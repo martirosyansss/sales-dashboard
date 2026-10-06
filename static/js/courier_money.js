@@ -277,7 +277,8 @@
             const due = r.due === null || r.due === undefined ? '<td class="cm-n cm-mute">—</td>'
                 : '<td class="cm-n" title="Ապրանքագիր՝ ' + esc(money(r.invoice_amount)) + '">' + esc(money(r.due)) + '</td>';
             return '<tr class="' + cls + '"><td class="cm-i">' + (i + 1) + '</td>'
-                + '<td class="cm-doc">' + esc(r.doc_number || r.stop_id) + (r.car_code && cars(x).length > 1 ? '<small>' + esc(r.car_code) + '</small>' : '') + '</td>'
+                + '<td class="cm-doc">' + (r.known ? '<a class="cm-doc-link" href="/courier/invoice?date=' + encodeURIComponent(st.data.date) + '&stop=' + encodeURIComponent(r.stop_id)
+                    + '" title="Ապրանքագրի քարտը՝ սկաններ, լուսանկարներ, ստորագրություն">' + esc(r.doc_number || r.stop_id) + '</a>' : '—') + (r.car_code && cars(x).length > 1 ? '<small>' + esc(r.car_code) + '</small>' : '') + '</td>'
                 + '<td class="cm-cust">' + esc(r.customer || '—') + '</td>'
                 + '<td>' + esc(COLLECT[r.collect] || '—') + '</td><td>' + statusBadge(r) + '</td>'
                 + due + exp + '<td class="cm-n"' + other + '>' + esc(money(r.invoice)) + '</td>' + short + cell(r.debt)

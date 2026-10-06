@@ -170,6 +170,8 @@
 .cm-table td.cm-n small, .cm-doc small { display: block; font-family: var(--rt-font); font-size: .75rem; color: var(--rt-fg-mute); }
 .cm-table .cm-i { color: var(--rt-fg-mute); width: 32px; font-family: var(--rt-mono); }
 .cm-doc { font-family: var(--rt-mono); white-space: nowrap; }
+.rt-page a.cm-doc-link { color: var(--rt-acc); text-decoration: none; font-weight: 600; }
+.rt-page a.cm-doc-link:hover { text-decoration: underline; }
 .cm-cust { min-width: 180px; }
 .cm-rc { font-family: var(--rt-mono); font-size: .8125rem; color: var(--rt-fg-dim); }
 .cm-flags { min-width: 180px; font-size: .8125rem; color: var(--rt-fg-dim); }

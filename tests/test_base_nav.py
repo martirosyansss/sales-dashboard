@@ -31,6 +31,7 @@ def active(html):
     ('/courier', ['Логистика', 'Առաքիչ']),
     ('/routes/live', ['Логистика', 'Маршруты', 'Մեքենաները առցանց']),   # №76: страница раздела «Маршруты»
     ('/courier/money', ['Логистика', 'Վարորդների գումարը']),   # своя страница: «Առաքիչ» не подсвечен
+    ('/courier/invoice', ['Логистика', 'Ապրանքագիր']),
     ('/customers', ['Клиенты', 'Клиенты и долги']),       # точное совпадение: /customers-grid не задевает
     ('/customers-grid', ['Клиенты', 'Клиенты Grid']),
     ('/plans', ['Продажи', 'Планы']),
@@ -44,7 +45,7 @@ def test_admin_sees_every_page_once():
     html = render('/', 'admin')
     for href in ('/managers', '/managers-kpi', '/quantity', '/groups', '/distributors', '/plans', '/customers',
                  '/customers-grid', '/customer-cards', '/areas', '/production', '/routes', '/routes/live', '/courier',
-                 '/courier/money', '/reports',
+                 '/courier/money', '/courier/invoice', '/reports',
                  '/dashboard-builder', '/ai-assistant', '/settings'):
         assert html.count(f'href="{href}"') == 1, href
 
