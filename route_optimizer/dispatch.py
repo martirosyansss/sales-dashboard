@@ -44,6 +44,10 @@
 - План дня «выпущен» (ответ владельца №80, Draft.released): первое утверждение ставит отметку, снятие утверждения, правки,
   пересборка и «Չեղարկել» её не снимают — машины уже в пути, их точки не пропадают. Только выпущенный план идёт на
   терминалы «Առաքիչ» (courier.routes_link); удалить выпущенный план нельзя (views), невыпущенный — удаляется как раньше.
+- Отправленный план (ответ владельца №81, Draft.sent, как «Publish changes» у Routific): терминалы, сверка офиса и карта
+  машин видят снимок плана, сделанный утверждением или «Ուղարկել վարորդներին» (send), — не черновик. Правки после
+  утверждения копятся в черновике; страница показывает, что не отправлено (unsent). Выпущенный до №81 план без снимка
+  читается так, будто отправлен он сам (Draft.from_json) — водители не теряют точки при обновлении.
 - Водителей меньше, чем машин (ответ владельца №77, build_crewed): машин в рейсах не больше, чем вышло водителей; свой
   водитель — на своей машине, свободные — на машинах невышедших, лишние машины выбирает сборка по ֏ дня. Машины без
   водителя (Draft.unmanned) — не машины дня: ни правки, ни новые заказы дня (№72), ни совет (№54) их не берут.
@@ -72,6 +76,7 @@
 """
 from __future__ import annotations
 
+import copy
 import math
 import re
 from dataclasses import dataclass, field, replace
@@ -639,6 +644,9 @@ class Draft:
     # план дня выпущен на терминалы (№80): {'at': первое утверждение (ISO), 'by': кто}; ставит approve, не снимает ничто —
     # ни unapprove, ни пересборка (build переносит), ни «Չեղարկել» (apply_edit «undo»); None — ни разу не утверждён
     released: dict[str, Any] | None = None
+    # что видят водители (№81): {'at': когда отправлен (ISO), 'by': кто, 'plan': to_json черновика в тот момент без
+    # undo и sent}; ставят approve и send, не снимает ничто; None — план не выпущен
+    sent: dict[str, Any] | None = None
     # правило «чьи заказы везут машины», с которым день собран (№74, FleetRule.to_json); None — пустое правило
     fleet: dict[str, Any] | None = None
     # водителей меньше, чем машин (№77, build_crewed): seats — машина → водитель, которого сборка посадила вместо её
@@ -672,6 +680,7 @@ class Draft:
                 **({'same_day_trucks': sorted(self.same_day_trucks)} if self.same_day_trucks else {}),
                 **({'approved': dict(self.approved)} if self.approved is not None else {}),
                 **({'released': dict(self.released)} if self.released is not None else {}),
+                **({'sent': self.sent} if self.sent is not None else {}),
                 **({'fleet': dict(self.fleet)} if self.fleet is not None else {}),
                 **({'seats': dict(sorted(self.seats.items()))} if self.seats else {}),
                 **({'unmanned': dict(sorted(self.unmanned.items()))} if self.unmanned else {}),
@@ -679,8 +688,9 @@ class Draft:
                 **({'solo_spare': dict(self.solo_spare)} if self.solo_spare is not None else {})}
 
     @classmethod
-    def from_json(cls, raw: Any) -> Draft:
-        """Черновик из базы; битые элементы пропускаются (черновик — не источник истины)."""
+    def from_json(cls, raw: Any, *, snapshot: bool = False) -> Draft:
+        """Черновик из базы; битые элементы пропускаются (черновик — не источник истины). snapshot — это сам отправленный
+        снимок (for_drivers): своего снимка у него нет и не строится."""
         if not isinstance(raw, dict):
             return cls()
         trucks = [t for t in raw.get('trucks') or [] if isinstance(t, str)]
@@ -710,7 +720,7 @@ class Draft:
         approved, released = _approved(raw.get('approved')), _released(raw.get('released'))
         if released is None and approved is not None:   # утверждён до №80 — выпущен этим утверждением
             released = {'at': approved['at'], 'by': approved['by']}
-        return cls(trucks, excluded, added, trips, next_id, built, _built_orders(raw.get('built_orders')), cids('no_room'),
+        draft = cls(trucks, excluded, added, trips, next_id, built, _built_orders(raw.get('built_orders')), cids('no_room'),
                    raw.get('overtime') is True, raw.get('overtime_ok') is True, isns('deferred'), isns('dropped'),
                    cids('no_window'), cids('no_center'), raw.get('prediction') if isinstance(raw.get('prediction'), dict) else None,
                    no_vehicle=cids('no_vehicle'),
@@ -726,6 +736,27 @@ class Draft:
                    absent=sorted({x for x in (raw.get('absent') or [])[:MAX_TRIPS] if isinstance(x, str) and x})
                    if isinstance(raw.get('absent'), list) else [],
                    solo_spare=raw.get('solo_spare') if isinstance(raw.get('solo_spare'), dict) else None)
+        if released is not None and not snapshot:
+            draft.sent = _sent(raw.get('sent'))
+            if draft.sent is None:   # выпущен до №81 (или снимок битый): водители видят сам черновик — он и отправлен
+                draft.sent = {**released, 'plan': draft.sent_plan()}
+        return draft
+
+    def sent_plan(self) -> dict[str, Any]:
+        """Снимок для водителей (№81): черновик без undo и sent."""
+        out = self.to_json()
+        out.pop('undo', None)
+        out.pop('sent', None)
+        return out
+
+    def for_drivers(self) -> Draft:
+        """План, который видят водители (№81): отправленный снимок; не выпущен — сам черновик (терминалы его всё равно
+        не берут — RoutesView.released)."""
+        if self.sent is None:
+            return self
+        out = Draft.from_json(self.sent['plan'], snapshot=True)
+        out.released, out.sent = self.released, self.sent
+        return out
 
 
 def _built_orders(raw: Any) -> dict[str, tuple[float, float]] | None:
@@ -767,6 +798,25 @@ def _released(raw: Any) -> dict[str, Any] | None:
         return None
     by = raw.get('by')
     return {'at': raw['at'], 'by': by if isinstance(by, str) else None}
+
+
+def _sent(raw: Any) -> dict[str, Any] | None:
+    """Отправленный водителям снимок из черновика (№81); битый — None (from_json возьмёт сам черновик)."""
+    if not isinstance(raw, dict) or not isinstance(raw.get('at'), str) or not isinstance(raw.get('plan'), dict) \
+            or not isinstance(raw['plan'].get('trips'), list):
+        return None
+    by = raw.get('by')
+    return {'at': raw['at'], 'by': by if isinstance(by, str) else None, 'plan': copy.deepcopy(raw['plan'])}
+
+
+def sent_json(raw: Any) -> Any:
+    """Сохранённый черновик (JSON) → что получили водители (№81): снимок выпущенного плана; не выпущен, снимка нет (выпущен
+    до №81) или он битый — сам черновик. Для читателей сырого JSON: обучение, замеры."""
+    if isinstance(raw, dict) and _released(raw.get('released')) is not None:
+        sent = _sent(raw.get('sent'))
+        if sent is not None:
+            return sent['plan']
+    return raw
 
 
 def _str_map(raw: Any) -> dict[str, str]:
@@ -1087,6 +1137,7 @@ def build(ctx: DayContext, stops: Sequence[Stop], old: Draft | None, trucks: Seq
                   built_at=now, deferred=set(old.deferred), dropped=set(old.dropped), agents_off=set(old.agents_off),
                   same_day=set(old.same_day), same_day_trips=set(old.same_day_trips),
                   released=dict(old.released) if old.released is not None else None,   # №80: пересборка не прячет день
+                  sent=old.sent,   # №81: пересборка — правка: водители видят прежний снимок до отправки
                   fleet=dict(old.fleet) if old.fleet is not None else None)
     gone = sorted({t.truck for t in old.trips if t.loaded is not None} - codes)
     if gone:   # №78: загруженный рейс пересборка не трогает — без его машины его не оставить
@@ -1794,6 +1845,7 @@ def apply_edit(ctx: DayContext, stops: Sequence[Stop], draft: Draft, edit: Mappi
             raise DispatchError('Չեղարկելու բան չկա՝ պլանը դրանից հետո արդեն փոխվել է')
         restored = Draft.from_json(draft.undo)
         restored.released = draft.released   # №80: отметка только копится — нынешняя не старее снимка
+        restored.sent = draft.sent           # №81: «Չեղարկել» правит черновик, отправленное водителям — как было
         return restored
     draft.undo = None
     if action in ('exclude', 'include'):
@@ -1858,7 +1910,7 @@ def apply_edit(ctx: DayContext, stops: Sequence[Stop], draft: Draft, edit: Mappi
             draft.approved = {**draft.approved, 'pinned': [i for i in draft.approved['pinned'] if i != trip.id]}
         return draft
     if action == 'resize':
-        before = {k: v for k, v in draft.to_json().items() if k not in ('prediction', 'undo')}
+        before = {k: v for k, v in draft.to_json().items() if k not in ('prediction', 'undo', 'sent')}   # №81: sent — свой
         draft = _resize(ctx, draft, routable, edit, now_min)
         draft.undo = before
         return draft
@@ -1953,7 +2005,18 @@ def _insertable(draft: Draft, t: DraftTrip) -> bool:
 def started_trips(ctx: DayContext, base: Sequence[Stop], draft: Draft, now_min: float) -> set[int]:
     """Рейсы, чья загрузка по плану уже началась (начало загрузки не позже now_min): машина в рейсе новый заказ не берёт и
     взятый заказ из него уже не вернуть на завтра (№72)."""
-    return _same_day_base(ctx, base, draft, now_min)[4]
+    out = _same_day_base(ctx, base, draft, now_min)[4]
+    if draft.sent is not None:   # №81: водители едут по отправленному плану — его начатые рейсы тоже не трогаем
+        out |= _same_day_base(ctx, base, draft.for_drivers(), now_min)[4]
+    return out
+
+
+def started_customers(ctx: DayContext, base: Sequence[Stop], draft: Draft, now_min: float) -> set[int]:
+    """Клиенты рейсов, чья загрузка уже началась, — и по черновику, и по отправленному водителям плану (№81: магазин могли
+    переложить в черновике, а машина везёт его по снимку). Номера рейсов не повторяются (next_id только растёт)."""
+    started = started_trips(ctx, base, draft, now_min)
+    trips = [*draft.trips, *(draft.for_drivers().trips if draft.sent is not None else ())]
+    return {c for t in trips if t.id in started for c in t.stops}
 
 
 def same_day_blocked(ctx: DayContext, base: Sequence[Stop], stops: Sequence[Stop], draft: Draft, cids: Collection[int],
@@ -2145,7 +2208,7 @@ def approve(draft: Draft, at: str, by: str | None) -> Draft:
     draft.approved = {'at': at, 'by': by, 'pinned': ids}
     if draft.released is None:   # №80: с первого утверждения план дня идёт на терминалы — и после снятия
         draft.released = {'at': at, 'by': by}
-    return draft
+    return send(draft, at, by)   # №81: утверждение отправляет план водителям (views повторит после prune и прогноза)
 
 
 def unapprove(draft: Draft) -> Draft:
@@ -2164,6 +2227,76 @@ def unapprove(draft: Draft) -> Draft:
     draft.undo = None
     draft.approved = None
     return draft
+
+
+# --- Отправка плана водителям (ответ владельца №81) ---
+
+def send(draft: Draft, at: str, by: str | None) -> Draft:
+    """Снимок черновика уходит водителям (Draft.sent). Зовётся последним перед сохранением — после prune и прогноза: и
+    утверждением (views), и «Ուղարկել վարորդներին». Ещё не выпущен (ни разу не утверждён) — DispatchError: до
+    утверждения водители плана не видят (№80)."""
+    if draft.released is None:
+        raise DispatchError('Նախ հաստատեք օրվա պլանը')
+    draft.sent = {'at': at, 'by': by, 'plan': draft.sent_plan()}
+    return draft
+
+
+def discard(draft: Draft) -> Draft:
+    """«Չեղարկել փոփոխությունները» (№81): черновик — снова отправленный водителям план (всё, что правили после отправки,
+    уходит: переносы, заказы дня, пересборка, утверждение и закрепления — как были в момент отправки). Не выпущен —
+    DispatchError: отменять нечего."""
+    if draft.sent is None:
+        raise DispatchError('Վարորդներին ուղարկված պլան չկա — չեղարկելու բան չկա')
+    restored = Draft.from_json(draft.sent['plan'], snapshot=True)
+    restored.released, restored.sent = draft.released, draft.sent
+    restored.next_id = max(restored.next_id, draft.next_id)   # номера выброшенных рейсов не повторяются (started_customers)
+    # №78: товар уже в машине — отметки «Բեռնված է» остаются (склад грузит по отправленному плану); загруженного рейса в
+    # отправленном плане нет — отменять нельзя: машина уехала бы с товаром рейса, которого у водителя нет
+    kept = {t.id: t for t in restored.trips}
+    for t in draft.trips:
+        if t.loaded is None:
+            continue
+        if t.id not in kept:
+            raise DispatchError('Բեռնված երթը վարորդներին ուղարկված պլանում չկա — նախ հանեք բեռնված նշումը')
+        kept[t.id].loaded, kept[t.id].pinned = dict(t.loaded), True
+    for t in restored.trips:   # отметка снимка, которую после отправки сняли, — снята
+        if t.loaded is not None and not any(x.id == t.id and x.loaded is not None for x in draft.trips):
+            t.loaded = None
+    return restored
+
+
+def loaded_changed(draft: Draft) -> bool:
+    """Загруженный рейс (№78, отметка в черновике) после отправки изменился: в черновике его точки не те, что у водителей
+    (№81) — склад грузил по отправленному плану, отправка правки изменит то, что уже в машине."""
+    if draft.sent is None:
+        return False
+    sent = {t.id: t.stops for t in draft.for_drivers().trips}
+    return any(t.loaded is not None and t.id in sent and list(sent[t.id]) != list(t.stops) for t in draft.trips)
+
+
+def _drivers_key(plan: Draft) -> tuple[dict[str, list[int]], tuple[Any, ...]]:
+    """Что из плана доходит до терминалов (courier.routes_link: RoutesView.car_customers — клиенты машины по порядку
+    рейсов, повтор — по первому появлению) и отбор заказов."""
+    trucks: dict[str, list[int]] = {}
+    for t in plan.trips:
+        order = trucks.setdefault(t.truck, [])
+        order.extend(c for c in t.stops if c not in order)
+    trucks = {c: v for c, v in trucks.items() if v}
+    return trucks, (sorted(plan.excluded), sorted(plan.added), sorted(plan.dropped), sorted(plan.agents_off),
+                    sorted(plan.same_day), FleetRule.from_json(plan.fleet).to_json())
+
+
+def unsent(draft: Draft) -> dict[str, Any] | None:
+    """Правки после отправки (№81): {'trucks': машины, чьи точки или их порядок у водителей другие, 'orders': изменился
+    отбор заказов (не везём сегодня, фильтр менеджеров, заказы дня …)}; не выпущен или всё отправлено — None."""
+    if draft.sent is None:
+        return None
+    now_trucks, now_orders = _drivers_key(draft)
+    was_trucks, was_orders = _drivers_key(draft.for_drivers())
+    changed = sorted(c for c in {*now_trucks, *was_trucks} if now_trucks.get(c) != was_trucks.get(c))
+    if not changed and now_orders == was_orders:
+        return None
+    return {'trucks': changed, 'orders': now_orders != was_orders}
 
 
 # --- «Բեռնված է» (ответ владельца №78) ---

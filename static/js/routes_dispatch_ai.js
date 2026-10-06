@@ -36,7 +36,10 @@
                 $('dpAi').hidden = !open;
                 $('dpAiOpen').hidden = open;
                 $('dpAiOpen').setAttribute('aria-expanded', String(open));
-                if (open) { aiRender(); $('dpAiInput').focus(); } else $('dpAiOpen').focus();
+                if (open) { aiRender(); $('dpAiInput').focus(); return; }
+                // на телефоне (№81) кнопки нет — AI во вкладках внизу: фокус возвращается на вкладку
+                const tab = document.getElementById('dpTabAi');
+                if ($('dpAiOpen').offsetParent === null && tab && !tab.hidden) tab.focus(); else $('dpAiOpen').focus();
             }
             // Ответ AI — абзацы и строки-пункты «• …» (без разметки: всё через textContent)
             function aiText(box, text) {

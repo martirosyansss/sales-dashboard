@@ -29,7 +29,14 @@
    (POST /api/routes/dispatch/same-day), выбор — правка same_day, «Թողնել վաղվան».
    Утверждение плана дня (ответ владельца №73): «Հաստատել օրվա պլանը» — правка approve (все рейсы закреплены), отметка
    «Պլանը հաստատված է · ժ. ЧЧ:ММ · кто»; пока утверждён, «Վերակազմել երթերը» и «Ջնջել երթերը» недоступны (сервер — 400),
-   «Չեղարկել հաստատումը» — правка unapprove. */
+   «Չեղարկել հաստատումը» — правка unapprove.
+   Отправка водителям (ответ владельца №81, как «Publish changes» у Routific): утверждение отправляет план на терминалы;
+   правки после него копятся — у даты метка «N մեքենայի փոփոխությունը չի ուղարկվել», кнопка «Ուղարկել» (правка send) и
+   «Չեղարկել փոփոխությունները» (правка discard — назад к отправленному); бумага при неотправленных правках — после
+   «Ուղարկել և շարունակել» (dpSendFirstDlg), чтобы лист и «Բեռնագիր» совпадали с терминалом водителя.
+   Как у профессиональных систем (№81): всё, что требует внимания, — строкой счётчиков под «Ի՞նչ անել հիմա» (dpInbox);
+   рейсы и карта — рабочий экран на высоту окна со своей прокруткой; магазин можно перетащить мышью на полосу рейса
+   шкалы или в рейс карточки (правка move); на телефоне — вкладки внизу «Օր · Երթեր · Քարտեզ» (dpTabs). */
 (function () {
     'use strict';
 
@@ -87,6 +94,9 @@
         pickMap: null, pickMarker: null, pickCid: null, dragging: false, undo: null,
         loadSeq: 0,                         // номер последнего запроса дня: ответы на прежние запросы не применяются
         editing: new Set(),                 // рейсы, открытые кнопкой «Փոփոխել»
+        tab: 'day',                         // №81: вкладка на телефоне — day | trips | map
+        dragStop: null,                     // №81: магазин, который тянут мышью на другой рейс: {stop, from}
+        boardFolded: false,                 // №81: шкала дня свёрнута (как «скрыть таймлайн» у Routific)
         fetchedAt: 0,                       // когда последний раз спрашивали сервер о заказах дня
         geoMap: null, geoMarker: null, geoStop: null,   // «Փոխել տեղը»: карта диалога и магазин
         sugMap: null, sugLayer: null, sugSel: null,     // предложения водителей: карта и выбранное (event_id)
@@ -342,11 +352,14 @@
             : plan ? 'Ամրացված երթերը կմնան ինչպես կան, մնացածը ծրագիրը կբաշխի նորից։'
                 + (loadedN ? ' Բեռնված երթերը (' + loadedN + ') չեն փոխվի։' : '') : 'Մոտ 5 վայրկյան։';
         renderApprove();
+        renderSendState();
         renderSteps();
         renderSameDay();
         if ($('dpSameDayDlg').open) { if (sdData()) renderSdDialog(); else $('dpSameDayDlg').close(); }
         $('dpStep3').hidden = !plan;
         if (plan) renderPlan(plan);
+        renderInbox();
+        renderTabs();
         $('dpAnalysis').hidden = !plan && !d.is_past;
         $('dpFact').hidden = !d.is_past;
         if (!d.is_past) $('dpFactOut').textContent = '';
@@ -428,19 +441,38 @@
             title = 'Խանութի կետը փոխվել է';
             lines.push(GEO_REBUILD);
             btns.push({ act: build, text: 'Վերակազմել երթերը', ico: 'fa-rotate' });
+        } else if (d.unsent && d.sent && !d.is_past) {
+            // №81: правки после отправки — водители их не видят, пока не нажать «Ուղարկել»
+            tone = 'is-warn'; ico = 'fa-paper-plane';
+            title = 'Փոփոխությունները դեռ չեն ուղարկվել վարորդներին';
+            lines.push('Վարորդները տեսնում են ' + builtWhen(d.sent.at) + '-ի պլանը։ ' + unsentDetail(d.unsent));
+            if (gone) lines.push(gone);
+            btns.push({ act: sendPlan, text: 'Ուղարկել վարորդներին', ico: 'fa-paper-plane' });
         } else if (planIssues(plan)) {
             tone = 'is-warn'; ico = 'fa-triangle-exclamation';
             title = 'Երթերը կազմված են, բայց ոչ ամեն ինչ է տեղավորվել';
             lines.push('Ստորև գրված է՝ ինչը չի տեղավորվել և ինչ անել։');
             if (gone) lines.push(gone);
-            btns.push({ act: () => { const el = $('dpOverflow').firstElementChild || $('dpUnassigned').firstElementChild; if (el) el.scrollIntoView({ block: 'start', behavior: 'smooth' }); }, text: 'Ցույց տալ', ico: 'fa-arrow-down' });
+            btns.push({ act: () => showPlanPart(() => $('dpOverflow').firstElementChild || $('dpUnassigned').firstElementChild), text: 'Ցույց տալ', ico: 'fa-arrow-down' });
+            btns.push(d.sent || d.is_past ? { act: printSheets, text: 'Տպել վարորդների համար', ico: 'fa-print' }
+                : { act: approvePlan, text: 'Հաստատել և ուղարկել', ico: 'fa-paper-plane' });
+        } else if (!d.sent && !d.is_past) {
+            // №81: следующий шаг после сборки — утвердить: только тогда водители видят рейсы в «Առաքիչ»
+            tone = 'is-ok'; ico = 'fa-circle-check';
+            title = 'Երթերը պատրաստ են — հաստատեք և ուղարկեք վարորդներին';
+            const when = builtWhen(d.built_at);
+            lines.push((when ? 'Կազմվել են ' + when + '։ ' : '') + 'Վարորդները կտեսնեն երթերը «Առաքիչ» ծրագրում միայն հաստատելուց հետո։');
+            if (coming) lines.push(coming + ' Եթե գան նոր պատվերներ, այստեղ կհայտնվի հիշեցում։');
+            if (gone) lines.push(gone);
+            btns.push({ act: approvePlan, text: 'Հաստատել և ուղարկել', ico: 'fa-paper-plane' });
             btns.push({ act: printSheets, text: 'Տպել վարորդների համար', ico: 'fa-print' });
         } else {
             tone = 'is-ok'; ico = 'fa-circle-check';
-            title = 'Երթերը պատրաստ են — տպեք թերթիկները վարորդների համար';
-            const when = builtWhen(d.built_at);
+            title = d.sent ? 'Պլանն ուղարկված է վարորդներին — տպեք թերթիկները' : 'Երթերը պատրաստ են — տպեք թերթիկները վարորդների համար';
+            const when = d.sent ? builtWhen(d.sent.at) : builtWhen(d.built_at);
             const tail = coming ? coming + ' Եթե գան նոր պատվերներ, այստեղ կհայտնվի հիշեցում։' : '';
-            if (when || tail) lines.push(((when ? 'Կազմվել են ' + when + '։ ' : '') + tail).trim());
+            if (when || tail) lines.push(((when ? (d.sent ? 'Ուղարկվել է ' : 'Կազմվել են ') + when + '։ ' : '') + tail).trim());
+            if (d.sent && !d.is_past) lines.push('Հետագա փոփոխությունները վարորդները կտեսնեն միայն «Ուղարկել» սեղմելուց հետո։');
             if (gone) lines.push(gone);
             btns.push({ act: printSheets, text: 'Տպել վարորդների համար', ico: 'fa-print' });
             btns.push({ act: exportExcel, text: 'Ներբեռնել Excel', ico: 'fa-file-excel' });
@@ -449,8 +481,7 @@
             btns = btns.filter(b => b.act !== build);
             lines.push(APPROVED_HY);
         }
-        // магазины без точки на карте в рейсы не попадают — напоминаем, пока они есть
-        if (plan && d.orders.no_coords && !problems.length) lines.push('Ուշադրություն՝ ' + pl(d.orders.no_coords, 'խանութի') + ' տեղը քարտեզում նշված չէ, դրանք երթերում չեն (տես 2-րդ քայլը)։');
+        // магазины без точки на карте в рейсы не попадают — после сборки о них напоминает счётчик «Առանց կետի» (№81, dpInbox)
         // №77: отмеченные машины, которые сегодня без водителя, — в рейсах их нет
         const idle = plan ? d.trucks.filter(t => t.unmanned && t.selected) : [];
         if (idle.length) lines.push('Առանց վարորդի ' + dayHuman(d.day) + 'ն դուրս չեն գալիս՝ ' + idle.map(truckLabel).join(', ') + '։');
@@ -482,7 +513,7 @@
     const interacting = () => {
         const a = document.activeElement;
         return state.pickCid !== null || state.dragging || $('dpGeoDlg').open || $('dpUnloadDlg').open || $('dpDriverDlg').open
-            || $('dpSameDayDlg').open || $('dpAbsentDlg').open
+            || $('dpSameDayDlg').open || $('dpAbsentDlg').open || $('dpSendFirstDlg').open
             || (!!a && $('dpBody').contains(a) && /^(SELECT|INPUT|TEXTAREA)$/.test(a.tagName));
     };
     async function poll() {
@@ -553,13 +584,128 @@
         const b = document.createElement('button');
         b.type = 'button';
         b.id = 'dpApproveBtn';
-        b.className = 'rt-btn rt-btn-ghost';
-        b.innerHTML = '<i class="fas fa-lock" aria-hidden="true"></i><span>Հաստատել օրվա պլանը</span>';
-        b.addEventListener('click', () => edit({ action: 'approve' }, 'Օրվա պլանը հաստատված է՝ բոլոր երթերն ամրացված են'));
+        // №81: пока план не у водителей, утверждение — главная кнопка сводки (печать рядом — второстепенная)
+        b.className = 'rt-btn ' + (d.sent ? 'rt-btn-ghost' : 'rt-btn-primary');
+        b.innerHTML = '<i class="fas fa-paper-plane" aria-hidden="true"></i><span></span>';
+        b.lastChild.textContent = d.sent ? 'Հաստատել օրվա պլանը' : 'Հաստատել և ուղարկել վարորդներին';
+        b.addEventListener('click', approvePlan);
         const note = document.createElement('p');
         note.className = 'dp-approve-note';
-        note.textContent = 'Բոլոր երթերը կամրացվեն։ Հետո՝ միայն ձեռքով փոփոխություններ և այսօրվա նոր պատվերներ, ամբողջական վերակազմում՝ միայն հաստատումը չեղարկելուց հետո։';
+        note.textContent = (d.sent ? (d.unsent ? 'Հաստատելիս վարորդներին կուղարկվեն նաև բոլոր փոփոխությունները։ ' : '')
+            : 'Վարորդները կտեսնեն երթերը «Առաքիչ» ծրագրում։ ')
+            + 'Բոլոր երթերը կամրացվեն։ Հետո՝ միայն ձեռքով փոփոխություններ և այսօրվա նոր պատվերներ, ամբողջական վերակազմում՝ միայն հաստատումը չեղարկելուց հետո։';
         box.append(b, note);
+    }
+    const approvePlan = () => edit({ action: 'approve' }, 'Օրվա պլանը հաստատված է և ուղարկված վարորդներին');
+
+    // ---------- Что видят водители (ответ владельца №81, как «Publish changes» у Routific) ----------
+    // Утверждение отправляет план на терминалы «Առաքիչ»; правки после него копятся в черновике (unsent ответа дня), пока
+    // логист не нажмёт «Ուղարկել» — тогда водители получают план целиком в нынешнем виде (правка send)
+    const SENT_OK = 'Փոփոխություններն ուղարկվեցին վարորդներին';
+    const onRoad = (u) => (u && Array.isArray(u.on_road) ? u.on_road : []).map(c => { const t = truckBy(c); return t ? truckLabel(t) : c; });
+    function sendPlan() {
+        const road = onRoad(state.data.unsent);
+        if (road.length && !window.confirm(road.join(', ') + (road.length > 1 ? ' մեքենաներն' : ' մեքենան') + ' արդեն բեռնվում է կամ '
+            + 'ճանապարհին է՝ վարորդը փոփոխությունը կտեսնի «Առաքիչ»-ում ճանապարհին։ Զանգահարեք նրան։ Ուղարկե՞լ։')) return;
+        edit({ action: 'send' }, SENT_OK);
+    }
+    // «Չեղարկել փոփոխությունները»: черновик — снова тот план, что у водителей (правка discard)
+    function discardPlan() {
+        const d = state.data;
+        if (!window.confirm('Չեղարկե՞լ բոլոր չուղարկված փոփոխությունները։ Պլանը կվերադառնա վարորդներին ուղարկված վիճակին ('
+            + builtWhen(d.sent.at) + ')՝ ներառյալ հաստատումը և ամրացումները։')) return;
+        edit({ action: 'discard' }, 'Պլանը վերադարձավ վարորդներին ուղարկված վիճակին');
+    }
+    function unsentTitle(u) {
+        return u.trucks.length ? pl(u.trucks.length, 'մեքենայի') + ' փոփոխությունը չի ուղարկվել' : 'Պատվերների փոփոխությունը չի ուղարկվել';
+    }
+    function unsentDetail(u) {
+        const names = u.trucks.map(c => { const t = truckBy(c); return t ? truckLabel(t) : c; });
+        const road = onRoad(u);
+        return (names.length ? 'Փոխվել են՝ ' + names.join(', ') + '։' : '')
+            + (u.orders ? (names.length ? ' ' : '') + 'Փոխվել է պատվերների ընտրությունը։' : '')
+            + (road.length ? ' Արդեն ճանապարհին են՝ ' + road.join(', ') + '․ ուղարկելուց հետո զանգահարեք վարորդին։' : '');
+    }
+    function renderSendState() {
+        const d = state.data, box = $('dpSendState');
+        const printMain = !!d.sent || !!d.is_past;
+        $('dpPrint').classList.toggle('rt-btn-primary', printMain);
+        $('dpPrint').classList.toggle('rt-btn-ghost', !printMain);
+        box.textContent = '';
+        box.hidden = !d.plan || (d.is_past && !d.sent);
+        if (box.hidden) return;
+        const unsent = !!(d.sent && d.unsent && !d.is_past);
+        const pill = document.createElement('span');
+        pill.className = 'dp-sendpill ' + (!d.sent ? 'is-draft' : unsent ? 'is-unsent' : 'is-sent');
+        pill.innerHTML = '<i class="fas ' + (!d.sent ? 'fa-pen-ruler' : unsent ? 'fa-circle' : 'fa-paper-plane') + '" aria-hidden="true"></i><span></span>';
+        pill.lastChild.textContent = !d.sent ? 'Սևագիր — վարորդները դեռ չեն տեսնում'
+            : unsent ? unsentTitle(d.unsent) : 'Ուղարկված է վարորդներին · ' + builtWhen(d.sent.at);
+        if (unsent) pill.title = unsentDetail(d.unsent);
+        box.appendChild(pill);
+        if (!unsent) return;
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.id = 'dpSendBtn';
+        b.className = 'rt-btn rt-btn-primary rt-btn-sm';
+        b.innerHTML = '<i class="fas fa-paper-plane" aria-hidden="true"></i><span>Ուղարկել</span>';
+        b.setAttribute('aria-label', 'Ուղարկել փոփոխությունները վարորդներին');
+        b.addEventListener('click', sendPlan);
+        const x = document.createElement('button');
+        x.type = 'button';
+        x.id = 'dpDiscardBtn';
+        x.className = 'rt-linkbtn dp-discard';
+        x.textContent = 'Չեղարկել փոփոխությունները';
+        x.addEventListener('click', discardPlan);
+        box.append(b, x);
+    }
+
+    // ---------- Требует внимания (№81): счётчики одной строкой, нажатие — к месту на странице ----------
+    function goTo(el) {
+        if (!el) return;
+        el.scrollIntoView({ block: 'start', behavior: calm() ? 'auto' : 'smooth' });
+        const f = el.matches('details') ? el.querySelector('summary') : el.querySelector('h3, h4, summary, button');
+        if (f) f.focus({ preventScroll: true });
+    }
+    // часть рейсов (не поместились, ещё не в рейсах): на телефоне — сначала вкладка «Երթեր»
+    function showPlanPart(find) {
+        if (state.tab !== 'trips' && tabsOn()) setTab('trips');
+        goTo(find());
+    }
+    function openFold(id) {
+        if (state.tab !== 'day' && tabsOn()) setTab('day');
+        unfoldStep('dpStep2');
+        const el = $(id);
+        el.open = true;
+        goTo(el);
+    }
+    function renderInbox() {
+        const d = state.data, plan = d.plan, box = $('dpInbox');
+        box.textContent = '';
+        if (!plan) { box.hidden = true; return; }
+        const add = (tone, ico, label, count, act, href) => {
+            const el = document.createElement(href ? 'a' : 'button');
+            el.className = 'dp-inchip' + (tone ? ' ' + tone : '');
+            if (href) el.href = href; else { el.type = 'button'; el.addEventListener('click', act); }
+            el.innerHTML = '<i class="fas ' + ico + '" aria-hidden="true"></i><span></span>' + (count ? '<b></b>' : '');
+            el.querySelector('span').textContent = label;
+            if (count) el.querySelector('b').textContent = fmt(count);
+            box.appendChild(el);
+        };
+        const bad = plan.trucks.reduce((n, t) => n + t.trips.filter(tripBad).length, 0);
+        if (bad) add('is-bad', 'fa-triangle-exclamation', 'Խնդիր երթերում', bad, () => showPlanPart(() => $('dpOverflow').firstElementChild));
+        if (plan.unassigned.length) add('is-bad', 'fa-inbox', 'Երթերում չեն', plan.unassigned.length, () => showPlanPart(() => $('dpUnassigned').firstElementChild));
+        const o = d.orders;
+        if (o.no_coords) add('is-warn', 'fa-location-dot', 'Առանց կետի', o.no_coords, () => openFold('dpNoCoords'));
+        const gs = geoSug();
+        if (gs.count) add('is-warn', 'fa-location-crosshairs', 'Նոր տեղ՝ վարորդներից', gs.count, () => openFold('dpGeoSug'));
+        const bl = d.backlog || [];
+        if (bl.length) add('', 'fa-clock-rotate-left', 'Նախորդ օրերից', bl.length, () => openFold('dpBacklog'));
+        if (o.excluded) add('', 'fa-ban', 'Այսօր չենք տանում', o.excluded, () => openFold('dpExcluded'));
+        // нормы погрузки, расхода и износа не заполнены — цифры дня приблизительные (раньше — только серым текстом под сводкой)
+        const sm = plan.summary;
+        if (sm.loading_configured === false || sm.fuel_load_unconfigured || sm.wear_unconfigured)
+            add('is-warn', 'fa-gear', 'Լրացնել մեքենաների նորմերը', 0, null, '/routes/settings#trucks');
+        box.hidden = !box.children.length;
     }
 
     // ---------- Новые заказы дня (ответ владельца №72) ----------
@@ -656,7 +802,16 @@
             + '<div class="dp-todo-body"><p class="dp-todo-k">Այսօրվա նոր պատվերներ</p><h2 class="dp-todo-t"></h2>'
             + '<div class="dp-todo-lines"></div><div class="dp-todo-btns"></div></div>';
         box.querySelector('.dp-todo-t').textContent = title;
-        lines.forEach(t => { const p = document.createElement('p'); p.textContent = t; box.querySelector('.dp-todo-lines').appendChild(p); });
+        // №81: плашка — одна строка с кнопкой; пояснения — под «Մանրամասն» (выбор всё равно в диалоге). Заказы с накладной
+        // на сегодня — не сворачиваем: не поставить их в рейс — значит не отвезти ни сегодня, ни завтра
+        if (lines.length && inv.length) lines.forEach(t => { const p = document.createElement('p'); p.textContent = t; box.querySelector('.dp-todo-lines').appendChild(p); });
+        else if (lines.length) {
+            const more = document.createElement('details');
+            more.className = 'dp-more';
+            more.innerHTML = '<summary>Մանրամասն</summary>';
+            lines.forEach(t => { const p = document.createElement('p'); p.textContent = t; more.appendChild(p); });
+            box.querySelector('.dp-todo-lines').appendChild(more);
+        }
         if (btn) {
             const b = document.createElement('button');
             b.type = 'button';
@@ -1718,9 +1873,7 @@
             if (diff > 0) saveRow('', 'fa-arrow-trend-down', [['Սա '], [fmt(diff) + NB + 'կմ-ով կարճ է', true],
                 [', քան եթե յուրաքանչյուր մենեջերի պատվերները տաներ իր սովորական մեքենան'],
                 ...(dl > 0 ? [[' (≈ '], [fmt(dl) + NB + 'լ', true], [' դիզելի խնայողություն)']] : []), ['։']]);
-            else saveRow('is-neutral', 'fa-scale-balanced', [[diff < 0
-                ? 'Սա ' + fmt(-diff) + NB + 'կմ-ով երկար է, քան սովորական բաշխումը ըստ մենեջերների — ստուգեք ամրացված երթերը։'
-                : 'Ճանապարհը նույնն է, ինչ սովորական բաշխումը ըստ մենեջերների։']]);
+            // №81: план не короче обычной развозки — сравнение для руководителя («Ղեկավարի համար»), не в сводке логиста
         }
         if (plan.coverage && !plan.coverage.complete) {
             const c = plan.coverage;
@@ -1744,11 +1897,13 @@
         if (sm.wear_unconfigured) costNotes.push(fmt(sm.wear_unconfigured) + ' երթի մաշվածքի արժեքը նշված չէ');
         if (sm.fuel_price_estimated) costNotes.push('դիզելի գինը պայմանական է՝ ' + money(sm.fuel_price_amd) + '/լ');
         if (costNotes.length) {
-            const note = document.createElement('p');
-            note.className = 'dp-costnote';
+            // №81: как посчитано — свёрнуто; незаполненные нормы — счётчиком «Լրացնել մեքենաների նորմերը» (dpInbox)
+            const more = document.createElement('details');
+            more.className = 'dp-costnote';
+            more.innerHTML = '<summary>Ինչպես է հաշված ճանապարհը և ծախսը</summary><p></p>';
             const text = costNotes.join('։ ') + '։ Նորմերը լրացրեք մեքենաների կարգավորումներում։';
-            note.textContent = text.charAt(0).toUpperCase() + text.slice(1);
-            lead.appendChild(note);
+            more.querySelector('p').textContent = text.charAt(0).toUpperCase() + text.slice(1);
+            lead.appendChild(more);
         }
         renderBoard(plan);
         renderOverflow(plan);
@@ -1791,7 +1946,23 @@
         lg[0].appendChild(document.createTextNode('աշխատանքային ժամ՝ ' + hhmm(ws) + '–' + hhmm(we)));
         lg[1].appendChild(document.createTextNode(hhmm(we) + '-ից հետո'));
         if (loading) head.lastChild.insertAdjacentHTML('beforeend', '<span><i class="dp-lg-load"></i>բեռնում պահեստում</span>');
+        // №81: шкалу можно свернуть — больше места рейсам и карте (помнится в этом браузере)
+        const fold = document.createElement('button');
+        fold.type = 'button';
+        fold.className = 'rt-linkbtn dp-board-fold';
+        fold.setAttribute('aria-expanded', String(!state.boardFolded));
+        fold.innerHTML = '<i class="fas fa-chevron-' + (state.boardFolded ? 'down' : 'up') + '" aria-hidden="true"></i><span></span>';
+        fold.lastChild.textContent = state.boardFolded ? 'Բացել' : 'Ծալել';
+        fold.addEventListener('click', () => {
+            state.boardFolded = !state.boardFolded;
+            try { window.localStorage.setItem('dpBoardFolded', state.boardFolded ? '1' : ''); } catch (e) { /* только на эту страницу */ }
+            renderBoard(state.data.plan);
+            box.querySelector('.dp-board-fold').focus();
+        });
+        head.appendChild(fold);
         box.appendChild(head);
+        box.classList.toggle('is-folded', state.boardFolded);
+        if (state.boardFolded) return;
 
         const grid = document.createElement('div');
         grid.className = 'dp-board-grid';
@@ -1853,6 +2024,7 @@
                 const bt = document.createElement('span');
                 bt.className = 'dp-bar-t';
                 bt.textContent = info;
+                if (tripBad(tr)) bt.insertAdjacentHTML('afterbegin', '<i class="fas fa-triangle-exclamation" aria-hidden="true"></i>');
                 bar.appendChild(bt);
                 // засечки — приезд в каждый магазин
                 tr.stops.forEach(s => {
@@ -2261,6 +2433,7 @@
         kg.className = 'dp-stop-kg';
         kg.textContent = kgText(stop.kg) + (stop.share > 1 ? ' (1/' + stop.share + ')' : '');
         li.append(eta, no, main, kg);
+        draggableStop(li, stop, tripId);
         if (editing) {
             const acts = document.createElement('div');
             acts.className = 'dp-stop-acts';
@@ -2291,6 +2464,94 @@
             li.appendChild(acts);
         }
         return li;
+    }
+
+    // №81: магазин тянут мышью (только мышь — на телефоне остаётся «Տեղափոխել այլ երթ…») на полосу рейса шкалы или в
+    // рейс карточки — правка move, как выбор рейса в списке; на свой рейс и машине, которой магазин не разрешён, — нельзя
+    const finePointer = () => !!(window.matchMedia && window.matchMedia('(pointer: fine)').matches);
+    function draggableStop(li, stop, tripId) {
+        if (state.data.is_past || !finePointer()) return;
+        li.draggable = true;
+        li.title = 'Քաշեք մկնիկով այլ մեքենայի քարտի կամ երթի վրա';
+        li.addEventListener('dragstart', (e) => {
+            if (state.busy) { e.preventDefault(); return; }
+            state.dragStop = { stop, from: tripId };
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/plain', stop.name || stop.code || '');
+            li.classList.add('is-dragged');
+            $('rtDispatch').classList.add('is-dragstop');
+        });
+        li.addEventListener('dragend', () => {
+            state.dragStop = null;
+            li.classList.remove('is-dragged');
+            $('rtDispatch').classList.remove('is-dragstop');
+            document.querySelectorAll('#dpStep3 .is-drop').forEach(x => x.classList.remove('is-drop'));
+        });
+    }
+    // цель — полоса рейса на шкале, рейс в раскрытой карточке или шапка карточки машины: у машины один рейс — он,
+    // несколько — карточка раскрывается, пока над ней держат магазин (SPRING_MS), и магазин кладут на нужный рейс
+    const SPRING_MS = 600;
+    function dropTrip(e) {
+        const ds = state.dragStop;
+        if (!ds || !e.target.closest) return null;
+        let el = e.target.closest('.dp-bar[data-trip], .dp-trip[data-trip]'), id = el ? Number(el.dataset.trip) : null;
+        if (!el) {
+            el = e.target.closest('.dp-tcard[data-truck]:not(.is-unmanned)');
+            const t = el && state.data.plan.trucks.find(x => x.car_code === el.dataset.truck);
+            if (!t) return null;
+            if (t.trips.length !== 1) return { el, id: null, t, spring: true };
+            id = t.trips[0].id;
+        }
+        const t = state.data.plan.trucks.find(x => x.trips.some(tr => tr.id === id));
+        return t && id !== ds.from && vehicleAllowed(ds.stop, t.car_code) ? { el, id, t } : null;
+    }
+    // раскрыть карточку на месте (без перерисовки списка — иначе пропал бы перетаскиваемый магазин)
+    function springOpen(card, t) {
+        const body = card.querySelector('.dp-tbody'), head = card.querySelector('.dp-thead');
+        if (!body || !body.hidden) return;
+        state.open.add(t.car_code);
+        t.trips.forEach((tr, i) => body.appendChild(tripBlock(t, tr, i)));
+        body.hidden = false;
+        if (head) head.setAttribute('aria-expanded', 'true');
+    }
+    function dropStops() {
+        const root = $('dpStep3');
+        let spring = null;
+        const stopSpring = () => { if (spring) { clearTimeout(spring.timer); spring = null; } };
+        root.addEventListener('dragover', (e) => {
+            if (!state.dragStop) return;
+            const hit = dropTrip(e);
+            root.querySelectorAll('.is-drop').forEach(x => { if (!hit || x !== hit.el) x.classList.remove('is-drop'); });
+            if (hit && hit.spring) {
+                if (!spring || spring.el !== hit.el) {
+                    stopSpring();
+                    spring = { el: hit.el, timer: setTimeout(() => { springOpen(hit.el, hit.t); spring = null; }, SPRING_MS) };
+                }
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'none';
+                return;
+            }
+            if (!hit || !spring || !spring.el.contains(hit.el)) stopSpring();
+            if (!hit) { e.dataTransfer.dropEffect = 'none'; return; }
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            hit.el.classList.add('is-drop');
+        });
+        root.addEventListener('dragend', stopSpring);
+        // источник мог исчезнуть при перерисовке (тогда его dragend не придёт) — забываем перетаскивание на любом конце
+        document.addEventListener('dragend', () => { state.dragStop = null; $('rtDispatch').classList.remove('is-dragstop'); });
+        document.addEventListener('drop', () => { state.dragStop = null; $('rtDispatch').classList.remove('is-dragstop'); });
+        root.addEventListener('drop', (e) => {
+            stopSpring();
+            const hit = dropTrip(e), ds = state.dragStop;
+            state.dragStop = null;
+            if (!hit || hit.spring) return;
+            e.preventDefault();
+            hit.el.classList.remove('is-drop');
+            const n = hit.t.trips.findIndex(tr => tr.id === hit.id) + 1;
+            edit({ action: 'move', customer_id: ds.stop.customer_id, from_trip: ds.from, to_trip: hit.id, truck: null },
+                '«' + (ds.stop.name || ds.stop.code) + '» տեղափոխվեց՝ ' + truckLabel(hit.t) + ', երթ ' + n);
+        });
     }
 
     function stopList(stops, tripId, editing, lunch) {
@@ -2706,7 +2967,10 @@
         const b = plan.baseline;
         $('dpBaseline').hidden = !b;
         if (!b) return;
-        $('dpBaselineNote').textContent = '≈ ' + fmt(b.km) + NB + 'կմ, ' + fmt(b.liters) + NB + 'լ, ' + pl(b.trips, 'երթ');
+        // №81: здесь же — насколько план короче или длиннее (в сводке — только экономия)
+        const diff = num(b.km) !== null ? Math.round(b.km - plan.summary.km) : 0;
+        $('dpBaselineNote').textContent = '≈ ' + fmt(b.km) + NB + 'կմ, ' + fmt(b.liters) + NB + 'լ, ' + pl(b.trips, 'երթ')
+            + (diff > 0 ? ' · պլանը ' + fmt(diff) + NB + 'կմ-ով կարճ է' : diff < 0 ? ' · պլանը ' + fmt(-diff) + NB + 'կմ-ով երկար է' : '');
         const tb = $('dpBaselineRows');
         tb.textContent = '';
         b.trucks.forEach(r => {
@@ -3297,7 +3561,7 @@
     // ---------- Действия ----------
     function setBusy(on) {
         state.busy = on;
-        document.querySelectorAll('#dpBody button, #dpBody select, #dpAgentsList input').forEach(x => {
+        document.querySelectorAll('#dpBody button, #dpBody select, #dpAgentsList input, #dpSendState button').forEach(x => {
             if (on) { x.dataset.wasDisabled = x.disabled ? '1' : ''; x.disabled = true; } else if (x.dataset.wasDisabled !== undefined) { x.disabled = x.dataset.wasDisabled === '1'; delete x.dataset.wasDisabled; }
         });
         $('rtDispatch').setAttribute('aria-busy', String(on));
@@ -3417,8 +3681,81 @@
         } catch (e) { setBusy(false); render(); showActionError(e); }
     }
 
+    // ---------- Вкладки на телефоне (№81, как Sidebar / Map у Onfleet) ----------
+    const PHONE = window.matchMedia ? window.matchMedia('(max-width: 767px)') : null;
+    const tabsOn = () => !!(PHONE && PHONE.matches && state.data && state.data.plan);
+    function renderTabs() {
+        const on = tabsOn(), root = $('rtDispatch');
+        $('dpTabs').hidden = !on;
+        if (!on) { delete root.dataset.tab; delete document.body.dataset.dpTab; return; }
+        root.dataset.tab = state.tab;
+        document.body.dataset.dpTab = state.tab;
+        $('dpTabs').querySelectorAll('.dp-tab').forEach(b => { if (b.dataset.tab !== 'ai') b.setAttribute('aria-pressed', String(b.dataset.tab === state.tab)); });
+        const ai = $('dpTabAi'), fab = $('dpAiOpen');
+        if (ai) ai.hidden = !fab || (fab.hidden && $('dpAi').hidden);
+    }
+    function setTab(tab) {
+        state.tab = tab;
+        renderTabs();
+        window.scrollTo(0, 0);
+        // карта, нарисованная во скрытой вкладке, сама впишет точки (watchSize); раскрыть её блок, если свёрнут
+        if (tab === 'map' && !$('dpMapBox').open) $('dpMapBox').open = true;
+    }
+    function initTabs() {
+        $('dpTabs').addEventListener('click', (e) => {
+            const b = e.target.closest('.dp-tab');
+            if (!b) return;
+            if (b.dataset.tab === 'ai') { const fab = $('dpAiOpen'); if (fab) fab.click(); return; }
+            setTab(b.dataset.tab);
+        });
+        if (PHONE) {
+            const sync = () => { if (state.data) renderTabs(); };
+            if (PHONE.addEventListener) PHONE.addEventListener('change', sync); else if (PHONE.addListener) PHONE.addListener(sync);
+        }
+        // кнопка AI (routes_dispatch_ai.js) появляется и прячется сама — вкладка AI вслед за ней
+        const fab = $('dpAiOpen');
+        if (fab && typeof window.MutationObserver !== 'undefined') {
+            const mo = new MutationObserver(() => { if (state.data) renderTabs(); });
+            mo.observe(fab, { attributes: true, attributeFilter: ['hidden'] });
+            mo.observe($('dpAi'), { attributes: true, attributeFilter: ['hidden'] });
+        }
+    }
+
     // ---------- Печать и Excel ----------
-    function printSheets() {
+    // №81: бумага (лист водителей, Excel, «Բեռնագիր») должна совпадать с терминалом водителя. Есть неотправленные правки
+    // (у машины code или в отборе заказов) — сначала окно «Ուղարկել և շարունակել»: отправка, затем сама бумага. Окно —
+    // на странице, не confirm(): клик по его кнопке — действие пользователя, после него браузер ещё даст открыть печать
+    function unsentFor(code) {
+        const d = state.data, u = d.sent && !d.is_past ? d.unsent : null;
+        return !!u && (!code || u.trucks.includes(code) || u.orders);
+    }
+    let paperNext = null;
+    function paper(code, go) {
+        if (state.busy) return;
+        if (!unsentFor(code)) { go(false); return; }
+        paperNext = go;
+        $('dpSfLead').textContent = 'Վարորդների «Առաքիչ» ծրագրում դեռ ' + builtWhen(state.data.sent.at) + '-ի պլանն է։ '
+            + unsentDetail(state.data.unsent) + ' Որպեսզի թուղթը համընկնի վարորդի ծրագրի հետ, նախ ուղարկեք փոփոխությունները։';
+        $('dpSendFirstDlg').showModal();
+    }
+    const sendForPaper = async () => !!(await edit({ action: 'send' }, SENT_OK));
+    const POPUP_HY = 'Զննարկիչը թույլ չտվեց բացել տպման պատուհանը — թույլատրեք թռուցիկ պատուհանները այս կայքի համար։';
+    function printSheets() { paper(null, printSheetsGo); }
+    async function printSheetsGo(send) {
+        if (!state.data.plan) return;
+        // окно — сразу по нажатию: открытое после ответа сервера браузер счёл бы всплывающим
+        const w = window.open('', '_blank');
+        if (!w) { showActionError(new Error(POPUP_HY)); return; }
+        if (send) {
+            w.document.write('<!doctype html><html lang="hy"><head><meta charset="utf-8"><title>Առաքում</title></head>'
+                + '<body style="font-family:Segoe UI,Sylfaen,Arial,sans-serif;padding:24px">Ուղարկում եմ փոփոխությունները…</body></html>');
+            w.document.close();
+            if (!(await sendForPaper())) { try { w.close(); } catch (e) { /* уже закрыто */ } return; }
+            if (w.closed) return;
+        }
+        printSheetsTo(w);
+    }
+    function printSheetsTo(w) {
         const d = state.data, plan = d.plan;
         if (!plan) return;
         const dayText = (WD_NAME[d.weekday] || '') + ', ' + dateRu(d.day);
@@ -3451,8 +3788,6 @@
             html += '</section>';
         });
         html += '</body></html>';
-        const w = window.open('', '_blank');
-        if (!w) { showActionError(new Error('Զննարկիչը թույլ չտվեց բացել տպման պատուհանը — թույլատրեք թռուցիկ պատուհանները այս կայքի համար։')); return; }
         w.document.open();
         w.document.write(html);
         w.document.close();
@@ -3460,7 +3795,9 @@
         setTimeout(() => { try { w.print(); } catch (e) { /* окно закрыли раньше */ } }, 300);
     }
 
-    function exportExcel() {
+    function exportExcel() { paper(null, exportExcelGo); }
+    async function exportExcelGo(send) {
+        if (send && !(await sendForPaper())) return;
         const d = state.data, plan = d.plan;
         if (!plan) return;
         if (typeof window.XLSX === 'undefined') { showActionError(new Error('Excel-ի գրադարանը չբեռնվեց (cdn.jsdelivr.net-ը հասանելի չէ)։')); return; }
@@ -3509,8 +3846,8 @@
         };
         const drv = mk('fa-user-pen', 'Վարորդ', 'Վարորդ և առաքիչ՝ ', openDriver);
         drv.classList.add('dp-drvbtn');
-        box.append(drv, mk('fa-print', 'Բեռնագիր', 'Տպել բեռնագիրը՝ ', printWaybill),
-            mk('fa-file-excel', 'Excel', 'Բեռնագիրը Excel-ով՝ ', excelWaybill));
+        box.append(drv, mk('fa-print', 'Բեռնագիր', 'Տպել բեռնագիրը՝ ', (c, b) => paper(c, (send) => printWaybill(c, b, send))),
+            mk('fa-file-excel', 'Excel', 'Բեռնագիրը Excel-ով՝ ', (c, b) => paper(c, (send) => excelWaybill(c, b, send))));
         return box;
     }
 
@@ -3795,6 +4132,8 @@
         w.document.write('<!doctype html><html lang="hy"><head><meta charset="utf-8"><title>Բեռնագիր</title></head>'
             + '<body style="font-family:Segoe UI,Sylfaen,Arial,sans-serif;padding:24px">Բեռնագիրը պատրաստվում է…</body></html>');
         w.document.close();
+        // №81: сначала отправить правки водителям — накладная по плану, который у водителя
+        if (send && !(await sendForPaper())) { try { w.close(); } catch (e) { /* уже закрыто */ } return; }
         let res;
         try { res = await fetchWaybill(code, btn); } catch (e) {
             try { w.close(); } catch (x) { /* уже закрыто */ }
@@ -3808,8 +4147,9 @@
         w.focus();
         setTimeout(() => { try { w.print(); } catch (e) { /* окно закрыли раньше */ } }, 300);
     }
-    async function excelWaybill(code, btn) {
+    async function excelWaybill(code, btn, send) {
         if (wbBusy(btn) || state.busy) return;
+        if (send && !(await sendForPaper())) return;
         hideActionError();
         if (typeof window.XLSX === 'undefined') { showActionError(new Error('Excel-ի գրադարանը չբեռնվեց (cdn.jsdelivr.net-ը հասանելի չէ)։')); return; }
         let res;
@@ -3963,6 +4303,17 @@
         $('dpUnloadMin').addEventListener('input', () => { $('dpUnloadErr').textContent = ''; markUnload(false); });
         $('dpUnloadMin').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); saveUnload(false); } });
         $('dpMapBox').addEventListener('toggle', () => { if ($('dpMapBox').open && state.data && state.data.plan) drawMap(); });
+        initTabs();
+        dropStops();
+        $('dpSfSend').addEventListener('click', () => {
+            const go = paperNext;
+            paperNext = null;
+            $('dpSendFirstDlg').close();
+            if (go) go(true);
+        });
+        $('dpSfCancel').addEventListener('click', () => $('dpSendFirstDlg').close());
+        $('dpSendFirstDlg').addEventListener('close', () => { paperNext = null; });
+        try { state.boardFolded = window.localStorage.getItem('dpBoardFolded') === '1'; } catch (e) { /* хранилище недоступно */ }
         $('dpStep1Tog').addEventListener('click', () => toggleStep('dpStep1'));
         $('dpStep2Tog').addEventListener('click', () => toggleStep('dpStep2'));
         // высота закреплённой шапки дашборда — карта закрепляется под ней (меню на узком экране раскрывается — пересчитать)

@@ -11,7 +11,7 @@
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=24">
 <!-- Страница на армянском (ответ владельца №31). Редизайн: тёмная спокойная тема (ответ владельца №51), свои стили поверх routes.css -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=46">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=48">
 {% endblock %}
 
 {% block content %}
@@ -45,6 +45,8 @@
                 <p class="dp-datenote"><span id="dpDateNote"></span>
                     <button type="button" id="dpRefresh" class="rt-linkbtn" title="Կրկին կարդալ պատվերները ERP-ից">
                         <i class="fas fa-rotate" aria-hidden="true"></i> Թարմացնել պատվերները</button></p>
+                <!-- №81: что видят водители — черновик, отправлено, есть неотправленные правки (кнопка «Ուղարկել») -->
+                <div class="dp-sendstate" id="dpSendState" hidden></div>
             </div>
             <div class="dp-daynav">
                 <div class="dp-dayseg">
@@ -90,6 +92,9 @@
     <div id="dpBody" hidden>
         <!-- ЧТО ДЕЛАТЬ СЕЙЧАС: одна подсказка и главная кнопка по состоянию дня -->
         <section id="dpTodo" class="dp-todo" aria-live="polite"></section>
+
+        <!-- №81 (как у профессиональных систем): всё, что требует внимания, — одной строкой счётчиков; нажатие ведёт к месту -->
+        <nav class="dp-inbox" id="dpInbox" aria-label="Ինչին ուշադրություն դարձնել" hidden></nav>
 
         <!-- машины без водителя в «Վարորդ» (ответ владельца №77, 4): одна строка вместо предупреждения у каждой карточки -->
         <div id="dpNoDriver" class="dp-nodriver" hidden>
@@ -338,6 +343,14 @@
         </section>
     </div>
 
+    <!-- №81: на телефоне — вкладки внизу (день · рейсы · карта), вместо одной длинной страницы -->
+    <nav class="dp-tabs" id="dpTabs" aria-label="Էջի բաժիններ" hidden>
+        <button type="button" class="dp-tab" data-tab="day" aria-pressed="true"><i class="fas fa-calendar-day" aria-hidden="true"></i><span>Օր</span></button>
+        <button type="button" class="dp-tab" data-tab="trips" aria-pressed="false"><i class="fas fa-truck-fast" aria-hidden="true"></i><span>Երթեր</span></button>
+        <button type="button" class="dp-tab" data-tab="map" aria-pressed="false"><i class="fas fa-map" aria-hidden="true"></i><span>Քարտեզ</span></button>
+        {% if ai_enabled %}<button type="button" class="dp-tab" data-tab="ai" id="dpTabAi" hidden><i class="fas fa-wand-magic-sparkles" aria-hidden="true"></i><span>AI</span></button>{% endif %}
+    </nav>
+
     {% if ai_enabled %}
     <!-- «Հարցրու AI-ին» (ответ владельца №52): вопросы по плану дня — AI отвечает по цифрам дня и ничего не меняет -->
     <button type="button" class="dp-ai-fab" id="dpAiOpen" aria-controls="dpAi" aria-expanded="false" hidden>
@@ -404,6 +417,15 @@
             <button type="button" id="dpSdClose" class="rt-btn rt-btn-ghost">Փակել</button>
         </div>
     </dialog>
+    <!-- №81: бумага при неотправленных правках — сначала отправить водителям, потом печать / Excel / «Բեռնագիր» -->
+    <dialog id="dpSendFirstDlg" class="dp-dlg dp-unload-dlg" aria-labelledby="dpSfTitle" aria-describedby="dpSfLead">
+        <h2 class="dp-dlg-t" id="dpSfTitle">Կան չուղարկված փոփոխություններ</h2>
+        <p class="dp-dlg-lead" id="dpSfLead"></p>
+        <div class="dp-dlg-btns">
+            <button type="button" id="dpSfSend" class="rt-btn rt-btn-primary"><i class="fas fa-paper-plane" aria-hidden="true"></i><span>Ուղարկել և շարունակել</span></button>
+            <button type="button" id="dpSfCancel" class="rt-btn rt-btn-ghost">Չեղարկել</button>
+        </div>
+    </dialog>
     <!-- водитель не вышел (ответ владельца №77): только этот день (по умолчанию) или до даты — отпуск, болезнь -->
     <dialog id="dpAbsentDlg" class="dp-dlg dp-unload-dlg" aria-labelledby="dpAbsentTitle" aria-describedby="dpAbsentLead dpAbsentHint">
         <h2 class="dp-dlg-t" id="dpAbsentTitle">Վարորդը չի եկել</h2>
@@ -457,6 +479,6 @@
         integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=1" data-yandex-key="{{ yandex_tiles_key }}"></script>
 <!-- панель «Հարցրու AI-ին» — до страницы: init подключает её (RoutesDispatchAI.attach) -->
-<script src="{{ url_for('static', filename='js/routes_dispatch_ai.js') }}?v=1"></script>
+<script src="{{ url_for('static', filename='js/routes_dispatch_ai.js') }}?v=2"></script>
 <script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=88"></script>
 {% endblock %}

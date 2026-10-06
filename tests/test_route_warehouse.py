@@ -294,6 +294,27 @@ def test_warehouse_waybill_is_dispatch_waybill_of_approved_plan(client, monkeypa
     assert get(rev=d['rev']).status_code == 409 and asked == []
 
 
+def test_warehouse_waybill_follows_sent_plan_like_the_page(client, monkeypatch):
+    """№81: склад видит план, отправленный водителям, — и Բեռնագիր склада по нему же (не по неотправленной правке
+    логиста; рейсы те же, что на странице склада, — её сверка после ответа сходится)."""
+    from test_route_dispatch_send import _move_one
+    state = _setup(client, monkeypatch)
+    products = {10: wb.Product(10, '0101', 'Կաթ 1լ', 'հատ', 1.05, 12)}
+    state.waybill_loader = lambda isns: wb.Lines({i.upper(): ((10, 30.0),) for i in isns}, frozenset(), products)
+    d = _build(client, ('CAR1', 'CAR2'))
+    d = client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': d['rev'], 'action': 'approve'}).get_json()
+    before = {t['car_code']: client.get('/api/routes/warehouse/waybill', query_string={
+        'date': DAY, 'truck': t['car_code'], 'rev': d['rev']}).get_json() for t in d['plan']['trucks']}
+    d = client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': d['rev'], **_move_one(d)}).get_json()
+    assert d['unsent'] is not None
+    w = client.get('/api/routes/warehouse?date=' + DAY).get_json()
+    for t in w['trucks']:
+        got = client.get('/api/routes/warehouse/waybill', query_string={'date': DAY, 'truck': t['car_code'],
+                                                                        'rev': w['rev']}).get_json()
+        assert [x['id'] for x in got['trips']] == [x['id'] for x in t['trips']]
+        assert ([x['basis'] for x in got['trips']], [x['kg'] for x in got['trips']]) ==             ([x['basis'] for x in before[t['car_code']]['trips']], [x['kg'] for x in before[t['car_code']]['trips']])
+
+
 def test_reset_race_with_warehouse_mark_is_409(client, monkeypatch):
     """«Ջնջել երթերը» стирает ровно прочитанный черновик: склад успел отметить — 409, отметка цела."""
     state = _setup(client, monkeypatch)

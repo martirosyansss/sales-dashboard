@@ -126,7 +126,10 @@
             tr.preloaded ? ' · մեկնում՝ ' + tr.depart : ' · բեռնում՝ ' + tr.loading_start + ', մեկնում՝ ' + tr.depart];
         const title = h('h3', { class: 'wh-trip-t', text: tr.of > 1 ? 'Երթ ' + tr.no + ' / ' + tr.of : 'Երթ' });
         let act;
-        if (tr.loaded) {
+        if (tr.changing) {
+            // №81: логист изменил рейс и ещё не отправил водителю — грузить нельзя, пока не уточнили
+            act = h('span', { class: 'wh-changing' }, icon('fa-phone'), 'Լոգիստը փոխում է երթը՝ զանգահարեք');
+        } else if (tr.loaded) {
             // №78, ответ 19: снять отметку можно в любое время — с вопросом (рейс снова может поменяться при պլանի վերակազմում)
             const u = h('button', { type: 'button', class: 'wh-undo', text: 'Հանել նշումը' });
             u.addEventListener('click', () => {

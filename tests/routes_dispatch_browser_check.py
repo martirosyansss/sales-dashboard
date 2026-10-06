@@ -48,6 +48,7 @@ import tempfile
 import threading
 from pathlib import Path
 from datetime import date, datetime
+from zoneinfo import ZoneInfo
 from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -65,6 +66,7 @@ from route_optimizer import ai_chat  # noqa: E402
 from route_optimizer import dispatch as dp  # noqa: E402
 from route_optimizer import learning as lr  # noqa: E402
 from route_optimizer import store as st  # noqa: E402
+from route_optimizer import views  # noqa: E402
 from route_optimizer.snapshot import SnapshotCache  # noqa: E402
 from test_route_optimizer import _dispatch_setup, _dorder, make_snapshot  # noqa: E402
 
@@ -348,6 +350,12 @@ def main() -> int:
             page.wait_for_timeout(500)
             sw = page.evaluate('() => document.documentElement.scrollWidth')
             check(sw <= 390, f'H phone 390: plan built, scrollWidth={sw}')
+            # №81: на телефоне рейсы и карта — во вкладках «Երթեր» / «Քարտեզ»; ширину блоков меряем во вкладке рейсов
+            check(page.locator('#dpTabs').is_visible(), 'H phone 390: tab bar «Օր · Երթեր · Քարտեզ» after the build')
+            page.click('.dp-tab[data-tab="trips"]')
+            page.wait_for_timeout(300)
+            check(page.locator('#dpTruckCards').is_visible() and not page.locator('#dpTodo').is_visible(),
+                  'H phone 390: «Երթեր» shows the trips, not the day')
             # scrollWidth не ловит обрезку внутри карточек (overflow:hidden у предка) — правый край блоков
             # плана, карточек машин и кнопок рейса должен быть внутри #dpStep3
             wide = page.evaluate('''() => {
@@ -358,7 +366,8 @@ def main() -> int:
                         .map(el => sel + ' ' + Math.round(el.getBoundingClientRect().width) + 'px'));
             }''')
             check(not wide, f'H phone 390: plan blocks fit #dpStep3 (too wide: {wide[:4]})')
-            page.click('#dpAiOpen')
+            check(not page.locator('#dpAiOpen').is_visible(), 'H phone 390: AI is a tab, the floating button does not cover the page')
+            page.click('#dpTabAi')
             page.wait_for_selector('#dpAi', state='visible', timeout=5000)
             page.wait_for_timeout(300)
             box = page.locator('#dpAi').bounding_box()
@@ -463,6 +472,60 @@ def main() -> int:
                   f'W next question reaches the model: page sent the new rev {rev2} (sent {asks[-1].get("rev")}), '
                   f'day_data shows the pinned trip, calls {len(fake.calls)}')
             page.keyboard.press('Escape')
+
+            # X (№81): план у водителей — только отправленный: черновик → «Հաստատել և ուղարկել» → правка копится → «Ուղարկել»
+            # день V (02.10) с его планом — будущий: «сейчас» — 01.10 08:00 (заказы синтетики — только этих дат)
+            fixed = datetime(2026, 10, 1, 8, 0)
+            real_clock, real_yerevan = views._clock, views._yerevan_now
+            views._clock = lambda: fixed
+            views._yerevan_now = lambda: fixed.replace(tzinfo=ZoneInfo('Asia/Yerevan'))
+            DAY3 = DAY2
+            pill = lambda: page.locator('#dpSendState .dp-sendpill')  # noqa: E731
+            page.goto(f'{BASE}/routes/dispatch?date={DAY3}')
+            page.wait_for_selector('#dpStep3', state='visible', timeout=30000)
+            check('is-draft' in (pill().get_attribute('class') or '') and 'հաստատեք' in page.inner_text('#dpTodo')
+                  and 'rt-btn-primary' in page.get_attribute('#dpApproveBtn', 'class')
+                  and 'rt-btn-ghost' in page.get_attribute('#dpPrint', 'class'),
+                  'X after build: «Սևագիր» pill, todo asks to approve, approve is the main button (print secondary)')
+            page.click('#dpApproveBtn')
+            page.wait_for_selector('#dpSendState .dp-sendpill.is-sent', timeout=15000)
+            check('Ուղարկված է վարորդներին' in pill().inner_text() and page.locator('#dpSendBtn').count() == 0,
+                  'X approved: «Ուղարկված է վարորդներին» pill, no send button')
+            page.locator('#dpTruckCards .dp-editbtn').first.click()
+            sel = page.locator('#dpTruckCards .dp-trip.is-editing .dp-move').first
+            opts = sel.locator('option').evaluate_all("os => os.map(o => o.value)")
+            target = next((v for v in opts if v.startswith('t:')), None) or next(v for v in opts if v.startswith('n:'))
+            sel.select_option(target)
+            page.wait_for_selector('#dpSendState .dp-sendpill.is-unsent', timeout=15000)
+            api_day = page.request.get(f'{BASE}/api/routes/dispatch?date={DAY3}').json()
+            check(page.locator('#dpSendBtn').is_visible() and 'չեն ուղարկվել' in page.inner_text('#dpTodo')
+                  and api_day['unsent'] and api_day['unsent']['trucks'],
+                  f'X edit after approval: «չի ուղարկվել» pill + «Ուղարկել», server unsent={api_day["unsent"]}')
+            sent_stops = {t['car_code']: [s['customer_id'] for tr in t['trips'] for s in tr['stops']]
+                          for t in page.request.get(f'{BASE}/api/routes/dispatch?date={DAY3}').json()['plan']['trucks']}
+            # «Չեղարկել փոփոխությունները» → план снова как у водителей (confirm принимается обработчиком dialog выше)
+            page.click('#dpDiscardBtn')
+            page.wait_for_selector('#dpSendState .dp-sendpill.is-sent', timeout=15000)
+            api_day = page.request.get(f'{BASE}/api/routes/dispatch?date={DAY3}').json()
+            back = {t['car_code']: [s['customer_id'] for tr in t['trips'] for s in tr['stops']] for t in api_day['plan']['trucks']}
+            check(api_day['unsent'] is None and back != sent_stops, f'X «Չեղարկել փոփոխությունները» → plan as sent, nothing unsent')
+            # снова правка → Excel: сначала окно «Ուղարկել և շարունակել», после него план отправлен
+            if page.locator('#dpTruckCards .dp-trip.is-editing').count() == 0:   # «Փոփոխել» мог остаться открытым
+                page.locator('#dpTruckCards .dp-editbtn').first.click()
+            sel = page.locator('#dpTruckCards .dp-trip.is-editing .dp-move').first
+            opts = sel.locator('option').evaluate_all("os => os.map(o => o.value)")
+            sel.select_option(next((v for v in opts if v.startswith('t:')), None) or next(v for v in opts if v.startswith('n:')))
+            page.wait_for_selector('#dpSendState .dp-sendpill.is-unsent', timeout=15000)
+            page.click('#dpExcel')
+            page.wait_for_selector('#dpSendFirstDlg[open]', timeout=5000)
+            check('չուղարկված' in page.inner_text('#dpSfTitle') and 'Փոխվել են' in page.inner_text('#dpSfLead'),
+                  'X Excel with unsent changes → «Ուղարկել և շարունակել» dialog first')
+            page.click('#dpSfSend')
+            page.wait_for_selector('#dpSendState .dp-sendpill.is-sent', timeout=15000)
+            api_day = page.request.get(f'{BASE}/api/routes/dispatch?date={DAY3}').json()
+            check(api_day['unsent'] is None and 'Պլանն ուղարկված է' in page.inner_text('#dpTodo'),
+                  f'X «Ուղարկել և շարունակել» → sent, nothing unsent ({api_day["unsent"]})')
+            views._clock, views._yerevan_now = real_clock, real_yerevan
 
             check(not errors, 'no pageerror / console errors' + ('' if not errors else ': ' + ' | '.join(errors[:5])))
             browser.close()

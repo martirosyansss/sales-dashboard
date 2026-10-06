@@ -9,6 +9,7 @@ RoadProvider.get); отметка выпуска плана (№80, Draft.releas
 План «Развоза» идёт на терминал только выпущенный (ответ владельца №80): утверждён «Հաստատել օրվա պլանը» хотя бы раз за
 день (Draft.released). До этого и без плана терминал не получает из плана ничего — ни заказов (O:), ни накладных без
 машины по плану, ни порядка объезда плана (RoutesView.released); накладные ERP с машиной (SALES.fDELIVERYCAR) — всегда.
+После выпуска терминал видит отправленный снимок плана (№81, Draft.sent): правки логиста — после «Ուղարկել վարորդներին».
 Офис (courier.views.plan_mismatches) видит план и до выпуска.
 """
 from __future__ import annotations
@@ -94,13 +95,15 @@ def routes_view(state: Any, day: date) -> RoutesView:
     carried = _carried(state, day, workdays, holidays)
     taken = _taken(state, day, workdays, holidays)
     prev = state.store.load_dispatch(dp.previous_workday(day, workdays, holidays).isoformat())
-    seen = dp.PlanSeen.of(dp.Draft.from_json(prev[0]) if prev is not None else None)
+    seen = dp.PlanSeen.of(dp.Draft.from_json(prev[0]).for_drivers() if prev is not None else None)   # №81
     if stored is None:
         # плана нет — менеджеры, чьи заказы не везём, по правилу настроек «Развоза» (№69)
         return RoutesView(depot=base.depot, geo_overrides=base.geo_overrides, workdays=workdays, holidays=holidays,
                           carried=frozenset(carried), agents_off=frozenset(dp.agents_off_of(None, bundle.settings)),
                           taken=frozenset(taken), fleet=base.fleet, roads=roads, seen=seen)
-    draft = dp.Draft.from_json(stored[0])   # правило №74 — то, с которым день собран: заказы рейсов не пропадут
+    # водителям — отправленный план (№81, Draft.for_drivers), не черновик с неотправленными правками; правило №74 — то, с
+    # которым день собран: заказы рейсов не пропадут
+    draft = dp.Draft.from_json(stored[0]).for_drivers()
     return RoutesView(depot=bundle.depot, geo_overrides=base.geo_overrides, workdays=workdays, holidays=holidays,
                       plan_exists=bool(draft.trips), released=bool(draft.trips) and draft.released is not None,
                       trips=tuple((t.truck, tuple(t.stops)) for t in draft.trips),
@@ -154,7 +157,7 @@ def _carried(state: Any, day: date, workdays: Sequence[int], holidays: Collectio
     while d < day:
         stored = state.store.load_dispatch(d.isoformat())
         if stored is not None:
-            out |= dp.Draft.from_json(stored[0]).deferred
+            out |= dp.Draft.from_json(stored[0]).for_drivers().deferred   # №81: отправленное водителям
         d += timedelta(days=1)
     return out
 
@@ -166,7 +169,7 @@ def _taken(state: Any, day: date, workdays: Sequence[int], holidays: Collection[
     while d < day:
         stored = state.store.load_dispatch(d.isoformat())
         if stored is not None:
-            out |= dp.Draft.from_json(stored[0]).same_day
+            out |= dp.Draft.from_json(stored[0]).for_drivers().same_day   # №81: отправленное водителям
         d += timedelta(days=1)
     return out
 
