@@ -1117,13 +1117,13 @@ body.dp-ws-on .rt-secbar .rt-tabs a { padding-top: 3px; padding-bottom: 3px; }
 
 /* рабочий экран */
 .dp-ws {
-    height: var(--ws-h, calc(100vh - 220px)); margin-bottom: 14px; display: grid; grid-template-rows: minmax(0, 1fr) minmax(150px, 30%);
+    height: var(--ws-h, calc(100vh - 220px)); margin-bottom: 14px; display: grid; grid-template-rows: minmax(0, 1fr) minmax(140px, 26%);
     border: 1px solid var(--rt-line); border-radius: var(--rt-radius); overflow: hidden; background: var(--rt-panel);
 }
 /* шкала свёрнута («Ծալել») — карта на всю высоту рабочего экрана */
 .dp-ws:has(.dp-board.is-folded) { grid-template-rows: minmax(0, 1fr) auto; }
-/* выбрана машина — её карточка внизу справа от шкалы (не поверх карты): низ выше, чтобы список магазинов читался */
-.dp-ws.has-side, .dp-ws.has-side:has(.dp-board.is-folded) { grid-template-rows: minmax(0, 1fr) minmax(240px, 44%); }
+/* выбрана машина — её карточка внизу справа от шкалы (не поверх карты): низ чуть выше, карта всё же главная (владелец 07.10 «карту выше») */
+.dp-ws.has-side, .dp-ws.has-side:has(.dp-board.is-folded) { grid-template-rows: minmax(0, 1fr) minmax(220px, 36%); }
 .dp-ws-main { position: relative; min-height: 0; }
 .dp-ws-map { position: absolute; inset: 0; }
 #rtDispatch .dp-ws-map .dp-mapbox { position: absolute; inset: 0; border: 0; border-radius: 0; box-shadow: none; }
