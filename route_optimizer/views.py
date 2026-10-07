@@ -4978,8 +4978,11 @@ def api_warehouse_waybill() -> Any:
         return _conflict(WAREHOUSE_STALE)
     logger.info('[Routes] Склад: Բեռնագիր %s на %s (%s)', car, day, session.get('username'))
     body = _waybill_body(state, dd, plan, truck)
-    # basis (номера заказов ERP, доли) — сверка «Развоза»; на лист не нужен, роли из интернета не отдаётся
-    return jsonify({**body, 'trips': [{k: v for k, v in tr.items() if k != 'basis'} for tr in body['trips']],
+    # basis (номера заказов ERP, доли) — сверка «Развоза»; на лист не нужен, роли из интернета не отдаётся. Порядок
+    # погрузки складу — только номера точек (решение владельца №87): код и название магазина роли не отдаются
+    return jsonify({**body, 'trips': [{**{k: v for k, v in tr.items() if k != 'basis'},
+                                       'loading': [{k: v for k, v in x.items() if k not in ('code', 'name')}
+                                                   for x in tr['loading']]} for tr in body['trips']],
                     'weekday': day.isoweekday()})
 
 

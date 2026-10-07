@@ -4764,7 +4764,7 @@
             + 'h1{font-size:24px;margin:0 0 4px}h2{font-size:19px;margin:18px 0 6px}.sub{font-size:15px;margin:0 0 10px}'
             + 'table{width:100%;border-collapse:collapse}th,td{border:1px solid #000;padding:7px 8px;vertical-align:top;text-align:left}'
             + 'th{font-size:13px;background:#eee}td.n{font-size:22px;font-weight:700;width:38px;text-align:center}td.kg{font-size:18px;font-weight:700;white-space:nowrap;width:90px}'
-            + 'td.ok{width:60px}td.t{font-size:17px;font-weight:700;white-space:nowrap;width:110px}.win{font-size:13px;font-weight:400}'
+            + 'td.ok{width:60px}td.ld{font-size:18px;text-align:center;width:56px}td.t{font-size:17px;font-weight:700;white-space:nowrap;width:110px}.win{font-size:13px;font-weight:400}'
             + '.addr{font-size:17px}.nm{font-weight:700}@media screen{body{background:#fff}}'
             + '</style></head><body>';
         plan.trucks.forEach(t => {
@@ -4773,14 +4773,15 @@
                 + ' · ≈ ' + esc(fmt(t.km)) + ' կմ</p>';
             t.trips.forEach((tr, i) => {
                 html += '<h2>Երթ ' + (i + 1) + '՝ մեկնում ' + esc(tr.depart) + ', ' + esc(kgText(tr.kg)) + ', ≈ ' + esc(fmt(tr.km)) + ' կմ</h2>'
-                    + '<table><thead><tr><th>№</th><th>Խանութ և հասցե</th><th>Ժամանում</th><th>Բեռ</th><th>Նշում</th></tr></thead><tbody>';
+                    + '<table><thead><tr><th>№</th><th>Խանութ և հասցե</th><th>Ժամանում</th><th>Բեռ</th><th>Բեռն. №</th><th>Նշում</th></tr></thead><tbody>';
                 tr.stops.forEach((s, si) => {
                     const win = windowText(s.window);
+                    // №87 п. 4: номер погрузки — обратный объезду (последняя точка грузится первой), как «Բեռնագիր»
                     html += '<tr><td class="n">' + (si + 1) + '</td><td><div class="nm">' + esc(s.name || s.code) + ' <small>(' + esc(s.code) + ')</small></div>'
                         + '<div class="addr">' + esc(s.address || 'ERP-ում հասցե չկա') + '</div></td>'
                         + '<td class="t">' + esc(s.eta ? '≈ ' + s.eta : '') + (win ? '<div class="win">ընդունում է՝ ' + esc(win) + '</div>' : '')
                         + (s.center ? '<div class="win">Կենտրոն</div>' : '') + '</td>'
-                        + '<td class="kg">' + esc(kgText(s.kg)) + '</td><td class="ok"></td></tr>';
+                        + '<td class="kg">' + esc(kgText(s.kg)) + '</td><td class="ld">' + (tr.stops.length - si) + '</td><td class="ok"></td></tr>';
                 });
                 html += '</tbody></table>';
             });
@@ -4800,10 +4801,11 @@
         const d = state.data, plan = d.plan;
         if (!plan) return;
         if (typeof window.XLSX === 'undefined') { showActionError(new Error('Excel-ի գրադարանը չբեռնվեց (cdn.jsdelivr.net-ը հասանելի չէ)։')); return; }
-        const rows = [['Մեքենա', 'Երթ', 'Մեկնում', 'Վերադարձ', '№', 'Ժամանում', 'Ընդունման ժամ', 'Կենտրոն', 'Կոդ', 'Խանութ', 'Հասցե', 'Մենեջեր',
+        // «Բեռն. №» (№87 п. 4) — номер погрузки точки: обратный объезду, как в листе водителя
+        const rows = [['Մեքենա', 'Երթ', 'Մեկնում', 'Վերադարձ', '№', 'Բեռն. №', 'Ժամանում', 'Ընդունման ժամ', 'Կենտրոն', 'Կոդ', 'Խանութ', 'Հասցե', 'Մենեջեր',
             'Բեռ, կգ', 'Գումար, դրամ', 'Լայնություն', 'Երկայնություն']];
         plan.trucks.forEach(t => t.trips.forEach((tr, i) => tr.stops.forEach((s, si) => rows.push([
-            truckLabel(t), i + 1, tr.depart, tr.return, si + 1, s.eta || '', windowText(s.window), s.center ? 'այո' : '',
+            truckLabel(t), i + 1, tr.depart, tr.return, si + 1, tr.stops.length - si, s.eta || '', windowText(s.window), s.center ? 'այո' : '',
             s.code, s.name, s.address, s.agent_name || s.agent_code, s.kg, Math.round(s.revenue / (s.share || 1)), s.lat, s.lon]))));
         const sum = [['Մեքենա', 'Երթեր', 'Կետեր', 'Բեռ, կգ', 'կմ', 'Լիտր', 'Մաշվածք, դրամ', 'Դիզել և մաշվածք, դրամ', 'Վերադարձ', 'Նորմերը լրացված են']];
         plan.trucks.forEach(t => sum.push([truckLabel(t), t.trips.length, t.stops, t.kg, t.km, t.liters,
@@ -5181,6 +5183,16 @@
                 r.pack && r.packs !== null ? r.packs : '', r.pack && r.packs !== null ? r.loose : '', r.pack || '', r.kg]));
             rows.push(['', '', 'Ընդամենը', '', '', '', '', '', tr.kg], []);
             wbNotes(tr).forEach(x => rows.push([x]));
+            // №87 п. 4: «Բեռնման հերթականություն» — ниже итогов, те же столбцы; строка магазина, под ней его товары
+            if (Array.isArray(tr.loading) && tr.loading.length) {
+                rows.push([], ['Բեռնման հերթականություն'], [window.RtWaybill.loadHint],
+                    ['Բեռն. №', 'Կոդ', 'Ապրանք', 'Միավոր', 'Քանակ', 'Փաթեթ', 'Առանձին', 'Փաթեթում', 'Քաշ, կգ']);
+                tr.loading.forEach(x => {
+                    rows.push([window.RtWaybill.loadNo(x), '', window.RtWaybill.loadStore(x), '', '', '', '', '', x.kg]);
+                    x.rows.forEach(r => rows.push(['', r.code, wbName(r), r.unit, r.qty,
+                        r.pack && r.packs !== null ? r.packs : '', r.pack && r.packs !== null ? r.loose : '', r.pack || '', r.kg]));
+                });
+            }
             const ws = XLSX.utils.aoa_to_sheet(rows);
             ws['!cols'] = [{ wch: 5 }, { wch: 8 }, { wch: 42 }, { wch: 8 }, { wch: 9 }, { wch: 8 }, { wch: 9 }, { wch: 10 }, { wch: 9 }];
             XLSX.utils.book_append_sheet(book, ws, 'Երթ ' + tr.no);

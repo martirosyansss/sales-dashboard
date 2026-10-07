@@ -41,7 +41,7 @@ from .security import (PEPPER_ENV, PEPPER_OLD_ENV, SCHEME_PLAIN, Pepper, check_p
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 PIN_MAX_FAILS = 5
 PIN_LOCK = timedelta(minutes=15)
@@ -108,6 +108,15 @@ _TERMINAL_LOG_SCHEMA = (
     "CREATE TABLE IF NOT EXISTS terminal_log(id INTEGER PRIMARY KEY AUTOINCREMENT, terminal_id INTEGER NOT NULL, "
     "kind TEXT NOT NULL CHECK (kind IN ('created','car','reissue')), car_code TEXT NOT NULL, at TEXT NOT NULL, by TEXT)",
     "CREATE INDEX IF NOT EXISTS terminal_log_terminal ON terminal_log(terminal_id, at, id)",
+)
+
+# Начальный остаток тары магазина (№87 п. 9, v9): на конец дня as_of у магазина customer_id (ERP CUSTOMERS.fID) столько
+# тары вида tare_id ('erp:N' | 'custom:N'), сколько qty; баланс — от него + движение дней после as_of (courier/tare.py).
+# Код и название магазина — на момент записи (магазин мог ещё не встречаться в снимках /day).
+_TARE_OPENING_SCHEMA = (
+    "CREATE TABLE IF NOT EXISTS tare_opening(customer_id INTEGER NOT NULL, tare_id TEXT NOT NULL, qty REAL NOT NULL, "
+    "as_of TEXT NOT NULL, customer_code TEXT, customer_name TEXT, updated_by TEXT, updated_at TEXT NOT NULL, "
+    "PRIMARY KEY (customer_id, tare_id))",
 )
 
 _SCHEMA = (
@@ -193,6 +202,7 @@ _SCHEMA = (
     *_TRACK_SCHEMA,
     *_CREW_SCHEMA,
     *_TERMINAL_LOG_SCHEMA,
+    *_TARE_OPENING_SCHEMA,
 )
 
 _SEED = (
@@ -285,6 +295,8 @@ _MIGRATIONS: dict[int, tuple[str | Callable[[sqlite3.Connection], None], ...]] =
         "t.created_by FROM terminals t WHERE NOT EXISTS (SELECT 1 FROM terminal_log l WHERE l.terminal_id = t.id)",
         lambda conn: _heal_terminal_log(conn),
     ),
+    # v8 → v9 (только добавляет, №87 п. 9): начальные остатки тары магазинов. Шаг повторяем.
+    8: _TARE_OPENING_SCHEMA,
 }
 
 
@@ -522,6 +534,17 @@ class MarkSetting:
     product_id: int
     marked: bool
     pack_qty: float | None
+
+
+@dataclass(frozen=True)
+class TareOpening:
+    """Начальный остаток тары магазина (№87 п. 9): qty None — убрать строку (магазин, тара)."""
+    customer_id: int
+    tare_id: str
+    qty: float | None
+    as_of: str | None
+    code: str = ''
+    name: str = ''
 
 
 @dataclass(frozen=True)
@@ -1612,6 +1635,61 @@ class Store:
             return tare_id
 
         return self._transaction(write, 'не удалось сохранить тару')
+
+    # --- баланс тары магазинов (№87 п. 9) ---
+
+    def tare_openings(self) -> list[dict[str, Any]]:
+        """Начальные остатки тары: {customer_id, tare_id, qty, as_of, code, name, updated_by, updated_at}."""
+        rows = self._read(lambda c: c.execute(
+            'SELECT customer_id, tare_id, qty, as_of, customer_code, customer_name, updated_by, updated_at '
+            'FROM tare_opening ORDER BY customer_id, tare_id').fetchall())
+        return [{'customer_id': int(r[0]), 'tare_id': r[1], 'qty': float(r[2]), 'as_of': r[3], 'code': r[4] or '',
+                 'name': r[5] or '', 'updated_by': r[6], 'updated_at': r[7]} for r in rows]
+
+    def save_tare_openings(self, rows: Sequence[TareOpening], user: str | None) -> None:
+        """Начальные остатки одной транзакцией (всё или ничего): qty None — строки (магазин, тара) больше нет, иначе она
+        записывается заново. Значения проверены вызывающим (courier.tare.check_opening)."""
+        now = _now()
+
+        def write(conn: sqlite3.Connection) -> None:
+            for r in rows:
+                if r.qty is None:
+                    conn.execute('DELETE FROM tare_opening WHERE customer_id = ? AND tare_id = ?', (r.customer_id, r.tare_id))
+                    continue
+                conn.execute('INSERT INTO tare_opening(customer_id, tare_id, qty, as_of, customer_code, customer_name, '
+                             'updated_by, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?) '
+                             'ON CONFLICT(customer_id, tare_id) DO UPDATE SET qty = excluded.qty, as_of = excluded.as_of, '
+                             'customer_code = excluded.customer_code, customer_name = excluded.customer_name, '
+                             'updated_by = excluded.updated_by, updated_at = excluded.updated_at',
+                             (r.customer_id, r.tare_id, r.qty, r.as_of, r.code, r.name, user, now))
+
+        self._transaction(write, 'не удалось сохранить начальные остатки тары')
+
+    def tare_day_keys(self) -> dict[str, tuple[Any, ...]]:
+        """Даты с доставками или отметками тары → дешёвый отпечаток данных даты для кэша баланса тары: (событий кроме
+        track и наибольший rowid — события только добавляются; последний снимок /day даты). Не изменился — правило дня
+        и движение тары даты те же. Запросы — по индексам events_type и day_snapshots_day."""
+        def query(c: sqlite3.Connection) -> dict[str, tuple[Any, ...]]:
+            days = [r[0] for r in c.execute(
+                "SELECT DISTINCT date FROM events WHERE type IN ('delivery', 'tare') ORDER BY date").fetchall()]
+            if not days:
+                return {}
+            ev = {r[0]: (r[1], r[2]) for r in c.execute(
+                "SELECT date, COUNT(*), MAX(rowid) FROM events WHERE type <> 'track' GROUP BY date").fetchall()}
+            snap = dict(c.execute('SELECT date, MAX(id) FROM day_snapshots GROUP BY date').fetchall())
+            return {d: (*ev.get(d, (0, None)), snap.get(d)) for d in days}
+        return self._read(query)
+
+    def tare_superseded(self) -> dict[str, frozenset[str]]:
+        """Отметки тары, вытесненные исправлением той же точки (`supersedes`) с ЛЮБОЙ датой: дата отметки → id (нижний
+        регистр). Исправление, отправленное на другой день, иначе оставило бы прежнюю отметку в её дне — тара дважды."""
+        rows = self._read(lambda c: c.execute(
+            "SELECT DISTINCT e.date, lower(e.id) FROM events e JOIN events x ON x.stop_id = e.stop_id AND x.type = 'tare' "
+            "AND lower(json_extract(x.payload, '$.supersedes')) = lower(e.id) WHERE e.type = 'tare'").fetchall())
+        out: dict[str, set[str]] = {}
+        for day, eid in rows:
+            out.setdefault(day, set()).add(eid)
+        return {d: frozenset(v) for d, v in out.items()}
 
     def reasons(self, kind: str, active_only: bool = True) -> list[dict[str, Any]]:
         rows = self._read(lambda c: c.execute(

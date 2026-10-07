@@ -12,8 +12,10 @@ R «Վարորդ» (№62): диалог «Վարորդ և առաքիչ» с п�
   обе роли — ошибка; «+ Նոր վարորդ» — поле имени; имя (с разметкой — текстом) по Enter сохраняется,
   уведомление, имя в шапке карточки, фокус обратно на кнопку; в накладной — в шапке листа и у подписи, в Excel — строка;
 B «Բեռնագիր» открывает окно с листом `.sheet` на каждый рейс машины: «ԲԵՌՆԱԳԻՐ», машина, товары подделки (имя, код,
-  «N փաթեթ + M հատ»), итог кг, подписи; разметка из ERP экранирована (имя товара с <b> — текстом);
-C «Excel» скачивает bernagir_<машина>_<день>.xlsx: лист на рейс, строка заголовка таблицы и товары; фокус остаётся на кнопке;
+  «N փաթեթ + M հատ»), итог кг, подписи, блок порядка погрузки (последняя точка — «բեռնել առաջինը», №87 п. 4); разметка
+  из ERP экранирована (имя товара с <b> — текстом);
+C «Excel» скачивает bernagir_<машина>_<день>.xlsx: лист на рейс, строка заголовка таблицы и товары, под итогами — блок
+  «Բեռնման հերթականություն» (№87 п. 4); фокус остаётся на кнопке;
 R2 у каждого свой срок: подмена водителя на день и առաքիչ «с этого дня» никого — подмена остаётся подменой, назавтра
   прежний водитель, առաքիչ нет; в шапке карточки «(փոխարինող)»;
 F тот же номер плана, но на сервере у магазина рейса появился заказ (ERP перечитана) → страница сама видит другой состав
@@ -188,12 +190,18 @@ def main() -> int:
                   and sheet.locator('.sheet i:text-is("x")').count() == 0, 'B driver in the sheet header and at the signature')
             check(f'Առաքիչ՝ {HELPER}' in text and f'Ընդունեց (առաքիչ)՝ {HELPER}' in text
                   and sheet.locator('.sheet .sign > div').count() == 3, 'B helper in the header, third signature')
-            cola = sheet.locator('.sheet').first.locator('tr', has_text='Կոլա 1.5լ').inner_text().replace(' ', ' ')
+            cola = sheet.locator('.sheet').first.locator('table').first.locator('tr', has_text='Կոլա 1.5լ').inner_text().replace(' ', ' ')
             first = api['trips'][0]
             q = next(r for r in first['rows'] if r['product_id'] == 11)
             check(f'{q["packs"]} փաթեթ' in cola and (q['loose'] == 0 or f'+ {q["loose"]} հատ' in cola) and '6-ական' in cola,
                   f'B cola row packs: {cola!r}')
             check(first['invoiced'] >= 0 and 'Քանակները՝' in text, 'B source note present')
+            # №87 п. 4: «Բեռնման հերթականություն» — первая строка магазина = последняя точка рейса, «բեռնել առաջինը»
+            ld = sheet.locator('.sheet').first.locator('tr.ld-h')
+            last = first['loading'][0]
+            check('Բեռնման հերթականություն' in text and ld.count() == len(first['loading']) == first['stops']
+                  and last['stop'] == first['stops'] and (last['name'] or last['code']) in ld.first.inner_text()
+                  and 'բեռնել առաջինը' in ld.first.inner_text(), f'B loading block: {ld.count()} stores, first {last}')
             sheet.close()
 
             # C
@@ -211,6 +219,9 @@ def main() -> int:
                   'C driver and helper rows in the Excel sheet')
             check(head is not None and vals[head][2] == 'Ապրանք' and {vals[head + 1][2], vals[head + 2][2]} == {'Գառնի 6լ <b>x</b>', 'Կոլա 1.5լ'},
                   'C table header and products in sheet 1')
+            lhead = next((i for i, r in enumerate(vals) if r[0] == 'Բեռնման հերթականություն'), None)
+            check(lhead is not None and lhead > head and vals[lhead + 2][0] == 'Բեռն. №'
+                  and vals[lhead + 3][0] == '1 — բեռնել առաջինը', 'C loading block under the totals in sheet 1')
             check(page.evaluate("() => document.activeElement && document.activeElement.classList.contains('dp-wbbtn')"
                                 " && document.activeElement.textContent.trim() === 'Excel'"), 'C focus stays on the Excel button')
 
