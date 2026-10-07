@@ -329,3 +329,48 @@ def test_probe_logist_substitute_only_car_gets_erp_permanent(tmp_path):
     s.save_truck_crew('A', '2026-10-02', {'driver': ('S', True)}, 'logist')
     assert s.fill_erp_crew('2026-10-02', lambda taken: {'A': ('E', None)}) == [('A', 'driver', 'E')]
     assert crew_of(s, '2026-10-02')[0] == {'A': 'S'} and crew_of(s, '2026-10-03')[0] == {'A': 'E'}
+
+
+def test_fill_clears_fixed_person_on_locked_car_erp_row_only(rs):
+    """Водитель A — ERP (X), առաքիչ A — логиста (машина «закрыта» для подбора); X постоянно на B у логиста: с A он
+    снимается (только его запись ERP), запись логиста на A остаётся (probe84b c)."""
+    rs.fill_erp_crew('2026-10-01', lambda taken: {'A': ('X', None)})
+    rs.save_truck_crew('A', '2026-10-02', {'helper': ('H', False)}, 'logist')
+    rs.save_truck_crew('B', '2026-10-02', {'driver': ('X', False)}, 'logist')
+    assert rs.fill_erp_crew('2026-10-02', lambda taken: {}) == [('A', 'driver', '')]
+    assert crew_of(rs, '2026-10-02') == ({'B': 'X'}, {'A': 'H'})
+    assert rs.fill_erp_crew('2026-10-02', lambda taken: {}) == []
+
+
+def test_driver_name_hints_cache_on_any_failure_and_thread_start_failure(monkeypatch):
+    """Сбой загрузчика не-ErpError — кэш всё равно пишется (повтор через DRIVER_LIST_RETRY_S, а не на каждый запрос);
+    поток не запустился — замок свободен."""
+    import threading
+    from types import SimpleNamespace
+    calls = []
+
+    def loader(since, until):
+        calls.append(1)
+        raise RuntimeError('сбой')
+    state = SimpleNamespace(store=SimpleNamespace(driver_names=lambda since: ['Ա']), driver_list_cache=None,
+                            driver_list_loader=loader, driver_list_lock=threading.Lock())
+    assert views.driver_name_hints(state) == ['Ա']
+    for _ in range(100):
+        if state.driver_list_cache is not None and not state.driver_list_lock.locked():
+            break
+        threading.Event().wait(0.02)
+    expires, names = state.driver_list_cache
+    assert names == [] and calls == [1] and not state.driver_list_lock.locked()
+    assert expires - views.time.monotonic() <= views.DRIVER_LIST_RETRY_S
+    views.driver_name_hints(state)
+    assert calls == [1]                                                               # повтор — не сразу
+
+    class NoThread:
+        def __init__(self, *a, **k):
+            pass
+
+        def start(self):
+            raise RuntimeError("can't start new thread")
+    monkeypatch.setattr(views.threading, 'Thread', NoThread)
+    state.driver_list_cache = None
+    assert views.driver_name_hints(state) == ['Ա'] and not state.driver_list_lock.locked()

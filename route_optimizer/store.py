@@ -2608,8 +2608,8 @@ class Store:
         """Экипаж по ERP (ответ владельца №84) — только машинам без записей: одной транзакцией; [(машина, роль, имя)] —
         что записано (CREW_BY_ERP, постоянно с day). choose(занятые) → машина → (водитель, առաքիչ | None) — подбор
         (waybill.pick_car_crews); занятые — люди записей логиста и «Առաքիչ» (постоянных, действующих в day, и подмен
-        day): их ERP не ставит. Машина, у которой есть постоянная запись не от ERP (любая роль, в т.ч. «никого»), — не
-        трогается. Своя запись ERP заменяется, если подбор другой; машины нет в подборе (в ERP нет данных) — прежняя
+        day): их ERP не ставит. Машина, у которой есть постоянная запись не от ERP (любая роль, в т.ч. «никого»), ERP не
+        заполняет — только снимает со своей прежней записи ERP на ней занятого постоянно в другом месте. Своя запись ERP заменяется, если подбор другой; машины нет в подборе (в ERP нет данных) — прежняя
         остаётся, но человек, которого подбор поставил на другую машину или логист / «Առաքիչ» — постоянной записью, с неё
         снимается (одно место; подмена дня — нет: её разводит рассадка №77). Без изменений — ничего не пишется."""
         if not isinstance(day, str) or not _ISO_DAY_RE.match(day):
@@ -2637,12 +2637,16 @@ class Store:
             picked = {n for d, h in picks.values() for n in (d, h) if n}
             out: list[tuple[str, str, str]] = []
             for car in sorted(set(picks) | set(current)):
-                if car in locked or car not in trucks:
+                if car not in trucks:
                     continue
                 have = current.get(car, {})
                 for i, role in enumerate(CREW_TABLES):
                     old = have.get(role)
-                    if car in picks:
+                    if car in locked:       # машина логиста / «Առաքիչ»: только снять с её записи ERP занятого в другом месте
+                        if old is None or old[1] != CREW_BY_ERP or not old[0] or old[0] not in fixed:
+                            continue
+                        want = ''
+                    elif car in picks:
                         want = picks[car][i] or ''
                     elif old is not None and old[0] and (old[0] in picked or old[0] in fixed):
                         want = ''

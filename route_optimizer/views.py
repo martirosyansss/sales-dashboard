@@ -1954,19 +1954,22 @@ def driver_name_hints(state: RoutesState) -> list[str]:
         today = _clock().date()
 
         def refresh() -> None:
+            names, ttl = (cached[1] if cached is not None else []), DRIVER_LIST_RETRY_S   # сбой — прежний, повтор скоро
             try:
-                try:
-                    names = state.driver_list_loader(today - timedelta(days=DRIVER_LIST_DAYS), today + timedelta(days=1))
-                    ttl = DRIVER_LIST_TTL_S
-                except ErpError:
-                    logger.warning('[Routes] Список водителей ERP не прочитан — прежний список', exc_info=True)
-                    names, ttl = (cached[1] if cached is not None else []), DRIVER_LIST_RETRY_S
-                state.driver_list_cache = (time.monotonic() + ttl, names)
+                names = state.driver_list_loader(today - timedelta(days=DRIVER_LIST_DAYS), today + timedelta(days=1))
+                ttl = DRIVER_LIST_TTL_S
+            except ErpError:
+                logger.warning('[Routes] Список водителей ERP не прочитан — прежний список', exc_info=True)
             except Exception:   # фоновый поток не должен падать молча
                 logger.exception('[Routes] Список водителей ERP: сбой')
             finally:
+                state.driver_list_cache = (time.monotonic() + ttl, names)
                 state.driver_list_lock.release()
-        threading.Thread(target=refresh, name='routes-driver-list', daemon=True).start()
+        try:
+            threading.Thread(target=refresh, name='routes-driver-list', daemon=True).start()
+        except BaseException:   # поток не запустился — замок не должен остаться занятым навсегда
+            state.driver_list_lock.release()
+            logger.exception('[Routes] Список водителей ERP: фоновое чтение не запущено')
     since = (_clock().date() - timedelta(days=DRIVER_LIST_DAYS)).isoformat()
     return sorted(set(cached[1] if cached is not None else []) | set(state.store.driver_names(since)))
 
