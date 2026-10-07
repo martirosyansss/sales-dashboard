@@ -1178,6 +1178,25 @@ body.dp-ws-on .rt-secbar .rt-tabs a { padding-top: 3px; padding-bottom: 3px; }
 #rtDispatch .dp-ws-side .dp-tacts .dp-wbbtn { padding: 0 10px; }
 #rtDispatch .dp-ws-side .dp-tacts .dp-wbbtn span { position: static; width: auto; height: auto; overflow: visible; clip-path: none; }
 #rtDispatch .dp-ws-side .dp-thead { grid-template-columns: minmax(0, 1fr) auto auto; }
+/* №89: шапка рейса — отдельной полосой внизу панели; точки прокручиваются над ней. Полоса стоит после точек своего рейса,
+   поэтому при прокрутке к следующему рейсу её сменяет его полоса. clip вместо hidden — иначе карточка стала бы
+   прокручиваемым блоком и sticky держался бы за неё, а не за панель. bottom −10px = нижний отступ панели: sticky
+   отсчитывает от него, и без этого под полосой просвечивала бы следующая точка. */
+#rtDispatch .dp-ws-side .dp-tcard { overflow: clip; }
+#rtDispatch .dp-ws-side .dp-trip { display: flex; flex-direction: column; padding-bottom: 0; }
+#rtDispatch .dp-ws-side .dp-trip-head {
+    order: 1; position: sticky; bottom: -10px; z-index: 1; gap: 6px 10px; margin: 8px -16px 0; padding: 8px 16px 10px;
+    border-top: 1px solid var(--rt-line); background: var(--rt-panel-2); box-shadow: 0 -8px 14px -10px rgba(0, 0, 0, .55);
+}
+#rtDispatch .dp-ws-side .dp-trip.is-editing .dp-trip-head { margin: 8px -10px 0; padding: 8px 10px 10px; border-radius: 0 0 12px 12px; }
+/* две строки: «Երթ 1 · время · загрузка · км» и под ними кнопки одним рядом — панель низкая, точкам нужно место */
+#rtDispatch .dp-ws-side .dp-trip-t { font-size: .875rem; }
+#rtDispatch .dp-ws-side .dp-time { font-size: .875rem; }
+#rtDispatch .dp-ws-side .dp-trip-line { width: auto; flex: 1 1 240px; gap: 2px 10px; font-size: .8125rem; }
+#rtDispatch .dp-ws-side .dp-loadm-bar { width: 48px; }
+#rtDispatch .dp-ws-side .dp-trip-acts { order: 1; width: 100%; margin: 0; flex-wrap: nowrap; gap: 6px; }
+#rtDispatch .dp-ws-side .dp-trip-acts .rt-btn { flex: 1 1 auto; min-width: 0; height: 30px; padding: 0 8px; font-size: .8125rem; }
+#rtDispatch .dp-ws-side .dp-trip-acts .rt-btn span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* снизу: машины и шкала дня (таблица слева — подписи шкалы) */
 .dp-ws-bottom { min-height: 0; overflow: auto; }
