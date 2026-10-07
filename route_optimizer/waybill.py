@@ -372,7 +372,7 @@ def truck_waybill(plan: Mapping[str, Any], car_code: str, lines: Lines) -> dict[
             goods, stop_kg, _ = _goods(share, lines)
             loading.append({'no': k, 'stop': len(loads) - k + 1, 'code': s.get('code') or '', 'name': s.get('name') or '',
                             'split': many, 'rows': goods, 'kg': stop_kg})
-        for x, w in zip(loading, _whole_kg([x['kg'] for x in loading], round(kg))):
+        for x, w in zip(loading, _whole_kg([x['kg'] for x in loading], round(kg)), strict=True):
             x['kg'] = w
         trips.append({'id': tr['id'], 'no': no, 'loading_start': tr['loading_start'], 'depart': tr['depart'],
                       'return': tr['return'], 'stops': len(tr['stops']), 'orders': orders, 'invoiced': invoiced,

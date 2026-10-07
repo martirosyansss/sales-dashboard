@@ -12,8 +12,10 @@
   по которой записана действующая доставка точки (та же версия, что строки правила), — по статусу правила:
   · full — вся;
   · covered — сестра разделённого заказа (заказ O: стал несколькими накладными, её товар отдан по заявлениям заказа,
-    paid_to правила): у неё самой — ничего, её строки и tare_expected считаются у владельца группы вместе с его
-    строками, по статусу и заявлениям владельца (заказ доставлен на 6 из 10 — ушла тара 6, отказ — 0);
+    paid_to правила): у неё самой — ничего, её тара — у владельца группы. Действующее заявление владельца — на заказе:
+    строки и tare_expected владельца и сестёр вместе, по статусу и заявлениям владельца (заказ 6 из 10 — ушло 6, отказ —
+    0); на накладной: владелец — по своему заявлению на своих строках, сестра — по долям заявлений поглощённых заказов
+    на своих строках (заказ 10 из 10, затем накладная 3 из 6 — ушло 3 + 4 = 7);
   · partial и in_progress — по доставленному товару: у товара p доставлено d_p (Σ по заявлениям правила, строка — не
     больше своего количества в версии заявления) из q_p (строки точки), f_p = min(1, d_p / q_p); тара вида t =
     tare_expected[t] × Σ f_p·q_p·k_p(t) / Σ q_p·k_p(t), k_p(t) — тара t на единицу товара p (связи ERP). Ни один товар
@@ -163,6 +165,18 @@ def _move(day: str, d: Mapping[str, Any], status: str | None, went_: Mapping[str
                 str(d.get('car_code') or ''), str(d.get('doc_number') or ''), status, dict(went_), dict(returned), approx)
 
 
+def _order_share(model: Any, statements: Sequence[Mapping[str, Any]]) -> dict[int, float]:
+    """Доля доставленного по товарам в заявлениях заказов: товар → min(1, доставлено / количество в строках заказа)."""
+    ordered: dict[int, float] = {}
+    for e in statements:
+        version = (model.versions.get(e['stop_id']) or {}).get(e.get('snapshot_id')) or model.data.get(e['stop_id']) or {}
+        for ln in version.get('lines') or ():
+            if isinstance(ln, dict) and isinstance(ln.get('product_id'), int) and _num(ln.get('qty')) > 0:
+                ordered[ln['product_id']] = ordered.get(ln['product_id'], 0.0) + _num(ln.get('qty'))
+    done = delivered_by_product(model, [e['id'] for e in statements])
+    return {p: min(1.0, done.get(p, 0.0) / q) for p, q in ordered.items()}
+
+
 def _group(owner: Mapping[str, Any], sisters: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     """Владелец разделённого заказа вместе с covered-сёстрами — одна «точка» для тары: строки и tare_expected всех."""
     lines = [ln for x in (owner, *sisters) for ln in x.get('lines') or ()]
@@ -179,6 +193,7 @@ def day_moves(day: str, model: Any, marks: Mapping[str, Sequence[Mapping[str, An
     (views._tare), foreign — версии точек отметок, которых нет в правиле даты (stop_id → данные точки)."""
     known = [e for e in model.inputs if e['stop_id'] in model.data]
     stated = mg.latest_by_stop(known, 'delivery')   # версия правила точки — версия её действующей доставки (day_model)
+    by_id = {e['id']: e for e in model.inputs}
     covered: dict[str, list[str]] = {}               # владелец → его covered-сёстры (заказ разделён на накладные)
     for sister, owner in sorted(model.paid_to.items()):
         covered.setdefault(owner, []).append(sister)
@@ -193,10 +208,24 @@ def day_moves(day: str, model: Any, marks: Mapping[str, Sequence[Mapping[str, An
             for t in (basis if s == x else model.data[s]).get('tare_expected') or ():
                 if isinstance(t, dict) and isinstance(t.get('tare_id'), str) and t.get('name'):
                     names[t['tare_id']] = str(t['name'])
-        if x in covered:   # товар covered-сестёр отдан по заявлениям заказа владельца — их тара считается здесь
+        last = by_id.get(v.statement or '')
+        split_by_invoice = x in covered and last is not None and str(last['stop_id']).startswith('S:')
+        if x in covered and not split_by_invoice:   # заявления заказа — на всю группу: тара сестёр считается здесь
             basis = _group(basis, [model.data[s] for s in covered[x]])
         delivered = delivered_by_product(model, v.statements) if v.status in SHARE else {}
         w, approx = went(v.status, basis, delivered, links)
+        if split_by_invoice:
+            # действующее заявление — на накладной: владелец — по нему на своих строках (выше); сёстры — по долям
+            # заявлений поглощённых заказов на своих строках (их товар отдан по заказу)
+            share = _order_share(model, [stated[o] for o, owner in sorted(model.absorbed_by.items())
+                                         if owner == x and o.startswith('O:') and o in stated])
+            for s in covered[x]:
+                sister = model.data[s]
+                done = {ln['product_id']: share.get(ln['product_id'], 0.0) * _num(ln.get('qty'))
+                        for ln in sister.get('lines') or () if isinstance(ln, dict) and isinstance(ln.get('product_id'), int)}
+                sw, sa = went('partial', sister, done, links)
+                w = {t: round(w.get(t, 0.0) + sw.get(t, 0.0), 2) for t in {*w, *sw}}
+                approx = approx or sa
         r = {i['tare_id']: round(_num(i.get('qty')), 2) for i in marks.get(x, ()) if _num(i.get('qty')) > 0}
         if w or r:
             m = _move(day, d, v.status, w, r, approx)

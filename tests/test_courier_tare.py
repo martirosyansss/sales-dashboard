@@ -191,11 +191,14 @@ def test_balance_cached_until_day_changes(client, st, days, erp, monkeypatch):
     assert built == [PAST] and rows[(11, CRATE)]['balance'] == 0.0      # пересчитан только изменившийся день
 
 
-@pytest.mark.parametrize('done, went', [(6, 6.0), (0, None)])
-def test_split_order_covered_sister_counted_once_at_owner(client, st, erp, done, went):
-    """Заказ O: 10 бутылей доставлен по заказу (6 или отказ), потом стал двумя накладными S:1 (6) и S:2 (4): S:2 —
-    covered (товар отдан по заказу). Тара — один раз по группе у владельца: 6 из 10 → ушло 6 (было 6 + 4 = 10), отказ →
-    ничего (было 4 у covered-сестры)."""
+@pytest.mark.parametrize('done, invoice, status, went', [
+    (6, None, 'partial', 6.0), (0, None, 'refused', None), (10, None, 'full', 10.0),   # заявление на заказе — группой
+    (10, 3, 'partial', 7.0), (10, 6, 'full', 10.0)])                                    # на накладной — порознь
+def test_split_order_covered_sister_counted_once_at_owner(client, st, erp, done, invoice, status, went):
+    """Заказ O: 10 бутылей доставлен по заказу (done), потом стал двумя накладными S:1 (6) и S:2 (4): S:2 — covered
+    (товар отдан по заказу). Тара — один раз у владельца. Действующее заявление на заказе — по группе: 6 из 10 → 6 (было
+    6 + 4 = 10), отказ → ничего (было 4). Водитель потом отметил и накладную S:1 (invoice) — она по своему заявлению на
+    своих строках, S:2 — по заказу на своих: 3 + 4 = 7, 6 + 4 = 10."""
     a = _who(st, 'A', '1111')
     o, s1, s2 = 'O:' + _uid(600), 'S:' + _uid(601), 'S:' + _uid(602)
     st.store.save_day(PAST, 'CAR1', [_stop(o, 30, [('o1', 10, WATER, 190.0)], {BOTTLE: 10})], 'v1', PAST + 'T08:00:00+04:00')
@@ -204,8 +207,10 @@ def test_split_order_covered_sister_counted_once_at_owner(client, st, erp, done,
     inv2 = {**_stop(s2, 30, [('b', 4, WATER, 76.0)], {BOTTLE: 4}, seq=2), 'replaces': [o]}
     st.store.save_day(PAST, 'CAR1', [inv1], 'v2', PAST + 'T09:10:00+04:00')
     st.store.save_day(PAST, 'CAR1', [inv1, inv2], 'v3', PAST + 'T09:20:00+04:00')
+    if invoice is not None:
+        _ingest(st, a, _deliver(s1, [('a', invoice)], '10:00:00'))
     stops = _today_stops(client)
-    assert (stops[s1]['status'], stops[s2]['status']) == ('partial' if done else 'refused', 'covered')
+    assert (stops[s1]['status'], stops[s2]['status']) == (status, 'covered')
     _, rows = _rows(client)
     assert (rows[(30, BOTTLE)]['went'] if went else rows.get((30, BOTTLE))) == went
 
