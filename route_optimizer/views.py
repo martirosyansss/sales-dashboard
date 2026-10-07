@@ -1945,6 +1945,32 @@ def _erp_drivers(state: RoutesState) -> list[str]:
         state.driver_list_lock.release()
 
 
+def driver_name_hints(state: RoutesState) -> list[str]:
+    """Имена водителей для подсказки в офисе «Առաքիչ» (№84, ревью: имя водителя APK сравнивается с записями «Развоза»
+    строкой) — тот же список, что у «Վարորդ»: ERP (кэш _erp_drivers) и свои за DRIVER_LIST_DAYS, по алфавиту. ERP
+    здесь не ждём: кэша нет или он устарел — перечитывается в фоне (один поток за раз), ответ — с тем, что есть."""
+    cached = state.driver_list_cache
+    if (cached is None or time.monotonic() >= cached[0]) and state.driver_list_loader is not None             and state.driver_list_lock.acquire(blocking=False):
+        today = _clock().date()
+
+        def refresh() -> None:
+            try:
+                try:
+                    names = state.driver_list_loader(today - timedelta(days=DRIVER_LIST_DAYS), today + timedelta(days=1))
+                    ttl = DRIVER_LIST_TTL_S
+                except ErpError:
+                    logger.warning('[Routes] Список водителей ERP не прочитан — прежний список', exc_info=True)
+                    names, ttl = (cached[1] if cached is not None else []), DRIVER_LIST_RETRY_S
+                state.driver_list_cache = (time.monotonic() + ttl, names)
+            except Exception:   # фоновый поток не должен падать молча
+                logger.exception('[Routes] Список водителей ERP: сбой')
+            finally:
+                state.driver_list_lock.release()
+        threading.Thread(target=refresh, name='routes-driver-list', daemon=True).start()
+    since = (_clock().date() - timedelta(days=DRIVER_LIST_DAYS)).isoformat()
+    return sorted(set(cached[1] if cached is not None else []) | set(state.store.driver_names(since)))
+
+
 ERP_CREW_DAYS = 30        # экипаж по ERP (№84) — кто возил машину за 30 дней
 ERP_CREW_TTL_S = 3600     # подбор по ERP — не чаще раза в час
 ERP_CREW_RETRY_S = 60     # ERP недоступна — снова через минуту (страница работает с прежними записями)
@@ -1988,12 +2014,8 @@ def _drivers_json(state: RoutesState, day: date) -> dict[str, Any]:
     # свои — вписанные за срок и все, кто в машинах сейчас или в этот день (давно закреплённый не пропадает из выбора)
     current = {n for role in CREW_TABLES for n in store.truck_drivers(today.isoformat(), role)[0].values()}
     own = sorted((set(store.driver_names(since)) | current | set(drivers.values()) | set(helpers.values())) - in_erp)
-    # №84: чьи записи из «Առաքիչ» или ERP (машина → 'apk' | 'erp'), только у машин с человеком; записи логиста — нет
-    sources = {key: {c: src for c, src in store.crew_sources(day.isoformat(), role).items() if c in people}
-               for key, role, people in (('driver_sources', 'driver', drivers), ('helper_sources', 'helper', helpers))}
     return {'drivers': drivers, 'substitutes': sorted(subs), 'helpers': helpers, 'helper_substitutes': sorted(helper_subs),
-            'driver_list': [{'name': n, 'erp': True} for n in erp_names] + [{'name': n, 'erp': False} for n in own],
-            **{key: value for key, value in sources.items() if value}}
+            'driver_list': [{'name': n, 'erp': True} for n in erp_names] + [{'name': n, 'erp': False} for n in own]}
 
 
 def _crew(state: RoutesState, day: date, trucks: Collection[str]) -> tuple[dp.Crew, dict[str, str]]:

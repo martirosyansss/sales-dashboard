@@ -155,3 +155,33 @@ def test_bad_courier_name_is_skipped(rs, st, client):
 def test_save_apk_crew_rejects_non_apk_label(rs):
     with pytest.raises(ValueError):
         rs.save_apk_crew('TEST', DAY, 'driver', 'Արամ', False, 'logist')
+
+
+# ============================== подсказка имени в офисе (ревью 83478e6) ==============================
+
+def test_office_driver_list_has_routes_name_hints(app, st, client, rs, monkeypatch):
+    """Имена водителей «Развоза» — ERP (кэш списка «Վարորդ») и свои за 90 дней — подсказкой в /courier#drivers; ERP здесь
+    не ждём: кэша нет — пусто сразу, список перечитывается в фоне."""
+    import threading
+    from route_optimizer import views as rviews
+    monkeypatch.setattr(rviews, '_clock', lambda: rviews.datetime(2026, 10, 2, 9, 0))
+    rs.save_truck_crew('CAR2', '2026-09-20', {'driver': ('Կարեն', False)}, 'logist')
+    loaded = threading.Event()
+
+    def loader(since, until):
+        loaded.set()
+        return ['Վարդանյան Գարիկ']
+    routes = SimpleNamespace(store=rs, driver_list_cache=None, driver_list_loader=loader, driver_list_lock=threading.Lock())
+    app.extensions['route_optimizer'] = routes
+    assert client.get('/api/courier/admin/drivers').get_json()['name_hints'] == ['Կարեն']
+    assert loaded.wait(5)
+    for _ in range(50):                                   # фоновый поток записывает кэш после загрузчика
+        if routes.driver_list_cache is not None:
+            break
+        loaded.wait(0.05)
+    assert client.get('/api/courier/admin/drivers').get_json()['name_hints'] == ['Կարեն', 'Վարդանյան Գարիկ']
+    app.extensions['route_optimizer'] = SimpleNamespace(store=rs)          # не «Маршруты» — без подсказки, не 500
+    r = client.get('/api/courier/admin/drivers')
+    assert r.status_code == 200 and r.get_json()['name_hints'] == []
+    app.extensions.pop('route_optimizer')
+    assert client.get('/api/courier/admin/drivers').get_json()['name_hints'] == []

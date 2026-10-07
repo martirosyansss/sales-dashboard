@@ -212,7 +212,6 @@ def test_dispatch_get_fills_empty_trucks(client, erp_day):
     assert erp_day.calls == [(date(2026, 8, 31), date(2026, 10, 1))]                   # 30 дней и сегодня
     assert page['drivers'] == {'CAR1': 'Վարդանյան Գարիկ', 'CAR2': 'Համբարձումյան Աղվան'}
     assert page['helpers'] == {'CAR1': 'Ավակիմյան Արթուր'}
-    assert page['driver_sources'] == {'CAR1': 'erp', 'CAR2': 'erp'} and page['helper_sources'] == {'CAR1': 'erp'}
     assert page['crew']['drivers'] == [{'name': 'Համբարձումյան Աղվան', 'trucks': ['CAR2'], 'absent': False, 'source': 'erp'},
                                        {'name': 'Վարդանյան Գարիկ', 'trucks': ['CAR1'], 'absent': False, 'source': 'erp'}]
     client.get('/api/routes/dispatch?date=2026-10-01')
@@ -226,7 +225,7 @@ def test_dispatch_get_fills_empty_trucks(client, erp_day):
     r = client.post('/api/routes/dispatch/driver', json={'date': '2026-10-01', 'car_code': 'CAR1', 'name': 'Լոգիստ',
                                                          'helper': 'Ավակիմյան Արթուր'})
     assert r.status_code == 200, r.get_json()
-    assert r.get_json()['driver_sources'] == {'CAR2': 'erp'} and 'helper_sources' not in r.get_json()
+    assert [(x['name'], x.get('source')) for x in r.get_json()['crew']['drivers']] ==         [('Լոգիստ', None), ('Համբարձումյան Աղվան', 'erp')]
     assert len(erp_day.calls) == 1                                                     # POST ERP не спрашивает
     erp_day.erp_crew_next = 0.0
     page = client.get('/api/routes/dispatch?date=2026-10-01').get_json()
@@ -238,7 +237,7 @@ def test_dispatch_get_erp_down_still_200(client, erp_day, monkeypatch):
     tick = {'t': 1000.0}
     monkeypatch.setattr(views.time, 'monotonic', lambda: tick['t'])
     r = client.get('/api/routes/dispatch?date=2026-10-01')
-    assert r.status_code == 200 and r.get_json()['drivers'] == {} and 'driver_sources' not in r.get_json()
+    assert r.status_code == 200 and r.get_json()['drivers'] == {} and r.get_json()['crew']['drivers'] == []
     client.get('/api/routes/dispatch?date=2026-10-01')
     assert len(erp_day.calls) == 1
     tick['t'] += views.ERP_CREW_RETRY_S                                                # повтор через минуту
@@ -258,3 +257,75 @@ def test_dispatch_store_failure_in_fill_still_200(client, erp_day, monkeypatch):
 def test_no_loader_no_fill(client, erp_day):
     erp_day.crew_days_loader = None
     assert client.get('/api/routes/dispatch?date=2026-10-01').get_json()['drivers'] == {}
+
+
+# ============================== ревью 83478e6 (probe84) ==============================
+
+def test_fill_clears_erp_row_when_logist_put_person_elsewhere(rs):
+    """ERP поставила X на A, логист постоянно перевёл X на B: следующий подбор снимает X с A (иначе он на двух машинах и
+    №77 считал бы лишнего водителя). Подмена дня — не повод: её разводит рассадка №77."""
+    rs.fill_erp_crew('2026-10-01', lambda taken: {'A': ('X', None)})
+    rs.save_truck_crew('B', '2026-10-02', {'driver': ('X', False)}, 'logist')
+    choose = lambda taken: {} if 'X' in taken else {'A': ('X', None)}             # noqa: E731
+    assert rs.fill_erp_crew('2026-10-02', choose) == [('A', 'driver', '')]
+    assert crew_of(rs, '2026-10-02')[0] == {'B': 'X'} and crew_of(rs, '2026-10-01')[0] == {'A': 'X'}
+    assert rs.fill_erp_crew('2026-10-02', choose) == []
+    rs.fill_erp_crew('2026-10-03', lambda taken: {'C': ('Y', None)})
+    rs.save_truck_crew('B', '2026-10-04', {'driver': ('Y', True)}, 'logist')          # только на день
+    assert rs.fill_erp_crew('2026-10-04', lambda taken: {}) == []
+    assert crew_of(rs, '2026-10-04')[0] == {'B': 'Y', 'C': 'Y'}
+
+
+def test_apk_login_keeps_logist_planned_move(rs):
+    """Логист запланировал Y на A с завтра (постоянно или подменой на день), а сегодня Y вошёл на B: до перехода он на B,
+    в день перехода — только на A (у B — «никого» той же записью)."""
+    rs.save_truck_crew('A', '2026-10-05', {'driver': ('Y', False)}, 'logist')
+    assert rs.save_apk_crew('B', '2026-10-02', 'driver', 'Y', False, 'apk:1')
+    assert crew_of(rs, '2026-10-04')[0] == {'B': 'Y'} and crew_of(rs, '2026-10-05')[0] == {'A': 'Y'}
+    assert crew_of(rs, '2026-10-09')[0] == {'A': 'Y'}
+    assert ('B', '2026-10-05', 0, '', 'apk:1') in rows_of(rs)
+    assert not rs.save_apk_crew('B', '2026-10-02', 'driver', 'Y', False, 'apk:1')     # повторный вход — без строк
+
+
+def test_apk_login_keeps_logist_planned_substitute(rs):
+    rs.save_truck_crew('A', '2026-10-03', {'helper': ('Y', True)}, 'logist')           # առաքիչ A только 03.10
+    rs.save_apk_crew('B', '2026-10-02', 'driver', 'Y', False, 'apk:1')
+    assert crew_of(rs, '2026-10-03') == ({}, {'A': 'Y'})
+    assert crew_of(rs, '2026-10-04') == ({'B': 'Y'}, {})                               # после подмены — снова на B
+    assert ('B', '2026-10-03', 1, '', 'apk:1') in rows_of(rs)
+
+
+def test_apk_login_planned_move_leaves_other_people_rows(rs):
+    """У B на день перехода уже другой (логист поставил Z с 04.10) или своя запись того же ключа — не трогается."""
+    rs.save_truck_crew('A', '2026-10-05', {'driver': ('Y', False)}, 'logist')
+    rs.save_truck_crew('B', '2026-10-04', {'driver': ('Z', False)}, 'logist')
+    rs.save_apk_crew('B', '2026-10-02', 'driver', 'Y', False, 'apk:1')
+    assert crew_of(rs, '2026-10-03')[0] == {'B': 'Y'} and crew_of(rs, '2026-10-05')[0] == {'A': 'Y', 'B': 'Z'}
+    # переход на ту же машину позже, чем вход на неё, — запланированная смена логиста: остаётся (probe 3)
+    rs.save_truck_crew('C', '2026-10-05', {'driver': ('X', False)}, 'logist')
+    rs.save_apk_crew('C', '2026-10-02', 'driver', 'W', False, 'apk:2')
+    assert crew_of(rs, '2026-10-04')[0]['C'] == 'W' and crew_of(rs, '2026-10-05')[0]['C'] == 'X'
+
+
+def test_probe_edge_cases_documented(rs):
+    # вход переводит X с машины ERP: у A — «никого» от «Առաքիչ», ERP её больше не заполняет (запись есть)
+    rs.fill_erp_crew('2026-10-01', lambda taken: {'A': ('X', None)})
+    rs.save_apk_crew('B', '2026-10-02', 'driver', 'X', False, 'apk:1')
+    assert rs.fill_erp_crew('2026-10-03', lambda taken: {'A': ('Z', None)}) == []
+    assert crew_of(rs, '2026-10-03')[0] == {'B': 'X'}
+    # «один» при подмене логиста на сегодня (постоянного нет) — подмена снимается: сегодня без առաքիչ
+    rs.save_truck_crew('C', '2026-10-02', {'helper': ('H', True)}, 'logist')
+    assert rs.save_apk_crew('C', '2026-10-02', 'helper', '', True, 'apk:3')
+    assert rs.truck_drivers('2026-10-02', 'helper') == ({}, frozenset())
+
+
+def test_probe_logist_substitute_only_car_gets_erp_permanent(tmp_path):
+    """У машины только подмена логиста на день (постоянной записи нет) — ERP пишет постоянную: в этот день — подмена."""
+    s = st.Store(str(tmp_path / 'r.db'))
+    s.load()
+    with closing(sqlite3.connect(s.path)) as conn:
+        conn.execute("INSERT INTO trucks(car_code, updated_at) VALUES('A', 'x')")
+        conn.commit()
+    s.save_truck_crew('A', '2026-10-02', {'driver': ('S', True)}, 'logist')
+    assert s.fill_erp_crew('2026-10-02', lambda taken: {'A': ('E', None)}) == [('A', 'driver', 'E')]
+    assert crew_of(s, '2026-10-02')[0] == {'A': 'S'} and crew_of(s, '2026-10-03')[0] == {'A': 'E'}

@@ -2576,9 +2576,32 @@ class Store:
                         else:
                             _crew_upsert(conn, other, car, day, True, '', user)
                         changed = True
+            if not only_day:
+                changed |= self._apk_planned_moves(conn, table, car_code, day, name, user)
             return changed
 
         return self._transaction(write, 'не удалось сохранить экипаж машины из «Առաքիչ»')
+
+    @staticmethod
+    def _apk_planned_moves(conn: sqlite3.Connection, table: str, car_code: str, day: str, name: str, user: str) -> bool:
+        """Запланированный логистом переход (№84, ревью): name вошёл на car_code с day, а записи после day ставят его на
+        другую машину (любая роль; постоянно — с from_day, подмена — на from_day). Переход остаётся: на car_code в той же
+        роли та же запись «никого» на тот день — до перехода он здесь, потом там. Своя запись car_code на этот ключ или
+        на тот день у car_code уже не он — не трогается. True — что-то записано."""
+        changed = False
+        for other in CREW_TABLES.values():
+            planned = conn.execute(f'SELECT DISTINCT from_day, only_day FROM {other} WHERE name = ? AND from_day > ? '
+                                   'AND car_code <> ?', (name, day, car_code)).fetchall()
+            for from_day, only_day in planned:
+                if conn.execute(f'SELECT 1 FROM {table} WHERE car_code = ? AND from_day = ? AND only_day = ?',
+                                (car_code, from_day, only_day)).fetchone() is not None:
+                    continue
+                perm = _crew_permanent(conn, table, car_code, from_day)
+                if perm is None or perm[0] != name:
+                    continue
+                _crew_upsert(conn, table, car_code, from_day, bool(only_day), '', user)
+                changed = True
+        return changed
 
     def fill_erp_crew(self, day: str, choose: Callable[[frozenset[str]], Mapping[str, tuple[str, str | None]]]
                       ) -> list[tuple[str, str, str]]:
@@ -2587,14 +2610,15 @@ class Store:
         (waybill.pick_car_crews); занятые — люди записей логиста и «Առաքիչ» (постоянных, действующих в day, и подмен
         day): их ERP не ставит. Машина, у которой есть постоянная запись не от ERP (любая роль, в т.ч. «никого»), — не
         трогается. Своя запись ERP заменяется, если подбор другой; машины нет в подборе (в ERP нет данных) — прежняя
-        остаётся, но человек, которого подбор поставил на другую машину, с неё снимается (одно место). Без изменений —
-        ничего не пишется."""
+        остаётся, но человек, которого подбор поставил на другую машину или логист / «Առաքիչ» — постоянной записью, с неё
+        снимается (одно место; подмена дня — нет: её разводит рассадка №77). Без изменений — ничего не пишется."""
         if not isinstance(day, str) or not _ISO_DAY_RE.match(day):
             raise ValueError('day: дата YYYY-MM-DD')
 
         def write(conn: sqlite3.Connection) -> list[tuple[str, str, str]]:
             current: dict[str, dict[str, tuple[str, str | None]]] = {}   # машина → роль → постоянная запись
             taken: set[str] = set()
+            fixed: set[str] = set()      # люди постоянных записей не от ERP: их прежняя запись ERP снимается
             locked: set[str] = set()
             for role, table in CREW_TABLES.items():
                 for (car,) in conn.execute(f'SELECT DISTINCT car_code FROM {table} WHERE from_day <= ?', (day,)).fetchall():
@@ -2604,6 +2628,7 @@ class Store:
                         if perm[1] != CREW_BY_ERP:
                             locked.add(car)
                             taken.add(perm[0])
+                            fixed.add(perm[0])
                     if sub is not None and sub[1] != CREW_BY_ERP:
                         taken.add(sub[0])
             taken.discard('')
@@ -2619,7 +2644,7 @@ class Store:
                     old = have.get(role)
                     if car in picks:
                         want = picks[car][i] or ''
-                    elif old is not None and old[0] in picked:
+                    elif old is not None and old[0] and (old[0] in picked or old[0] in fixed):
                         want = ''
                     else:
                         continue

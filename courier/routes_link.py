@@ -152,6 +152,19 @@ def planned_crew(state: Any, day: date) -> dict[str, dict[str, str | None]] | No
     return {car: {'driver': drivers.get(car), 'helper': helpers.get(car)} for car in sorted({*drivers, *helpers})}
 
 
+def driver_name_hints(state: Any) -> list[str]:
+    """Имена водителей «Развоза» (ERP и свои, route_optimizer.views.driver_name_hints) — подсказка имени в офисе: правила
+    №84 сравнивают имя водителя APK с записями «Маршрутов» строкой. Раздела нет или любой сбой — пусто (в лог)."""
+    if state is None:
+        return []
+    try:
+        from route_optimizer.views import driver_name_hints as hints   # раздел подключён — его модуль уже загружен
+        return hints(state)
+    except Exception:   # подсказка — необязательна: сбой «Маршрутов» не мешает офису
+        logger.warning('[Courier] Имена водителей «Маршрутов» не прочитаны — без подсказки', exc_info=True)
+        return []
+
+
 def record_crew(state: Any, car_code: str, day: date, role: str, name: str, only_day: bool, terminal_id: int) -> bool:
     """Экипаж машины из «Առաքիչ» — в «Маршруты» (ответ владельца №84: терминал привязан к машине, вход по PIN — её
     водитель, решение экипажа — её առաքիչ): Store.save_apk_crew с меткой CREW_BY_APK + id терминала, день — рабочий день
