@@ -3728,13 +3728,14 @@
     // у машины — «✓ доставлено / всего». Прошлый и будущий день, «Առաքիչ» нет — кружки как в плане
     const PROGRESS_MS = 60 * 1000;
     const PG_HY = { done: 'առաքված', partial: 'մասնակի', refused: 'հրաժարվել է', here: 'մեքենան տեղում է', late: 'ուշանում է', pending: 'սպասում է' };
+    let progressSeq = 0;
     async function loadProgress() {
         const d = state.data;
-        if (!d || !d.plan || d.day !== d.today || document.hidden) return;
-        const day = d.day;
+        if (!d || !d.plan || d.day !== d.today || document.hidden || !$('rtDispatch').classList.contains('is-ws')) return;
+        const day = d.day, seq = ++progressSeq;
         let r;
         try { r = await api('GET', '/api/routes/dispatch/progress?date=' + encodeURIComponent(day)); } catch (e) { return; }
-        if (!state.data || state.data.day !== day) return;
+        if (seq !== progressSeq || !state.data || state.data.day !== day) return;   // пришёл более свежий ответ / сменили день
         state.progress = r && r.live ? { day, trucks: r.trucks || {}, now: r.now } : null;
         paintProgress();
     }
@@ -3758,10 +3759,13 @@
             if (!el) return;
             el.hidden = !car;
             if (!car) return;
-            const all = Object.values(car), done = all.filter(g => g.s === 'done' || g.s === 'partial' || g.s === 'refused').length;
-            const late = all.filter(g => g.s === 'late').length;
-            el.textContent = '✓ ' + done + '/' + all.length + (late ? ' · ուշ ' + late : '');
+            const all = Object.values(car), done = all.filter(g => g.s === 'done' || g.s === 'partial').length;
+            const refused = all.filter(g => g.s === 'refused').length, late = all.filter(g => g.s === 'late').length;
+            el.textContent = '✓ ' + done + '/' + all.length + (refused ? ' · ✗ ' + refused : '') + (late ? ' · ուշ ' + late : '');
             el.classList.toggle('is-late', late > 0);
+            if (lab.dataset.baseLabel === undefined) lab.dataset.baseLabel = lab.getAttribute('aria-label') || '';
+            lab.setAttribute('aria-label', lab.dataset.baseLabel + ' · առաքված ' + done + '/' + all.length
+                + (refused ? ', հրաժարում ' + refused : '') + (late ? ', ուշանում է ' + late : ''));
         });
         $('dpBoard').classList.toggle('has-progress', !!p);
     }

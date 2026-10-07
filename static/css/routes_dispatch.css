@@ -1168,10 +1168,11 @@ body.dp-ws-on .rt-secbar .rt-tabs a { padding-top: 5px; padding-bottom: 5px; }
 #rtDispatch.is-ws .dp-bar i.dp-tick.pg-done::before { content: "✓"; font-size: 11px; }
 #rtDispatch.is-ws .dp-bar i.dp-tick.pg-partial { background: var(--rt-warn); color: #2a1a00; }
 #rtDispatch.is-ws .dp-bar i.dp-tick.pg-refused { background: var(--rt-panel-2); color: var(--rt-fg-mute); text-decoration: line-through; }
-#rtDispatch.is-ws .dp-bar i.dp-tick.pg-late { background: var(--rt-danger); color: #fff; }
+#rtDispatch.is-ws .dp-bar i.dp-tick.pg-late { background: var(--rt-danger); color: #fff; outline: 2px dashed #fff; outline-offset: 1px; }
+#rtDispatch.is-ws .dp-board.has-progress .dp-bar i.dp-tick.is-bad:not([class*="pg-"]) { background: var(--dp-c); color: #0b0f15; box-shadow: 0 0 0 2px var(--rt-danger); }
 #rtDispatch.is-ws .dp-bar i.dp-tick.pg-here { background: #fff; color: #0b0f15; box-shadow: 0 0 0 3px var(--rt-acc); animation: dp-here 1.6s ease-in-out infinite; }
 @keyframes dp-here { 50% { box-shadow: 0 0 0 6px rgba(56, 189, 248, .25); } }
-@media (prefers-reduced-motion: reduce) { #rtDispatch .dp-bar i.dp-tick.pg-here { animation: none; } }
+@media (prefers-reduced-motion: reduce) { #rtDispatch.is-ws .dp-bar i.dp-tick.pg-here { animation: none; } }
 .dp-blx-pg { color: var(--rt-ok); font-weight: 600; white-space: nowrap; }
 #rtDispatch.is-ws .dp-blabel-t { position: relative; width: 100%; }
 #rtDispatch.is-ws .dp-blx-pg { position: absolute; right: 0; top: 1px; font-size: .75rem; }

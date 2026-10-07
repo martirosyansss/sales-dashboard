@@ -4011,7 +4011,28 @@ def _day_progress(state: RoutesState, day: date) -> dict[str, dict[str, dict[str
     """Машина → клиент (str) → {'s': done | partial | refused | here | late | pending, 'at': «HH:MM» (доставлен — когда,
     иначе ETA) | None, 'delay': минуты ETA позже плана | None}. Машины без точек терминала — нет."""
     ctx, now, fleet, cards = _live_cards(state, day)
+    with state.live_lock:
+        hit = _PROGRESS_CACHE.get(day)
+    if hit is not None and hit[0] is cards:    # тот же расчёт флота (_live_cards) — тот же ход дня
+        return hit[1]
     out: dict[str, dict[str, dict[str, Any]]] = {}
+    _budget.until = _monotonic() + LIVE_BUDGET_S   # как у онлайн-карты: дальше участки «от машины» — запасная модель
+    try:
+        _progress_fill(ctx, day, now, fleet, out)
+    finally:
+        _budget.until = math.inf
+    with state.live_lock:
+        _PROGRESS_CACHE[day] = (cards, out)
+        while len(_PROGRESS_CACHE) > 4:
+            _PROGRESS_CACHE.pop(next(iter(_PROGRESS_CACHE)))
+    return out
+
+
+_PROGRESS_CACHE: dict[date, tuple[Any, dict[str, dict[str, dict[str, Any]]]]] = {}
+
+
+def _progress_fill(ctx: _LiveContext, day: date, now: datetime, fleet: Mapping[str, Any],
+                   out: dict[str, dict[str, dict[str, Any]]]) -> None:
     for car, facts in sorted(fleet.items()):
         stops = [s for s in (facts or {}).get('stops') or () if isinstance(s.get('customer_id'), int)]
         if not stops:
@@ -4036,10 +4057,10 @@ def _day_progress(state: RoutesState, day: date) -> dict[str, dict[str, dict[str
             if prev is None or _PROGRESS_RANK[st] > _PROGRESS_RANK[prev['s']]:
                 mine[str(s['customer_id'])] = {'s': st, 'at': at, 'delay': delay}
         out[car] = mine
-    return out
 
 
-_PROGRESS_RANK = {'done': 0, 'partial': 1, 'refused': 2, 'pending': 3, 'here': 4, 'late': 5}
+# худшее у магазина с несколькими накладными; «машина на месте» важнее «опаздывает» (она уже у него)
+_PROGRESS_RANK = {'done': 0, 'partial': 1, 'refused': 2, 'pending': 3, 'late': 4, 'here': 5}
 
 
 @bp.get('/api/routes/dispatch/progress')
