@@ -1931,6 +1931,9 @@
         if (fleet.length) s.dispatch_fleet_agents = fleet.filter(cb => cb.checked).map(cb => Number(cb.value)).sort((a, b) => a - b);
         if ($('rsCities')) s.dispatch_other_cities = splitCities($('rsCities').value);
         s.dispatch_customers_off = [...state.customersOff.keys()].sort((a, b) => a - b);
+        // с каким списком открылась страница: сервер применит только наши добавления и удаления — «никогда» из «Развоза»,
+        // поставленное после открытия страницы, не сотрётся (views._merge_customers_off)
+        s.dispatch_customers_off_base = (Array.isArray(state.data.settings.dispatch_customers_off) ? state.data.settings.dispatch_customers_off : []).map(Number);
         const manual = state.season.mode === 'manual';
         s.low_months = manual ? [...state.season.low].sort((a, b) => a - b) : null;
         s.peak_months = manual ? [...state.season.peak].sort((a, b) => a - b) : null;

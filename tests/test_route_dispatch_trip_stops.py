@@ -200,3 +200,233 @@ def test_api_trip_stops_saves_and_undo_restores(client):
     bad = client.post('/api/routes/dispatch/edit', json={'date': day, 'rev': undo['rev'], 'action': 'trip_stops',
                                                          'trip': trip['id'], 'add': 'x'})
     assert bad.status_code == 400
+
+
+# ============================== «×» с причиной-правилом (stop_rule): правило на все дни ==============================
+
+DAY = '2026-10-01'
+
+
+def _rule_setup(client, monkeypatch):
+    from datetime import datetime
+    from route_optimizer import views
+    from route_optimizer.actuals import YEREVAN
+    monkeypatch.setattr(views, '_yerevan_now', lambda: datetime(2026, 9, 30, 18, 0, tzinfo=YEREVAN))   # накануне дня
+    monkeypatch.setattr(views, '_clock', lambda: datetime(2026, 9, 30, 18, 0))
+    _dispatch_setup(client, [_dorder(1, 101, 400.0), _dorder(2, 102, 300.0, agent=2), _dorder(3, 104, 1200.0, agent=2)])
+    body = client.post('/api/routes/dispatch/build', json={'date': DAY, 'trucks': ['CAR1', 'CAR2']}).get_json()
+    truck = next(t for t in body['plan']['trucks'] if t['trips'])
+    trip = truck['trips'][0]
+    return body, truck['car_code'], trip['id'], trip['stops'][0]['customer_id']
+
+
+def _bundle(client):
+    return client.application.extensions['route_optimizer'].store.load()
+
+
+def _rule(client, body, **kw):
+    return client.post('/api/routes/dispatch/edit', json={'date': body.get('day', DAY), 'rev': body['rev'], 'action': 'stop_rule', **kw})
+
+
+def _where(body, cid):
+    return [t['car_code'] for t in body['plan']['trucks'] for tr in t['trips'] if any(s['customer_id'] == cid for s in tr['stops'])]
+
+
+def test_rule_deny_truck_saved_and_rebuild_keeps_it(client, monkeypatch):
+    body, car, tid, cid = _rule_setup(client, monkeypatch)
+    r = _rule(client, body, trip=tid, customer_id=cid, rule='deny_truck')
+    assert r.status_code == 200, r.get_json()
+    d = r.get_json()
+    assert cid in [s['customer_id'] for s in d['plan']['unassigned']] and not _where(d, cid)
+    acc = _bundle(client).vehicle_access[cid]
+    assert (acc.mode, acc.trucks) == ('deny', (car,))
+    undo = client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': d['rev'], 'action': 'undo'})
+    assert undo.status_code == 400                                           # правило «Չեղարկել» не отменяет
+    again = client.post('/api/routes/dispatch/build', json={'date': DAY, 'trucks': ['CAR1', 'CAR2']}).get_json()
+    assert car not in _where(again, cid)                                     # и новая сборка его соблюдает
+
+
+def test_rule_deny_last_allowed_truck_is_refused_and_nothing_saved(client, monkeypatch):
+    body, car, tid, cid = _rule_setup(client, monkeypatch)
+    from route_optimizer.vehicle_access import VehicleAccess
+    client.application.extensions['route_optimizer'].store.save_customer_vehicles(cid, VehicleAccess('allow', (car,)), 'qa')
+    body = client.get(f'/api/routes/dispatch?date={DAY}').get_json()
+    r = _rule(client, body, trip=tid, customer_id=cid, rule='deny_truck')
+    assert r.status_code == 400
+    assert _bundle(client).vehicle_access[cid].trucks == (car,)
+    assert client.get(f'/api/routes/dispatch?date={DAY}').get_json()['rev'] == body['rev']
+
+
+def test_rule_only_trucks(client, monkeypatch):
+    body, car, tid, cid = _rule_setup(client, monkeypatch)
+    other = 'CAR2' if car == 'CAR1' else 'CAR1'
+    assert _rule(client, body, trip=tid, customer_id=cid, rule='only_trucks', trucks=[car]).status_code == 400
+    assert _rule(client, body, trip=tid, customer_id=cid, rule='only_trucks', trucks=[]).status_code == 400
+    assert _rule(client, body, trip=tid, customer_id=cid, rule='only_trucks', trucks=['NOPE']).status_code == 400
+    assert cid not in _bundle(client).vehicle_access                          # отказы ничего не сохранили
+    r = _rule(client, body, trip=tid, customer_id=cid, rule='only_trucks', trucks=[other])
+    assert r.status_code == 200, r.get_json()
+    acc = _bundle(client).vehicle_access[cid]
+    assert (acc.mode, acc.trucks) == ('allow', (other,))
+    again = client.post('/api/routes/dispatch/build', json={'date': DAY, 'trucks': ['CAR1', 'CAR2']}).get_json()
+    assert set(_where(again, cid)) <= {other}
+
+
+def test_rule_never_drops_store_today_and_on_rebuild(client, monkeypatch):
+    body, car, tid, cid = _rule_setup(client, monkeypatch)
+    r = _rule(client, body, trip=tid, customer_id=cid, rule='never')
+    assert r.status_code == 200, r.get_json()
+    d = r.get_json()
+    assert not _where(d, cid) and cid not in [s['customer_id'] for s in d['plan']['unassigned']]   # из дня ушёл совсем
+    assert cid in _bundle(client).settings['dispatch_customers_off']
+    assert _bundle(client).settings['dispatch_agents_off'] == st_default_agents_off(client)        # соседние не тронуты
+    again = client.post('/api/routes/dispatch/build', json={'date': DAY, 'trucks': ['CAR1', 'CAR2']}).get_json()
+    assert not _where(again, cid)
+
+
+def st_default_agents_off(client):
+    from route_optimizer.store import DEFAULT_SETTINGS
+    return DEFAULT_SETTINGS['dispatch_agents_off']
+
+
+@pytest.mark.parametrize('kw', [
+    {'rule': 'whatever'}, {'rule': 'never', 'customer_id': True}, {'rule': 'never', 'trip': True},
+    {'rule': 'never', 'customer_id': 999999},
+])
+def test_rule_bad_requests(client, monkeypatch, kw):
+    body, car, tid, cid = _rule_setup(client, monkeypatch)
+    r = _rule(client, body, **{'trip': tid, 'customer_id': cid, **kw})
+    assert r.status_code == 400
+    b = _bundle(client)
+    assert cid not in b.vehicle_access and cid not in b.settings['dispatch_customers_off']
+
+
+def test_rule_past_day_refused(client, monkeypatch):
+    body, car, tid, cid = _rule_setup(client, monkeypatch)
+    from datetime import datetime
+    from route_optimizer import views
+    from route_optimizer.actuals import YEREVAN
+    monkeypatch.setattr(views, '_yerevan_now', lambda: datetime(2026, 10, 2, 9, 0, tzinfo=YEREVAN))
+    monkeypatch.setattr(views, '_clock', lambda: datetime(2026, 10, 2, 9, 0))
+    assert _rule(client, body, trip=tid, customer_id=cid, rule='never').status_code == 400
+    assert cid not in _bundle(client).settings['dispatch_customers_off']
+
+
+def test_rule_stale_rev_saves_no_rule(client, monkeypatch):
+    body, car, tid, cid = _rule_setup(client, monkeypatch)
+    r = client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': body['rev'] - 1, 'action': 'stop_rule',
+                                                       'trip': tid, 'customer_id': cid, 'rule': 'deny_truck'})
+    assert r.status_code == 409 and cid not in _bundle(client).vehicle_access
+
+
+# ------------------------------ ревью stop_rule: одна транзакция, следующие дни, плашка, настройки ------------------------------
+
+def test_rule_late_conflict_saves_neither_rule_nor_plan(client, monkeypatch):
+    """План изменили в другой вкладке уже после проверки номера в начале запроса: ни правило, ни план не записаны."""
+    body, car, tid, cid = _rule_setup(client, monkeypatch)
+    store = client.application.extensions['route_optimizer'].store
+    real = store.save_dispatch
+
+    def racing(day, data, user, expected_rev=None, also=None):
+        raw, rev = store.load_dispatch(day)
+        real(day, raw, 'other-tab', expected_rev=rev)          # другая вкладка успела раньше
+        return real(day, data, user, expected_rev=expected_rev, also=also)
+    monkeypatch.setattr(store, 'save_dispatch', racing)
+    r = _rule(client, body, trip=tid, customer_id=cid, rule='deny_truck')
+    assert r.status_code == 409
+    r = _rule(client, client.get(f'/api/routes/dispatch?date={DAY}').get_json(), trip=tid, customer_id=cid, rule='never')
+    assert r.status_code == 409
+    b = _bundle(client)
+    assert cid not in b.vehicle_access and cid not in b.settings['dispatch_customers_off']
+
+
+def test_rule_never_reaches_built_next_days_but_not_loaded_truck(client, monkeypatch):
+    body, car, tid, cid = _rule_setup(client, monkeypatch)
+    store = client.application.extensions['route_optimizer'].store
+    nxt = {'trucks': ['CAR1'], 'next_id': 2, 'trips': [{'id': 1, 'truck': 'CAR1', 'stops': [cid, 102], 'pinned': False}]}
+    store.save_dispatch('2026-10-02', nxt, 'qa')
+    loaded = {'trucks': ['CAR1'], 'next_id': 2, 'trips': [{'id': 1, 'truck': 'CAR1', 'stops': [cid], 'pinned': True,
+                                                            'loaded': {'at': '2026-10-02T19:00:00', 'by': 'w', 'pin': True}}]}
+    store.save_dispatch('2026-10-03', loaded, 'qa')
+    before = {d: store.load_dispatch(d) for d in ('2026-10-02', '2026-10-03')}
+    r = _rule(client, body, trip=tid, customer_id=cid, rule='never')
+    assert r.status_code == 200, r.get_json()
+    assert r.get_json()['rule_kept_days'] == ['2026-10-03']                 # загруженная машина — решает логист
+    d2, rev2 = store.load_dispatch('2026-10-02')
+    assert cid in dp.FleetRule.from_json(d2['fleet']).customers_off and rev2 == before['2026-10-02'][1] + 1
+    assert store.load_dispatch('2026-10-03') == before['2026-10-03']       # не тронут
+
+
+def test_rule_never_no_false_settings_banner(client, monkeypatch):
+    body, car, tid, cid = _rule_setup(client, monkeypatch)
+    d = _rule(client, body, trip=tid, customer_id=cid, rule='never').get_json()
+    assert 'settings_differ' not in d
+    assert 'settings_differ' not in client.get(f'/api/routes/dispatch?date={DAY}').get_json()
+
+
+def test_settings_page_saved_later_keeps_never_from_dispatch(client, monkeypatch):
+    """Страница настроек открыта до «никогда» и сохранена после: её старый список не стирает новое правило, а её
+    собственные добавления и удаления применяются."""
+    client.post('/api/routes/settings', json={'settings': {'dispatch_customers_off': [500, 501]}})
+    body, car, tid, cid = _rule_setup(client, monkeypatch)
+    assert _rule(client, body, trip=tid, customer_id=cid, rule='never').status_code == 200
+    page = {'dispatch_customers_off': [501, 777], 'dispatch_customers_off_base': [500, 501]}   # убрала 500, добавила 777
+    r = client.post('/api/routes/settings', json={'settings': page})
+    assert r.status_code == 200, r.get_json()
+    assert _bundle(client).settings['dispatch_customers_off'] == sorted([501, 777, cid])
+    bad = client.post('/api/routes/settings', json={'settings': {'dispatch_customers_off': [1], 'dispatch_customers_off_base': 'x'}})
+    assert bad.status_code == 400
+
+
+def _three_days(client, monkeypatch):
+    from datetime import date, datetime
+    from route_optimizer import views
+    from route_optimizer.actuals import YEREVAN
+    monkeypatch.setattr(views, '_yerevan_now', lambda: datetime(2026, 9, 30, 18, 0, tzinfo=YEREVAN))
+    monkeypatch.setattr(views, '_clock', lambda: datetime(2026, 9, 30, 18, 0))
+    _dispatch_setup(client, [_dorder(1, 101, 400.0), _dorder(2, 102, 300.0, agent=2), _dorder(3, 104, 1200.0, agent=2),
+                             _dorder(11, 101, 400.0, day=date(2026, 10, 1)), _dorder(12, 102, 300.0, day=date(2026, 10, 1)),
+                             _dorder(21, 101, 400.0, day=date(2026, 10, 2)), _dorder(22, 102, 300.0, day=date(2026, 10, 2))])
+
+
+def _trip_with(body, cid):
+    return next(tr['id'] for t in body['plan']['trucks'] for tr in t['trips'] if any(s['customer_id'] == cid for s in tr['stops']))
+
+
+def test_rule_never_on_built_next_day_is_not_called_cancelled(client, monkeypatch):
+    """Ревью M5: на уже собранном следующем дне магазин, выведенный «никогда», — не «заказ отменили или доставили»."""
+    _three_days(client, monkeypatch)
+    d2 = client.post('/api/routes/dispatch/build', json={'date': '2026-10-02', 'trucks': ['CAR1', 'CAR2']}).get_json()
+    assert _where(d2, 101) and not d2['removed_since_build']['count']
+    body = client.post('/api/routes/dispatch/build', json={'date': DAY, 'trucks': ['CAR1', 'CAR2']}).get_json()
+    assert _rule(client, body, trip=_trip_with(body, 101), customer_id=101, rule='never').status_code == 200
+    g = client.get('/api/routes/dispatch?date=2026-10-02').get_json()
+    assert not _where(g, 101) and not g['removed_since_build']['count'] and 'settings_differ' not in g
+
+
+def test_rule_never_set_on_later_day_reaches_days_between(client, monkeypatch):
+    """Ревью N1: правило ставят на 02.10, а 01.10 уже собран — 01.10 тоже получает его (сегодня — 30.09)."""
+    _three_days(client, monkeypatch)
+    b1 = client.post('/api/routes/dispatch/build', json={'date': DAY, 'trucks': ['CAR1', 'CAR2']}).get_json()
+    assert _where(b1, 101)
+    b2 = client.post('/api/routes/dispatch/build', json={'date': '2026-10-02', 'trucks': ['CAR1', 'CAR2']}).get_json()
+    assert _rule(client, b2, trip=_trip_with(b2, 101), customer_id=101, rule='never').status_code == 200
+    raw, _ = client.application.extensions['route_optimizer'].store.load_dispatch(DAY)
+    assert 101 in dp.FleetRule.from_json(raw.get('fleet')).customers_off
+
+
+def test_rule_access_changed_meanwhile_is_not_overwritten(client, monkeypatch):
+    """Ревью N3: допуск магазина поменяли в карточке, пока шла правка, — правка отказывает, карточка не затёрта."""
+    body, car, tid, cid = _rule_setup(client, monkeypatch)
+    from route_optimizer.vehicle_access import VehicleAccess
+    store = client.application.extensions['route_optimizer'].store
+    real = store.save_dispatch
+
+    def meanwhile(day, data, user, expected_rev=None, also=None):
+        store.save_customer_vehicles(cid, VehicleAccess('deny', ('ZZZ',)), 'card')
+        return real(day, data, user, expected_rev=expected_rev, also=also)
+    monkeypatch.setattr(store, 'save_dispatch', meanwhile)
+    r = _rule(client, body, trip=tid, customer_id=cid, rule='deny_truck')
+    assert r.status_code == 400
+    assert _bundle(client).vehicle_access[cid].trucks == ('ZZZ',)
+    assert client.get(f'/api/routes/dispatch?date={DAY}').get_json()['rev'] == body['rev']

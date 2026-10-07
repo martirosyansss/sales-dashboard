@@ -464,13 +464,13 @@ def test_settings_and_dispatch_pages_have_rule_texts():
     page = (ROOT / 'templates' / 'routes_settings.html').read_text(encoding='utf-8')
     js = (ROOT / 'static' / 'js' / 'routes_settings.js').read_text(encoding='utf-8')
     djs = (ROOT / 'static' / 'js' / 'routes_dispatch.js').read_text(encoding='utf-8')
-    assert 'id="fleet"' in page and 'id="custoff"' in page and "routes_settings.js') }}?v=35" in page
+    assert 'id="fleet"' in page and 'id="custoff"' in page and "routes_settings.js') }}?v=36" in page
     dpage = (ROOT / 'templates' / 'routes_dispatch.html').read_text(encoding='utf-8')
     assert 'id="dpRuleDiff"' in dpage and 'Կիրառել կարգավորումները' in dpage and 'id="dpOther"' in dpage
     assert "action: 'apply_settings'" in djs and 'other_vehicle' in djs
     assert "'agents', 'fleet', 'custoff'" in js and '/api/routes/settings/customer-hints' in js
     assert 'գնում է այլ մեքենայով' in djs and 'չենք տանում՝ կարգավորումներով' in djs
-    assert "routes_dispatch.js') }}?v=97" in (ROOT / 'templates' / 'routes_dispatch.html').read_text(encoding='utf-8')
+    assert "routes_dispatch.js') }}?v=99" in (ROOT / 'templates' / 'routes_dispatch.html').read_text(encoding='utf-8')
 
 
 

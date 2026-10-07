@@ -11,7 +11,7 @@
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=24">
 <!-- Страница на армянском (ответ владельца №31). Редизайн: тёмная спокойная тема (ответ владельца №51), свои стили поверх routes.css -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=57">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=58">
 {% endblock %}
 
 {% block content %}
@@ -459,6 +459,17 @@
             <button type="button" id="dpSdClose" class="rt-btn rt-btn-ghost">Փակել</button>
         </div>
     </dialog>
+    <!-- «×» у магазина: причина обязательна; «всегда» — правило на все дни (допуск машин магазина или «машины не везут») -->
+    <dialog id="dpWhyDlg" class="dp-dlg dp-add-dlg" aria-labelledby="dpWhyTitle" aria-describedby="dpWhyLead">
+        <h2 class="dp-dlg-t" id="dpWhyTitle">Ինչու՞ եք հանում խանութը</h2>
+        <p class="dp-dlg-lead" id="dpWhyLead"></p>
+        <fieldset class="dp-why-opts" id="dpWhyOpts"><legend class="rt-sr-only">Պատճառը</legend></fieldset>
+        <div class="rt-ferr" id="dpWhyErr" role="alert"></div>
+        <div class="dp-dlg-btns">
+            <button type="button" id="dpWhySave" class="rt-btn rt-btn-primary" disabled><i class="fas fa-xmark" aria-hidden="true"></i><span>Հանել երթից</span></button>
+            <button type="button" id="dpWhyCancel" class="rt-btn rt-btn-ghost">Չեղարկել</button>
+        </div>
+    </dialog>
     <!-- «Ավելացնել խանութ» у рейса: магазины из «Դեռ երթերում չեն» и других рейсов — галочками, одной правкой (trip_stops) -->
     <dialog id="dpAddDlg" class="dp-dlg dp-add-dlg" aria-labelledby="dpAddTitle" aria-describedby="dpAddLead">
         <h2 class="dp-dlg-t" id="dpAddTitle">Ավելացնել խանութներ</h2>
@@ -536,5 +547,5 @@
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=1" data-yandex-key="{{ yandex_tiles_key }}"></script>
 <!-- панель «Հարցրու AI-ին» — до страницы: init подключает её (RoutesDispatchAI.attach) -->
 <script src="{{ url_for('static', filename='js/routes_dispatch_ai.js') }}?v=3"></script>
-<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=97"></script>
+<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=99"></script>
 {% endblock %}
