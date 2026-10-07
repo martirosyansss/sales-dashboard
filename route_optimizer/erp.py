@@ -20,6 +20,7 @@ from typing import Any, Iterator, Sequence
 
 import pyodbc
 
+from .cost_to_serve import Sale, SalesData
 from .crew_pay import CrewData, Invoice
 from .demand import SaleDoc
 from .dispatch import DispatchData, DispatchOrder, FactData, Place, SameDayData, ShippedDoc, hint_reason
@@ -446,6 +447,23 @@ WHERE s.fSTATE = 2 AND s.fDATE >= ? AND s.fDATE < ?
 GROUP BY s.fVANAGENTID, CAST(s.fDATE AS date), s.fCUSTOMERID, ISNULL(s.fSALESAGENTID, 0)
 """
 
+# «Առաքման արժեք» (№87, п. 6; cost_to_serve): все проведённые накладные за период по дню, клиенту, линии (менеджеру) и
+# «вёз экспедитор» (как SQL_CREW_PAY: fVANAGENTID ≠ 0 и ≠ менеджер) — сумма и кг (вес — как в SQL_SHIPPED). Продажи
+# магазина — все строки, груз и точка экипажа — строки экспедиторов (cost_to_serve.deliveries).
+SQL_COST_SALES = """
+SELECT CAST(s.fDATE AS date), s.fCUSTOMERID, ISNULL(s.fSALESAGENTID, 0),
+       CASE WHEN ISNULL(s.fVANAGENTID, 0) <> 0 AND s.fVANAGENTID <> ISNULL(s.fSALESAGENTID, 0) THEN 1 ELSE 0 END,
+       SUM(s.fTOTALSUM), SUM(ISNULL(k.kg, 0))
+FROM SALES s WITH (NOLOCK)
+OUTER APPLY (SELECT SUM(sd.fQUANTITY * pr.fWEIGHT) AS kg
+             FROM SALEDOCDETAILS sd WITH (NOLOCK)
+             JOIN PRODUCTS pr WITH (NOLOCK) ON pr.fID = sd.fPRODUCTID
+             WHERE sd.fISN = s.fISN) k
+WHERE s.fSTATE = 2 AND s.fDATE >= ? AND s.fDATE < ?
+GROUP BY CAST(s.fDATE AS date), s.fCUSTOMERID, ISNULL(s.fSALESAGENTID, 0),
+         CASE WHEN ISNULL(s.fVANAGENTID, 0) <> 0 AND s.fVANAGENTID <> ISNULL(s.fSALESAGENTID, 0) THEN 1 ELSE 0 END
+"""
+
 
 # --- Справочники ---
 
@@ -807,5 +825,18 @@ def load_crew_pay(connection_string: str, since: date, until: date) -> CrewData:
                                  float(r[5] or 0))
                          for r in _select(conn, SQL_CREW_PAY, (since, until)))
         return CrewData(invoices, {a.id: (a.code, ' '.join(a.name.split())) for a in agents(conn).values()})
+    finally:
+        close_quietly(conn)
+
+
+def load_cost_sales(connection_string: str, since: date, until: date) -> SalesData:
+    """Накладные за [since, until) по дню, клиенту, линии и «вёз экспедитор», коды менеджеров и имена клиентов — одним
+    соединением, только чтение («Առաքման արժեք»)."""
+    conn = connect(connection_string)
+    try:
+        sales = tuple(Sale(_day(r[0]), int(r[1] or 0), int(r[2] or 0), bool(r[3]), float(r[4] or 0), float(r[5] or 0))
+                      for r in _select(conn, SQL_COST_SALES, (since, until)))
+        names = {c.id: (c.code, ' '.join(c.name.split())) for c in customers(conn, sorted({x.customer_id for x in sales})).values()}
+        return SalesData(sales, {a.id: a.code for a in agents(conn).values()}, names)
     finally:
         close_quietly(conn)

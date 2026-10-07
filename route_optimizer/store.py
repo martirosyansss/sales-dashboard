@@ -22,7 +22,7 @@ from datetime import date, datetime, timedelta
 from enum import Enum
 from typing import Any, Callable, Collection, Literal, Mapping, Sequence
 
-from . import crew_pay
+from . import cost_to_serve, crew_pay
 from .geo import ARMENIA_LAT, ARMENIA_LON, Point, is_valid_point
 from .garage import KM_PER_DAY_MAX, SPREAD_MONTHS
 from .patterns import parse_freq_key, parse_pattern_key, parse_plan_freq_key, parse_transfer_key
@@ -31,6 +31,7 @@ from .vehicle_access import VehicleAccess, check_access
 
 SCHEMA_VERSION = 24
 CREW_PAY_KEY = 'crew_pay'   # строка settings с параметрами «Աշխատավարձ» (Store.crew_pay_params); не ключ DEFAULT_SETTINGS
+COST_MARGIN_KEY = 'cts_margin_pct'   # средняя наценка «Առաքման արժեք», % (Store.cost_margin) — как CREW_PAY_KEY
 
 # manager_profile.included: 1/0 — выбор владельца, NULL — «авто» (в расчёте, если есть работа за 8 недель)
 _MANAGER_PROFILE_COLUMNS = (
@@ -2735,6 +2736,20 @@ class Store:
 
         return self._transaction(write, 'не удалось сохранить план развоза')
 
+    def dispatch_range(self, since: str, until: str) -> list[tuple[str, dict[str, Any] | None, int]]:
+        """Черновики планов развоза за [since, until] (YYYY-MM-DD) по дням: (день, данные, номер правки); битая запись —
+        данные None (отчёт пропускает день и говорит об этом, а не падает)."""
+        rows = self._read(lambda conn: conn.execute(
+            'SELECT day, data, rev FROM dispatch_plan WHERE day BETWEEN ? AND ? ORDER BY day', (since, until)).fetchall())
+        out: list[tuple[str, dict[str, Any] | None, int]] = []
+        for day, raw, rev in rows:
+            try:
+                data = json.loads(raw)
+            except (TypeError, ValueError, RecursionError):
+                data = None
+            out.append((day, data if isinstance(data, dict) and _is_int(rev) else None, rev if _is_int(rev) else 0))
+        return out
+
     def count_dispatch_overtime(self, since: str, until: str) -> int:
         """Дней в [since, until] (YYYY-MM-DD), когда машины по плану развоза работали дольше дня
         (черновик с "overtime": true). Битый JSON черновика не считается и не роняет запрос."""
@@ -2837,6 +2852,29 @@ class Store:
         self._transaction(lambda conn: conn.execute(
             'INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
             (CREW_PAY_KEY, json.dumps(value, ensure_ascii=False))), 'չհաջողվեց պահպանել աշխատավարձի պարամետրերը')
+
+    # Средняя наценка владельца для «Առաքման արժեք» (№87, п. 6) — строка COST_MARGIN_KEY таблицы settings, как параметры
+    # «Աշխատավարձ»: не ключ DEFAULT_SETTINGS (не в отпечатке настроек маршрутов), кто и когда — в той же JSON-строке.
+    def cost_margin(self) -> tuple[float | None, str | None, str | None]:
+        """(наценка %, когда и кем сохранена); не сохраняли или пусто — None (без красного); битая запись — StoreError."""
+        row = self._read(lambda conn: conn.execute('SELECT value FROM settings WHERE key = ?', (COST_MARGIN_KEY,)).fetchone())
+        if row is None:
+            return None, None, None
+        try:
+            raw = json.loads(row[0])
+        except (TypeError, ValueError, RecursionError):
+            raw = None
+        value, error = cost_to_serve.check_margin(raw.get('value')) if isinstance(raw, dict) else (None, 'JSON')
+        if error is not None:
+            raise StoreError(f'{self._name()}: վնասված է միջին հավելագնի կարգավորումը{_FIX_HINT}')
+        at, by = raw.get('updated_at'), raw.get('updated_by')
+        return value, at if isinstance(at, str) else None, by if isinstance(by, str) else None
+
+    def save_cost_margin(self, value: float | None, user: str | None) -> None:
+        raw = json.dumps({'value': value, 'updated_at': _now(), 'updated_by': user}, ensure_ascii=False)
+        self._transaction(lambda conn: conn.execute(
+            'INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+            (COST_MARGIN_KEY, raw)), 'չհաջողվեց պահպանել միջին հավելագինը')
 
     def learning_auto(self) -> dict[str, bool]:
         """Автообучение по виду, выбранное владельцем; нет строки — learning.DEFAULT_AUTO."""

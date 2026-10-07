@@ -26,13 +26,14 @@ from flask import (Blueprint, Response, current_app, g, has_app_context, has_req
 
 from . import actuals as ac
 from . import ai_chat
+from . import cost_to_serve as cts
 from . import crew_pay as cp
 from . import dispatch as dp
 from . import evaluate, garage, learning, live, optimize
 from . import fleet as fl
 from . import waybill as wb
 from . import terrain as dem
-from .running_costs import TERRAIN_U_BAR_TRACK, curb_tonnes, profile_fields, terrain_liters
+from .running_costs import TERRAIN_U_BAR_TRACK, curb_tonnes, profile_fields, route_cost, terrain_liters
 from .erp import CUSTOMER_FIND_MAX_LEN, CustomerHint, CustomerRef, ErpError
 from .geo import Point, haversine_km, in_city, is_valid_point
 from .roads import SNAP_MAX_KM, CenterBypassRoads, RoadDistances, RoadProvider, roads_version
@@ -160,6 +161,14 @@ class RoutesState:
     crew_pay_loader: Callable[[date, date], cp.CrewData] | None = None
     crew_pay_cache: dict[tuple[date, date], tuple[float, cp.CrewData]] = field(default_factory=dict)
     crew_pay_lock: threading.Lock = field(default_factory=threading.Lock)
+    # «Առաքման արժեք» (№87, п. 6): накладные ERP за [с, по) по дню и клиенту; кэш — (с, по) → (time.monotonic(), данные);
+    # расчёт дня — день → (ключ входа, рейсы с долями магазинов, None или time.monotonic() расчёта без рельефа): прошлый день
+    # не пересчитывается, пока не изменились план (номер правки), его накладные, точки, машины, цена дизеля и ставки
+    # (_cost_compute); день без подъёмов точек — не дольше COST_RETRY_SECONDS
+    cost_sales_loader: Callable[[date, date], cts.SalesData] | None = None
+    cost_sales_cache: dict[tuple[date, date], tuple[float, cts.SalesData]] = field(default_factory=dict)
+    cost_days: dict[date, tuple[Any, list[cts.TripCost], float | None]] = field(default_factory=dict)
+    cost_lock: threading.Lock = field(default_factory=threading.Lock)   # только словари кэша: расчёт не под ним
     driver_list_cache: tuple[float, list[str]] | None = None
     driver_list_lock: threading.Lock = field(default_factory=threading.Lock)   # перечитывает один запрос
     # (машина ERP, имя, день) — кто возил машины за [since, until) (№84, waybill.load_car_crew_days): экипаж машин без
@@ -5080,3 +5089,271 @@ def api_pay_params() -> Any:
     state.store.save_crew_pay_params(params, session.get('username'))
     logger.info('[Routes] Աշխատավարձ: параметры сохранены пользователем %s: %s', session.get('username'), params.json())
     return jsonify(_pay_params_body(state))
+
+
+# --- «Առաքման արժեք» (№87, п. 6; cost_to_serve): стоимость обслуживания магазина против его продаж, только администратору ---
+
+COST_TTL_SECONDS = 300     # накладные периода из ERP: CSV, смена наценки и повтор не перечитывают ERP
+COST_SALES_KEPT = 6        # периодов накладных в кэше
+COST_DAYS_KEPT = 200       # дней расчёта в кэше (больше периода 92 дня — с запасом на смену периода)
+COST_RETRY_SECONDS = 60    # день, посчитанный без рельефа (подъёмы точек ещё в фоне, _cost_leg), — пересчитать не раньше
+COST_NO_CTX = 'Սկզբում նշեք պահեստը և մեքենաների տոննաժն ու ծախսը կարգավորումներում'
+
+
+@bp.get('/routes/cost')
+@_admin_only
+def cost_page() -> str:
+    return render_template('routes_cost.html')
+
+
+def _cost_sales(state: RoutesState, since: date, until: date) -> cts.SalesData:
+    """Накладные ERP за [since, until) — кэш COST_TTL_SECONDS, не больше COST_SALES_KEPT периодов."""
+    if state.cost_sales_loader is None:
+        raise ErpError('Загрузчик накладных не подключён')
+    key = (since, until)
+    with state.cost_lock:
+        hit = state.cost_sales_cache.get(key)
+    if hit is not None and time.monotonic() - hit[0] < COST_TTL_SECONDS:
+        return hit[1]
+    data = state.cost_sales_loader(since, until)
+    with state.cost_lock:
+        state.cost_sales_cache.pop(key, None)
+        state.cost_sales_cache[key] = (time.monotonic(), data)
+        while len(state.cost_sales_cache) > COST_SALES_KEPT:
+            state.cost_sales_cache.pop(next(iter(state.cost_sales_cache)))
+    return data
+
+
+def _cost_margin(state: RoutesState) -> tuple[float | None, str | None, str | None, bool]:
+    """(наценка, когда, кто, запись битая): битая — без красного и предупреждение, а не 500 (сохранение её перезапишет)."""
+    try:
+        return (*state.store.cost_margin(), False)
+    except StoreError:
+        logger.exception('[Routes] Առաքման արժեք: наценка в базе не читается — без красного')
+        return None, None, None, True
+
+
+@dataclass(frozen=True)
+class _CostResult:
+    since: date
+    until: date
+    report: cts.Report
+    names: Mapping[int, tuple[str, str]]
+    params: cp.Params
+    margin: float | None
+    margin_at: str | None
+    margin_by: str | None
+    margin_broken: bool
+    sources: Mapping[str, int]      # дней по отправленному плану (sent), по черновику (draft), битых записей (broken)
+    fuel_price: float
+    fuel_price_estimated: bool
+
+
+def _cost_plans(state: RoutesState, since: date, until: date) -> tuple[dict[date, tuple[str, int, list[cts.Trip]]],
+                                                                       dict[str, int]]:
+    """Рейсы дней периода: отправленный водителям план (№81), без него — сохранённый черновик (шапка cost_to_serve)."""
+    days: dict[date, tuple[str, int, list[cts.Trip]]] = {}
+    sources = {'sent': 0, 'draft': 0, 'broken': 0}
+    for raw_day, raw, rev in state.store.dispatch_range(since.isoformat(), until.isoformat()):
+        try:
+            day: date | None = date.fromisoformat(raw_day)
+        except ValueError:
+            day = None
+        if raw is None or day is None:
+            sources['broken'] += 1
+            continue
+        draft = dp.Draft.from_json(raw)
+        source, plan = ('sent', draft.for_drivers()) if draft.sent is not None else ('draft', draft)
+        trips = [cts.Trip(day, t.id, t.truck, tuple(t.stops)) for t in plan.trips if t.stops]
+        if trips:
+            days[day] = (source, rev, trips)
+            sources[source] += 1
+    return days, sources
+
+
+def _cost_leg(ctx: dp.DayContext, points: Sequence[Point]) -> tuple[cts.CostFn, bool, bool]:
+    """(расход рейса для cost_to_serve, рельеф включён, подъёмы ещё считаются). Та же модель, что fl.trip_running_cost
+    (plan_view: км norms.for_trucks(), литры с рельефом №85 — route_cost по участкам), но участки и подъёмы — из памяти:
+    варианты «без магазина» повторяют участки рейса, а подъёмы всех точек периода проверяются один раз (ensure_climb
+    подмножества точек — то же, что всех). Подъёмы ещё в фоне (pending) — литры без рельефа, как у _leg_climbs."""
+    norms = ctx.norms.for_trucks()
+    roads = norms.roads
+    terrain = roads is not None and bool(getattr(roads, 'terrain', False))
+    climbs = terrain and roads.ensure_climb([ctx.depot, *points])
+    legs: dict[tuple[Point, Point], tuple[float, float | None]] = {}
+
+    def part(a: Point, b: Point) -> tuple[float, float | None]:
+        got = legs.get((a, b))
+        if got is None:
+            got = legs[(a, b)] = (norms.km(a, b), roads.climb(a, b) if climbs else None)
+        return got
+
+    def leg(code: str, pts: Sequence[Point], kgs: Sequence[float]) -> cts.Leg | None:
+        truck = ctx.trucks.get(code)
+        if truck is None or not truck.capacity_kg > 0:   # без норм — дизеля и износа нет (unpriced)
+            return None
+        nodes = [ctx.depot, *pts, ctx.depot]
+        parts = [part(a, b) for a, b in zip(nodes, nodes[1:])]
+        cost = route_cost([d for d, _ in parts], kgs, truck, [u for _, u in parts] if climbs else None)
+        return cts.Leg(cost.total_amd(ctx.tn.fuel_price), math.fsum(d for d, _ in parts))
+    return leg, terrain, terrain and not climbs
+
+
+def _cost_compute(state: RoutesState, since: date, until: date) -> _CostResult:
+    """Отчёт за [since, until]: рейсы планов, накладные ERP (одним запросом), модель расхода «Развоза» (_dispatch_ctx: км
+    дорог, рельеф, нормы машин, выученный расход) с ценами сегодня — дизель настроек, износ гаража на сегодня, ставки
+    «Աշխատավարձ». Яндекс-пробки не спрашиваются: они меняют минуты, а не км (и для прошлых дат их нет)."""
+    params, _, _ = state.store.crew_pay_params()
+    margin, at, by, broken = _cost_margin(state)
+    days, sources = _cost_plans(state, since, until)
+    snap, _ = state.snapshots.cached()
+    bundle = _bundle(state)
+    if bundle.settings.get('traffic_mode') == 'yandex':
+        bundle = replace(bundle, settings={**bundle.settings, 'traffic_mode': 'gps'})
+    cids = sorted({c for _, _, trips in days.values() for t in trips for c in t.stops})
+    coords = {c: evaluate.visit_coord(snap, c, 0, bundle.geo_overrides, bundle.driver_points).point for c in cids}
+    trucks = _ready_trucks(snap, bundle, active_only=False)
+    ctx = _dispatch_ctx(state, snap, bundle, _yerevan_now().date(), trucks, [p for p in coords.values() if p is not None])
+    if ctx is None:
+        raise dp.DispatchError(COST_NO_CTX)
+    data = _cost_sales(state, since, until + timedelta(days=1))   # ERP — только когда считать есть чем
+    delivered = cts.deliveries(data, params.excluded_lines)
+    leg, terrain, pending = _cost_leg(ctx, [p for p in coords.values() if p is not None])
+    # общее для всех дней: машины с нормами, цена дизеля, ставки экипажа, откуда км, рельеф, склад
+    fixed = (sorted(ctx.trucks.items()), ctx.tn.fuel_price, params.rate_point, params.rate_tonne, ctx.model.get('km'),
+             terrain, pending, ctx.depot)
+    out: list[cts.TripCost] = []
+    for day in sorted(days):
+        source, rev, trips = days[day]
+        day_cids = sorted({c for t in trips for c in t.stops})
+        key = (source, rev, trips, [(c, delivered.get((day, c)), coords.get(c)) for c in day_cids], fixed)
+        with state.cost_lock:
+            hit = state.cost_days.get(day)
+        if hit is not None and hit[0] == key and (hit[2] is None or time.monotonic() - hit[2] < COST_RETRY_SECONDS):
+            out += hit[1]
+            continue
+        costs = cts.trip_costs(trips, delivered, coords, leg, params)
+        out += costs
+        with state.cost_lock:
+            state.cost_days.pop(day, None)
+            state.cost_days[day] = (key, costs, time.monotonic() if pending else None)
+            while len(state.cost_days) > COST_DAYS_KEPT:
+                state.cost_days.pop(next(iter(state.cost_days)))
+    names = {c: data.customers.get(c) or ((snap.customers[c].code, snap.customers[c].name) if c in snap.customers
+                                          else (str(c), '')) for c in cids}
+    return _CostResult(since, until, cts.report(out, cts.sales_by_customer(data, set(days)), margin), names, params, margin, at, by,
+                       broken, sources, ctx.tn.fuel_price, ctx.tn.fuel_price_estimated)
+
+
+def _cost_request() -> tuple[_CostResult | None, Any]:
+    """(отчёт за период из ?days= или ?from=&to=, None) или (None, ответ 400)."""
+    a = request.args
+    span, error = cts.period(a.get('days'), a.get('from'), a.get('to'), _yerevan_now().date())
+    if span is None:
+        return None, _bad_request({'period': error or ''})
+    return _cost_compute(_state(), *span), None
+
+
+def _cost_pct(x: float | None) -> float | None:
+    return None if x is None else round(x, 2)
+
+
+@bp.get('/api/routes/cost')
+@_admin_only
+@_api
+def api_cost() -> Any:
+    """Период ?days=30|90 (полные дни по вчера) или ?from=&to= (до MAX_DAYS дней): магазины с ֏ доставки, продажами, % и
+    красным; рейсы магазина; итог; наценка, ставки и откуда рейсы."""
+    res, error = _cost_request()
+    if res is None:
+        return error
+    rep = res.report
+    rows = []
+    for r in rep.rows:
+        code, name = res.names.get(r.customer_id, (str(r.customer_id), ''))
+        rows.append({'customer_id': r.customer_id, 'code': code, 'name': name, 'visits': r.visits, 'fuel': r.fuel,
+                     'crew': r.crew, 'cost': r.cost, 'per_visit': round(r.per_visit), 'sales': round(r.sales),
+                     'pct': _cost_pct(r.pct), 'red': r.red, 'unrouted': r.unrouted,
+                     'trips': [{'date': v.day.isoformat(), 'truck': v.truck, 'trip': v.trip_id, 'fuel': v.fuel,
+                                'crew': v.crew, 'detour_km': round(v.detour_km, 1), 'trip_fuel': v.trip_fuel,
+                                'trip_stops': v.trip_stops} for v in r.trips]})
+    return jsonify({'success': True, 'from': res.since.isoformat(), 'to': res.until.isoformat(),
+                    'days': (res.until - res.since).days + 1, 'presets': list(cts.PRESET_DAYS), 'max_days': cts.MAX_DAYS,
+                    'margin': res.margin, 'margin_updated_at': res.margin_at, 'margin_updated_by': res.margin_by,
+                    'margin_store_error': res.margin_broken,
+                    'rates': {'rate_point': res.params.rate_point, 'rate_tonne': res.params.rate_tonne},
+                    'fuel_price': res.fuel_price, 'fuel_price_estimated': res.fuel_price_estimated,
+                    'sources': dict(res.sources),
+                    'totals': {'cost': rep.fuel + rep.crew, 'fuel': rep.fuel, 'crew': rep.crew, 'sales': round(rep.sales),
+                               'pct': _cost_pct(rep.pct), 'red': rep.red, 'stores': len(rep.rows), 'trips': rep.trips,
+                               'unpriced_trips': rep.unpriced_trips, 'visits': sum(r.visits for r in rep.rows)},
+                    'rows': rows})
+
+
+@bp.get('/api/routes/cost.csv')
+@_admin_only
+@_api
+def api_cost_csv() -> Any:
+    """Таблица магазинов для Excel: «;», десятичная запятая, UTF-8 с BOM (как pay.csv); в начале — период, наценка, ставки."""
+    import csv
+    import io
+    res, error = _cost_request()
+    if res is None:
+        return error
+    rep = res.report
+
+    def n(x: float | None, d: int = 2) -> str:
+        return '' if x is None else f'{x:.{d}f}'.replace('.', ',')
+
+    out = io.StringIO()
+    w = csv.writer(out, delimiter=';', lineterminator='\r\n')
+    w.writerow(['Առաքման արժեք', res.since.isoformat(), res.until.isoformat()])
+    w.writerow(['Հաշվված է', _yerevan_now().strftime('%Y-%m-%d %H:%M')])
+    w.writerow(['Պլանով օրեր', res.sources['sent'] + res.sources['draft']])   # продажи — только за них
+    w.writerow(['Միջին հավելագին, %', n(res.margin)])
+    w.writerow(['Դիզել, ֏/լ', n(res.fuel_price, 0)])
+    w.writerow(['Մեկ կետի համար, ֏', n(res.params.rate_point, 0)])
+    w.writerow(['Մեկ տոննայի համար, ֏', n(res.params.rate_tonne, 0)])
+    w.writerow(['Ընդամենը առաքում, ֏', rep.fuel + rep.crew])
+    w.writerow(['Վաճառքից, %', n(rep.pct)])
+    w.writerow([])
+    w.writerow(['Կոդ', 'Խանութ', 'Այցեր', 'Դիզել և մաշվածք, ֏', 'Անձնակազմ, ֏', 'Առաքում, ֏', 'Մեկ այցը, ֏', 'Վաճառք, ֏',
+                'Վաճառքից, %', 'Կարմիր'])
+    for r in rep.rows:
+        code, name = res.names.get(r.customer_id, (str(r.customer_id), ''))
+        w.writerow([_csv_cell(code), _csv_cell(name), r.visits, r.fuel, r.crew, r.cost, round(r.per_visit), round(r.sales),
+                    n(r.pct), 'այո' if r.red else ''])
+    name = f'cost-to-serve-{res.since:%Y%m%d}-{res.until:%Y%m%d}.csv'
+    return Response('﻿' + out.getvalue(), mimetype='text/csv',
+                    headers={'Content-Disposition': f'attachment; filename="{name}"'})
+
+
+def _cost_margin_body(state: RoutesState) -> dict[str, Any]:
+    value, at, by, broken = _cost_margin(state)
+    return {'success': True, 'value': value, 'updated_at': at, 'updated_by': by, 'store_error': broken}
+
+
+@bp.get('/api/routes/cost/margin')
+@_admin_only
+@_api
+def api_cost_margin_get() -> Any:
+    return jsonify(_cost_margin_body(_state()))
+
+
+@bp.post('/api/routes/cost/margin')
+@_admin_only
+@_api
+def api_cost_margin() -> Any:
+    """Средняя наценка владельца, %: {"value": 0–100 | null} (null или пусто — без красного). Только route_optimizer.db."""
+    payload, error = _json_body()
+    if error is not None:
+        return error
+    if not isinstance(payload, dict):
+        return _bad_request({'value': 'Լրացրեք թիվը'})
+    value, err = cts.check_margin(payload.get('value'))
+    if err is not None:
+        return _bad_request({'value': err})
+    state = _state()
+    state.store.save_cost_margin(value, session.get('username'))
+    logger.info('[Routes] Առաքման արժեք: наценка %s сохранена пользователем %s', value, session.get('username'))
+    return jsonify(_cost_margin_body(state))
