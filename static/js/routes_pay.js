@@ -111,10 +111,11 @@
             d.calendar_warning || '',
             d.excluded_kin.length ? 'Այս կոդերը հաշվվում են, բայց նույն անունով կոդ կա չհաշվվողների մեջ՝ '
                 + d.excluded_kin.join(', ') + ' — նշեք մարդու բոլոր կոդերը։' : '',
+            ...(d.km_warnings || []),
         ].filter(Boolean);
         $('cpWarn').hidden = !warn.length;
         $('cpWarnText').textContent = warn.join(' ');
-        renderFormula(d.params, dm, d.current ? daysText : '');
+        renderFormula(d.params, dm, d.current ? daysText : '', d.km_counted);
         renderTable(d);
     }
 
@@ -133,13 +134,18 @@
         $('cpMonth').value = current || months[0];
     }
 
-    function renderFormula(p, D, currentDays) {
+    function renderFormula(p, D, currentDays, kmCounted) {
         const n = (text) => h('span', { class: 'num', text });
         const dText = D ? String(D) : '—';
         $('cpFormula').replaceChildren(
             h('p', null, h('b', { text: 'Վճարել' }), ' = ամենամեծը երկուսից՝ (Ֆիքս + Գործավարձ) կամ Նվազագույն'),
             h('p', null, h('b', { text: 'Ֆիքս' }), ' = ', n(amd(p.fix)), ' × (աշխատած օրեր ÷ ', n(dText), ' աշխատանքային օր)'),
-            h('p', null, h('b', { text: 'Գործավարձ' }), ' = ', n(amd(p.rate_point)), ' × կետեր + ', n(amd(p.rate_tonne)), ' × տոննա'),
+            h('p', null, h('b', { text: 'Գործավարձ' }), ' = ', n(amd(p.rate_point)), ' × կետեր + ', n(amd(p.rate_tonne)), ' × տոննա',
+                p.rate_km > 0 ? [' + ', n(amd(p.rate_km)), ' × կմ'] : ''),
+            p.rate_km > 0 ? h('p', null, h('b', { text: 'Կմ' }), ' = պլանային կմ, ոչ թե փաստացի (GPS կամ սպիդոմետր)՝ ամեն օր '
+                + 'պահեստ → այդ օրվա խանութները → պահեստ, ամենակարճ հերթականությամբ՝ ճանապարհներով։ Օրը մեկ երթ է՝ առանց '
+                + 'բաժանելու ռեյսերի ըստ տոննաժի։ Կոորդինատներ չունեցող խանութը կմ չի ավելացնում։'
+                + (kmCounted ? '' : ' Այս ամսի կմ-ն հաշվված չէ (տե՛ս նախազգուշացումը)։')) : '',
             h('p', null, h('b', { text: 'Նվազագույն' }), ' = ', n(amd(p.minimum)), ' × (կետեր ÷ նորմ), բայց ոչ ավելի, քան ',
                 n(amd(p.minimum)), '։ Նորմ = ', n(fmt(p.norm_per_day, p.norm_per_day % 1 ? 1 : 0)), ' կետ × ', n(dText), ' օր',
                 D ? [' = ', n(fmt(p.norm_per_day * D, (p.norm_per_day * D) % 1 ? 1 : 0)), ' կետ'] : ''),
@@ -171,6 +177,10 @@
                 num(r.days + '/' + (d.workdays_month ?? d.workdays)),
                 num(fmt(r.points)),
                 num(fmt(r.tonnes, 1)),
+                h('td', { class: 'num' }, d.km_counted ? fmt(r.km) : '—', r.no_coords ? h('span', {
+                    class: 'rt-badge b-warn', title: r.no_coords + ' կետ առանց կոորդինատների — կմ-ն պակաս է հաշվված',
+                    'aria-label': r.no_coords + ' կետ առանց կոորդինատների' },
+                    h('i', { class: 'fas fa-location-crosshairs', 'aria-hidden': 'true' }), ' ' + r.no_coords) : null),
                 num(fmt(r.fix)),
                 num(fmt(r.piece)),
                 num(fmt(r.minimum), r.min_applied ? 'is-min' : ''),
@@ -183,7 +193,8 @@
         }));
         const t = d.totals;
         $('cpTotals').replaceChildren(rows.length ? h('tr', null,
-            h('td', { colspan: 2, text: 'Ընդամենը' }), num(''), num(fmt(t.points)), num(fmt(t.tonnes, 1)), num(fmt(t.fix)),
+            h('td', { colspan: 2, text: 'Ընդամենը' }), num(''), num(fmt(t.points)), num(fmt(t.tonnes, 1)),
+            num(d.km_counted ? fmt(t.km) : '—'), num(fmt(t.fix)),
             num(fmt(t.piece)), num(''), num(fmt(t.pay), 'pay'), num(fmt(t.old)), num(signed(t.diff))) : '');
     }
 
@@ -196,7 +207,12 @@
             (r.name || r.code) + ' · ' + r.code + ' · ' + monthHy(state.month));
         $('cpDayRows').replaceChildren(...r.by_day.map(x => h('tr', null,
             h('td', { class: 'txt', text: dayHy(x.date) }), h('td', { class: 'num', text: fmt(x.points) }),
-            h('td', { class: 'num', text: fmt(x.tonnes, 2) }), h('td', { class: 'num', text: fmt(x.piece) }))));
+            h('td', { class: 'num', text: fmt(x.tonnes, 2) }),
+            h('td', { class: 'num' }, state.data.km_counted ? fmt(x.km, 1) : '—', x.no_coords ? h('span', {
+                class: 'rt-badge b-warn', title: x.no_coords + ' կետ առանց կոորդինատների',
+                'aria-label': x.no_coords + ' կետ առանց կոորդինատների' },
+                h('i', { class: 'fas fa-location-crosshairs', 'aria-hidden': 'true' }), ' ' + x.no_coords) : null),
+            h('td', { class: 'num', text: fmt(x.piece) }))));
         $('cpDays').hidden = false;
         $('cpDays').scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' });
         $('cpDays').focus({ preventScroll: true });
@@ -215,7 +231,7 @@
     });
 
     // ---------- параметры ----------
-    const NUM_FIELDS = { fix: 'cpFix', rate_point: 'cpRatePoint', rate_tonne: 'cpRateTonne', minimum: 'cpMin',
+    const NUM_FIELDS = { fix: 'cpFix', rate_point: 'cpRatePoint', rate_tonne: 'cpRateTonne', rate_km: 'cpRateKm', minimum: 'cpMin',
         norm_per_day: 'cpNorm', old_fix: 'cpOldFix', old_pct: 'cpOldPct' };
     const CODE_FIELDS = { excluded_lines: 'cpLines', excluded_people: 'cpPeople' };
 

@@ -3,6 +3,7 @@
 API страницы с подменённым загрузчиком ERP (живой ERP не нужен), CSV и доступ только администратору."""
 import json
 import sys
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -13,7 +14,9 @@ from route_optimizer import crew_pay as cp  # noqa: E402
 from route_optimizer import store as st  # noqa: E402
 from route_optimizer import views  # noqa: E402
 from route_optimizer.erp import ErpError, check_sql, SQL_CREW_PAY  # noqa: E402
-from test_route_optimizer import REF, _no_road_map, client  # noqa: E402,F401
+from route_optimizer.geo import haversine_km  # noqa: E402
+from route_optimizer.snapshot import SnapshotCache  # noqa: E402
+from test_route_optimizer import REF, _no_road_map, client, make_snapshot  # noqa: E402,F401
 
 NOW = datetime(2026, 10, 7, 10, 0)
 YEREVAN = timezone(timedelta(hours=4))
@@ -101,7 +104,8 @@ def test_no_data_is_empty_not_division_by_zero():
     assert cp.compute(data(), cp.Params(excluded_people=('B008/10',))) == cp.Result(0, (), ())
     only_19 = data(inv(KORYUN, 1, 1, line=LINE19))
     assert cp.compute(only_19, cp.Params()).rows == () and cp.compute(only_19, cp.Params()).workdays == 0
-    assert cp.totals(()) == {'points': 0, 'tonnes': 0, 'sales': 0, 'fix': 0, 'piece': 0, 'pay': 0, 'old': 0, 'diff': 0}
+    assert cp.totals(()) == {'points': 0, 'tonnes': 0, 'km': 0, 'no_coords': 0, 'sales': 0, 'fix': 0, 'piece': 0, 'pay': 0,
+                             'old': 0, 'diff': 0}
 
 
 def test_check_params():
@@ -216,8 +220,8 @@ def test_default_excluded_people_match_research():
 
 def test_default_rates_owner_0710():
     p = cp.Params()
-    assert (p.fix, p.rate_point, p.rate_tonne, p.minimum, p.norm_per_day, p.old_fix, p.old_pct) == \
-        (100_000, 250, 1_750, 250_000, 12, 100_000, 2.0)
+    assert (p.fix, p.rate_point, p.rate_tonne, p.rate_km, p.minimum, p.norm_per_day, p.old_fix, p.old_pct) == \
+        (100_000, 210, 1_500, 15, 250_000, 12, 100_000, 2.0)
 
 
 # Текущий месяц, 07.10: накладные по сегодня, а фикс и норма — от рабочих дней ВСЕГО месяца (D_month)
@@ -253,7 +257,7 @@ def test_calendar_rest():
 
 def test_current_month_prorated_by_whole_month_not_elapsed_days():
     """07.10: доставки 1–3, 5–7 (6 дней) + календарь 07–31.10 (22 дня, 07.10 в обоих) — D_month 27, а не 6."""
-    p = cp.Params()
+    p = cp.Params(rate_point=250, rate_tonne=1750)
     week = data(*avakimyan_week())
     before = row(cp.compute(week, p), KORYUN)                         # без D_month — как было: полный месяц за неделю
     assert (before.days, before.points, round(before.tonnes, 3)) == (6, 75, 9.7)
@@ -369,21 +373,32 @@ def test_calendar_unreadable_falls_back_to_elapsed_days_with_warning(pay, monkey
     assert past['calendar_warning'] is None
 
 
+def save_old_params_row(store, **values):
+    """Строка crew_pay, как её сохраняла версия до км (без rate_km)."""
+    import sqlite3
+    old = {k: v for k, v in cp.Params().json().items() if k != 'rate_km'}
+    store.save_crew_pay_params(cp.Params(), 'qa')
+    with sqlite3.connect(store.path) as conn:
+        conn.execute("UPDATE settings SET value = ? WHERE key = 'crew_pay'",
+                     (json.dumps({**old, **values, 'updated_at': '2026-10-07T09:00:00', 'updated_by': 'boss'}),))
+
+
 def test_past_month_unchanged_and_saved_params_win(pay):
-    """Регрессия: сентябрь со ставками 175 / 1 200 (сохранённая строка crew_pay сильнее новых значений по умолчанию) —
-    те же числа, что до D_month, даже если календарь настроек сентябрю не соответствует."""
-    old_rates = {**cp.Params().json(), 'rate_point': 175, 'rate_tonne': 1200}
-    assert pay.post('/api/routes/pay/params', json=old_rates).status_code == 200
+    """Регрессия: сентябрь со ставками 175 / 1 200 из строки, сохранённой версией до км (без rate_km): строка читается
+    (rate_km — по умолчанию 15) и сильнее новых значений по умолчанию; D — как до D_month, даже если календарь настроек
+    сентябрю не соответствует."""
+    save_old_params_row(pay.state.store, rate_point=175, rate_tonne=1200)
     save_calendar(pay, workdays=[1, 2, 3, 4, 5], holidays=['2026-09-01', '2026-09-21'])
     body = pay.get('/api/routes/pay?month=2026-09').get_json()
-    assert body['params']['rate_point'] == 175 and body['params']['rate_tonne'] == 1200
+    assert body['params']['rate_point'] == 175 and body['params']['rate_tonne'] == 1200 and body['params']['rate_km'] == 15
+    assert body['params_updated_by'] == 'boss'
     assert (body['workdays'], body['workdays_month']) == (2, 2)
     k, a = body['rows']
-    assert (k['days'], k['points'], k['tonnes'], k['fix'], k['piece']) == (2, 2, 1.5, 100_000, 2_150)
-    assert k['minimum'] == 20_833 and k['pay'] == 102_150 and k['old'] == 103_000 and k['diff'] == -850
-    assert (a['days'], a['fix'], a['piece'], a['minimum'], a['pay'], a['old']) == (1, 50_000, 475, 10_417, 50_475, 50_400)
+    assert (k['days'], k['points'], k['tonnes'], k['fix'], k['piece']) == (2, 2, 1.5, 100_000, 2_150 + 15 * 6)
+    assert k['minimum'] == 20_833 and k['pay'] == 102_240 and k['old'] == 103_000 and k['diff'] == -760
+    assert (a['days'], a['fix'], a['piece'], a['minimum'], a['pay'], a['old']) == (1, 50_000, 565, 10_417, 50_565, 50_400)
     lines = pay.get('/api/routes/pay.csv?month=2026-09').get_data().decode('utf-8')[1:].split('\r\n')
-    assert 'B001/1;Իսկանդարյան Կորյուն;2;2;2;1,500;100000;2150;20833;102150;;103000;-850' in lines
+    assert 'B001/1;Իսկանդարյան Կորյուն;2;2;2;1,500;6,0;100000;2240;20833;102240;;103000;-760' in lines
     assert 'Աշխատանքային օրեր ամսում;2' in lines
 
 
@@ -405,6 +420,17 @@ def test_store_params_roundtrip_without_schema_change(tmp_path):
     assert st.CREW_PAY_KEY not in store.load().settings and st.SCHEMA_VERSION == 24   # настройки маршрутов не задеты
 
 
+def test_store_params_row_without_rate_km_loads(tmp_path):
+    """Строка, сохранённая версией до км: rate_km нет — значение по умолчанию, остальное — как сохранено; а не «битая»."""
+    store = st.Store(str(tmp_path / 'routes.db'))
+    save_old_params_row(store, rate_point=250, rate_tonne=1750)
+    params, at, by = store.crew_pay_params()
+    assert (params.rate_point, params.rate_tonne, params.rate_km) == (250, 1750, 15) and by == 'boss'
+    assert cp.check_params({**cp.Params().json(), 'rate_km': None})[1] == {'rate_km': 'Լրացրեք թիվը'}   # есть, но пусто
+    assert set(cp.check_params({**cp.Params().json(), 'rate_km': 10_001})[1]) == {'rate_km'}
+    assert cp.check_params({**cp.Params().json(), 'rate_km': 0})[0].rate_km == 0
+
+
 def test_store_corrupt_params_is_an_error(tmp_path):
     import sqlite3
     store = st.Store(str(tmp_path / 'routes.db'))
@@ -424,13 +450,54 @@ SEPT = [inv(KORYUN, 1, 1, kg=1000, total=100_000), inv(KORYUN, 2, 2, kg=500, tot
         inv(AGHVAN, 2, 3, kg=250, total=20_000), inv(KORYUN, 3, 4, line=LINE19)]
 
 
+DEPOT = (40.0, 44.5)
+NO_COORD = 444                                    # клиент без координат
+
+
+def shop(c):
+    """Магазин c — в c км к северу от склада по одной «дороге» FakeRoads: тур дня = 2 × самый дальний магазин."""
+    return (DEPOT[0] + c / 1000, DEPOT[1])
+
+
+class FakeRoads:
+    """RoadDistances в памяти (живые кэши data/roads/ не трогаются): км = |Δширота| × 1000; точки far — без км по
+    дорогам (не привязаны). Считает вызовы ensure и km."""
+    version, km_source = 'fake', 'osm'
+
+    def __init__(self, far=(), failed=False):
+        self.far, self.failed, self.ensured, self.km_calls = set(far), failed, [], 0
+
+    def ensure(self, points):
+        self.ensured.append(list(points))
+
+    def km(self, a, b):
+        self.km_calls += 1
+        return None if self.failed or a in self.far or b in self.far else abs(a[0] - b[0]) * 1000
+
+
+class FakeProvider:
+    def __init__(self, roads):
+        self.roads = roads
+
+    def get(self):
+        return self.roads
+
+
 @pytest.fixture
 def pay(client, monkeypatch):
-    """Клиент «Маршрутов», «сегодня» — 07.10.2026; роль — из g.user_role (как ставит app_v2), по умолчанию admin."""
+    """Клиент «Маршрутов», «сегодня» — 07.10.2026; роль — из g.user_role (как ставит app_v2), по умолчанию admin.
+    Склад DEPOT, магазины — shop(c) (ERP-адрес снимка; NO_COORD — без точки), дороги — FakeRoads."""
     monkeypatch.setattr(views, '_clock', lambda: NOW)
     monkeypatch.setattr(views, '_yerevan_now', lambda: NOW.replace(tzinfo=YEREVAN))
     app = client.application
     state = app.extensions['route_optimizer']
+    snap = replace(make_snapshot(), erp_points={100_000 + c: (c, shop(c)) for c in range(1000) if c != NO_COORD},
+                   default_address={c: 100_000 + c for c in range(1000)}, gps_points={})
+    state.snapshots = SnapshotCache(lambda: snap)
+    state.roads = FakeProvider(FakeRoads())
+    changes, errors = st.validate_payload({'depot': {'lat': DEPOT[0], 'lon': DEPOT[1]}}, state.store.load(), REF)
+    assert not errors, errors
+    state.store.save(changes, 'qa')
     calls = []
     source = {'invoices': SEPT, 'error': None}
 
@@ -447,7 +514,7 @@ def pay(client, monkeypatch):
         from flask import g
         if role['value']:
             g.user_role = role['value']
-    client.role, client.calls, client.source = role, calls, source
+    client.role, client.calls, client.source, client.state = role, calls, source, state
     return client
 
 
@@ -459,9 +526,13 @@ def test_api_month(pay):
     assert body['months'][0] == '2026-10' and body['months'][-1] == '2025-11' and len(body['months']) == 12
     assert [r['code'] for r in body['rows']] == ['B001/1', 'B002/1']
     k = body['rows'][0]
-    assert (k['days'], k['points'], k['tonnes'], k['fix'], k['piece']) == (2, 2, 1.5, 100_000, 250 * 2 + 1750 * 1.5)
-    assert k['minimum'] == 20_833 and k['pay'] == 103_125 and k['old'] == 103_000 and k['diff'] == 125
-    assert [d['date'] for d in k['by_day']] == ['2026-09-01', '2026-09-02']
+    assert body['km_counted'] is True and body['km_warnings'] == []
+    assert (k['days'], k['points'], k['tonnes'], k['km'], k['no_coords']) == (2, 2, 1.5, 6.0, 0)
+    assert k['fix'] == 100_000 and k['piece'] == 210 * 2 + 1500 * 1.5 + 15 * 6 == 2_760
+    assert k['minimum'] == 20_833 and k['pay'] == 102_760 and k['old'] == 103_000 and k['diff'] == -240
+    assert [(d['date'], d['km'], d['piece']) for d in k['by_day']] == [('2026-09-01', 2.0, 210 + 1500 + 30),
+                                                                       ('2026-09-02', 4.0, 210 + 750 + 60)]
+    assert body['totals']['km'] == 12.0 and body['rows'][1]['km'] == 6.0
     assert body['totals']['pay'] == sum(r['pay'] for r in body['rows']) and body['params'] == cp.Params().json()
     pay.get('/api/routes/pay?month=2026-09')
     assert len(pay.calls) == 1                                                      # повтор — из кэша
@@ -527,9 +598,11 @@ def test_csv(pay):
     table = lines[head + 1:]
     assert len(table) == 5
     assert "'=HYPERLINK" in text and "\n'=B8;Ծածկագիր;" in text                    # формула Excel не исполнится
-    assert 'B001/1;Իսկանդարյան Կորյուն;2;2;2;1,500;100000;3125;20833;103125;;103000;125' in table
+    assert 'B001/1;Իսկանդարյան Կորյուն;2;2;2;1,500;6,0;100000;2760;20833;102760;;103000;-240' in table
+    assert lines[head].startswith('Կոդ;Առաքիչ;Օրեր;Աշխատանքային օրեր;Կետեր;Տոննա;Կմ;Ֆիքս;')
+    assert 'Մեկ կմ-ի համար, ֏;15' in lines and 'Մեկ կետի համար, ֏;210' in lines
     assert 'Աշխատանքային օրեր ամսում;2' in lines[:head]
-    assert table[-1].startswith(';Ընդամենը;;2;')
+    assert table[-1].startswith(';Ընդամենը;;2;5;1,770;42,0;')            # 6 + 6 + 14 + 16 км
 
 
 def test_csv_shows_when_params_changed(pay):
@@ -561,3 +634,145 @@ def test_only_admin(pay, role):
     assert pay.calls == []
     pay.role['value'] = 'admin'
     assert pay.get('/api/routes/pay').status_code == 200
+
+
+# ============================== плановые км ==============================
+
+def test_tour_km_on_tiny_fake_distance():
+    """Тур склад → магазины → склад по NN + 2-opt: «манхэттен» на квадрате — обход по периметру (4), а не крест-накрест."""
+    manhattan = lambda a, b: abs(a[0] - b[0]) + abs(a[1] - b[1])   # noqa: E731
+    depot = (0.0, 0.0)
+    assert cp.tour_km(depot, [(1.0, 1.0), (0.0, 1.0), (1.0, 0.0)], manhattan) == (4.0, 0)
+    assert cp.tour_km(depot, [], manhattan) == (0.0, 0)
+    assert cp.tour_km(depot, [(0.0, 3.0)], manhattan) == (6.0, 0)
+    # пары без км по дорогам — по прямой × 1,3, и их число
+    a, b = (40.0, 44.5), (40.01, 44.5)
+    km, straight = cp.tour_km(a, [b], lambda x, y: None)
+    assert straight == 2 and km == pytest.approx(2 * haversine_km(a, b) * cp.KM_DETOUR)
+
+
+def test_plan_tours_missing_coords_and_memo():
+    calls = []
+
+    def road(a, b):
+        calls.append((a, b))
+        return abs(a[0] - b[0]) * 1000
+    coords = {c: shop(c) for c in (1, 2, 5)}
+    days = [frozenset({1, 2, NO_COORD}), frozenset({NO_COORD}), frozenset({5})]
+    memo = {}
+    tours, straight = cp.plan_tours(DEPOT, coords, days, road, memo)
+    assert straight == 0 and tours.no_coords == {NO_COORD}
+    assert {k: round(v, 6) for k, v in tours.km.items()} == {days[0]: 4.0, days[1]: 0.0, days[2]: 10.0}
+    n = len(calls)
+    again, _ = cp.plan_tours(DEPOT, coords, [frozenset({1, 2}), frozenset({5})], road, memo)   # те же точки — из memo
+    assert len(calls) == n and round(again.km[frozenset({1, 2})], 6) == 4.0
+
+
+def sept_tours(data_, p=cp.Params(), coords=None):
+    coords = coords if coords is not None else {c: shop(c) for c in range(1000) if c != NO_COORD}
+    return cp.plan_tours(DEPOT, coords, cp.day_stores(data_, p), lambda a, b: abs(a[0] - b[0]) * 1000)[0]
+
+
+def test_missing_coords_zero_km_counted_per_row_and_day():
+    d = data(inv(KORYUN, 1, 3, kg=100), inv(KORYUN, 1, NO_COORD, kg=100), inv(KORYUN, 2, NO_COORD, kg=100),
+             inv(AGHVAN, 2, 7, kg=100))
+    res = cp.compute(d, cp.Params(), tours=sept_tours(d))
+    k = row(res, KORYUN)
+    assert res.km_counted and k.no_coords == 2 and k.km == pytest.approx(6.0)
+    assert [(x.day.day, round(x.km, 6), x.no_coords) for x in k.by_day] == [(1, 6.0, 1), (2, 0.0, 1)]
+    assert k.piece == cp.money(210 * 3 + 1500 * 0.3 + 15 * 6)
+    assert row(res, AGHVAN).no_coords == 0 and cp.totals(res.rows)['no_coords'] == 2
+
+
+def test_rate_km_zero_no_km_and_no_tours_needed():
+    d = data(inv(KORYUN, 1, 3, kg=100))
+    p = cp.Params(rate_km=0)
+    res = cp.compute(d, p, tours=sept_tours(d))
+    assert not res.km_counted and row(res, KORYUN).km == 0 and row(res, KORYUN).piece == 210 + 150
+    assert not cp.compute(d, cp.Params()).km_counted                          # туров нет — км не в сдельной части
+
+
+def test_merged_person_sums_km_of_both_codes():
+    """Կարապետ сменил код: одна строка, км — сумма дней обоих кодов."""
+    agents = {**AGENTS, 21: ('B004/19', 'Հակոբյան Կարապետ'), 22: ('B003/24', 'Հակոբյան Կարապետ')}
+    d = cp.CrewData((inv(21, 1, 5, kg=100), inv(21, 1, 6, kg=60), inv(22, 2, 5, kg=50), inv(22, 3, 9, kg=10)), agents)
+    res = cp.compute(d, cp.Params(), tours=sept_tours(d))
+    assert len(res.rows) == 1
+    r = res.rows[0]
+    assert r.agent_ids == (22, 21) and r.km == pytest.approx(12 + 10 + 18)
+    assert [round(x.km, 6) for x in r.by_day] == [12.0, 10.0, 18.0]
+
+
+def test_current_month_proration_unaffected_by_km():
+    """Км — только в сдельной части: фикс, минимум и D_month текущего месяца те же, что без км."""
+    week = data(*avakimyan_week())
+    plain = row(cp.compute(week, cp.Params(), rest(date(2026, 10, 7))), KORYUN)
+    res = cp.compute(week, cp.Params(), rest(date(2026, 10, 7)), sept_tours(week))
+    r = row(res, KORYUN)
+    assert (res.workdays, res.workdays_month) == (6, 27)
+    assert (r.fix, r.minimum, r.old) == (plain.fix, plain.minimum, plain.old) == (22_222, 57_870, plain.old)
+    assert r.km > 0 and r.piece == cp.money(210 * 75 + 1500 * 9.7 + 15 * r.km)
+
+
+def test_api_km_warnings_for_missing_coords_and_csv(pay):
+    pay.source['invoices'] = SEPT + [inv(KORYUN, 2, NO_COORD, kg=10)]
+    body = pay.get('/api/routes/pay?month=2026-09').get_json()
+    k = body['rows'][0]
+    assert (k['points'], k['km'], k['no_coords']) == (3, 6.0, 1)
+    assert [(d['km'], d['no_coords']) for d in k['by_day']] == [(2.0, 0), (4.0, 1)]
+    assert body['totals']['no_coords'] == 1
+    assert body['km_warnings'] == ['1 կետ առանց կոորդինատների — կմ-ն պակաս է հաշվված (Իսկանդարյան Կորյուն՝ 1)։']
+    lines = pay.get('/api/routes/pay.csv?month=2026-09').get_data().decode('utf-8')[1:].split('\r\n')
+    assert 'Ստուգել;' + body['km_warnings'][0] in lines
+    assert any(x.startswith('B001/1;Իսկանդարյան Կորյուն;2;2;3;1,510;6,0;') for x in lines)
+
+
+def test_api_km_cached_with_erp_data(pay):
+    """Туры месяца живут вместе с данными ERP: повтор, CSV и правка ставок дороги не пересчитывают."""
+    roads = pay.state.roads.roads
+    first = pay.get('/api/routes/pay?month=2026-09').get_json()
+    calls = roads.km_calls
+    assert calls > 0 and roads.ensured and set(map(tuple, roads.ensured[0])) == {DEPOT, shop(1), shop(2), shop(3)}
+    pay.get('/api/routes/pay.csv?month=2026-09')
+    assert pay.post('/api/routes/pay/params', json={**cp.Params().json(), 'rate_km': 20}).status_code == 200
+    again = pay.get('/api/routes/pay?month=2026-09').get_json()
+    assert roads.km_calls == calls and len(pay.calls) == 1
+    assert again['rows'][0]['km'] == first['rows'][0]['km'] and again['rows'][0]['piece'] == 2_760 + 5 * 6
+
+
+def test_api_rate_km_zero_skips_roads(pay):
+    assert pay.post('/api/routes/pay/params', json={**cp.Params().json(), 'rate_km': 0}).status_code == 200
+    pay.state.snapshots = SnapshotCache(lambda: (_ for _ in ()).throw(ErpError('снимок не нужен')))
+    body = pay.get('/api/routes/pay?month=2026-09').get_json()
+    assert body['km_counted'] is False and body['km_warnings'] == [] and body['rows'][0]['km'] == 0
+    assert body['rows'][0]['piece'] == 210 * 2 + 1500 * 1.5
+    assert pay.state.roads.roads.ensured == [] and pay.state.roads.roads.km_calls == 0
+
+
+@pytest.mark.parametrize('broken', ['no_map', 'failed'])
+def test_api_roads_unavailable_haversine_fallback(pay, broken):
+    pay.state.roads = None if broken == 'no_map' else FakeProvider(FakeRoads(failed=True))
+    body = pay.get('/api/routes/pay?month=2026-09').get_json()
+    assert body['km_warnings'] == [views.PAY_KM_NO_ROADS] and 'ճանապարհների քարտեզ չկա' in views.PAY_KM_NO_ROADS
+    k = body['rows'][0]
+    expect = 2 * cp.KM_DETOUR * (haversine_km(DEPOT, shop(1)) + haversine_km(DEPOT, shop(2)))
+    assert k['km'] == round(expect, 1) and k['piece'] == cp.money(210 * 2 + 1500 * 1.5 + 15 * expect)
+    lines = pay.get('/api/routes/pay.csv?month=2026-09').get_data().decode('utf-8')[1:].split('\r\n')
+    assert 'Ստուգել;' + views.PAY_KM_NO_ROADS in lines
+
+
+def test_api_unsnapped_store_partial_warning(pay):
+    pay.state.roads = FakeProvider(FakeRoads(far={shop(2)}))
+    body = pay.get('/api/routes/pay?month=2026-09').get_json()
+    assert len(body['km_warnings']) == 1 and body['km_warnings'][0].startswith('Կմ-ն մասամբ մոտավոր է․ 2 հատված')
+    assert body['rows'][0]['km'] == round(2 + 2 * cp.KM_DETOUR * haversine_km(DEPOT, shop(2)), 1)
+
+
+def test_api_no_depot_no_km_with_warning(pay):
+    store = pay.state.store
+    changes, errors = st.validate_payload({'depot': None}, store.load(), REF)
+    assert not errors
+    store.save(changes, 'qa')
+    body = pay.get('/api/routes/pay?month=2026-09').get_json()
+    assert body['km_counted'] is False and body['km_warnings'] == [views.PAY_KM_NO_DEPOT]
+    assert body['rows'][0]['piece'] == 210 * 2 + 1500 * 1.5 and pay.state.roads.roads.ensured == []

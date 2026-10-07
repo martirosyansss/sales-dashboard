@@ -156,9 +156,11 @@ class RoutesState:
     # Армении»; None — без ERP (поиск пуст)
     customer_ref_loader: Callable[[str, Sequence[int]], list[CustomerRef]] | None = None
     customer_hint_loader: Callable[[date, date], list[CustomerHint]] | None = None
-    # «Աշխատավարձ»: накладные экспедиторов ERP за [с, по) и справочник менеджеров; кэш — (с, по) → (time.monotonic(), данные)
+    # «Աշխատավարձ»: накладные экспедиторов ERP за [с, по) и справочник менеджеров; кэш — (с, по) → (time.monotonic(),
+    # данные, посчитанные туры плановых км: (склад, версия дорог) → memo cp.plan_tours) — туры живут столько же, сколько данные
     crew_pay_loader: Callable[[date, date], cp.CrewData] | None = None
-    crew_pay_cache: dict[tuple[date, date], tuple[float, cp.CrewData]] = field(default_factory=dict)
+    crew_pay_cache: dict[tuple[date, date], tuple[float, cp.CrewData, dict[Any, dict[Any, Any]]]] = \
+        field(default_factory=dict)
     crew_pay_lock: threading.Lock = field(default_factory=threading.Lock)
     driver_list_cache: tuple[float, list[str]] | None = None
     driver_list_lock: threading.Lock = field(default_factory=threading.Lock)   # перечитывает один запрос
@@ -4886,21 +4888,23 @@ def _pay_month(raw: str, today: date) -> date | None:
     return first if first is not None and first >= _add_months(today.replace(day=1), 1 - PAY_MONTHS) else None
 
 
-def _pay_data(state: RoutesState, since: date, until: date) -> cp.CrewData:
+def _pay_data(state: RoutesState, since: date, until: date) -> tuple[cp.CrewData, dict[Any, dict[Any, Any]]]:
+    """(накладные месяца, memo туров плановых км этих накладных) — из кэша PAY_TTL_SECONDS или из ERP."""
     if state.crew_pay_loader is None:
         raise ErpError('Загрузчик накладных не подключён')
     key = (since, until)
     with state.crew_pay_lock:
         hit = state.crew_pay_cache.get(key)
     if hit is not None and time.monotonic() - hit[0] < PAY_TTL_SECONDS:
-        return hit[1]
+        return hit[1], hit[2]
     data = state.crew_pay_loader(since, until)
+    memo: dict[Any, dict[Any, Any]] = {}
     with state.crew_pay_lock:
         state.crew_pay_cache.pop(key, None)   # перечитанный месяц — в конец очереди: вытесняется самый давний
-        state.crew_pay_cache[key] = (time.monotonic(), data)
+        state.crew_pay_cache[key] = (time.monotonic(), data, memo)
         while len(state.crew_pay_cache) > PAY_MONTHS:
             state.crew_pay_cache.pop(next(iter(state.crew_pay_cache)))
-    return data
+    return data, memo
 
 
 @dataclass(frozen=True)
@@ -4911,6 +4915,7 @@ class _PayMonth:
     params_by: str | None
     result: cp.Result
     calendar_warning: str | None = None   # календарь «Маршрутов» не прочитан: текущий месяц посчитан от D
+    km_warning: str | None = None         # км не посчитаны (нет склада) или посчитаны приблизительно (по прямой × 1,3)
 
 
 def _calendar_rest(today: date, settings: Mapping[str, Any]) -> frozenset[date]:
@@ -4926,28 +4931,83 @@ PAY_CALENDAR_WARNING = ('Աշխատանքային օրացույցը (կարգա
                         'առաքման օրերով, ուստի ֆիքսը և նորմը կարող են ավելի մեծ լինել։')
 
 
+PAY_KM_NO_DEPOT = ('Պահեստի կոորդինատները նշված չեն (Կարգավորումներ) — կմ-ն հաշվված չէ, գործավարձը հաշվված է առանց '
+                   'կմ-ի։')
+PAY_KM_NO_ROADS = 'Կմ-ն մոտավոր է (ճանապարհների քարտեզ չկա)՝ ուղիղ գծով × 1,3։'
+
+
+def _pay_tours(state: RoutesState, data: cp.CrewData, params: cp.Params, bundle: Bundle | None,
+               memo: dict[Any, dict[Any, Any]]) -> tuple[cp.Tours | None, str | None]:
+    """Плановые км дней месяца (cp.plan_tours): склад — из настроек, координаты магазинов — те же, что у обзора и
+    «Развоза» (evaluate.visit_coord: ручная → водителей → ERP → GPS менеджеров), км — общие дороги раздела (state.roads:
+    дисковый кэш расстояний уже тёплый). Блокировка — только та, что внутри RoadDistances.ensure. Карты нет или она
+    сломана — по прямой × 1,3 с предупреждением. → (туры или None — склада нет, предупреждение)."""
+    if bundle is None or bundle.depot is None:
+        return None, PAY_KM_NO_DEPOT
+    days = cp.day_stores(data, params)
+    customers = {c for stores in days for c in stores}
+    if not customers:
+        return cp.Tours({}), None
+    snap, _ = state.snapshots.cached()
+    driver = _driver_points(state)
+    coords = {cid: pt for cid in customers
+              if (pt := evaluate.visit_coord(snap, cid, 0, bundle.geo_overrides, driver).point) is not None}
+    roads = state.roads.get() if state.roads is not None else None
+    if roads is not None:
+        started = time.perf_counter()
+        roads.ensure([bundle.depot, *coords.values()])
+        logger.info('[Routes] Աշխատավարձ: дороги для %d магазинов за %.1f с', len(coords), time.perf_counter() - started)
+    ok = roads is not None and not roads.failed
+    road_km: Callable[[Point, Point], float | None] = roads.km if roads is not None and ok else (lambda a, b: None)
+    tours, straight = cp.plan_tours(bundle.depot, coords, days, road_km,
+                                    memo.setdefault((bundle.depot, roads_version(roads)), {}))
+    if not ok:
+        return tours, PAY_KM_NO_ROADS
+    if straight:
+        return tours, (f'Կմ-ն մասամբ մոտավոր է․ {straight} հատված հաշվված է ուղիղ գծով × 1,3 (կետը ճանապարհից հեռու է '
+                       'կամ ճանապարհ չի գտնվել)։')
+    return tours, None
+
+
 def _pay_month_result(state: RoutesState, first: date, today: date) -> _PayMonth:
     """Расчёт месяца first: текущий — по сегодня включительно (накладные «из будущего» не берём), фикс и норма — от
     D_month: прошедшие дни с доставкой + рабочие дни календаря с сегодня до конца месяца (начислено по сегодня);
-    прошлый — от D, как раньше. Календарь не читается — текущий месяц от D и предупреждение, а не 500."""
+    прошлый — от D, как раньше. Календарь не читается — текущий месяц от D и предупреждение, а не 500; без склада (или
+    настроек) км не считаются — тоже предупреждение. rate_km = 0 — дороги и снимок не трогаются."""
     until = min(_add_months(first, 1), today + timedelta(days=1))
     params, at, by = state.store.crew_pay_params()
+    try:
+        bundle: Bundle | None = state.store.load()
+    except StoreError:
+        logger.exception('[Routes] Աշխատավարձ: настройки не читаются — без календаря и склада')
+        bundle = None
     rest, warning = None, None
     if first == today.replace(day=1):
-        try:
-            rest = _calendar_rest(today, state.store.load().settings)
-        except StoreError:
-            logger.exception('[Routes] Աշխատավարձ: календарь настроек не читается — текущий месяц от D')
+        if bundle is not None:
+            rest = _calendar_rest(today, bundle.settings)
+        else:
             warning = PAY_CALENDAR_WARNING
-    return _PayMonth(first, params, at, by, cp.compute(_pay_data(state, first, until), params, rest), warning)
+    data, memo = _pay_data(state, first, until)
+    tours, km_warning = _pay_tours(state, data, params, bundle, memo) if params.rate_km > 0 else (None, None)
+    return _PayMonth(first, params, at, by, cp.compute(data, params, rest, tours), warning, km_warning)
+
+
+def _pay_no_coords_warning(result: cp.Result) -> str | None:
+    """Точки без координат (их км — 0): сколько и у кого — на странице и в CSV «Ստուգել»."""
+    rows = [r for r in result.rows if r.no_coords]
+    if not result.km_counted or not rows:
+        return None
+    return (f'{sum(r.no_coords for r in rows)} կետ առանց կոորդինատների — կմ-ն պակաս է հաշվված ('
+            + ', '.join(f'{r.name or r.code}՝ {r.no_coords}' for r in rows) + ')։')
 
 
 def _pay_row_json(r: cp.Row) -> dict[str, Any]:
     return {'agent_ids': list(r.agent_ids), 'code': r.code, 'name': r.name, 'days': r.days, 'points': r.points,
-            'tonnes': round(r.tonnes, 3), 'sales': r.sales, 'fix': r.fix, 'piece': r.piece, 'minimum': r.minimum,
-            'pay': r.pay, 'old': r.old, 'diff': r.diff, 'min_applied': r.min_applied,
-            'by_day': [{'date': d.day.isoformat(), 'points': d.points, 'tonnes': round(d.tonnes, 3), 'piece': d.piece}
-                       for d in r.by_day]}
+            'tonnes': round(r.tonnes, 3), 'km': round(r.km, 1), 'no_coords': r.no_coords, 'sales': r.sales, 'fix': r.fix,
+            'piece': r.piece, 'minimum': r.minimum, 'pay': r.pay, 'old': r.old, 'diff': r.diff,
+            'min_applied': r.min_applied,
+            'by_day': [{'date': d.day.isoformat(), 'points': d.points, 'tonnes': round(d.tonnes, 3), 'km': round(d.km, 1),
+                        'no_coords': d.no_coords, 'piece': d.piece} for d in r.by_day]}
 
 
 def _pay_request() -> tuple[_PayMonth | None, Any]:
@@ -4976,8 +5036,11 @@ def api_pay() -> Any:
                     'unknown_codes': list(result.unknown_codes),
                     'overlapping_codes': [list(c) for c in result.overlapping_codes],
                     'excluded_kin': list(result.excluded_kin), 'calendar_warning': m.calendar_warning,
+                    'km_counted': result.km_counted,
+                    'km_warnings': [w for w in (m.km_warning, _pay_no_coords_warning(result)) if w],
                     'rows': [_pay_row_json(r) for r in result.rows],
-                    'totals': {k: round(v, 3) if k == 'tonnes' else v for k, v in cp.totals(result.rows).items()}})
+                    'totals': {k: round(v, 3) if k == 'tonnes' else round(v, 1) if k == 'km' else v
+                               for k, v in cp.totals(result.rows).items()}})
 
 
 def _csv_cell(value: Any) -> str:
@@ -4988,7 +5051,8 @@ def _csv_cell(value: Any) -> str:
 
 # Подписи параметров в шапке CSV — как на странице
 PAY_PARAM_LABELS = (('fix', 'Ֆիքս ամսական, ֏'), ('rate_point', 'Մեկ կետի համար, ֏'),
-                    ('rate_tonne', 'Մեկ տոննայի համար, ֏'), ('minimum', 'Նվազագույն ամսական, ֏'),
+                    ('rate_tonne', 'Մեկ տոննայի համար, ֏'), ('rate_km', 'Մեկ կմ-ի համար, ֏'),
+                    ('minimum', 'Նվազագույն ամսական, ֏'),
                     ('norm_per_day', 'Նորմ՝ կետ մեկ աշխատանքային օրում'), ('old_fix', 'Հին սխեմա՝ ֆիքս, ֏'),
                     ('old_pct', 'Հին սխեմա՝ վաճառքի տոկոս, %'), ('excluded_lines', 'Չհաշվվող գծեր'),
                     ('excluded_people', 'Չհաշվվող առաքիչներ'))
@@ -5030,16 +5094,20 @@ def api_pay_csv() -> Any:
     if result.excluded_kin:
         w.writerow(['Ստուգել', _csv_cell('Հաշվվում են, բայց նույն անունով կոդ կա չհաշվվողների մեջ՝ '
                                          + ', '.join(result.excluded_kin))])
+    for warning in (m.km_warning, _pay_no_coords_warning(result)):
+        if warning:
+            w.writerow(['Ստուգել', _csv_cell(warning)])
     w.writerow([])
-    w.writerow(['Կոդ', 'Առաքիչ', 'Օրեր', 'Աշխատանքային օրեր', 'Կետեր', 'Տոննա', 'Ֆիքս', 'Գործավարձ', 'Նվազագույն',
+    w.writerow(['Կոդ', 'Առաքիչ', 'Օրեր', 'Աշխատանքային օրեր', 'Կետեր', 'Տոննա', 'Կմ', 'Ֆիքս', 'Գործավարձ', 'Նվազագույն',
                 'Վճարել', 'Նվազագույնը կիրառված է', f'Հին սխեմա ({n(params.old_pct)}%)', 'Տարբերություն'])
     for r in result.rows:
         w.writerow([_csv_cell(r.code), _csv_cell(r.name), r.days, result.workdays, r.points, f'{r.tonnes:.3f}'.replace('.', ','),
-                    r.fix, r.piece, r.minimum, r.pay, 'այո' if r.min_applied else '', r.old, r.diff])
+                    f'{r.km:.1f}'.replace('.', ','), r.fix, r.piece, r.minimum, r.pay, 'այո' if r.min_applied else '',
+                    r.old, r.diff])
     if result.rows:
         s = cp.totals(result.rows)
-        w.writerow(['', 'Ընդամենը', '', result.workdays, s['points'], f"{s['tonnes']:.3f}".replace('.', ','), s['fix'],
-                    s['piece'], '', s['pay'], '', s['old'], s['diff']])
+        w.writerow(['', 'Ընդամենը', '', result.workdays, s['points'], f"{s['tonnes']:.3f}".replace('.', ','),
+                    f"{s['km']:.1f}".replace('.', ','), s['fix'], s['piece'], '', s['pay'], '', s['old'], s['diff']])
     name = f'crew-pay-{m.first:%Y-%m}.csv'
     return Response('\ufeff' + out.getvalue(), mimetype='text/csv',
                     headers={'Content-Disposition': f'attachment; filename="{name}"'})
