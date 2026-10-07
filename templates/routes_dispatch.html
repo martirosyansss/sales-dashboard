@@ -11,7 +11,7 @@
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=24">
 <!-- Страница на армянском (ответ владельца №31). Редизайн: тёмная спокойная тема (ответ владельца №51), свои стили поверх routes.css -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=48">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=49">
 {% endblock %}
 
 {% block content %}
@@ -56,6 +56,13 @@
                     <button type="button" id="dpDayNext" class="dp-segbtn" aria-label="Հաջորդ օր" title="Հաջորդ օր"><i class="fas fa-chevron-right" aria-hidden="true"></i></button>
                 </div>
                 <button type="button" id="dpTomorrow" class="rt-linkbtn">Վերադառնալ վաղվան</button>
+            </div>
+            <!-- №82 (вариант А, как Routific): на широком экране с рейсами — действия дня в шапке; узлы переносит layoutWs() -->
+            <div class="dp-wsacts" id="dpWsActs" hidden>
+                <button type="button" id="dpPrepOpen" class="rt-btn rt-btn-ghost" aria-controls="dpDrawer" aria-expanded="false">
+                    <i class="fas fa-sliders" aria-hidden="true"></i><span>Մեքենաներ, պատվերներ</span></button>
+                <button type="button" id="dpWsAi" class="rt-btn rt-btn-ghost" aria-controls="dpAi" hidden><i class="fas fa-wand-magic-sparkles" aria-hidden="true"></i><span>AI</span></button>
+                <button type="button" id="dpViewList" class="rt-btn rt-btn-ghost" title="Ցուցակով (նախկին տեսք)" aria-label="Ցուցակով (նախկին տեսք)"><i class="fas fa-list" aria-hidden="true"></i></button>
             </div>
         </div>
 
@@ -110,6 +117,26 @@
             <span id="dpActionErrorText" class="rt-alert-text"></span>
             <button type="button" id="dpActionReload" class="rt-btn rt-btn-ghost rt-btn-sm d-none">Թարմացնել էջը</button>
         </div>
+
+        <!-- №82 вариант А: рабочий экран на высоту окна — карта (итоги поверх), справа машина, снизу машины и шкала дня -->
+        <div class="dp-ws" id="dpWs" hidden>
+            <div class="dp-ws-main">
+                <div class="dp-ws-map" id="dpWsMap"><div class="dp-ws-kpi" id="dpWsKpi"></div></div>
+                <aside class="dp-ws-side" id="dpWsSide" aria-label="Ընտրված մեքենան" hidden>
+                    <button type="button" class="dp-ws-close" id="dpWsClose" aria-label="Փակել մեքենայի քարտը" title="Փակել"><i class="fas fa-xmark" aria-hidden="true"></i></button>
+                </aside>
+            </div>
+            <div class="dp-ws-bottom" id="dpWsBottom"></div>
+        </div>
+
+        <!-- №82: шаги 1–2 и пересборка на широком экране — выдвижная панель «Մեքենաներ, պատվերներ» -->
+        <aside class="dp-drawer" id="dpDrawer" aria-labelledby="dpDrawerTitle" hidden>
+            <div class="dp-drawer-head">
+                <h2 class="dp-drawer-t" id="dpDrawerTitle">Մեքենաներ և պատվերներ</h2>
+                <button type="button" class="dp-ws-close" id="dpDrawerClose" aria-label="Փակել"><i class="fas fa-xmark" aria-hidden="true"></i></button>
+            </div>
+            <div class="dp-drawer-body" id="dpDrawerBody"></div>
+        </aside>
 
         <!-- ПОДГОТОВКА: шаг 1 (машины) и шаг 2 (заказы) рядом; после сборки — свёрнуты в строку -->
         <div class="dp-prep">
@@ -279,8 +306,9 @@
                         <h2 class="dp-step-title" id="dpStep3Title" tabindex="-1"><span class="rt-sr-only">Քայլ 3. </span>Երթեր</h2>
                     </div>
                     <div class="dp-summary-cta">
-                        <button type="button" id="dpPrint" class="rt-btn rt-btn-primary"><i class="fas fa-print" aria-hidden="true"></i><span>Տպել վարորդների համար</span></button>
+                        <button type="button" id="dpPrint" class="rt-btn rt-btn-primary" aria-label="Տպել վարորդների համար"><i class="fas fa-print" aria-hidden="true"></i><span>Տպել վարորդների համար</span></button>
                         <button type="button" id="dpExcel" class="rt-btn rt-btn-ghost"><i class="fas fa-file-excel" aria-hidden="true"></i><span>Excel</span></button>
+                        <button type="button" id="dpViewWs" class="rt-btn rt-btn-ghost dp-view-ws" title="Աշխատանքային էկրան՝ քարտեզ և ժամացույց"><i class="fas fa-table-columns" aria-hidden="true"></i><span>Աշխատանքային էկրան</span></button>
                     </div>
                 </div>
                 <!-- Утверждение плана дня (ответ владельца №73): «Հաստատել օրվա պլանը» / отметка и «Չեղարկել հաստատումը» -->
@@ -479,6 +507,6 @@
         integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=1" data-yandex-key="{{ yandex_tiles_key }}"></script>
 <!-- панель «Հարցրու AI-ին» — до страницы: init подключает её (RoutesDispatchAI.attach) -->
-<script src="{{ url_for('static', filename='js/routes_dispatch_ai.js') }}?v=2"></script>
+<script src="{{ url_for('static', filename='js/routes_dispatch_ai.js') }}?v=3"></script>
 <script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=89"></script>
 {% endblock %}

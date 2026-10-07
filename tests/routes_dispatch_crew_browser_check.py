@@ -71,6 +71,7 @@ def main() -> int:
             browser = pw.chromium.launch()
             ctx = browser.new_context(viewport={'width': 1440, 'height': 950})
             page = ctx.new_page()
+            page.add_init_script("try { localStorage.setItem('dpLayout', 'list'); } catch (e) {}")   # №82: прежний вид «список»
             page.on('pageerror', lambda e: errors.append('pageerror: ' + str(e)))
             page.on('console', lambda m: errors.append('console: ' + m.text)
                     if m.type == 'error' and not base.is_ignorable(m) else None)

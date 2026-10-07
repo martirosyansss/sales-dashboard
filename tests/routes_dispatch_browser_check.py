@@ -145,6 +145,7 @@ def main() -> int:
             browser = pw.chromium.launch()
             ctx = browser.new_context(viewport={'width': 1440, 'height': 950}, accept_downloads=True)
             page = ctx.new_page()
+            page.add_init_script("try { localStorage.setItem('dpLayout', 'list'); } catch (e) {}")   # №82: рабочий экран — блок Y
             page.on('pageerror', lambda e: errors.append('pageerror: ' + str(e)))
             page.on('console', lambda m: errors.append('console: ' + m.text) if m.type == 'error' and not is_ignorable(m) else None)
             page.on('dialog', lambda d: d.accept())
@@ -525,6 +526,57 @@ def main() -> int:
             api_day = page.request.get(f'{BASE}/api/routes/dispatch?date={DAY3}').json()
             check(api_day['unsent'] is None and 'Պլանն ուղարկված է' in page.inner_text('#dpTodo'),
                   f'X «Ուղարկել և շարունակել» → sent, nothing unsent ({api_day["unsent"]})')
+            views._clock, views._yerevan_now = real_clock, real_yerevan
+
+            # Y (№82, вариант А): рабочий экран — карта, машины и шкала с номерами, панель машины, шаги в выдвижной панели
+            views._clock = lambda: fixed                    # день V — будущий (в прошедших днях магазины не перетаскиваются)
+            views._yerevan_now = lambda: fixed.replace(tzinfo=ZoneInfo('Asia/Yerevan'))
+            ws = ctx.new_page()
+            ws.add_init_script("try { localStorage.setItem('dpLayout', 'ws'); } catch (e) {}")
+            ws_errors = []
+            ws.on('pageerror', lambda e: ws_errors.append(str(e)))
+            ws.goto(f'{BASE}/routes/dispatch?date={DAY2}')
+            ws.wait_for_selector('#rtDispatch.is-ws', timeout=30000)
+            ws.wait_for_timeout(800)
+            check(ws.locator('#dpWsMap #dpMap').count() == 1 and ws.locator('#dpWsBottom #dpBoard').count() == 1
+                  and ws.locator('#dpWsKpi #dpPlanStats').is_visible() and ws.locator('#dpWsActs #dpPrint').is_visible(),
+                  'Y workspace: map, board, KPI over the map, print in the header')
+            check(ws.locator('#dpBoard .dp-bar i.dp-tick').first.inner_text() == '1'
+                  and ws.locator('#dpBoard .dp-blabel .dp-blx-t').first.is_visible(), 'Y board: numbered stops, load line per truck')
+            box = ws.evaluate("(() => { const r = document.getElementById('dpWs').getBoundingClientRect(); return [r.top, r.bottom, innerHeight]; })()")
+            check(box[1] <= box[2] + 1, f'Y workspace fits the window {box}')
+            ws.locator('#dpBoard .dp-blabel').first.click()
+            ws.wait_for_selector('#dpWsSide:not([hidden]) .dp-tcard.is-focus', timeout=5000)
+            check(ws.locator('#dpWsSide .dp-tcard.is-focus .dp-editbtn').first.is_visible(), 'Y truck click → its card on the right with «Փոփոխել»')
+            src = ws.locator('#dpWsSide .dp-tcard.is-focus .dp-trip .dp-stop[draggable="true"]').first
+            own = ws.evaluate("(document.querySelector('#dpWsSide .dp-tcard.is-focus .dp-trip') || {}).dataset?.trip || ''")
+            tgt = ws.locator(f'#dpBoard .dp-bar:not([data-trip="{own}"])').first
+            moves = []
+            ws.on('request', lambda r: moves.append(r.post_data) if r.method == 'POST' and r.url.endswith('/dispatch/edit') else None)
+            check(src.count() > 0 and tgt.count() > 0, f'Y drag source/target present ({src.count()}, {tgt.count()})')
+            if src.count() and tgt.count():
+                src.drag_to(tgt)
+                ws.wait_for_timeout(1500)
+                check(any('"move"' in (m or '') for m in moves), f'Y drag a stop from the truck card onto another bar → move ({len(moves)} edit)')
+            ws.click('#dpWsClose')
+            check(ws.locator('#dpWsSide').is_hidden() and ws.evaluate("document.activeElement && document.activeElement.classList.contains('dp-blabel')"),
+                  'Y side closed, focus back on the truck row')
+            ws.click('#dpPrepOpen')
+            check(ws.locator('#dpDrawer #dpStep1').is_visible() and ws.locator('#dpDrawer #dpBuild').is_visible(),
+                  'Y «Մեքենաներ, պատվերներ»: steps 1–2 and rebuild in the drawer')
+            ws.click('#dpDrawerClose')
+            ws.click('#dpViewList')
+            check(ws.locator('#rtDispatch.is-ws').count() == 0 and ws.locator('.dp-split #dpTruckCards').count() == 1
+                  and ws.locator('.dp-mapcol #dpMapBox').count() == 1 and ws.locator('#dpViewWs').is_visible(),
+                  'Y «Ցուցակով»: the old layout, nodes back home')
+            ws.click('#dpViewWs')
+            check(ws.locator('#rtDispatch.is-ws').count() == 1 and ws.evaluate("localStorage.getItem('dpLayout')") == 'ws',
+                  'Y back to the workspace, remembered')
+            ws.set_viewport_size({'width': 1000, 'height': 900})
+            ws.wait_for_timeout(300)
+            check(ws.locator('#rtDispatch.is-ws').count() == 0, 'Y narrow window: no workspace')
+            check(not ws_errors, f'Y no page errors {ws_errors[:2]}')
+            ws.close()
             views._clock, views._yerevan_now = real_clock, real_yerevan
 
             check(not errors, 'no pageerror / console errors' + ('' if not errors else ': ' + ' | '.join(errors[:5])))

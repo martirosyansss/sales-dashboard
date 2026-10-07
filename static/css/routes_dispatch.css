@@ -974,3 +974,187 @@ details.dp-costnote p { margin: 6px 0 0; }
     .dp-inbox { margin-top: 0; }
     .dp-inchip { flex: 1 1 auto; justify-content: center; }
 }
+
+/* ==========================================================================
+   №82 — вариант А (как Routific / Яндекс): рабочий экран на широком экране
+   карта (итоги поверх) · справа машина · снизу машины и шкала дня
+   ========================================================================== */
+.dp-ws[hidden], .dp-wsacts[hidden], .dp-drawer[hidden], .dp-ws-side[hidden] { display: none !important; }
+/* по умолчанию (узкий экран, старая страница) подпись машины на шкале — как раньше, номер магазина в засечке не виден */
+.dp-blabel-x { display: none; }
+.dp-bar i.dp-tick { font-size: 0; }
+
+#rtDispatch.is-ws .dp-kicker, #rtDispatch.is-ws .dp-help, #rtDispatch.is-ws .dp-cal, #rtDispatch.is-ws .dp-split,
+#rtDispatch.is-ws .dp-summary-top, #rtDispatch.is-ws .dp-ai-fab, #rtDispatch.is-ws #dpTomorrow { display: none !important; }
+#rtDispatch.is-ws .dp-mast { margin-bottom: 10px; padding: 0; }
+/* шапка рабочего экрана — одна строка: день · листать · что у водителей · обновить … действия */
+#rtDispatch.is-ws .dp-dayboard { margin-top: 6px; padding: 8px 12px; display: flex; flex-wrap: nowrap; align-items: center; gap: 10px; }
+#rtDispatch.is-ws .dp-day-main { display: contents; }
+#rtDispatch.is-ws .rt-title { order: 1; flex: none; }
+#rtDispatch.is-ws .dp-daynav { order: 2; flex: none; }
+#rtDispatch.is-ws .dp-sendstate { order: 3; flex: 0 1 auto; min-width: 0; margin: 0; }
+#rtDispatch.is-ws .dp-datenote { order: 4; flex: none; margin: 0; }
+#rtDispatch.is-ws .dp-datenote .rt-linkbtn { font-size: 0; gap: 0; }
+#rtDispatch.is-ws .dp-datenote .rt-linkbtn i { font-size: .9375rem; }
+#rtDispatch.is-ws .dp-wsacts { order: 5; margin-left: auto; flex-wrap: nowrap; }
+#rtDispatch.is-ws .dp-sendpill { white-space: nowrap; }
+#rtDispatch.is-ws .rt-title { font-size: 0; overflow: visible; }
+#rtDispatch.is-ws .rt-title::after { content: attr(data-short); content: attr(data-short) / ""; font-size: 1.1875rem; white-space: nowrap; }
+.dp-wsacts .dp-summary-cta { flex-direction: row; flex-wrap: nowrap; }
+.dp-wsacts .dp-summary-cta .rt-btn { flex: none; width: auto; }
+#rtDispatch.is-ws .dp-todo-body { flex-wrap: nowrap; }
+#rtDispatch.is-ws .dp-todo-t { white-space: nowrap; flex: none; }
+/* короткие подписи: «Տպել», «Հաստատել և ուղարկել» (полные — в aria-label / title) */
+#rtDispatch.is-ws #dpPrint span, #rtDispatch.is-ws #dpApproveBtn span { display: none; }
+#rtDispatch.is-ws #dpPrint::after { content: "Տպել"; }
+#rtDispatch.is-ws #dpApproveBtn::after { content: attr(data-short); }
+#rtDispatch.is-ws .dp-sendpill { max-width: 360px; overflow: hidden; }
+#rtDispatch.is-ws .dp-sendpill span { overflow: hidden; text-overflow: ellipsis; }
+/* подсказка — без кнопок, которые уже в шапке (утвердить, отправить) */
+#rtDispatch.is-ws .dp-todo-btns [data-ico="fa-paper-plane"] { display: none; }
+#rtDispatch.is-ws .rt-title { white-space: nowrap; max-width: 100%; }
+#rtDispatch.is-ws .dp-datenote > span { display: none; }
+#rtDispatch.is-ws #dpApprovedBadge, #rtDispatch.is-ws #dpNoDriver { display: none !important; }
+#rtDispatch.is-ws #dpUnapprove { height: 38px; }
+#rtDispatch.is-ws .dp-datenote { margin-top: 2px; font-size: .8125rem; flex-wrap: nowrap; }
+#rtDispatch.is-ws .dp-datenote > span { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+body.dp-ws-on .rt-secbar { margin-bottom: 0; }
+body.dp-ws-on .rt-secbar .rt-tabs { padding: 3px; }
+body.dp-ws-on .rt-secbar .rt-tabs a { padding-top: 5px; padding-bottom: 5px; }
+/* печать и Excel — в шапке рабочего экрана, в подсказке не повторяются */
+#rtDispatch.is-ws .dp-todo-btns [data-ico="fa-print"], #rtDispatch.is-ws .dp-todo-btns [data-ico="fa-file-excel"] { display: none; }
+
+#rtDispatch.is-ws .dp-segbtn { width: 34px; height: 34px; }
+#rtDispatch.is-ws .rt-input.dp-date { height: 34px; min-width: 140px; }
+.dp-wsacts { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
+.dp-wsacts .dp-approve { margin: 0; display: flex; align-items: center; gap: 8px; }
+.dp-wsacts .dp-approve-note { display: none; }
+.dp-wsacts .dp-summary-cta { display: flex; gap: 8px; }
+.dp-wsacts .rt-btn { height: 38px; }
+
+/* «Ի՞նչ անել հիմա» — одна строка (как баннер «Routes not yet shared → Send routes» у OptimoRoute) */
+#rtDispatch.is-ws .dp-todo { margin-bottom: 8px; padding: 8px 14px; }
+#rtDispatch.is-ws .dp-todo-ico { display: none; }
+#rtDispatch.is-ws .dp-todo-body { display: flex; align-items: center; gap: 4px 14px; }
+#rtDispatch.is-ws .dp-todo-k { display: none; }
+#rtDispatch.is-ws .dp-todo-t { margin: 0; font-size: 1rem; }
+#rtDispatch.is-ws .dp-todo-lines { flex: 1 1 260px; min-width: 0; margin: 0; }
+#rtDispatch.is-ws .dp-todo-lines p { margin: 0; font-size: .8125rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#rtDispatch.is-ws .dp-todo-lines p + p { display: none; }
+#rtDispatch.is-ws .dp-todo-btns { margin: 0; flex-wrap: nowrap; }
+#rtDispatch.is-ws .dp-todo-btns .rt-btn { height: 34px; }
+#rtDispatch.is-ws .dp-inbox { margin: 0 0 8px; flex-wrap: nowrap; overflow-x: auto; }
+/* подсказка и счётчики — одной строкой над рабочим экраном */
+#rtDispatch.is-ws #dpBody { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 10px; align-items: start; }
+#rtDispatch.is-ws #dpBody > * { grid-column: 1 / -1; }
+#rtDispatch.is-ws #dpBody > #dpTodo { grid-column: 1; min-width: 0; }
+#rtDispatch.is-ws #dpBody > #dpInbox { grid-column: 2; grid-row: 1; max-width: 52vw; }
+#rtDispatch.is-ws #dpBody > #dpInbox .dp-inchip { height: 44px; white-space: nowrap; flex: none; }
+#rtDispatch.is-ws .dp-nodriver, #rtDispatch.is-ws .dp-sameday { margin-bottom: 8px; }
+#rtDispatch.is-ws .dp-sameday { padding: 8px 14px; }
+#rtDispatch.is-ws .dp-sameday .dp-todo-ico { display: none; }
+
+/* рабочий экран */
+.dp-ws {
+    height: var(--ws-h, calc(100vh - 220px)); margin-bottom: 14px; display: grid; grid-template-rows: minmax(0, 1fr) minmax(210px, 40%);
+    border: 1px solid var(--rt-line); border-radius: var(--rt-radius); overflow: hidden; background: var(--rt-panel);
+}
+.dp-ws-main { position: relative; min-height: 0; }
+.dp-ws-map { position: absolute; inset: 0; }
+#rtDispatch .dp-ws-map .dp-mapbox { position: absolute; inset: 0; border: 0; border-radius: 0; box-shadow: none; }
+#rtDispatch .dp-ws-map .dp-mapbox > summary { display: none; }
+/* содержимое <details> не тянется по height: 100% — тело карты прижато к краям самого блока */
+#rtDispatch .dp-ws-map .dp-mapbox-body { position: absolute; inset: 0; height: auto; min-height: 0; }
+#rtDispatch .dp-ws-map .dp-mapbox-body > .dp-map { position: absolute; inset: 0; height: auto; min-height: 0; }
+#rtDispatch .dp-ws-map .dp-mapfilter {
+    position: absolute; z-index: 500; left: 112px; bottom: 12px; max-width: min(720px, 50%); max-height: 50px; flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; border: 1px solid var(--rt-line);
+    border-radius: 12px; background: rgba(23, 28, 36, .92); backdrop-filter: blur(6px);
+}
+#rtDispatch .dp-ws-map .dp-mapfocus { position: absolute; z-index: 500; left: 64px; top: 78px; max-width: 46%; border: 1px solid var(--rt-line); border-radius: 10px; background: rgba(23, 28, 36, .94); }
+/* итоги дня поверх карты (плашка Routific) */
+.dp-ws-kpi { position: absolute; z-index: 600; top: 12px; left: 50%; transform: translateX(-50%); pointer-events: none; }
+#rtDispatch .dp-ws-kpi .dp-stats {
+    pointer-events: auto; display: flex; gap: 0; margin: 0; border: 1px solid var(--rt-line); border-radius: 14px; overflow: hidden;
+    background: rgba(23, 28, 36, .94); box-shadow: 0 10px 30px rgba(0, 0, 0, .45); backdrop-filter: blur(6px);
+}
+#rtDispatch .dp-ws-kpi .dp-stat { padding: 7px 14px; border: 0; border-left: 1px solid var(--rt-line-soft); text-align: center; min-width: 0; }
+#rtDispatch .dp-ws-kpi .dp-stat:first-child { border-left: 0; }
+#rtDispatch .dp-ws-kpi .dp-stat b { font-size: 1.0625rem; font-family: var(--rt-mono); white-space: nowrap; }
+#rtDispatch .dp-ws-kpi .dp-stat span { font-size: .6875rem; }
+/* выбранная машина — справа поверх карты */
+.dp-ws-side {
+    position: absolute; z-index: 650; top: 12px; right: 12px; bottom: 12px; width: min(460px, 44%); overflow: auto; overscroll-behavior: contain;
+    padding: 44px 10px 10px; border: 1px solid var(--rt-line); border-radius: 16px; background: rgba(23, 28, 36, .97);
+    box-shadow: 0 18px 50px rgba(0, 0, 0, .55);
+}
+.dp-ws-close {
+    position: absolute; top: 8px; right: 8px; width: 32px; height: 32px; border-radius: 50%; border: 1px solid var(--rt-line);
+    background: var(--rt-panel-2); color: var(--rt-fg-dim); display: grid; place-items: center; cursor: pointer; z-index: 2;
+}
+.dp-ws-close:hover { color: var(--rt-fg); }
+#rtDispatch .dp-ws-side .dp-trucklist { position: static; max-height: none; overflow: visible; padding: 0; gap: 10px; }
+#rtDispatch .dp-ws-side .dp-tcard { display: none; }
+#rtDispatch .dp-ws-side .dp-tcard.is-focus { display: block; }
+#rtDispatch .dp-ws-side .dp-why { margin-top: 10px; max-height: none; }
+/* карточка машины в узкой панели: кнопки «Վարորդ · Բեռնագիր · Excel» — строкой под шапкой, с подписями */
+#rtDispatch .dp-ws-side .dp-ttop { flex-wrap: wrap; }
+#rtDispatch .dp-ws-side .dp-ttop > .dp-thead-h { flex-basis: 100%; }
+#rtDispatch .dp-ws-side .dp-tacts { width: 100%; padding: 0 12px 12px 16px; }
+#rtDispatch .dp-ws-side .dp-tacts .rt-btn { flex: 1 1 0; }
+#rtDispatch .dp-ws-side .dp-tacts .dp-wbbtn { padding: 0 10px; }
+#rtDispatch .dp-ws-side .dp-tacts .dp-wbbtn span { position: static; width: auto; height: auto; overflow: visible; clip-path: none; }
+#rtDispatch .dp-ws-side .dp-thead { grid-template-columns: minmax(0, 1fr) auto auto; }
+
+/* снизу: машины и шкала дня (таблица слева — подписи шкалы) */
+.dp-ws-bottom { min-height: 0; overflow: auto; border-top: 1px solid var(--rt-line); }
+#rtDispatch .dp-ws-bottom .dp-board { border: 0; border-radius: 0; padding: 8px 14px 6px; background: transparent; }
+#rtDispatch .dp-ws-bottom .dp-board-head { margin-bottom: 2px; }
+#rtDispatch .dp-ws-bottom .dp-board-legend { display: none; }
+#rtDispatch .dp-ws-bottom .dp-board-grid { grid-template-columns: minmax(260px, 300px) minmax(0, 1fr) minmax(70px, auto); }
+#rtDispatch.is-ws .dp-blabel { height: 46px; }
+#rtDispatch.is-ws .dp-blabel-x { display: flex; align-items: center; gap: 8px; font-family: var(--rt-mono); font-size: .75rem; color: var(--rt-fg-dim); }
+#rtDispatch.is-ws .dp-blabel.has-bad .dp-blx-t { color: var(--rt-warn); }
+#rtDispatch.is-ws .dp-blabel-t small { display: none; }
+#rtDispatch.is-ws .dp-blabel-t b { font-size: .875rem; }
+#rtDispatch.is-ws .dp-blabel-t b::after { content: attr(data-plate); }
+.dp-blfill { position: relative; flex: 0 0 56px; height: 5px; border-radius: 3px; background: var(--rt-line); overflow: hidden; }
+.dp-blfill em { position: absolute; inset: 0 auto 0 0; border-radius: 3px; background: var(--rt-fg-dim); }
+.dp-blfill.is-hi em { background: var(--rt-warn); }
+.dp-blfill.is-over em { background: var(--rt-danger); }
+#rtDispatch.is-ws .dp-track { height: 46px; }
+#rtDispatch.is-ws .dp-bar { top: 11px; bottom: 11px; padding: 0; border-radius: 12px; overflow: visible;
+    background: color-mix(in srgb, var(--dp-c) 28%, var(--rt-panel)); box-shadow: 0 0 0 1.5px var(--dp-c) inset; }
+#rtDispatch.is-ws .dp-bar[aria-pressed="true"] { box-shadow: 0 0 0 1.5px var(--dp-c) inset, 0 0 0 3px var(--rt-fg); }
+#rtDispatch.is-ws .dp-bar.is-bad { box-shadow: 0 0 0 2px var(--rt-danger) inset; }
+#rtDispatch.is-ws .dp-bar .dp-bar-t { display: none; }
+#rtDispatch.is-ws .dp-bar i.dp-tick {
+    top: 50%; bottom: auto; width: 18px; height: 18px; margin: -9px 0 0 -9px; border-radius: 50%; z-index: 1;
+    display: grid; place-items: center; background: var(--dp-c); color: #0b0f15; border: 1.5px solid var(--rt-panel);
+    font: 700 9.5px/1 var(--rt-font); font-style: normal;
+}
+#rtDispatch.is-ws .dp-bar i.dp-tick.is-bad { background: var(--rt-danger); color: #fff; }
+#rtDispatch.is-ws .dp-load { top: 15px; bottom: 15px; }
+#rtDispatch.is-ws .dp-bend b { font-size: 1rem; }
+
+/* шаги 1–2 и пересборка — выдвижная панель справа (не модальная: рейсы и карта видны) */
+.dp-drawer {
+    position: fixed; z-index: 1058; top: calc(var(--rt-nav-h, 64px) + 8px); right: 8px; bottom: 8px; width: min(760px, calc(100vw - 16px));
+    display: flex; flex-direction: column; border: 1px solid var(--rt-line); border-radius: 18px; background: var(--rt-bg);
+    box-shadow: 0 28px 70px rgba(0, 0, 0, .6);
+}
+.dp-drawer-head { display: flex; align-items: center; gap: 10px; padding: 12px 54px 12px 18px; border-bottom: 1px solid var(--rt-line); position: relative; }
+.dp-drawer-t { margin: 0; font-size: 1.125rem; font-weight: 700; }
+.dp-drawer-body { flex: 1; min-height: 0; overflow: auto; padding: 14px; }
+#rtDispatch .dp-drawer-body .dp-prep { grid-template-columns: minmax(0, 1fr); }
+#rtDispatch .dp-drawer-body .dp-step-tog { display: none; }
+/* №82: «Աշխատանքային էկրան» — в прежнем виде на широком экране (на узком рабочего экрана нет) */
+.dp-view-ws { display: none; }
+@media (min-width: 1101px) { #rtDispatch:not(.is-ws) .dp-view-ws { display: inline-flex; } }
+#rtDispatch.is-ws .dp-view-ws { display: none !important; }
+/* подписи Яндекса и Leaflet справа внизу (их нельзя перекрывать) — левее открытой карточки машины */
+.dp-ws.has-side .leaflet-bottom.leaflet-right { margin-right: calc(min(460px, 44%) + 24px); }
+.dp-ws.has-side .dp-ws-kpi { left: calc((100% - min(460px, 44%)) / 2); }
+/* узкий рабочий экран с карточкой машины — итоги дня переносятся, а не уходят под карточку */
+.dp-ws.has-side .dp-ws-kpi { max-width: calc(100% - min(460px, 44%) - 40px); }
+#rtDispatch .dp-ws.has-side .dp-ws-kpi .dp-stats { flex-wrap: wrap; justify-content: center; }
+#rtDispatch .dp-ws.has-side .dp-ws-kpi .dp-stat { padding: 6px 10px; }
