@@ -11,7 +11,7 @@
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=24">
 <!-- Страница на армянском (ответ владельца №31). Редизайн: тёмная спокойная тема (ответ владельца №51), свои стили поверх routes.css -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=50">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=51">
 {% endblock %}
 
 {% block content %}
@@ -508,5 +508,5 @@
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=1" data-yandex-key="{{ yandex_tiles_key }}"></script>
 <!-- панель «Հարցրու AI-ին» — до страницы: init подключает её (RoutesDispatchAI.attach) -->
 <script src="{{ url_for('static', filename='js/routes_dispatch_ai.js') }}?v=3"></script>
-<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=90"></script>
+<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=91"></script>
 {% endblock %}

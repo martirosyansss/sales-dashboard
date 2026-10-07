@@ -1056,9 +1056,11 @@ body.dp-ws-on .rt-secbar .rt-tabs a { padding-top: 5px; padding-bottom: 5px; }
 
 /* рабочий экран */
 .dp-ws {
-    height: var(--ws-h, calc(100vh - 220px)); margin-bottom: 14px; display: grid; grid-template-rows: minmax(0, 1fr) minmax(210px, 40%);
+    height: var(--ws-h, calc(100vh - 220px)); margin-bottom: 14px; display: grid; grid-template-rows: minmax(0, 1fr) minmax(150px, 30%);
     border: 1px solid var(--rt-line); border-radius: var(--rt-radius); overflow: hidden; background: var(--rt-panel);
 }
+/* шкала свёрнута («Ծալել») — карта на всю высоту рабочего экрана */
+.dp-ws:has(.dp-board.is-folded) { grid-template-rows: minmax(0, 1fr) auto; }
 .dp-ws-main { position: relative; min-height: 0; }
 .dp-ws-map { position: absolute; inset: 0; }
 #rtDispatch .dp-ws-map .dp-mapbox { position: absolute; inset: 0; border: 0; border-radius: 0; box-shadow: none; }
@@ -1067,23 +1069,32 @@ body.dp-ws-on .rt-secbar .rt-tabs a { padding-top: 5px; padding-bottom: 5px; }
 #rtDispatch .dp-ws-map .dp-mapbox-body { position: absolute; inset: 0; height: auto; min-height: 0; }
 #rtDispatch .dp-ws-map .dp-mapbox-body > .dp-map { position: absolute; inset: 0; height: auto; min-height: 0; }
 #rtDispatch .dp-ws-map .dp-mapfilter {
-    position: absolute; z-index: 500; left: 112px; bottom: 12px; max-width: min(720px, 50%); max-height: 50px; flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; border: 1px solid var(--rt-line);
+    position: absolute; z-index: 500; left: 112px; bottom: 10px; max-width: min(640px, 50%); max-height: 42px; padding: 5px 6px; gap: 4px; flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; border: 1px solid var(--rt-line);
     border-radius: 12px; background: rgba(23, 28, 36, .92); backdrop-filter: blur(6px);
 }
-#rtDispatch .dp-ws-map .dp-mapfocus { position: absolute; z-index: 500; left: 64px; top: 78px; max-width: 46%; border: 1px solid var(--rt-line); border-radius: 10px; background: rgba(23, 28, 36, .94); }
+/* на карте меньше надписей: что выбрано — в карточке машины справа, рейс — на шкале; кнопки внизу — цвет и номер машины */
+#rtDispatch .dp-ws-map .dp-mapfocus { display: none !important; }
+#rtDispatch .dp-ws-map .dp-mapfilter .rt-lg { height: 26px; padding: 0 9px; font-size: .75rem; }
+#rtDispatch .dp-ws-map .dp-mapfilter .rt-lg.is-trip, #rtDispatch .dp-ws-map .dp-mapfilter .rt-lg:has(.n-short) .n { display: none; }
+.rt-lg .n-short { display: none; }
+#rtDispatch .dp-ws-map .dp-mapfilter .rt-lg .n-short { display: inline; font-family: var(--rt-mono); }
+#rtDispatch .dp-ws-map .dp-mapfilter .dp-lg { font-size: .75rem; white-space: nowrap; }
+#rtDispatch .dp-ws.has-side .dp-ws-map .dp-mapfilter { display: none; }
+#rtDispatch .dp-ws-map .dp-npin span { width: 22px; height: 22px; margin: 2px; font-size: 11px; border-width: 1.5px; }
+#rtDispatch .dp-ws-map .dp-npin span.is-long { font-size: 9px; }
 /* итоги дня поверх карты (плашка Routific) */
 .dp-ws-kpi { position: absolute; z-index: 600; top: 12px; left: 50%; transform: translateX(-50%); pointer-events: none; }
 #rtDispatch .dp-ws-kpi .dp-stats {
-    pointer-events: auto; display: flex; gap: 0; margin: 0; border: 1px solid var(--rt-line); border-radius: 14px; overflow: hidden;
-    background: rgba(23, 28, 36, .94); box-shadow: 0 10px 30px rgba(0, 0, 0, .45); backdrop-filter: blur(6px);
+    pointer-events: auto; display: flex; gap: 0; margin: 0; border: 1px solid var(--rt-line); border-radius: 10px; overflow: hidden;
+    background: rgba(23, 28, 36, .88); box-shadow: 0 4px 14px rgba(0, 0, 0, .35); backdrop-filter: blur(6px);
 }
-#rtDispatch .dp-ws-kpi .dp-stat { padding: 7px 14px; border: 0; border-left: 1px solid var(--rt-line-soft); text-align: center; min-width: 0; }
+#rtDispatch .dp-ws-kpi .dp-stat { padding: 3px 10px 4px; border: 0; border-left: 1px solid var(--rt-line-soft); text-align: center; min-width: 0; }
 #rtDispatch .dp-ws-kpi .dp-stat:first-child { border-left: 0; }
-#rtDispatch .dp-ws-kpi .dp-stat b { font-size: 1.0625rem; font-family: var(--rt-mono); white-space: nowrap; }
-#rtDispatch .dp-ws-kpi .dp-stat span { font-size: .6875rem; }
+#rtDispatch .dp-ws-kpi .dp-stat b { font-size: .875rem; font-family: var(--rt-mono); white-space: nowrap; }
+#rtDispatch .dp-ws-kpi .dp-stat span { font-size: .625rem; line-height: 1.2; }
 /* выбранная машина — справа поверх карты */
 .dp-ws-side {
-    position: absolute; z-index: 650; top: 12px; right: 12px; bottom: 12px; width: min(460px, 44%); overflow: auto; overscroll-behavior: contain;
+    position: absolute; z-index: 650; top: 10px; right: 10px; bottom: 10px; width: min(400px, 36%); overflow: auto; overscroll-behavior: contain;
     padding: 44px 10px 10px; border: 1px solid var(--rt-line); border-radius: 16px; background: rgba(23, 28, 36, .97);
     box-shadow: 0 18px 50px rgba(0, 0, 0, .55);
 }
@@ -1108,7 +1119,8 @@ body.dp-ws-on .rt-secbar .rt-tabs a { padding-top: 5px; padding-bottom: 5px; }
 /* снизу: машины и шкала дня (таблица слева — подписи шкалы) */
 .dp-ws-bottom { min-height: 0; overflow: auto; border-top: 1px solid var(--rt-line); }
 #rtDispatch .dp-ws-bottom .dp-board { border: 0; border-radius: 0; padding: 8px 14px 6px; background: transparent; }
-#rtDispatch .dp-ws-bottom .dp-board-head { margin-bottom: 2px; }
+/* шкала ниже — прокручивается; заголовок со «Ծալել» остаётся сверху */
+#rtDispatch .dp-ws-bottom .dp-board-head { margin: -8px -14px 2px; padding: 8px 14px 4px; position: sticky; top: 0; z-index: 4; background: var(--rt-panel); }
 #rtDispatch .dp-ws-bottom .dp-board-legend { display: none; }
 #rtDispatch .dp-ws-bottom .dp-board-grid { grid-template-columns: minmax(260px, 300px) minmax(0, 1fr) minmax(70px, auto); }
 #rtDispatch.is-ws .dp-blabel { height: 46px; }
@@ -1152,12 +1164,9 @@ body.dp-ws-on .rt-secbar .rt-tabs a { padding-top: 5px; padding-bottom: 5px; }
 @media (min-width: 1101px) { #rtDispatch:not(.is-ws) .dp-view-ws { display: inline-flex; } }
 #rtDispatch.is-ws .dp-view-ws { display: none !important; }
 /* подписи Яндекса и Leaflet справа внизу (их нельзя перекрывать) — левее открытой карточки машины */
-.dp-ws.has-side .leaflet-bottom.leaflet-right { margin-right: calc(min(460px, 44%) + 24px); }
-.dp-ws.has-side .dp-ws-kpi { left: calc((100% - min(460px, 44%)) / 2); }
-/* узкий рабочий экран с карточкой машины — итоги дня переносятся, а не уходят под карточку */
-.dp-ws.has-side .dp-ws-kpi { max-width: calc(100% - min(460px, 44%) - 40px); }
-#rtDispatch .dp-ws.has-side .dp-ws-kpi .dp-stats { flex-wrap: wrap; justify-content: center; }
-#rtDispatch .dp-ws.has-side .dp-ws-kpi .dp-stat { padding: 6px 10px; }
+.dp-ws.has-side .leaflet-bottom.leaflet-right { margin-right: calc(min(400px, 36%) + 20px); }
+/* выбрана машина — её цифры в карточке справа, итоги дня над картой убраны (вернутся, когда карточку закрыть) */
+.dp-ws.has-side .dp-ws-kpi { display: none; }
 /* №82: ход дня на шкале — кружок магазина по факту «Առաքիչ» (цвет + знак: не только цветом) */
 #rtDispatch .dp-bar i.dp-tick.pg-done { background: var(--rt-ok); }
 #rtDispatch .dp-bar i.dp-tick.pg-partial { background: var(--rt-warn); }

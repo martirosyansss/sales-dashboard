@@ -3072,10 +3072,11 @@
         const box = $('dpLegend');
         box.textContent = '';
         const f = state.mapFocus;
-        const pill = (text, pressed, aria, onClick, color) => {
+        // short — подпись на рабочем экране (только номер машины), trip — кнопка рейса (там её нет: рейс выбирают на шкале)
+        const pill = (text, pressed, aria, onClick, color, short, trip) => {
             const b = document.createElement('button');
             b.type = 'button';
-            b.className = 'rt-lg';
+            b.className = 'rt-lg' + (trip ? ' is-trip' : '');
             b.setAttribute('aria-pressed', String(pressed));
             if (aria) b.setAttribute('aria-label', aria);
             if (color) {
@@ -3089,6 +3090,12 @@
             n.className = 'n';
             n.textContent = text;
             b.appendChild(n);
+            if (short) {
+                const sh = document.createElement('span');
+                sh.className = 'n-short';
+                sh.textContent = short;
+                b.appendChild(sh);
+            }
             // кнопки строятся заново — фокус клавиатуры вернуть на ту же кнопку
             b.addEventListener('click', () => {
                 onClick();
@@ -3103,9 +3110,9 @@
             const one = t.trips.length === 1;
             pill(truckLabel(t) + ' — ' + pl(t.trips.length, 'երթ'),
                  !!f && f.truck === t.car_code && (f.trip == null || one), 'Միայն ' + truckLabel(t),
-                 () => setMapFocus({ truck: t.car_code, trip: null }), color);
+                 () => setMapFocus({ truck: t.car_code, trip: null }), color, t.car_code);
             if (!one) t.trips.forEach((tr, i) => pill('երթ ' + (i + 1), !!f && f.trip === tr.id,
-                'Միայն ' + truckLabel(t) + ', երթ ' + (i + 1), () => setMapFocus({ truck: t.car_code, trip: tr.id }), color));
+                'Միայն ' + truckLabel(t) + ', երթ ' + (i + 1), () => setMapFocus({ truck: t.car_code, trip: tr.id }), color, null, true));
         });
         if (plan.unassigned.length && !f) {
             const lg = document.createElement('span');
