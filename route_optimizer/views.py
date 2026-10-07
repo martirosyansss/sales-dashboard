@@ -198,8 +198,16 @@ class RoutesState:
     # сводка дня «Վարորդներ»: день → (отпечаток данных дня, сводка) — views._scorecard_days
     scorecard_cache: dict[str, tuple[Any, dict[str, Any]]] = field(default_factory=dict)
     scorecard_lock: threading.Lock = field(default_factory=threading.Lock)   # только словарь кэша: расчёт не под ним
-    # неделя для APK (week_score): понедельник → (момент расчёта, scorecard.period недели); расчёт — под своим замком
+    # «Վարորդներ» по машино-дням (под scorecard_lock): (машина, день) → (отпечаток, (превышений, минут стоянок вне
+    # магазинов)) — _scorecard_cars; интервал заправок → (отпечаток, день → км трека машины) и (машина, день) →
+    # (отпечаток, (вид, (литры, норма) | None)) — _scorecard_fuel
+    scorecard_track: dict[tuple[str, str], tuple[Any, Any]] = field(default_factory=dict)
+    fuel_span_cache: dict[tuple[Any, ...], tuple[Any, dict[date, float]]] = field(default_factory=dict)
+    fuel_day_cache: dict[tuple[str, str], tuple[Any, Any]] = field(default_factory=dict)
+    # неделя для APK (week_score): понедельник → (момент расчёта, scorecard.period недели); идущий расчёт — понедельник
+    # → фоновый поток (не больше одного); замок — только словари, расчёт не под ним
     score_week_cache: dict[str, tuple[float, dict[str, Any]]] = field(default_factory=dict)
+    score_week_running: dict[str, threading.Thread] = field(default_factory=dict)
     score_week_lock: threading.Lock = field(default_factory=threading.Lock)
     # рельеф трека машино-дня (№85): (машина, день) → (отпечаток трека и высот, (подъём м, км) или None) — _track_climbs
     track_climbs: dict[tuple[str, str], tuple[Any, Any]] = field(default_factory=dict)
@@ -3152,11 +3160,16 @@ def learning_page() -> str:
     return render_template('routes_learning.html', yandex_tiles_key=_yandex_tiles_key())
 
 
-def _learning_days(state: RoutesState, bundle: Bundle, since: date, until: date
+_DayRead = Callable[[str, str, Any, Mapping[str, Any], list[ac.PlanStop], ac.DayActual], None]
+
+
+def _learning_days(state: RoutesState, bundle: Bundle, since: date, until: date, on_read: _DayRead | None = None
                    ) -> list[tuple[str, date, list[ac.PlanStop], ac.DayActual, dict[str, Any] | None, int, int]]:
     """Машино-дни с треком за since…until: (машина, день, точки плана, факт, черновик развоза, рейсов и точек машины
     по плану). Место точки в объезде — по черновику «Развоза» дня, без него — порядок /day терминала. Факт дня — из
-    кэша, пока не изменились трек, доставки, снимок /day (FleetFacts.version), склад, план машины и окна приёма."""
+    кэша, пока не изменились трек, доставки, снимок /day (FleetFacts.version), склад, план машины и окна приёма.
+    on_read(машина, день, отпечаток кэша, данные FleetFacts.day, точки, факт) — после чтения машино-дня мимо кэша:
+    вызывающий берёт из того же чтения своё (трек «Վարորդներ» — _scorecard_cars), не читая день снова."""
     if state.fleet_facts is None:
         return []
     windows = {cid: w.span() for cid, w in bundle.windows.items()}
@@ -3182,6 +3195,8 @@ def _learning_days(state: RoutesState, bundle: Bundle, since: date, until: date
                 state.actuals_cache[(car, ds)] = (version, stops, actual)
                 while len(state.actuals_cache) > ACTUALS_CACHE_MAX:
                     state.actuals_cache.pop(next(iter(state.actuals_cache)))
+            if on_read is not None:
+                on_read(car, ds, version, data, stops, actual)
         out.append((car, date.fromisoformat(ds), stops, actual, drafts[ds], plan_trips, len(ranks)))
     return out
 
@@ -4179,15 +4194,19 @@ def api_dispatch_progress() -> Any:
 # --- «Վարորդներ»: показатели водителей за период (как driver analytics Omnitracs / Routific; №83, №87 п. 3 и 7) ---
 # Правила — route_optimizer.scorecard. Факт людей — «Առաքիչ» (crew_facts), GPS-факт машин — кэш обучения
 # (_learning_days → actuals_cache) и трек (скорость, стоянки — правила карты машин live), план — отправленный водителям
-# черновик «Развоза», литры — заправки и норма «Նորմ և փաստ». ERP не читается. Сводка дня хранится в памяти, пока не
-# изменился отпечаток данных дня (события — в т.ч. трек, снимки /day, «сдал фактически», правка плана, склад, окна
-# приёма, пороги тревог): прошлые дни не пересчитываются. Доступ: администратор и «Гараж» (№87: гаражу — без денег,
-# сервер их не отдаёт); APK — своя неделя водителя (week_score, courier GET /api/courier/v1/score).
+# черновик «Развоза», литры — заправки и норма «Նորմ և փաստ». ERP не читается. В памяти, пока не изменился отпечаток:
+# сводка дня (события — в т.ч. трек, снимки /day, «сдал фактически», правка плана, склад, окна приёма, пороги тревог),
+# скорость и стоянки машино-дня (отпечаток факта обучения), км треков интервала заправок и литры машино-дня — прошлые
+# дни не пересчитываются и не перечитываются. Доступ: администратор и «Гараж» (№87: гаражу — без денег, сервер их не
+# отдаёт); APK — своя неделя водителя (week_score, courier GET /api/courier/v1/score).
 
 SCORECARD_DEFAULT_DAYS = 30
 SCORECARD_CACHE_DAYS = 400   # сводок дней в памяти; больше — вытесняется самая давняя по записи
+SCORECARD_CACHE_CAR_DAYS = 3000   # машино-дней (трек, литры) и интервалов заправок в памяти — как ACTUALS_CACHE_MAX
 SCORECARD_ROLES = ('admin', 'garage')   # кто видит «Վարորդներ»; деньги (Կանխիկ) — только admin
 SCORE_WEEK_TTL_S = 300.0     # неделя для APK (week_score): готовый расчёт отдаётся терминалам столько секунд
+SCORE_WEEK_WAIT_S = 2.0      # запрос, начавший расчёт недели, ждёт его не дольше; остальные — не ждут вовсе
+SCORE_WEEK_KEEP = 16         # недель в памяти: прежний расчёт отдаётся, пока считается новый
 SCORECARD_FORBIDDEN = 'Մուտքն արգելված է'
 
 
@@ -4195,6 +4214,14 @@ def _scorecard_role() -> str | None:
     """Роль запроса, если ей открыты «Վարորդներ» (вторая линия после гейта app_v2), иначе None."""
     role = g.get('user_role')
     return role if role in SCORECARD_ROLES else None
+
+
+def _bounded(cache: dict[Any, Any], key: Any, value: Any, limit: int) -> None:
+    """Записать в кэш (вызывать под его замком): новая запись — в конец, сверх limit вытесняются самые давние."""
+    cache.pop(key, None)
+    cache[key] = value
+    while len(cache) > limit:
+        cache.pop(next(iter(cache)))
 
 
 @bp.get('/routes/drivers')
@@ -4222,21 +4249,56 @@ def _scorecard_range() -> tuple[tuple[date, date] | None, Any]:
     return (since, until), None
 
 
-def _plan_etas(draft: Mapping[str, Any] | None, car: str, day: date) -> dict[int, datetime]:
-    """Плановое ETA клиентов машины за день — прогноз сборки отправленного водителям плана (live.plan_trips)."""
+def _plan_etas(draft: Mapping[str, Any] | None, car: str, day: date
+               ) -> tuple[dict[int, datetime], list[dict[int, datetime]]]:
+    """Плановое ETA клиентов машины за день — прогноз сборки отправленного водителям плана: (клиент → ETA первого
+    появления (live.plan_trips), по рейсам плана — клиент → ETA в этом рейсе). По рейсам — только если в прогнозе
+    столько же рейсов, сколько в плане (логист не менял рейсы после сборки), иначе []."""
     trips = [list(t.get('stops') or ()) for t in (draft or {}).get('trips') or ()
              if isinstance(t, dict) and t.get('truck') == car]
     pred = (((draft or {}).get('prediction') or {}).get('trucks') or {}).get(car)
-    return {c: e for t in live.plan_trips(trips, pred if isinstance(pred, dict) else None, day) for c, e in t.etas.items()}
+    pred = pred if isinstance(pred, dict) else None
+    first = {c: e for t in live.plan_trips(trips, pred, day) for c, e in t.etas.items()}
+    ptrips = [t for t in (pred or {}).get('trips') or () if isinstance(t, Mapping)]
+    if len(ptrips) != len(trips):
+        return first, []
+    midnight = datetime(day.year, day.month, day.day, tzinfo=ac.YEREVAN)
+    per_trip = []
+    for t in ptrips:
+        etas: dict[int, datetime] = {}
+        for c in t.get('stops') or ():
+            if isinstance(c, list) and len(c) == 2 and isinstance(c[0], int) and not isinstance(c[0], bool) \
+                    and c[0] not in etas and (m := learning._hhmm(c[1])) is not None:
+                etas[c[0]] = midnight + timedelta(minutes=m)
+        per_trip.append(etas)
+    return first, per_trip
+
+
+def _stop_etas(draft: Mapping[str, Any] | None, car: str, day: date, stops: Sequence[ac.PlanStop],
+               actual: ac.DayActual) -> dict[str, datetime]:
+    """Плановое ETA обслуженных точек машино-дня: ETA клиента в рейсе плана с номером фактического рейса визита
+    (тяжёлый заказ, разбитый на рейсы, — у каждой точки своё ETA); клиента в этом рейсе плана нет (лишний заезд на
+    склад сдвинул номера) или по рейсам сравнивать нельзя — ETA его первого появления в плане."""
+    first, per_trip = _plan_etas(draft, car, day)
+    by_key = {s.key: s for s in stops}
+    out: dict[str, datetime] = {}
+    for key, vi in actual.served:
+        s = by_key.get(key)
+        if s is None or s.customer_id is None:
+            continue
+        k = actual.visits[vi].trip
+        eta = per_trip[k].get(s.customer_id) if k < len(per_trip) else None
+        eta = eta if eta is not None else first.get(s.customer_id)
+        if eta is not None:
+            out[key] = eta
+    return out
 
 
 def _eta_errors(car: str, day: date, stops: Sequence[ac.PlanStop], actual: ac.DayActual,
                 draft: Mapping[str, Any] | None) -> list[float]:
     """Ошибки планового ETA обслуженных точек машино-дня, минуты (scorecard.eta_error): прибытие по GPS − ETA."""
-    eta = _plan_etas(draft, car, day)
     marks = ac.stop_marks(actual, stops, day)
-    return [sc.eta_error(marks[s.key], eta[s.customer_id]) for s in stops
-            if s.key in marks and s.customer_id is not None and s.customer_id in eta]
+    return [sc.eta_error(marks[k], eta) for k, eta in _stop_etas(draft, car, day, stops, actual).items() if k in marks]
 
 
 def _offroute_end(actual: ac.DayActual) -> datetime | None:
@@ -4248,27 +4310,57 @@ def _offroute_end(actual: ac.DayActual) -> datetime | None:
     return max((v.leave for v in actual.visits), default=None)
 
 
+def _track_metrics(track: Sequence[Sequence[Any]], actual: ac.DayActual, day: date, depot: Point | None,
+                   rules: live.Rules) -> tuple[int | None, float | None]:
+    """(превышений скорости, минут стоянок вне магазинов сверх порога) машино-дня по чистому треку с порогами карты
+    машин: live.speed_alerts; live.stop_alerts от первого выезда до _offroute_end, обед — сверх обеда. Трека нет —
+    (None, None)."""
+    pts = ac.clean_track(learning.track_fixes(track))
+    if not pts:
+        return None, None
+    speed = len(live.speed_alerts(pts, rules, False))   # type: ignore[arg-type]
+    deps = live.departures(pts, actual, depot)
+    stays = live.stop_alerts(actual, day, rules, deps[0] if deps else None, _offroute_end(actual), None, False)
+    return speed, math.fsum(max(0.0, a['minutes'] - (rules.lunch_min if a['lunch'] else 0.0)) for a in stays)
+
+
 def _scorecard_cars(state: RoutesState, bundle: Bundle, day: date, rules: live.Rules) -> dict[str, sc.CarDay]:
     """GPS-факт машин дня: км и отметки визитов (actuals.stop_marks: прибытие, окно) — из кэша обучения
-    (_learning_days); плановые ETA (_plan_etas); превышения скорости (live.speed_alerts) и минуты стоянок вне
-    магазинов сверх порога (live.stop_alerts: обед — сверх обеда; от первого выезда до _offroute_end) — по чистому
-    треку дня с порогами карты машин; порядок объезда — actuals.visit_metrics."""
+    (_learning_days); плановые ETA (_plan_etas, по точке — _stop_etas); скорость и стоянки (_track_metrics) — из
+    кэша scorecard_track, пока не сменились отпечаток факта обучения, склад и пороги: трек холодного дня читается один
+    раз (тем же чтением, что и факт обучения, — on_read); порядок объезда — actuals.visit_metrics."""
     out: dict[str, sc.CarDay] = {}
     facts = state.fleet_facts
     if facts is None:
         return out
-    for car, _, stops, actual, draft, _, _ in _learning_days(state, bundle, day, day):
-        pts = ac.clean_track(learning.track_fixes(facts.day(car, day.isoformat())['track']))
-        speed: int | None = None
-        offroute: float | None = None
-        if pts:
-            speed = len(live.speed_alerts(pts, rules, False))   # type: ignore[arg-type]
-            deps = live.departures(pts, actual, bundle.depot)
-            stays = live.stop_alerts(actual, day, rules, deps[0] if deps else None, _offroute_end(actual), None, False)
-            offroute = math.fsum(max(0.0, a['minutes'] - (rules.lunch_min if a['lunch'] else 0.0)) for a in stays)
+    ds = day.isoformat()
+    rkey = (bundle.depot, rules.speed_kmh, rules.speed_sec, rules.stop_min, rules.lunch_min, rules.lunch_window)
+
+    def remember(car: str, d: str, version: Any, data: Mapping[str, Any], stops: list[ac.PlanStop],
+                 actual: ac.DayActual) -> None:
+        got = _track_metrics(data['track'], actual, day, bundle.depot, rules)
+        with state.scorecard_lock:
+            _bounded(state.scorecard_track, (car, d), ((version, rkey), got), SCORECARD_CACHE_CAR_DAYS)
+
+    for car, _, stops, actual, draft, _, _ in _learning_days(state, bundle, day, day, remember):
+        with state.actuals_lock:
+            cached = state.actuals_cache.get((car, ds))
+        version = cached[0] if cached is not None else None
+        with state.scorecard_lock:
+            hit = state.scorecard_track.get((car, ds))
+        if hit is not None and version is not None and hit[0] == (version, rkey):
+            speed, offroute = hit[1]
+        else:   # факт обучения был в кэше, а скорости и стоянок нет (пороги сменились, вытеснено) — одно чтение
+            speed, offroute = _track_metrics(facts.day(car, ds)['track'], actual, day, bundle.depot, rules)
+            if version is not None:
+                with state.scorecard_lock:
+                    _bounded(state.scorecard_track, (car, ds), ((version, rkey), (speed, offroute)),
+                             SCORECARD_CACHE_CAR_DAYS)
         vm = ac.visit_metrics(actual, stops, day)
-        out[car] = sc.CarDay(actual.km_gps, ac.stop_marks(actual, stops, day), _plan_etas(draft, car, day), speed,
-                             offroute, (vm.order_changes, vm.ordered) if vm.ordered else None)
+        first, _ = _plan_etas(draft, car, day)
+        out[car] = sc.CarDay(actual.km_gps, ac.stop_marks(actual, stops, day), first, speed, offroute,
+                             (vm.order_changes, vm.ordered) if vm.ordered else None,
+                             _stop_etas(draft, car, day, stops, actual))
     return out
 
 
@@ -4294,10 +4386,7 @@ def _scorecard_days(state: RoutesState, bundle: Bundle, since: date, until: date
             day = date.fromisoformat(ds)
             summary = sc.day_summary(state.crew_facts.day(ds), _scorecard_cars(state, bundle, day, rules))
             with state.scorecard_lock:
-                state.scorecard_cache.pop(ds, None)
-                state.scorecard_cache[ds] = (key, summary)
-                while len(state.scorecard_cache) > SCORECARD_CACHE_DAYS:
-                    state.scorecard_cache.pop(next(iter(state.scorecard_cache)))
+                _bounded(state.scorecard_cache, ds, (key, summary), SCORECARD_CACHE_DAYS)
         out.append((date.fromisoformat(ds), summary))
     return out
 
@@ -4309,10 +4398,15 @@ def _scorecard_fuel(state: RoutesState, bundle: Bundle, since: date, until: date
     в «Նորմ և փաստ»: км GPS × норма машины (_fuel_norms) + литры подъёма трека (№85, _terrain_norm); высот трека нет —
     без подъёма. Правило покрытия гаража (GARAGE_TERRAIN_MIN_COVER): треки машины покрывают не меньше этой доли км
     интервала — иначе расход интервала описывает в основном пробег без трека, значения нет. Счётчики: terrain / flat
-    — дни с нормой по рельефу и без, uncovered — мало трека в интервале, no_norm — у машины нет нормы."""
+    — дни с нормой по рельефу и без, uncovered — мало трека в интервале, no_norm — у машины нет нормы.
+
+    Кэш (scorecard_lock): км треков машины по дням интервала — пока у его дней те же отпечатки «Առաքիչ» (события, в т.ч.
+    трек и снимки /day — crew_facts.versions), правки плана и склад (fuel_span_cache); результат машино-дня — пока те
+    же интервал с его отпечатком, норма, тоннаж и тайлы высот (fuel_day_cache). Тёплый вызов: заправки, отпечатки
+    дней и правки плана — по одному запросу на весь диапазон, норма машин; ни трека, ни факта обучения."""
     counts = {'terrain': 0, 'flat': 0, 'uncovered': 0, 'no_norm': 0}
-    facts = state.fleet_facts
-    if facts is None:
+    facts, crew = state.fleet_facts, state.crew_facts
+    if facts is None or crew is None:
         return {}, counts
     lookback = (since - timedelta(days=GARAGE_REFUEL_LOOKBACK_DAYS)).isoformat()
     refuels = [r for r in facts.refuels(lookback) if (r.get('eff_date') or r.get('date') or '') >= lookback]
@@ -4323,41 +4417,90 @@ def _scorecard_fuel(state: RoutesState, bundle: Bundle, since: date, until: date
     spans = [x for x in spans if x[1] <= until and x[2] >= since]
     if not spans:
         return {}, counts
-    km = {(car, d): actual.km_gps for car, d, _, actual, _, _, _ in
-          _learning_days(state, bundle, min(x[1] for x in spans), max(x[2] for x in spans))}
-    climbs = _track_climbs(state, since, until)
+    lo, hi = min(x[1] for x in spans), max(x[2] for x in spans)
+    versions = crew.versions(lo.isoformat(), hi.isoformat())
+    revs = state.store.dispatch_revs(lo.isoformat(), hi.isoformat())
+
+    def span_key(j: int) -> tuple[Any, ...]:
+        iv = spans[j][0]
+        return iv.car_code, iv.start, iv.end, iv.liters, iv.km
+
+    def span_fp(j: int) -> tuple[Any, ...]:
+        a, b = spans[j][1], spans[j][2]
+        days = [(a + timedelta(days=i)).isoformat() for i in range((b - a).days + 1)]
+        return bundle.depot, tuple((d, versions.get(d), revs.get(d)) for d in days)
+
+    km: dict[tuple[str, date], float] = {}
+    fps = {j: span_fp(j) for j in range(len(spans))}
+    todo = []
+    for j in range(len(spans)):
+        with state.scorecard_lock:
+            hit = state.fuel_span_cache.get(span_key(j))
+        if hit is not None and hit[0] == fps[j]:
+            km.update({(spans[j][0].car_code, d): v for d, v in hit[1].items()})
+        else:
+            todo.append(j)
+    if todo:
+        got = {(car, d): actual.km_gps for car, d, _, actual, _, _, _ in
+               _learning_days(state, bundle, min(spans[j][1] for j in todo), max(spans[j][2] for j in todo))}
+        for j in todo:
+            iv, a, b = spans[j]
+            mine = {d: v for (c, d), v in got.items() if c == iv.car_code and a <= d <= b}
+            km.update({(iv.car_code, d): v for d, v in mine.items()})
+            with state.scorecard_lock:
+                _bounded(state.fuel_span_cache, span_key(j), (fps[j], mine), SCORECARD_CACHE_CAR_DAYS)
+    tracked = {j: math.fsum(v for (c, d), v in km.items() if c == iv.car_code and a <= d <= b)
+               for j, (iv, a, b) in enumerate(spans)}
     norms = _fuel_norms(state, bundle, (until + timedelta(days=1)).isoformat())
     erp_capacity = _peek_car_capacity(state)
-    tracked: dict[int, float] = {}   # интервал (номер в spans) → км треков машины в нём
-
-    def covered(j: int) -> float:
-        if j not in tracked:
-            iv, a, b = spans[j]
-            tracked[j] = math.fsum(v for (c, x), v in km.items() if c == iv.car_code and a <= x <= b)
-        return tracked[j]
+    try:
+        dem_key = (dem.elev_params(), dem.dem_signature()) if dem.terrain_supported() else None
+    except Exception:   # тайлы высот недоступны — как в _track_climbs: без рельефа, не ошибка
+        dem_key = None
     out: dict[tuple[str, str], tuple[float, float]] = {}
+    pending: list[tuple[str, date, int, Any, float, float]] = []   # (машина, день, интервал, отпечаток, км, норма)
     for (car, d), k in sorted(km.items()):
         if not since <= d <= until or k <= 0:
             continue
+        # день заправки посреди дня — граница двух интервалов: берётся первый (как learning.daily_l100); км такого дня
+        # входят в покрытие обоих интервалов (дневной трек на части до и после заправки не делится)
         j = next((i for i, x in enumerate(spans) if x[0].car_code == car and x[1] <= d <= x[2]), None)
         if j is None:
             continue
         iv = spans[j][0]
-        if covered(j) < GARAGE_TERRAIN_MIN_COVER * iv.km:
-            counts['uncovered'] += 1
-            continue
         l100 = (norms.get(car) or {}).get('l100')
-        if l100 is None:
-            counts['no_norm'] += 1
+        capacity = bundle.truck_capacity(car, erp_capacity)
+        fp = (span_key(j), fps[j], tracked[j], k, l100, capacity, dem_key)
+        with state.scorecard_lock:
+            hit = state.fuel_day_cache.get((car, d.isoformat()))
+        if hit is not None and hit[0] == fp:
+            kind, value = hit[1]
+        elif tracked[j] < GARAGE_TERRAIN_MIN_COVER * iv.km or l100 is None:
+            kind, value = ('uncovered' if tracked[j] < GARAGE_TERRAIN_MIN_COVER * iv.km else 'no_norm'), None
+            with state.scorecard_lock:
+                _bounded(state.fuel_day_cache, (car, d.isoformat()), (fp, (kind, value)), SCORECARD_CACHE_CAR_DAYS)
+        else:
+            pending.append((car, d, j, fp, k, l100))
             continue
-        hill = _terrain_norm(bundle.truck_capacity(car, erp_capacity), k, l100, climbs.get((car, d.isoformat())))
-        counts['terrain' if hill is not None else 'flat'] += 1
-        out[(d.isoformat(), car)] = (k * iv.l100 / 100.0, hill[1] if hill is not None else k * l100 / 100.0)
+        counts[kind] += 1
+        if value is not None:
+            out[(d.isoformat(), car)] = value
+    if pending:   # рельеф — только для машино-дней без готового результата (_track_climbs читает трек мимо своего кэша)
+        climbs = _track_climbs(state, min(p[1] for p in pending), max(p[1] for p in pending))
+        for car, d, j, fp, k, l100 in pending:
+            hill = _terrain_norm(bundle.truck_capacity(car, erp_capacity), k, l100, climbs.get((car, d.isoformat())))
+            kind = 'terrain' if hill is not None else 'flat'
+            value = (k * spans[j][0].l100 / 100.0, hill[1] if hill is not None else k * l100 / 100.0)
+            with state.scorecard_lock:
+                _bounded(state.fuel_day_cache, (car, d.isoformat()), (fp, (kind, value)), SCORECARD_CACHE_CAR_DAYS)
+            counts[kind] += 1
+            out[(d.isoformat(), car)] = value
     return out, counts
 
 
 def _scorecard(state: RoutesState, since: date, until: date) -> dict[str, Any]:
-    """Показатели людей за since…until (scorecard.period) с литрами к норме; coverage.fuel — счётчики _scorecard_fuel."""
+    """Показатели людей за since…until (scorecard.period) с литрами к норме; coverage.fuel — счётчики
+    _scorecard_fuel."""
     assert state.crew_facts is not None
     bundle = state.store.load()
     fuel, fuel_cov = _scorecard_fuel(state, bundle, since, until)
@@ -4395,23 +4538,48 @@ def api_drivers_scorecard() -> Any:
                     'gps': state.fleet_facts is not None, 'cash': cash, 'rules': sc.rules(), **body})
 
 
-def week_score(state: RoutesState | None, driver_id: int, monday: date) -> dict[str, Any] | None:
-    """Своя неделя водителя для APK (courier GET /api/courier/v1/score, контракт §10): показатели за пн–вс, балл и
-    место среди водителей с ≥ scorecard.MIN_DAYS днями — без имён и id других. Неделя считается одна на всех
-    терминалов и отдаётся из памяти SCORE_WEEK_TTL_S секунд (сводки дней — свой кэш). None — «Վարորդներ» не подключены
-    (нет раздела «Маршруты» или «Առաքիչ»)."""
+def _week_job(app: Any, state: RoutesState, key: str, monday: date) -> None:
+    """Фоновый расчёт недели для APK (week_score): результат — в score_week_cache; сбой — в журнал (следующий запрос
+    начнёт расчёт заново). Контекст приложения — для факта «Առաքիչ» (courier.scorecard берёт базу из него)."""
+    try:
+        with app.app_context():
+            body = _scorecard(state, monday, monday + timedelta(days=6))
+        with state.score_week_lock:
+            _bounded(state.score_week_cache, key, (time.monotonic(), body), SCORE_WEEK_KEEP)
+    except Exception:
+        logger.exception('[Routes] Վարորդներ: неделя %s для APK не посчитана', key)
+    finally:
+        with state.score_week_lock:
+            state.score_week_running.pop(key, None)
+
+
+def week_score(state: RoutesState | None, driver_id: int, monday: date) -> tuple[str, dict[str, Any] | None]:
+    """Своя неделя водителя для APK (courier GET /api/courier/v1/score, контракт §10): ('ok', ответ) — показатели за
+    пн–вс, балл и место среди водителей с ≥ scorecard.MIN_DAYS днями, без имён и id других; ('busy', None) — неделя
+    считается, прежнего расчёта нет (APK повторит позже); ('off', None) — «Վարորդներ» не подключены (нет раздела
+    «Маршруты» или «Առաքիչ»). Неделя считается одна на все терминалы, в одном фоновом потоке и одна за раз (другие
+    недели ждут своей очереди): запрос, начавший расчёт, ждёт его не дольше SCORE_WEEK_WAIT_S, остальные не ждут —
+    получают прежний расчёт этой недели, если он есть. Готовый расчёт отдаётся SCORE_WEEK_TTL_S секунд, потом
+    пересчитывается (до готовности — прежний). Потоки сервера, нужные терминалам, расчёт не держит."""
     if state is None or getattr(state, 'crew_facts', None) is None:
-        return None
+        return 'off', None
     key = monday.isoformat()
     sunday = monday + timedelta(days=6)
-    with state.score_week_lock:   # один расчёт недели за раз: терминалы, пришедшие следом, берут готовое
-        now = time.monotonic()
-        for k in [k for k, (at, _) in state.score_week_cache.items() if now - at > SCORE_WEEK_TTL_S]:
-            del state.score_week_cache[k]
+    with state.score_week_lock:
         hit = state.score_week_cache.get(key)
-        if hit is None:
-            hit = (time.monotonic(), _scorecard(state, monday, sunday))
-            state.score_week_cache[key] = hit
+        fresh = hit is not None and time.monotonic() - hit[0] <= SCORE_WEEK_TTL_S
+        job = None
+        if not fresh and not state.score_week_running:
+            job = threading.Thread(target=_week_job, args=(current_app._get_current_object(), state, key, monday),
+                                   name='routes-score-week', daemon=True)
+            state.score_week_running[key] = job
+            job.start()
+    if job is not None:
+        job.join(SCORE_WEEK_WAIT_S)
+        with state.score_week_lock:
+            hit = state.score_week_cache.get(key)
+    if hit is None:
+        return 'busy', None
     body = hit[1]
     row = next((r for r in body['drivers'] if r['role'] == 'driver' and r['id'] == driver_id), None)
     me: dict[str, Any] = {'days': 0, 'stops': 0, 'on_time_pct': None, 'on_time_n': 0, 'on_time_of': 0,
@@ -4423,8 +4591,9 @@ def week_score(state: RoutesState | None, driver_id: int, monday: date) -> dict[
                   speed_events=row['speed_events'], speed_per_100km=row['speed_per_100km'],
                   offroute_stop_min=row['offroute_min'], liters_vs_norm_pct=row['liters_vs_norm_pct'],
                   score=row['score'], parts={k: dict(v) for k, v in row['parts'].items()})
-    return {'week_from': key, 'week_to': sunday.isoformat(), 'me': me, 'rank': row['rank'] if row is not None else None,
-            'of': body['ranked'], 'enough_data': bool(row is not None and row['enough_data']), 'min_days': sc.MIN_DAYS}
+    return 'ok', {'week_from': key, 'week_to': sunday.isoformat(), 'me': me,
+                  'rank': row['rank'] if row is not None else None, 'of': body['ranked'],
+                  'enough_data': bool(row is not None and row['enough_data']), 'min_days': sc.MIN_DAYS}
 
 
 # --- Журнал гаража «Ավտոտնակ» (№53, docs/plans/garage-journal-plan.md) ---

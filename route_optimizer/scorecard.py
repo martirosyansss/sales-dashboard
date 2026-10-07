@@ -16,7 +16,8 @@ actuals.visit_metrics); литры к норме машино-дня счита�
   приёма, не позже конца окна и обслуживание не раньше начала (actuals.stop_marks). n/N — вовремя / оценено;
 - опоздание точки — max(прибытие − ETA, если больше допуска; прибытие − конец окна); Միջին ուշացում — среднее по
   опоздавшим (раньше окна — «рано», в среднее не входит);
-- Կմ — км машины дня по GPS (actuals.reconstruct), делённые между людьми одной роли по доле закрытых ими точек машины;
+- Կմ — км машины дня по GPS (actuals.reconstruct) × доля человека в закрытых точках машины за день (с известным
+  водителем): два водителя одной машины делят км; առաքիչ, бывший на 2 точках из 3, получает 2/3 км машины;
 - показатели машины за день (скорость, стоянки, порядок, литры) — водителю машины дня (правило выше), не առաքիչ:
   - Արագություն — превышения скорости (дольше live_speed_sec выше live_speed_kmh подряд), раз и раз на 100 км GPS
     машино-дней с треком;
@@ -27,7 +28,8 @@ actuals.visit_metrics); литры к норме машино-дня счита�
     (1 − actuals.order_changes / ordered);
   - Վառելիք — (литры по заправкам − норма) / норма за машино-дни с покрытыми треком заправками (views._scorecard_fuel);
 - Միավոր (0–100) — средневзвешенное подоценок WEIGHTS, каждая — линейно по SCALE; показатель без данных выпадает, веса
-  остальных перенормируются; меньше MIN_DAYS дней — «քիչ տվյալ»: без балла и места (только водители);
+  остальных перенормируются; меньше MIN_DAYS дней или ни одного показателя с данными — «քիչ տվյալ» (enough_data
+  false): без балла и места (только водители);
 - точность ETA (п. 7) — по точкам с плановым ETA и прибытием по GPS: |прибытие − ETA| ≤ ETA_OK_MIN — точно, медиана и
   P80 абсолютной ошибки, раньше и позже допуска.
 Неполные данные не выдумываются: нет GPS — км, «вовремя», скорость, стоянки нет; нет плана — точка не оценивается;
@@ -83,14 +85,17 @@ class CrewFacts(Protocol):
 class CarDay:
     """GPS-факт и план машины за день: км по GPS; точка → отметка обслуживающего визита (actuals.stop_marks: arrive,
     late_min — позже конца окна, early — обслуживание раньше начала окна, window — у точки есть окно); клиент →
-    плановое ETA; превышений скорости и минут стоянок вне магазинов (None — трека нет); порядок объезда — (точек не в
-    плановом порядке, обслуженных с плановым местом) или None (сравнивать не с чем)."""
+    плановое ETA (первое появление клиента в плане); превышений скорости и минут стоянок вне магазинов (None — трека
+    нет); порядок объезда — (точек не в плановом порядке, обслуженных с плановым местом) или None (сравнивать не с
+    чем); stop_eta — плановое ETA точки в её рейсе (тяжёлый заказ в нескольких рейсах — своё ETA у каждого рейса),
+    главнее eta клиента."""
     km: float
     marks: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
     eta: Mapping[int, datetime] = field(default_factory=dict)
     speed_events: int | None = None
     offroute_min: float | None = None
     order: tuple[int, int] | None = None
+    stop_eta: Mapping[str, datetime] = field(default_factory=dict)
 
 
 def _hm(t: datetime | None) -> str | None:
@@ -148,7 +153,11 @@ def day_summary(crew: Mapping[str, Any], cars: Mapping[str, CarDay], slack: floa
         car = s['car_code']
         g = cars.get(car)
         mark = g.marks.get(s['stop_id']) if g is not None else None
-        eta = g.eta.get(s.get('customer_id')) if g is not None and s.get('customer_id') is not None else None
+        eta = None
+        if g is not None:
+            eta = g.stop_eta.get(s['stop_id'])
+            if eta is None and s.get('customer_id') is not None:
+                eta = g.eta.get(s['customer_id'])
         if mark is not None and eta is not None:
             errors.append(eta_error(mark, eta))   # точность плана — по всем точкам, и без известного водителя
         did = s.get('driver_id') if s.get('driver_id') is not None else main.get(car)
@@ -194,14 +203,12 @@ def day_summary(crew: Mapping[str, Any], cars: Mapping[str, CarDay], slack: floa
         driven = share.get((car, 'driver'))
         if not driven:
             cov['km_unassigned'] += g.km
+            continue   # закрытых точек с известным водителем нет — ни км, ни показатели машины никому
+        total = sum(driven.values())   # все закрытые точки машины с известным водителем: доля и у առաքիչ — от них
         for role in ROLES:
-            by = share.get((car, role)) or {}
-            total = sum(by.values())
-            for key, n in by.items():
+            for key, n in (share.get((car, role)) or {}).items():
                 e = people[key]
                 e['km'] = (e['km'] or 0.0) + g.km * n / total
-        if car not in main:
-            continue   # водителя машины дня нет — её скорость, стоянки и порядок никому
         e = people[f'driver:{main[car]}']
         if g.speed_events is not None:
             e['speed_days'] += 1
@@ -315,7 +322,8 @@ def _metrics(r: Mapping[str, Any]) -> dict[str, Any]:
             'speed_per_100km': round(100.0 * r['speed_events'] / r['speed_km'], 2) if r['speed_km'] > 0 else None,
             'offroute_min': round(r['offroute_min']) if r['stop_days'] else None,
             'offroute_min_per_day': round(r['offroute_min'] / r['stop_days'], 1) if r['stop_days'] else None,
-            'liters_vs_norm_pct': round(100.0 * (r['fuel_fact_l'] - fuel_norm) / fuel_norm, 1) if fuel_norm > 0 else None}
+            'liters_vs_norm_pct': (round(100.0 * (r['fuel_fact_l'] - fuel_norm) / fuel_norm, 1)
+                                   if fuel_norm > 0 else None)}
 
 
 def period(days: Sequence[tuple[date, Mapping[str, Any]]], names: Mapping[int, str],
@@ -333,7 +341,8 @@ def period(days: Sequence[tuple[date, Mapping[str, Any]]], names: Mapping[int, s
         errors.extend(summary.get('eta_errors') or ())
         for key, e in summary['people'].items():
             role, pid = key.split(':', 1)
-            r = rows.setdefault(key, {'key': key, 'id': int(pid), 'role': role, 'name': names.get(int(pid)) or f'#{pid}',
+            r = rows.setdefault(key, {'key': key, 'id': int(pid), 'role': role,
+                                      'name': names.get(int(pid)) or f'#{pid}',
                                       'days': 0, **{k: 0 for k in SUMS}, 'delay_sum': 0.0, 'km': None, 'km_days': 0,
                                       'cash': None, 'tare': 0.0, 'fuel_days': 0, 'fuel_fact_l': 0.0,
                                       'fuel_norm_l': 0.0, 'detail': []})
@@ -365,10 +374,11 @@ def period(days: Sequence[tuple[date, Mapping[str, Any]]], names: Mapping[int, s
                 d.update(fuel_fact_l=round(fact, 1), fuel_norm_l=round(norm, 1),
                          liters_vs_norm_pct=_pct(fact - norm, norm))
         m = _metrics(r)
-        enough = r['days'] >= MIN_DAYS
         total, parts = score({'on_time': m['on_time_pct'], 'order': m['order_pct'], 'speed': m['speed_per_100km'],
                               'stops': m['offroute_min_per_day'], 'liters': m['liters_vs_norm_pct']}) \
             if r['role'] == 'driver' else (None, {})
+        # хватает данных: не меньше MIN_DAYS дней и (у водителя) хотя бы один показатель балла с данными
+        enough = r['days'] >= MIN_DAYS and (r['role'] != 'driver' or total is not None)
         late_n = r.pop('late_n')
         r.pop('delay_sum')
         out.append({**r, **m, 'late': late_n, 'km': _round(r['km']), 'cash': _cash_json(r['cash']),

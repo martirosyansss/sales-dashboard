@@ -92,9 +92,9 @@ def test_day_summary_people_attribution_and_coverage():
     assert d1['late'] == [{'stop_id': 'S:B', 'name': 'Խանութ S:B', 'car': 'CAR1', 'planned': '10:20', 'arrive': '11:00',
                            'delay_min': 40.0, 'reason': 'eta'}]
     assert d1['km'] == 30.0 and d1['tare'] == 5.0 and d1['cash']['short'] == 400.0
-    # առաքիչ — отдельной строкой: только точки, где он был; км — его доля среди точек помощников машины (все)
+    # առաքիչ — отдельной строкой: только точки, где он был; км — его доля во всех закрытых точках машины (2 из 3)
     h = p['helper:2']
-    assert (h['stops'], h['partial'], h['refused'], h['rated'], h['on_time'], h['km']) == (2, 1, 0, 2, 1, 30.0)
+    assert (h['stops'], h['partial'], h['refused'], h['rated'], h['on_time'], h['km']) == (2, 1, 0, 2, 1, 20.0)
     assert h['cash'] is None and h['tare'] == 0
     # covered без автора — водителю машины дня (больше всех закрытых точек)
     d3 = p['driver:3']
@@ -285,6 +285,9 @@ def sc_app(app_v2, monkeypatch):
     monkeypatch.setattr(state, 'fleet_facts', fleet)
     monkeypatch.setattr(state, 'scorecard_cache', {})
     monkeypatch.setattr(state, 'score_week_cache', {})
+    monkeypatch.setattr(state, 'score_week_running', {})
+    for name in ('scorecard_track', 'fuel_span_cache', 'fuel_day_cache'):
+        monkeypatch.setattr(state, name, {})
     monkeypatch.setattr(state, 'actuals_cache', {})
     monkeypatch.setattr(views, '_yerevan_now', lambda: NOW)
     hm = lambda t: t.strftime('%H:%M')   # noqa: E731
@@ -347,7 +350,7 @@ def test_api_scorecard_for_admin(client, sc_app):
     assert sorted(crew.calls) == [D1, D1, D2, D2]
     page = client.get('/routes/drivers', base_url=LAN)
     html = page.get_data(as_text=True)
-    assert page.status_code == 200 and 'js/routes_drivers.js?v=2' in html and 'css/routes_drivers.css?v=2' in html
+    assert page.status_code == 200 and 'js/routes_drivers.js?v=3' in html and 'css/routes_drivers.css?v=2' in html
     assert 'data-key="cash"' in html and 'data-cash="1"' in html
     assert '<a href="/routes/drivers" aria-current="page">Վարորդներ</a>' in html
 
@@ -486,44 +489,146 @@ def test_eta_accuracy_math():
 
 # ============================== литры к норме (views._scorecard_fuel) ==============================
 
-def test_scorecard_fuel_coverage_rule_terrain_and_api(client, sc_app, monkeypatch):
+def test_scorecard_fuel_coverage_rule_terrain_cache_and_api(client, sc_app, monkeypatch):
     from route_optimizer import learning, views
-    app, _, _ = sc_app
+    app, crew, _ = sc_app
     state = app.app.extensions['route_optimizer']
     bundle = state.store.load()
     d1 = date.fromisoformat(D1)
     kg = views._learning_days(state, bundle, d1, d1)[0][3].km_gps   # км GPS машино-дня — как у расчёта
-    ivs = []
-    real_norms = views._fuel_norms
+    ivs, calls = [], []
+    real_norms, real_days = views._fuel_norms, views._learning_days
     monkeypatch.setattr(views.learning, 'fuel_intervals', lambda refuels, rejected=None: list(ivs))
-    monkeypatch.setattr(views, '_track_climbs', lambda st, since, until: {})
+    monkeypatch.setattr(views, '_learning_days', lambda *a, **k: calls.append('days') or real_days(*a, **k))
+    climbs = {}
+    monkeypatch.setattr(views, '_track_climbs', lambda st, since, until: calls.append('climbs') or dict(climbs))
     iv = lambda liters, km: learning.Interval('CAR1', T(6), T(21), liters, km)   # noqa: E731
+    fuel_of = lambda: views._scorecard_fuel(state, bundle, d1, d1)   # noqa: E731
     ivs[:] = [iv(kg * 0.36, kg)]   # трек — весь интервал; расход 36 л/100 против нормы машины 30 (без рельефа)
-    fuel, cov = views._scorecard_fuel(state, bundle, d1, d1)
+    fuel, cov = fuel_of()
     fact, norm = fuel[(D1, 'CAR1')]
     assert fact == pytest.approx(kg * 0.36) and norm == pytest.approx(kg * 0.30)
-    assert cov == {'terrain': 0, 'flat': 1, 'uncovered': 0, 'no_norm': 0}
+    assert cov == {'terrain': 0, 'flat': 1, 'uncovered': 0, 'no_norm': 0} and calls == ['days', 'climbs']
+    # тёплый вызов: ни факта обучения (трека), ни рельефа — из кэша по отпечатку
+    calls.clear()
+    assert fuel_of() == (fuel, cov) and calls == []
+    # новые события дня (трек, отметки) — отпечаток другой: пересчёт
+    crew.ver[D1] = (2,)
+    assert fuel_of() == (fuel, cov) and calls == ['days', 'climbs']
     ivs[:] = [iv(kg * 0.9, kg * 2.0)]   # трек — ровно половина км интервала: ещё покрыто (правило гаража ≥ 50 %)
-    assert views._scorecard_fuel(state, bundle, d1, d1)[1]['flat'] == 1
+    assert fuel_of()[1]['flat'] == 1
     ivs[:] = [iv(kg * 0.9, kg * 2.5)]   # 40 % — значения нет
-    assert views._scorecard_fuel(state, bundle, d1, d1) == ({}, {'terrain': 0, 'flat': 0, 'uncovered': 1, 'no_norm': 0})
-    # рельеф трека (№85): норма — как в «Նորմ և փաստ», км × норма + литры подъёма
-    monkeypatch.setattr(views, '_track_climbs', lambda st, since, until: {('CAR1', D1): (150.0, kg)})
+    assert fuel_of() == ({}, {'terrain': 0, 'flat': 0, 'uncovered': 1, 'no_norm': 0})
+    # рельеф трека (№85): норма — как в «Նորմ և փաստ», км × норма + литры подъёма. Рельеф подменён в обход отпечатка
+    # (трек и тайлы те же) — кэш машино-дня сброшен
+    climbs[('CAR1', D1)] = (150.0, kg)
+    monkeypatch.setattr(state, 'fuel_day_cache', {})
     ivs[:] = [iv(kg * 0.36, kg)]
-    fuel, cov = views._scorecard_fuel(state, bundle, d1, d1)
+    fuel, cov = fuel_of()
     want = views._terrain_norm(10000.0, kg, 30.0, (150.0, kg))
     assert want is not None and want[1] > kg * 0.30 and fuel[(D1, 'CAR1')][1] == pytest.approx(want[1])
     assert cov['terrain'] == 1
-    monkeypatch.setattr(views, '_fuel_norms', lambda st, b, before: {})   # у машины нет нормы
-    assert views._scorecard_fuel(state, bundle, d1, d1) == ({}, {'terrain': 0, 'flat': 0, 'uncovered': 0, 'no_norm': 1})
+    monkeypatch.setattr(views, '_fuel_norms', lambda st, b, before: {})   # у машины нет нормы — другой отпечаток
+    assert fuel_of() == ({}, {'terrain': 0, 'flat': 0, 'uncovered': 0, 'no_norm': 1})
     # в API — литры водителю машины дня
     monkeypatch.setattr(views, '_fuel_norms', real_norms)
-    monkeypatch.setattr(views, '_track_climbs', lambda st, since, until: {})
+    climbs.clear()
+    monkeypatch.setattr(state, 'fuel_day_cache', {})
     _session_as(client, 'boss', base=LAN)
     body = client.get(f'/api/routes/drivers/scorecard?from={D1}&to={D1}', base_url=LAN).get_json()
     r1 = {x['key']: x for x in body['drivers']}['driver:1']
     assert (r1['liters_vs_norm_pct'], r1['fuel_days']) == (20.0, 1) and r1['detail'][0]['liters_vs_norm_pct'] == 20.0
     assert body['coverage']['fuel']['flat'] == 1 and 'liters' in r1['parts']
+
+
+def test_scorecard_reads_track_once_per_cold_day(client, sc_app, monkeypatch):
+    """Холодный день: факт обучения, скорость и стоянки — одним чтением трека; тёплый — без чтения; сменились пороги —
+    сводка дня пересчитывается, факт обучения из кэша, трек читается один раз."""
+    from route_optimizer import views
+    state = sc_app[0].app.extensions['route_optimizer']
+    fleet, reads = state.fleet_facts, []
+    real = fleet.day
+    monkeypatch.setattr(fleet, 'day', lambda car, ds: reads.append((car, ds)) or real(car, ds))
+    _session_as(client, 'boss', base=LAN)
+    url = f'/api/routes/drivers/scorecard?from={D1}&to={D2}'
+    r1 = lambda body: {x['key']: x for x in body['drivers']}['driver:1']   # noqa: E731
+    assert r1(client.get(url, base_url=LAN).get_json())['speed_events'] == 1 and reads == [('CAR1', D1)]
+    client.get(url, base_url=LAN)
+    assert reads == [('CAR1', D1)]
+    monkeypatch.setattr(views.live.Rules, 'from_settings', classmethod(lambda cls, s: cls(speed_kmh=200.0)))
+    assert r1(client.get(url, base_url=LAN).get_json())['speed_events'] == 0 and reads == [('CAR1', D1)] * 2
+
+
+def test_stop_etas_take_eta_of_actual_trip():
+    """Тяжёлый заказ в двух рейсах: у точки второго рейса — ETA второго рейса плана, не первого появления клиента."""
+    from route_optimizer import actuals as ac
+    from route_optimizer import views
+    day = date(2026, 10, 1)
+    draft = {'trips': [{'truck': 'CAR1', 'stops': [11, 12]}, {'truck': 'CAR1', 'stops': [11]},
+                       {'truck': 'CAR2', 'stops': [21]}],
+             'prediction': {'trucks': {'CAR1': {'trips': [{'stops': [[11, '10:00'], [12, '10:30']]},
+                                                          {'stops': [[11, '13:00']]}]}}}}
+    stops = [ac.PlanStop('S:1', 11, A, 100.0), ac.PlanStop('S:2', 12, B, 100.0), ac.PlanStop('S:3', 11, A, 100.0),
+             ac.PlanStop('S:4', 13, C, 1.0)]
+    v = lambda keys, hh, trip: ac.Visit(keys, T(hh), T(hh, 5), trip, False)   # noqa: E731
+    actual = ac.DayActual(10, 5.0, T(9), T(15), visits=(v(('S:1',), 10, 0), v(('S:2',), 11, 0), v(('S:3',), 13, 1),
+                                                        v(('S:4',), 14, 1)),
+                          served=(('S:1', 0), ('S:2', 1), ('S:3', 2), ('S:4', 3)))
+    hm = lambda got: {k: e.strftime('%H:%M') for k, e in got.items()}   # noqa: E731
+    assert hm(views._stop_etas(draft, 'CAR1', day, stops, actual)) == {'S:1': '10:00', 'S:2': '10:30', 'S:3': '13:00'}
+    # лишний заезд на склад: визит в 3-м фактическом рейсе — такого рейса в плане нет, ETA первого появления
+    shifted = ac.DayActual(10, 5.0, T(9), T(15), visits=(v(('S:3',), 13, 2),), served=(('S:3', 0),))
+    assert hm(views._stop_etas(draft, 'CAR1', day, stops, shifted)) == {'S:3': '10:00'}
+    # рейсов в прогнозе меньше, чем в плане (логист добавил рейс после сборки) — по рейсам сравнивать нельзя
+    draft['trips'].append({'truck': 'CAR1', 'stops': [12]})
+    assert hm(views._stop_etas(draft, 'CAR1', day, stops, actual))['S:3'] == '10:00'
+    # day_summary: ETA точки главнее ETA клиента
+    crew = {'stops': [cstop('S:3', 'CAR1', 'full', 1, None, 11)]}
+    s = sc.day_summary(crew, {'CAR1': sc.CarDay(5.0, {'S:3': mark(T(13, 5))}, {11: T(10)}, stop_eta={'S:3': T(13)})})
+    assert s['eta_errors'] == [5.0] and s['people']['driver:1']['on_time'] == 1
+
+
+def test_three_days_without_metrics_is_not_enough():
+    """≥ 3 дней, но ни одного показателя балла (нет GPS, плана, заправок) — «քիչ տվյալ», а не «данных хватает»."""
+    days = [(date(2026, 10, 5) + timedelta(days=i), _day(7)) for i in range(3)]
+    r = sc.period(days, {})['drivers'][0]
+    assert (r['days'], r['score'], r['rank'], r['enough_data'], r['parts']) == (3, None, None, False, {})
+    h = sc.period([(d, sc.day_summary({'stops': [cstop(f'S:{d}', 'CAR1', 'full', 1, 2)]}, {})) for d, _ in days], {})
+    assert {x['key']: x['enough_data'] for x in h['drivers']} == {'driver:1': False, 'helper:2': True}   # առաքիչ — по дням
+
+
+def test_apk_score_computes_in_background_without_holding_requests(client, apk, monkeypatch):
+    """Расчёт недели — в фоне и один: запросы не держат потоки сервера — 503 `score` с retry_after, пока прежнего
+    расчёта нет; другая неделя ждёт своей очереди; после TTL, пока идёт пересчёт, — прежний расчёт."""
+    import threading
+    import time
+    from route_optimizer import views
+    gate = threading.Event()
+    fake = views._scorecard
+    monkeypatch.setattr(views, '_scorecard', lambda st, since, until: gate.wait(10) and fake(st, since, until))
+    monkeypatch.setattr(views, 'SCORE_WEEK_WAIT_S', 0.05)
+    aram = apk.login('CAR1', '1111')
+    t0 = time.monotonic()
+    r = client.get(f'{API}/score', headers=aram, base_url=LAN)
+    assert r.status_code == 503 and r.get_json()['error'] == 'score' and r.get_json()['retry_after'] == 30
+    job = apk.state.score_week_running['2026-10-05']
+    r = client.get(f'{API}/score?week=2026-09-28', headers=aram, base_url=LAN)   # другая неделя — своя очередь
+    assert r.status_code == 503 and r.get_json()['error'] == 'score'
+    assert list(apk.state.score_week_running) == ['2026-10-05'] and time.monotonic() - t0 < 2
+    gate.set()
+    job.join(5)
+    r = client.get(f'{API}/score', headers=aram, base_url=LAN)
+    assert r.status_code == 200 and r.get_json()['me']['days'] == 3 and apk.calls == [(date(2026, 10, 5), date(2026, 10, 11))]
+    # TTL вышел: пересчёт в фоне, а терминал сразу получает прежний расчёт
+    gate.clear()
+    monkeypatch.setattr(views, 'SCORE_WEEK_TTL_S', -1.0)
+    t0 = time.monotonic()
+    r = client.get(f'{API}/score', headers=aram, base_url=LAN)
+    assert r.status_code == 200 and r.get_json()['me']['days'] == 3 and time.monotonic() - t0 < 2
+    job = apk.state.score_week_running['2026-10-05']
+    gate.set()
+    job.join(5)
+    assert len(apk.calls) == 2 and not apk.state.score_week_running
 
 
 def test_learning_api_eta_tile(client, sc_app):
@@ -592,9 +697,13 @@ def test_scorecard_from_internet_garage_only(client, sc_app):
     for path, method in (('/api/routes/drivers/scorecard', 'POST'), ('/routes/drivers', 'POST'),
                          ('/routes/drivers/', 'GET'), ('/api/routes/drivers/Scorecard', 'GET'),
                          ('/api/routes/drivers-x', 'GET'), ('/api/routes/drivers/../pay', 'GET'),
-                         ('/static/js/routes_drivers.js/', 'GET')):
+                         ('/static/js/routes_drivers.js/', 'GET'), ('/api/routes/drivers', 'GET'),
+                         ('/api/routes/drivers/scorecard/', 'GET'), ('/api/routes/drivers/other', 'GET')):
         assert not app._public_path_allowed(path, method), (path, method)
     assert not app._garage_path_allowed('/api/routes/drivers/scorecard', 'POST')
+    # гаражу — ровно один путь API «Վարորդներ»: новый путь под тем же префиксом сам не откроется
+    for path in ('/api/routes/drivers', '/api/routes/drivers/other', '/api/routes/drivers/scorecard/x'):
+        assert not app._garage_path_allowed(path, 'GET'), path
     _session_as(client, 'garage1')   # с телефона через туннель
     page = client.get('/routes/drivers', base_url=PUBLIC)
     assert page.status_code == 200

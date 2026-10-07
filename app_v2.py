@@ -420,22 +420,22 @@ def _restricted_path_allowed(path: str, method: str) -> bool:
 
 
 # ---- Роль 'garage': только журнал гаража, карта машин и «Վարորդներ» (default-deny) -------------------
-# Страница журнала (GET) и её API (GET и POST); карта «Մեքենաները առցանց» (№76) и «Վարորդներ» (№87; деньги гаражу
-# не отдаёт сам API — route_optimizer.views.api_drivers_scorecard) и их API — только GET; статика и выход
-# пропускаются раньше. Всё прочее — 403 JSON или переход на страницу гаража. Границы пути — по сегменту:
-# '/api/routes/garage-x', '/api/routes/live-x' и '/api/routes/drivers-x' не совпадают.
+# Страница журнала (GET) и её API (GET и POST); карта «Մեքենաները առցանց» (№76) и её API — только GET; «Վարորդներ»
+# (№87) — страница и ровно один путь API, только GET (деньги гаражу не отдаёт сам API —
+# route_optimizer.views.api_drivers_scorecard); статика и выход пропускаются раньше. Всё прочее — 403 JSON или переход
+# на страницу гаража. Границы пути — по сегменту: '/api/routes/garage-x' и '/api/routes/live-x' не совпадают.
 _GARAGE_PAGE = '/routes/garage'
 _GARAGE_API = '/api/routes/garage'
 _LIVE_PAGE = '/routes/live'
 _LIVE_API = '/api/routes/live'
 _DRIVERS_PAGE = '/routes/drivers'
-_DRIVERS_API = '/api/routes/drivers'
+_DRIVERS_API = '/api/routes/drivers/scorecard'   # точный путь: новый API «Վարորդներ» гаражу сам не откроется
 
 
 def _garage_path_allowed(path: str, method: str) -> bool:
-    if method in ('GET', 'HEAD') and path in (_GARAGE_PAGE, _LIVE_PAGE, _DRIVERS_PAGE):
+    if method in ('GET', 'HEAD') and path in (_GARAGE_PAGE, _LIVE_PAGE, _DRIVERS_PAGE, _DRIVERS_API):
         return True
-    if method in ('GET', 'HEAD') and any(path == p or path.startswith(p + '/') for p in (_LIVE_API, _DRIVERS_API)):
+    if method in ('GET', 'HEAD') and (path == _LIVE_API or path.startswith(_LIVE_API + '/')):
         return True
     return method in ('GET', 'HEAD', 'POST') and (path == _GARAGE_API or path.startswith(_GARAGE_API + '/'))
 
@@ -488,9 +488,9 @@ _PUBLIC_STATIC = frozenset((
     '/static/css/routes_warehouse.css', '/static/js/routes_warehouse.js',                     # routes_warehouse.html (№78)
     '/static/css/routes_drivers.css', '/static/js/routes_drivers.js',                         # routes_drivers.html (№87)
 ))
-# API журнала, карты машин (№76) и «Վարորդներ» (№87) снаружи — только простые сегменты (путь уже раскодирован
-# сервером): без '..', '//', '%', '\', регистра.
-_PUBLIC_GARAGE_API_RE = re.compile(r'/api/routes/(?:garage|live|drivers)(?:/[a-z0-9_-]+)*')
+# API журнала и карты машин (№76) снаружи — только простые сегменты (путь уже раскодирован сервером): без '..',
+# '//', '%', '\', регистра. «Վարորդներ» (№87) — только точный путь _DRIVERS_API.
+_PUBLIC_GARAGE_API_RE = re.compile(r'/api/routes/(?:garage|live)(?:/[a-z0-9_-]+)*')
 _PUBLIC_WAREHOUSE_API_RE = re.compile(r'/api/routes/warehouse(?:/[a-z0-9_-]+)*')   # склад (№78) — так же
 
 
@@ -501,7 +501,7 @@ def _public_path_allowed(path: str, method: str) -> bool:
         return method in ('GET', 'HEAD', 'POST')
     if path == '/logout':
         return method == 'POST'
-    if path in (_GARAGE_PAGE, _LIVE_PAGE, _DRIVERS_PAGE) or _PUBLIC_GARAGE_API_RE.fullmatch(path):
+    if path in (_GARAGE_PAGE, _LIVE_PAGE, _DRIVERS_PAGE, _DRIVERS_API) or _PUBLIC_GARAGE_API_RE.fullmatch(path):
         return _garage_path_allowed(path, method)
     if path == _WAREHOUSE_PAGE or _PUBLIC_WAREHOUSE_API_RE.fullmatch(path):
         return _warehouse_path_allowed(path, method)

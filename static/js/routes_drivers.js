@@ -130,7 +130,11 @@
     }
     function scoreTitle(r) {
         if (r.role !== 'driver') return 'Առաքիչը միավոր չի ստանում';
-        if (!r.enough_data) return 'Քիչ տվյալ՝ ' + fmt(r.days) + ' օր (պետք է առնվազն ' + fmt(state.data.rules.min_days) + ')';
+        if (!r.enough_data) {
+            return num(r.days) < num(state.data.rules.min_days)
+                ? 'Քիչ տվյալ՝ ' + fmt(r.days) + ' օր (պետք է առնվազն ' + fmt(state.data.rules.min_days) + ')'
+                : 'Քիչ տվյալ՝ ցուցանիշներից ոչ մեկի համար տվյալ չկա (GPS, պլան, լիցքավորումներ)';
+        }
         const lines = Object.entries(r.parts || {}).map(([k, p]) => partLine(k, p));
         return lines.length ? lines.join('\n') : 'Ցուցանիշների տվյալ չկա';
     }
