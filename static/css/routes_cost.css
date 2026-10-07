@@ -1,0 +1,57 @@
+/* «Առաքման արժեք» /routes/cost — поверх routes.css (тема, карточки, плитки .rt-kpi); свои классы .ct-* */
+#ctPage { max-width: 1280px; margin: 0 auto; }
+
+.ct-periods { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+.ct-period[aria-pressed="true"] { background: var(--rt-acc-glow); border-color: var(--rt-acc-dim); color: var(--rt-acc); }
+.ct-range { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 0 14px; margin-top: 12px; }
+.ct-range .rt-field { margin-bottom: 0; }
+.ct-range .rt-field-hint { align-self: center; }
+.ct-sub { font-size: .9375rem; color: var(--rt-fg-dim); }
+
+.ct-margin-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 0 14px; }
+.ct-margin-row .rt-field { margin-bottom: 0; }
+.ct-margin-row .rt-input { width: 160px; }
+.ct-saved { font-size: .9375rem; color: var(--rt-ok); align-self: center; }
+
+.ct-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; margin-bottom: 12px; }
+.ct-search { width: min(360px, 100%); }
+.ct-only-red { display: inline-flex; align-items: center; gap: 8px; font-size: .9375rem; color: var(--rt-fg-dim); cursor: pointer; }
+
+/* таблица прокручивается внутри карточки — страница не шире экрана */
+.ct-scroll { max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch;
+    border: 1px solid var(--rt-line); border-radius: var(--rt-radius-sm); }
+.ct-table { min-width: 1040px; }
+.ct-trips { min-width: 860px; }
+.rt-numtable.ct-table thead th:nth-child(2) { text-align: left; }
+.ct-table thead th { padding: 0; }
+.ct-sort {
+    all: unset; box-sizing: border-box; display: block; width: 100%; padding: 8px 12px; cursor: pointer; text-align: inherit;
+    font: inherit; color: inherit;
+}
+.ct-sort:focus-visible { outline: 2px solid var(--rt-acc); outline-offset: -2px; }
+.ct-table thead th[aria-sort] .ct-sort { color: var(--rt-fg); }
+.ct-table thead th[aria-sort="descending"] .ct-sort::after { content: " ↓"; }
+.ct-table thead th[aria-sort="ascending"] .ct-sort::after { content: " ↑"; }
+.ct-table td.txt { white-space: nowrap; }
+.ct-table td.ct-name { white-space: normal; min-width: 220px; }
+.ct-table tbody tr { cursor: pointer; }
+.ct-table tbody tr:hover td { background: var(--rt-panel-2); }
+.ct-table tbody tr.is-open td { background: var(--rt-acc-glow); }
+.ct-table tbody tr.is-red td:first-child { box-shadow: inset 3px 0 0 var(--rt-danger); }
+.ct-table td.ct-cost { font-weight: 700; }
+.ct-table .rt-badge { margin-left: 6px; vertical-align: 1px; }
+.ct-table tfoot td { font-weight: 700; border-top: 1px solid var(--rt-line); padding: 10px 12px; }
+.ct-legend { margin: 10px 0 0; }
+.ct-close { margin-left: auto; }
+
+.ct-how { display: grid; gap: 8px; font-size: .9375rem; line-height: 1.55; max-width: 92ch; }
+.ct-how p { margin: 0; }
+.ct-how b { color: var(--rt-fg); }
+.ct-how .note { color: var(--rt-fg-mute); font-size: .875rem; }
+
+@media (max-width: 575px) {
+    .ct-periods { flex: 1 1 100%; }
+    .ct-periods .rt-btn { flex: 1 1 auto; }
+    #ctCsv { flex: 1 1 100%; }
+    .ct-margin-row .rt-btn { flex: 1 1 auto; }
+}

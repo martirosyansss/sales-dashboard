@@ -1,0 +1,186 @@
+{% extends "base_v2.html" %}
+
+{% block title %}Առաքման արժեք — Sales Dashboard{% endblock %}
+
+{% block extra_css %}
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400..700&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+Armenian:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=24">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_cost.css') }}?v=1">
+{% endblock %}
+
+{% block content %}
+<!-- Вкладки раздела — одинаковая полоса на всех страницах «Маршрутов» (одно место, один вид) -->
+<div class="rt-page rt-secbar" lang="hy">
+    <nav class="rt-tabs" aria-label="Երթուղիների բաժիններ">
+        <a href="/routes">Ակնարկ</a>
+        <a href="/routes/optimize">Օպտիմալացում</a>
+        <a href="/routes/dispatch">Առաքում</a>
+        <a href="/routes/learning">Ուսուցում</a>
+        <a href="/routes/settings">Կարգավորումներ</a>
+        <a href="/routes/garage">Ավտոտնակ</a>
+        <a href="/routes/pay">Աշխատավարձ</a>
+        <a href="/routes/araqich">Առաքիչների KPI</a>
+        <a href="/routes/cost" aria-current="page">Առաքման արժեք</a>
+    </nav>
+</div>
+<!-- «Առաքման արժեք» (№87, п. 6; route_optimizer/cost_to_serve.py): ֏ доставки магазина против его продаж; только администратору -->
+<div class="rt-page" id="ctPage" lang="hy">
+
+    <header class="rt-head">
+        <div class="rt-head-row">
+            <h1 class="rt-title">Առաքման արժեք</h1>
+            <div class="rt-head-tools">
+                <div class="ct-periods" role="group" aria-label="Ժամանակահատված">
+                    <button type="button" class="rt-btn rt-btn-ghost ct-period" data-days="30" aria-pressed="true">30 օր</button>
+                    <button type="button" class="rt-btn rt-btn-ghost ct-period" data-days="90" aria-pressed="false">90 օր</button>
+                    <button type="button" class="rt-btn rt-btn-ghost ct-period" data-days="custom" aria-pressed="false" aria-controls="ctRange">Ընտրել…</button>
+                </div>
+                <button type="button" id="ctCsv" class="rt-btn rt-btn-ghost">
+                    <i class="fas fa-file-csv" aria-hidden="true"></i>Ներբեռնել CSV</button>
+            </div>
+        </div>
+        <form id="ctRange" class="ct-range" hidden novalidate>
+            <div class="rt-field">
+                <label for="ctFrom">Սկսած</label>
+                <input id="ctFrom" class="rt-input" type="date" required>
+            </div>
+            <div class="rt-field">
+                <label for="ctTo">Մինչև</label>
+                <input id="ctTo" class="rt-input" type="date" required>
+            </div>
+            <button type="submit" class="rt-btn rt-btn-primary">Ցույց տալ</button>
+            <span class="rt-field-hint">Ոչ ավելի, քան 92 օր։</span>
+        </form>
+        <p class="rt-head-lead">Յուրաքանչյուր խանութի առաքման ծախսը՝ դիզել, մեքենայի մաշվածք և առաքիչի գործավարձ, համեմատած
+            նրա վաճառքի հետ։ Կարմիր են այն խանութները, որտեղ առաքումը վաճառքի ավելի մեծ մասն է կազմում, քան միջին հավելագինը։
+            Սեղմեք խանութի վրա՝ նրա երթերը տեսնելու համար։</p>
+    </header>
+
+    <div id="ctStatus" class="rt-sr-only" role="status" aria-live="polite"></div>
+    <div id="ctAlert" class="rt-alert" role="alert" hidden>
+        <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
+        <span id="ctAlertText" class="rt-alert-text"></span>
+    </div>
+    <div id="ctWarn" class="rt-alert is-warn" role="status" hidden>
+        <i class="fas fa-circle-exclamation" aria-hidden="true"></i>
+        <span id="ctWarnText" class="rt-alert-text"></span>
+    </div>
+
+    <!-- Итог периода -->
+    <div class="rt-kpis" id="ctKpis" aria-live="polite">
+        <div class="rt-kpi">
+            <span class="rt-kpi-label"><i class="fas fa-truck" aria-hidden="true"></i>Առաքում ընդամենը</span>
+            <span class="rt-kpi-val"><span class="now" id="ctTotal">—</span><span class="unit">֏</span></span>
+            <span class="rt-kpi-sub" id="ctTotalSub"></span>
+        </div>
+        <div class="rt-kpi" id="ctPctTile">
+            <span class="rt-kpi-label"><i class="fas fa-percent" aria-hidden="true"></i>Վաճառքից</span>
+            <span class="rt-kpi-val"><span class="now" id="ctPct">—</span><span class="unit">%</span></span>
+            <span class="rt-kpi-sub" id="ctPctSub"></span>
+        </div>
+        <div class="rt-kpi" id="ctRedTile">
+            <span class="rt-kpi-label"><i class="fas fa-store-slash" aria-hidden="true"></i>Կարմիր խանութներ</span>
+            <span class="rt-kpi-val"><span class="now" id="ctRed">—</span></span>
+            <span class="rt-kpi-sub" id="ctRedSub"></span>
+        </div>
+    </div>
+
+    <!-- Средняя наценка: route_optimizer.db (ERP не меняется) -->
+    <form class="rt-card ct-margin" id="ctMarginForm" aria-labelledby="ctMarginTitle" novalidate>
+        <div class="ct-margin-row">
+            <div class="rt-field">
+                <label for="ctMargin" id="ctMarginTitle">Միջին հավելագին, %</label>
+                <input id="ctMargin" name="value" class="rt-input" type="number" min="0" max="100" step="0.1" inputmode="decimal"
+                       aria-describedby="ctMarginHint ctMarginErr">
+                <span id="ctMarginErr" class="rt-ferr"></span>
+            </div>
+            <button type="submit" id="ctMarginSave" class="rt-btn rt-btn-primary" disabled>
+                <i class="fas fa-floppy-disk" aria-hidden="true"></i>Պահպանել</button>
+            <span id="ctMarginSaved" class="ct-saved" role="status"></span>
+        </div>
+        <p id="ctMarginHint" class="rt-field-hint">Խանութը կարմիր է, եթե առաքումը վաճառքի ավելի մեծ տոկոս է, քան այս թիվը։
+            Դատարկ՝ կարմիր չկա։ ERP-ում ոչինչ չի փոխվում։</p>
+        <p id="ctMarginChanged" class="rt-field-hint"></p>
+    </form>
+
+    <section class="rt-card" aria-labelledby="ctTableTitle">
+        <div class="rt-card-head">
+            <h2 class="rt-card-title" id="ctTableTitle"><i class="fas fa-store" aria-hidden="true"></i>Խանութներ</h2>
+            <span id="ctSub" class="ct-sub"></span>
+        </div>
+        <div class="ct-tools">
+            <label for="ctSearch" class="rt-sr-only">Որոնել խանութ</label>
+            <input id="ctSearch" class="rt-input ct-search" type="search" placeholder="Որոնել՝ անուն կամ կոդ" autocomplete="off" spellcheck="false">
+            <label class="ct-only-red"><input type="checkbox" id="ctOnlyRed"> Միայն կարմիրները</label>
+        </div>
+        <div id="ctLoading" class="rt-loading"><div class="rt-spinner"></div><span id="ctLoadingText">Հաշվում եմ…</span></div>
+        <p id="ctEmpty" class="rt-empty" hidden>Այս ժամանակահատվածում երթեր չկան։</p>
+        <div id="ctTableWrap" class="ct-scroll" hidden>
+            <table class="rt-numtable ct-table">
+                <caption class="rt-sr-only">Խանութների առաքման արժեքը ժամանակահատվածի համար</caption>
+                <thead>
+                    <tr>
+                        <th scope="col" data-key="code"><button type="button" class="ct-sort">Կոդ</button></th>
+                        <th scope="col" data-key="name" class="ct-name"><button type="button" class="ct-sort">Խանութ</button></th>
+                        <th scope="col" data-key="visits"><button type="button" class="ct-sort">Այցեր</button></th>
+                        <th scope="col" data-key="fuel"><button type="button" class="ct-sort">Դիզել և մաշվածք</button></th>
+                        <th scope="col" data-key="crew"><button type="button" class="ct-sort">Առաքիչ</button></th>
+                        <th scope="col" data-key="cost" aria-sort="descending"><button type="button" class="ct-sort">Առաքում, ֏</button></th>
+                        <th scope="col" data-key="per_visit"><button type="button" class="ct-sort">Մեկ այցը, ֏</button></th>
+                        <th scope="col" data-key="sales"><button type="button" class="ct-sort">Վաճառք, ֏</button></th>
+                        <th scope="col" data-key="pct"><button type="button" class="ct-sort">Վաճառքից, %</button></th>
+                    </tr>
+                </thead>
+                <tbody id="ctRows"></tbody>
+                <tfoot id="ctTotals"></tfoot>
+            </table>
+        </div>
+        <p id="ctNoMatch" class="rt-empty" hidden>Որոնմանը համապատասխան խանութ չկա։</p>
+    </section>
+
+    <!-- Рейсы выбранного магазина -->
+    <section class="rt-card" id="ctTrips" aria-labelledby="ctTripsTitle" hidden tabindex="-1">
+        <div class="rt-card-head">
+            <h2 class="rt-card-title" id="ctTripsTitle"></h2>
+            <button type="button" id="ctTripsClose" class="rt-btn rt-btn-ghost rt-btn-sm ct-close">
+                <i class="fas fa-xmark" aria-hidden="true"></i>Փակել</button>
+        </div>
+        <div class="ct-scroll">
+            <table class="rt-numtable ct-trips">
+                <thead>
+                    <tr><th scope="col">Ամսաթիվ</th><th scope="col">Մեքենա</th><th scope="col">Երթ</th>
+                        <th scope="col">Դիզել և մաշվածք, ֏</th><th scope="col">Առաքիչ, ֏</th><th scope="col">Ընդամենը, ֏</th>
+                        <th scope="col">Շեղում, կմ</th><th scope="col">Երթի դիզել և մաշվածք, ֏</th><th scope="col">Խանութներ երթում</th></tr>
+                </thead>
+                <tbody id="ctTripRows"></tbody>
+            </table>
+        </div>
+        <p class="rt-field-hint ct-legend">Շեղում՝ քանի կմ-ով է երթը երկար այս խանութի պատճառով (երթը առանց նրա՝ նույն հերթականությամբ)։</p>
+    </section>
+
+    <!-- Как считается (формулы — route_optimizer/cost_to_serve.py) -->
+    <details class="rt-fold">
+        <summary><span class="rt-fold-t"><i class="fas fa-calculator" aria-hidden="true"></i>Ինչպես է հաշվվում</span></summary>
+        <div class="rt-fold-body ct-how" id="ctHow">
+            <p><b>Երթի ծախսը</b> = դիզել (լիտրեր՝ «Առաքում»-ի նույն մոդելով՝ ճանապարհներ, բեռ, ռելիեֆ) × դիզելի գին + մաշվածք
+                ֏/կմ։ Այն բաժանվում է երթի խանութներին ըստ այն բանի, թե որքանով կնվազեր երթի ծախսը առանց տվյալ խանութի։ Խանութների
+                մասերի գումարը ճիշտ հավասար է երթի ծախսին։ Ճանապարհին ընկած խանութը ստանում է փոքր, բայց ոչ զրոյական մաս։</p>
+            <p><b>Առաքիչ</b> = <span id="ctRatePoint">—</span> ֏ մեկ կետի համար + <span id="ctRateTonne">—</span> ֏ մեկ տոննայի
+                համար («Աշխատավարձ»-ի դրույքները)՝ ուղղակի խանութին։ Ամսական ֆիքսը և նվազագույնը խանութներին չեն բաշխվում։</p>
+            <p><b>Վաճառքից, %</b> = առաքում ÷ խանութի վաճառք × 100։ Վաճառքը՝ ERP-ի բոլոր անցկացված ապրանքագրերը այն օրերին,
+                որոնց համար կա առաքման պլան (առանց պլանի օրերի առաքումը հայտնի չէ)։ Ընդհանուր տոկոսը՝ միայն երթերում եղած
+                խանութների վաճառքից։</p>
+            <p class="note">Երթերը՝ վարորդներին ուղարկված պլանից։ Մինչև առաջին ուղարկված պլանի օրը՝ պահպանված պլանից, իսկ դրանից
+                հետո չուղարկված պլանը (և այսօրվա չուղարկվածը) հաշվի չի առնվում։ Բեռը՝ ERP-ի
+                առաքիչների ապրանքագրերից։ Գները՝ այսօրվա. դիզելը՝ <span id="ctFuel">—</span> ֏/լ (կարգավորումներ), մաշվածքը՝
+                ավտոտնակից։ Առանց կոորդինատի խանութը երթի մեջ չի մտնում՝ նրան հասնում է միայն առաքիչի մասը։</p>
+        </div>
+    </details>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/routes_cost.js') }}?v=1"></script>
+{% endblock %}
