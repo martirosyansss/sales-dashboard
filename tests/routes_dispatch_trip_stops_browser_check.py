@@ -7,13 +7,18 @@
 как в tests/routes_dispatch_browser_check.py (магазины 101, 102, 104 и 999 без точки); порт 8773 на 127.0.0.1.
 
 A сборка рейсов, карточки машин раскрыты: у каждого магазина рейса — «×», у каждого рейса — «Խանութ»;
-B «×» у первого магазина → одна правка trip_stops remove [cid], подсказка «հանվեց» с «Չեղարկել», магазин — в
+B «×» у первого магазина → окно «Ինչու՞» (5 причин, «Հանել» недоступна без причины, ничего не отправлено);
+  «Միայն այսօր» → одна правка trip_stops remove [cid], подсказка «հանվեց» с «Չեղարկել», магазин — в
   «Դեռ երթերում չեն», фокус остался в рейсе («×» соседней строки или «Խանութ»);
 C «Չեղարկել» в подсказке → правка undo, магазин снова в рейсе;
 D снова «×», затем «Խանութ» у рейса → окно: магазин в группе «Դեռ երթերում չեն», «Ավելացնել» недоступна; поиск по
   коду оставляет одну строку, Enter в поиске ничего не отправляет; галочка → «Ընտրված՝ 1» и «Ավելացնել (1)»; клик → правка add [cid], окно закрыто,
   магазин в этом рейсе;
 E окно и Esc → закрыто без запроса правки;
+M «Փոփոխել» → «Հանել երթից» в «Տեղափոխել…» → окно «Ինչու՞», «Չեղարկել» — ничего не отправлено;
+R «×» → «эта машина не может» → правка stop_rule deny_truck, подсказка «Կանոնը պահպանվեց», допуск магазина deny
+  [машина] сохранён; в окне «Խանութ» того рейса магазин в «Չի կարելի ավելացնել» с причиной и ссылкой на правило;
+  «×» → «никогда» → stop_rule never, магазин ушёл из дня, id в settings.dispatch_customers_off;
 P прошедший день (часы на день позже): ни «×», ни «Խանութ»;
 H телефон 390×860, вкладка «Երթեր»: «×» видна, не меньше 36 px и внутри карточки, горизонтальной прокрутки нет.
 Ошибки страницы и консоли — провал (кроме внешних ресурсов, как в основной проверке).
@@ -33,6 +38,7 @@ sys.path.insert(0, str(ROOT / 'tests'))
 
 from routes_dispatch_browser_check import TILE_PNG, FakeClient, build_app, is_ignorable  # noqa: E402
 from route_optimizer import views  # noqa: E402
+from route_optimizer.actuals import YEREVAN  # noqa: E402
 from playwright.sync_api import sync_playwright  # noqa: E402
 from werkzeug.serving import make_server  # noqa: E402
 
@@ -54,6 +60,7 @@ def main() -> int:
 
     app = build_app(tempfile.mkdtemp(prefix='dispatch-trip-stops-'), FakeClient())
     views._clock = lambda: datetime(2026, 9, 30, 18, 0)     # «сейчас» — накануне DAY: день не прошедший, правки доступны
+    views._yerevan_now = lambda: datetime(2026, 9, 30, 18, 0, tzinfo=YEREVAN)   # и для правок с правилом (stop_rule)
     server = make_server('127.0.0.1', PORT, app, threaded=True)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     errors, posts = [], []
@@ -82,6 +89,13 @@ def main() -> int:
                     if head.get_attribute('aria-expanded') != 'true':
                         head.click()
 
+            def pick_why(key, trucks=()):
+                page.locator(f'#dpWhyOpts input[value="{key}"]').check()
+                for code in trucks:
+                    page.locator(f'#dpWhyOpts .dp-why-trucks input[value="{code}"]').check()
+                page.click('#dpWhySave')
+                page.wait_for_function("() => !document.getElementById('dpWhyDlg').open", timeout=15000)
+
             def wait_idle():
                 page.wait_for_function("() => !document.body.classList.contains('is-busy') && !document.querySelector('[aria-busy=\"true\"]')",
                                        timeout=15000)
@@ -108,6 +122,12 @@ def main() -> int:
             home = trip_of(d, cid)
             n = len(posts)
             first.locator('.dp-stop-x').click()
+            why = page.locator('#dpWhyDlg')
+            check(why.is_visible() and page.locator('#dpWhySave').is_disabled() and not edits(n),
+                  'B «×» asks why first: dialog open, «Հանել» disabled until a reason, nothing sent')
+            check(page.locator('#dpWhyOpts .dp-why-opt').count() == 5, 'B five reasons')
+            why.screenshot(path=str(SHOTS / 'b-why.png'))
+            pick_why('today')
             page.wait_for_selector('#dpToast.is-on .dp-toast-act', timeout=15000)
             e = edits(n)
             check(len(e) == 1 and e[0].get('action') == 'trip_stops' and e[0].get('remove') == [cid] and e[0].get('trip') == home,
@@ -130,6 +150,7 @@ def main() -> int:
             # D
             open_cards()
             page.locator(f'#dpTruckCards .dp-stop[data-cid="{cid}"] .dp-stop-x').click()
+            pick_why('today')
             page.wait_for_function("(c) => ![...document.querySelectorAll('#dpTruckCards .dp-stop')].some(li => li.dataset.cid === String(c))",
                                    arg=cid, timeout=15000)
             open_cards()
@@ -169,6 +190,58 @@ def main() -> int:
             page.keyboard.press('Escape')
             page.wait_for_function("() => !document.getElementById('dpAddDlg').open", timeout=5000)
             check(not edits(n), 'E Esc closes without an edit')
+
+            # M — «Հանել երթից» в «Տեղափոխել այլ երթ…» (режим «Փոփոխել») — тоже только с причиной
+            wait_idle()
+            open_cards()
+            page.locator('#dpTruckCards .dp-editbtn').first.click()
+            n = len(posts)
+            page.locator('#dpTruckCards .dp-trip.is-editing .dp-stop .dp-move').first.select_option('u:')
+            check(page.locator('#dpWhyDlg').is_visible() and not edits(n), 'M «Հանել երթից» in the move list asks why, sends nothing')
+            page.click('#dpWhyCancel')
+            page.wait_for_function("() => !document.getElementById('dpWhyDlg').open", timeout=5000)
+            check(not edits(n), 'M cancel sends nothing')
+            page.locator('#dpTruckCards .dp-editbtn').first.click()
+
+            # R — «×» с правилом «эта машина не может» (на все дни) и «никогда не возим»; в окне «Խանութ» — с причиной
+            wait_idle()
+            open_cards()
+            d = data()
+            t0 = next(t for t in d['plan']['trucks'] if any(len(tr['stops']) >= 2 for tr in t['trips']))
+            tr0 = next(tr for tr in t0['trips'] if len(tr['stops']) >= 2)
+            rc = tr0['stops'][0]['customer_id']
+            n = len(posts)
+            page.locator(f'#dpTruckCards .dp-trip[data-trip="{tr0["id"]}"] .dp-stop[data-cid="{rc}"] .dp-stop-x').click()
+            pick_why('deny_truck')
+            e = edits(n)
+            check(len(e) == 1 and e[0].get('action') == 'stop_rule' and e[0].get('rule') == 'deny_truck'
+                  and e[0].get('customer_id') == rc and e[0].get('trip') == tr0['id'], 'R deny_truck edit: ' + str(e))
+            check('Կանոնը պահպանվեց' in page.locator('#dpToast').inner_text(), 'R toast: rule saved')
+            rule = page.evaluate("(c) => fetch('/api/routes/customer-vehicles?customer_id=' + c).then(r => r.json())", rc)
+            acc = rule['customers'][0]['vehicle_access']
+            check(acc == {'mode': 'deny', 'trucks': [t0['car_code']]}, 'R rule saved for all days: ' + str(acc))
+            wait_idle()
+            open_cards()
+            page.locator(f'#dpTruckCards .dp-trip[data-trip="{tr0["id"]}"] .dp-addbtn').click()
+            off = page.locator('#dpAddList .dp-add-row.is-off', has_text=next(
+                s['name'] for s in data()['plan']['unassigned'] if s['customer_id'] == rc))
+            check(off.count() == 1 and 'արգելված' in off.inner_text() and off.locator('a').get_attribute('href')
+                  == f'/routes/settings?customer={rc}#rsCustomerSettings', 'R add dialog shows why it is blocked + link')
+            page.locator('#dpAddDlg').screenshot(path=str(SHOTS / 'r-blocked.png'))
+            page.keyboard.press('Escape')
+            wait_idle()
+            open_cards()
+            d = data()
+            nc = next(s['customer_id'] for t in d['plan']['trucks'] for tr in t['trips'] for s in tr['stops'] if s['customer_id'] != rc)
+            page.locator(f'#dpTruckCards .dp-stop[data-cid="{nc}"] .dp-stop-x').first.click()
+            n = len(posts)
+            pick_why('never')
+            e = edits(n)
+            check(len(e) == 1 and e[0].get('rule') == 'never', 'R never edit: ' + str(e))
+            d = data()
+            gone = trip_of(d, nc) is None and nc not in [s['customer_id'] for s in d['plan']['unassigned']]
+            sets = page.evaluate("() => fetch('/api/routes/settings').then(r => r.json())")
+            check(gone and nc in sets['settings']['dispatch_customers_off'], 'R never: gone from the day and in settings list')
 
             # P — прошедший день: кнопок быстрой правки нет
             views._clock = lambda: datetime(2026, 10, 2, 10, 0)

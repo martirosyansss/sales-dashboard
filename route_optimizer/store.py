@@ -2362,6 +2362,13 @@ class Store:
                           'չհաջողվեց պահպանել խանութի մեքենաները')
 
     @staticmethod
+    def customer_access_in(conn: sqlite3.Connection, customer_id: int) -> VehicleAccess | None:
+        """Допуск машин магазина внутри чужой транзакции (сверка перед записью: правку из карточки не затираем)."""
+        row = conn.execute('SELECT mode, trucks FROM customer_vehicle_access WHERE customer_id = ?',
+                           (customer_id,)).fetchone()
+        return None if row is None else VehicleAccess(row[0], tuple(sorted(set(json.loads(row[1])))))
+
+    @staticmethod
     def _write_customer_vehicles(conn: sqlite3.Connection, customer_id: int,
                                  access: VehicleAccess | None, user: str | None) -> None:
         if access is None:
@@ -2713,10 +2720,12 @@ class Store:
         return data, row[1]
 
     def save_dispatch(self, day: str, data: Mapping[str, Any], user: str | None,
-                      expected_rev: int | None = None) -> int | None:
+                      expected_rev: int | None = None,
+                      also: Callable[[sqlite3.Connection], None] | None = None) -> int | None:
         """Сохранить черновик на дату; возвращает новый номер правки. expected_rev — номер, от которого
         делалась правка: черновик с тех пор изменён (другая вкладка) — None, ничего не записано.
-        Черновики старше DISPATCH_KEPT_DAYS от этой даты удаляются."""
+        also — ещё запись в той же транзакции после проверки номера (правило магазина «×» с причиной): план и правило
+        сохраняются вместе или ни одно. Черновики старше DISPATCH_KEPT_DAYS от этой даты удаляются."""
         raw = json.dumps(data, ensure_ascii=False, sort_keys=True)
         now = _now()
 
@@ -2725,6 +2734,8 @@ class Store:
             current = row[0] if row is not None else 0
             if expected_rev is not None and expected_rev != current:
                 return None
+            if also is not None:
+                also(conn)
             rev = current + 1
             conn.execute('INSERT INTO dispatch_plan(day, data, rev, updated_at, updated_by) VALUES(?, ?, ?, ?, ?) '
                          'ON CONFLICT(day) DO UPDATE SET data = excluded.data, rev = excluded.rev, '
@@ -2734,6 +2745,38 @@ class Store:
             return rev
 
         return self._transaction(write, 'не удалось сохранить план развоза')
+
+    @staticmethod
+    def add_customer_off(conn: sqlite3.Connection, customer_id: int) -> None:
+        """Клиент — в «машины не везут» (settings.dispatch_customers_off, №74) внутри чужой транзакции: список читается
+        здесь же, параллельная правка настроек не теряется. Список полон (MAX_CUSTOMERS_OFF) — ValueError."""
+        row = conn.execute("SELECT value FROM settings WHERE key = 'dispatch_customers_off'").fetchone()
+        off = json.loads(row[0]) if row is not None else []
+        if not isinstance(off, list):
+            raise StoreError('dispatch_customers_off: битое значение')
+        if customer_id in off:
+            return
+        if len(off) >= MAX_CUSTOMERS_OFF:
+            raise ValueError(f'не больше {MAX_CUSTOMERS_OFF} клиентов')
+        conn.execute("INSERT INTO settings(key, value) VALUES('dispatch_customers_off', ?) "
+                     'ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+                     (json.dumps(sorted({*off, customer_id})),))
+
+    @staticmethod
+    def rewrite_dispatch_after(conn: sqlite3.Connection, day: str,
+                               change: Callable[[str, dict[str, Any]], dict[str, Any] | None], user: str | None) -> None:
+        """Черновики дней после day внутри чужой транзакции: change(день, черновик) → новый черновик (номер правки
+        растёт: открытая страница того дня получит «план изменён») или None — день не трогать."""
+        rows = conn.execute('SELECT day, data, rev FROM dispatch_plan WHERE day > ? ORDER BY day', (day,)).fetchall()
+        for d, raw, rev in rows:
+            try:
+                data = json.loads(raw)
+            except ValueError:
+                continue
+            new = change(d, data) if isinstance(data, dict) else None
+            if new is not None:
+                conn.execute('UPDATE dispatch_plan SET data = ?, rev = ?, updated_at = ?, updated_by = ? WHERE day = ?',
+                             (json.dumps(new, ensure_ascii=False, sort_keys=True), rev + 1, _now(), user, d))
 
     def count_dispatch_overtime(self, since: str, until: str) -> int:
         """Дней в [since, until] (YYYY-MM-DD), когда машины по плану развоза работали дольше дня

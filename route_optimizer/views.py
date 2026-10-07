@@ -599,6 +599,9 @@ def api_settings_post() -> Any:
     state = _state()
     bundle = state.store.load()
     snap, _ = state.snapshots.get(allow_stale=True)
+    merge_error = _merge_customers_off(payload, bundle)
+    if merge_error:
+        return jsonify({'success': False, 'errors': {'settings.dispatch_customers_off': merge_error}}), 400
     changes, errors = validate_payload(payload, bundle, snap.ref_data())
     if errors:
         return jsonify({'success': False, 'errors': errors}), 400
@@ -606,6 +609,23 @@ def api_settings_post() -> Any:
     state.store.save(changes, user)
     logger.info('[Routes] Настройки сохранены пользователем %s', user)
     return jsonify({'success': True})
+
+
+def _merge_customers_off(payload: Any, bundle: Bundle) -> str | None:
+    """«Машины не везут» (№74) пишет не только страница настроек, но и «×» в «Развозе» (правило «никогда»): страница,
+    открытая раньше, прислала бы весь свой старый список и стёрла новое. Поэтому она присылает и список, с которым
+    открылась (settings.dispatch_customers_off_base): к нынешнему списку применяются только её добавления и удаления.
+    Без base — как раньше (список целиком). Меняет payload на месте; ошибка base — текст."""
+    s = payload.get('settings') if isinstance(payload, dict) else None
+    if not isinstance(s, dict) or 'dispatch_customers_off_base' not in s:
+        return None
+    base, sent = s.pop('dispatch_customers_off_base'), s.get('dispatch_customers_off')
+    ok = lambda v: isinstance(v, list) and all(isinstance(x, int) and not isinstance(x, bool) for x in v)  # noqa: E731
+    if not ok(base) or not ok(sent):
+        return 'սպասվում էր հաճախորդների ցուցակ'
+    current = set(bundle.settings.get('dispatch_customers_off') or ())
+    s['dispatch_customers_off'] = sorted((current - (set(base) - set(sent))) | (set(sent) - set(base)))
+    return None
 
 
 # --- Сборка ответа настроек ---
@@ -1401,16 +1421,21 @@ def _orders_sig(data: dp.DispatchData) -> str:
 
 def _freshness(day: date, bundle: Bundle, data: dp.DispatchData, deliver: list[dp.DispatchOrder],
                backlog: list[dp.DispatchOrder], draft: dp.Draft | None,
-               carried: Collection[str] = ()) -> dict[str, Any]:
+               carried: Collection[str] = (), ruled_out: Collection[str] = ()) -> dict[str, Any]:
     """«Заказы ещё поступают» и что изменилось с последней сборки — для подсказки вверху страницы.
-    Перенесённые сюда из прошлого дня — как заказы дня: появился перенос — «новые», сняли — «убраны»."""
+    Перенесённые сюда из прошлого дня — как заказы дня: появился перенос — «новые», сняли — «убраны». ruled_out —
+    заказы, которые вывело правило дня (№74; «никогда» у «×» дописывает его и в уже собранные дни): не «отменили или
+    доставили»."""
     s = bundle.settings
     changes = None
     if draft is not None:
         inside = _backlog_in(draft, carried)
         moved_in = [o for o in backlog if o.isn in set(carried) - draft.dropped]
+        built = draft.built_orders
+        if built is not None and ruled_out:
+            built = {k: v for k, v in built.items() if k not in set(ruled_out)}
         # заказы менеджеров, снятых фильтром, — не «новые»: их сегодня не везём
-        changes = dp.since_build(draft.built_orders, [o for o in (*deliver, *moved_in) if o.agent_id not in draft.agents_off],
+        changes = dp.since_build(built, [o for o in (*deliver, *moved_in) if o.agent_id not in draft.agents_off],
                                  [*deliver, *(o for o in backlog if o.isn in inside)], draft.excluded)
     return {
         'orders_still_coming': dp.orders_still_coming(day, s['workdays'], _clock(), s['dispatch_ready_time'],
@@ -1633,7 +1658,8 @@ def _dispatch_body(dd: _DispatchDay) -> dict[str, Any]:
         **({'approved': {'at': draft.approved['at']}} if draft is not None and draft.approved is not None else {}),
         # №72: план прошлого дня не прочитан — заказы, взятые в его развоз, могли попасть и сюда
         **({'same_day_unread': True} if dd.same_day_unread else {}),
-        **_freshness(dd.day, dd.bundle, dd.data, dd.deliver, dd.backlog, draft, dd.carried),
+        **_freshness(dd.day, dd.bundle, dd.data, dd.deliver, dd.backlog, draft, dd.carried,
+                     {o.isn for o in (*dd.customers_off, *dd.other_vehicle)}),
     }
     if draft is not None and dd.ctx is not None:
         plan = dp.plan_view(dd.ctx, dd.stops, draft, info, crew=_crew(_state(), dd.day, dd.bundle.trucks)[0])
@@ -1897,6 +1923,127 @@ def _apply_settings_edit(state: RoutesState, bundle: Bundle, dd: _DispatchDay) -
         gone = {o.isn for o in dd.deliver} - {o.isn for o in after.deliver}
         new.built_orders = {k: v for k, v in new.built_orders.items() if k not in gone}
     return new
+
+
+STOP_RULES = ('deny_truck', 'only_trucks', 'never')
+STOP_RULE_MAX_TRUCKS = 100
+PAST_DAY_RULE = 'Անցած օրվա պլանում խանութը կանոնով չի հանվում'
+ONLY_ALLOWED_TRUCK = ('Սա այս խանութի միակ թույլատրված մեքենան է։ Ընտրեք «Միշտ տանել միայն ընտրված մեքենաներով» '
+                      'և նշեք, թե որ մեքենաներն են տանում')
+RULE_REFUSED = 'Կարգավորումները չեն ընդունում այս խանութը'
+
+
+@dataclass
+class _StopRule:
+    """Правка «×» с причиной-правилом: черновик дня после неё, bundle с новым правилом (по нему день считается заново),
+    also — запись правила в транзакции плана (store.save_dispatch), kept — будущие дни, где «никогда» не применено:
+    магазин там уже в загруженной машине (№78)."""
+    draft: dp.Draft
+    bundle: Bundle
+    also: Callable[[Any], None]
+    kept: list[str] = field(default_factory=list)
+
+
+def _fleet_with_off(raw: Any, old: Mapping[str, Any], new: Mapping[str, Any], cid: int) -> dict[str, Any] | None:
+    """Правило «чьи заказы везут машины» собранного дня (Draft.fleet) с клиентом cid в «машины не везут». День был собран
+    по нынешним настройкам — и дальше по ним (иначе плашка «план не по настройкам» без причины); свой снимок — к нему
+    добавляется только cid."""
+    rule = dp.FleetRule.from_json(raw)
+    if rule.same_as(dp.FleetRule.from_settings(old)):
+        return dp.FleetRule.from_settings(new).to_json()
+    return replace(rule, customers_off=rule.customers_off | {cid}).to_json()
+
+
+def _stop_rule_edit(state: RoutesState, bundle: Bundle, dd: _DispatchDay, payload: Mapping[str, Any],
+                    confirmed: bool) -> _StopRule:
+    """«×» у магазина с причиной-правилом (владелец 07.10: «обязательно с объяснением… чтобы фильтры всегда работали»):
+    {"action": "stop_rule", "trip", "customer_id", "rule": deny_truck | only_trucks | never, "trucks": [код, …]
+    (только only_trucks)}. Магазин уходит из рейса (trip_stops remove) и запоминается правило на все дни:
+      deny_truck — машине рейса нельзя к магазину (допуск магазина: deny + машина; allow — машина вычёркивается);
+      only_trucks — магазин возят только эти машины (допуск allow; машины рейса среди них нет — её и убираем);
+      never — «машины не везут» (настройка dispatch_customers_off, №74): и в правиле этого дня, и в уже собранных
+          следующих днях (Draft.fleet) — кроме дня, где магазин уже в загруженной машине (_StopRule.kept).
+    Допуск машин действует на все дни сразу (dispatch._require_vehicle, plan_view). Ничего не сохраняет сама: правило
+    пишется в той же транзакции, что и черновик (_StopRule.also). «Չեղարկել» правило не отменяет — undo у правки нет
+    (правило меняют в «Առաքման պայմաններ» и в настройках)."""
+    kind, cid, tid = payload.get('rule'), payload.get('customer_id'), payload.get('trip')
+    if kind not in STOP_RULES or not dp._is_int(cid) or not dp._is_int(tid):
+        raise dp.DispatchError('Սերվերը չընդունեց հարցումը — թարմացրեք էջը')
+    if dd.day < _clock().date():   # те же часы, что у is_past страницы
+        raise dp.DispatchError(PAST_DAY_RULE)
+    trip = dp.trip_of(dd.draft, tid)
+    if cid not in trip.stops:
+        raise dp.DispatchError('Այս խանութն արդեն երթում չէ — թարմացրեք էջը')
+    user = session.get('username')
+    snap, _ = state.snapshots.get(allow_stale=True)
+    draft = dp.apply_edit(dd.ctx, dd.stops, dd.draft, {'action': 'trip_stops', 'trip': tid, 'remove': [cid]},
+                          {o.isn for o in dd.deliver}, {o.isn for o in dd.backlog}, carried=dd.carried,
+                          now_min=_today_min(dd), loaded_ok=confirmed)
+    draft.undo = None
+    if kind == 'never':
+        old_s = bundle.settings
+        off = sorted({*(old_s.get('dispatch_customers_off') or ()), cid})
+        changes, errors = validate_payload({'settings': {'dispatch_customers_off': off}}, bundle, snap.ref_data())
+        if errors or changes is None:
+            raise dp.DispatchError(RULE_REFUSED + '՝ ' + '; '.join(errors.values()) if errors else RULE_REFUSED)
+        new_s = {**old_s, 'dispatch_customers_off': off}
+        draft.fleet = _fleet_with_off(draft.fleet, old_s, new_s, cid)
+        if draft.built_orders is not None:   # как _apply_settings_edit: выведенные правилом — не «убраны после сборки»
+            gone = {o.isn for o in dd.deliver if o.customer_id == cid} | {
+                o.isn for st in dd.stops if st.customer_id == cid for o in st.orders}
+            draft.built_orders = {k: v for k, v in draft.built_orders.items() if k not in gone}
+        kept: list[str] = []
+
+        def later(day: str, data: dict[str, Any]) -> dict[str, Any] | None:
+            if day == dd.day.isoformat():
+                return None
+            trips = data.get('trips') if isinstance(data.get('trips'), list) else []
+            if any(isinstance(t, dict) and t.get('loaded') and isinstance(t.get('stops'), list) and cid in t['stops']
+                   for t in trips):
+                kept.append(day)                  # товар уже в машине — день решает логист сам
+                return None
+            fleet = _fleet_with_off(data.get('fleet'), old_s, new_s, cid)
+            return None if fleet == data.get('fleet') else {**data, 'fleet': fleet}
+
+        def also(conn: Any) -> None:
+            try:
+                state.store.add_customer_off(conn, cid)
+            except ValueError as e:
+                raise dp.DispatchError(RULE_REFUSED + '՝ ' + str(e)) from e
+            # сегодняшний план уже в работе — правило дня у него своё; следующие дни — все уже собранные
+            state.store.rewrite_dispatch_after(conn, _clock().date().isoformat(), later, user)
+            logger.info('[Routes] «Развоз» %s: клиент %d — машины не везут никогда (%s)', dd.day, cid, user)
+        return _StopRule(draft, replace(bundle, settings=new_s), also, kept)
+    old = bundle.vehicle_access.get(cid)
+    if kind == 'deny_truck':
+        if old is not None and old.mode == 'allow':
+            if trip.truck not in old.trucks:   # и так не разрешена (магазин в рейсе вопреки допуску) — правило уже есть
+                raw: Any = old.to_json()
+            else:
+                rest = [c for c in old.trucks if c != trip.truck]
+                if not rest:
+                    raise dp.DispatchError(ONLY_ALLOWED_TRUCK)
+                raw = {'mode': 'allow', 'trucks': rest}
+        else:
+            raw = {'mode': 'deny', 'trucks': sorted({*(old.trucks if old else ()), trip.truck})}
+    else:
+        trucks = payload.get('trucks')
+        if not isinstance(trucks, list) or not trucks or len(trucks) > STOP_RULE_MAX_TRUCKS:
+            raise dp.DispatchError('Նշեք գոնե մեկ մեքենա, որը տանում է այս խանութը')
+        if trip.truck in trucks:
+            raise dp.DispatchError('Երթի մեքենան ընտրվածների մեջ է՝ խանութն այդ դեպքում երթից հանելու կարիք չկա')
+        raw = {'mode': 'allow', 'trucks': trucks}
+    access, err = check_access(raw, set(snap.cars) | set(bundle.trucks) | set(old.trucks if old else ()))
+    if err or access is None:
+        raise dp.DispatchError(err or 'Սերվերը չընդունեց հարցումը — թարմացրեք էջը')
+
+    def also_access(conn: Any) -> None:
+        if state.store.customer_access_in(conn, cid) != old:
+            raise dp.DispatchError('Խանութի մեքենաների կանոնը հենց նոր փոխվել է — թարմացրեք էջը')
+        state.store._write_customer_vehicles(conn, cid, access, user)
+        logger.info('[Routes] «Развоз» %s: допуск машин клиента %d: %s (%s)', dd.day, cid, access, user)
+    return _StopRule(draft, replace(bundle, vehicle_access={**bundle.vehicle_access, cid: access}), also_access)
+
 
 
 def _check_defer_same_day(dd: _DispatchDay, trip_id: Any) -> None:
@@ -2208,7 +2355,8 @@ def api_dispatch_status() -> Any:
     return jsonify({'success': True, 'day': day.isoformat(), 'rev': rev,
                     'orders': {'count': len(active), 'kg': round(sum(o.kg for o in active)),
                                'revenue': round(sum(o.revenue for o in active))},
-                    **_freshness(day, bundle, data, sel.main, sel.backlog, draft, carried), **same})
+                    **_freshness(day, bundle, data, sel.main, sel.backlog, draft, carried,
+                                 {o.isn for o in (*sel.customers_off, *sel.other_vehicle)}), **same})
 
 
 def _dispatch_request() -> tuple[Any, Any, Any]:
@@ -2334,7 +2482,7 @@ def api_dispatch_build() -> Any:
 @bp.post('/api/routes/dispatch/edit')
 @_api
 def api_dispatch_edit() -> Any:
-    """Правка логиста: {"date", "rev", "action": move | trip_stops | pin | unpin | exclude | include | agents | defer_trip | resize | undo, …}
+    """Правка логиста: {"date", "rev", "action": move | trip_stops | stop_rule | pin | unpin | exclude | include | agents | defer_trip | resize | undo, …}
     (dispatch.apply_edit). rev — номер черновика, от которого правка: план изменён в другой вкладке — 409.
     В ответе — день целиком и delta_km: как изменились км плана. resize с "preview": true — только подсказка во время
     перетаскивания (ничего не сохраняется): {"preview": {delta_km, stops — сколько точек у машины рейса прибавилось
@@ -2359,6 +2507,7 @@ def api_dispatch_edit() -> Any:
     trips_before = {t.id for t in dd.draft.trips}   # №73: рейсы, появившиеся при правке утверждённого плана, — закрепить
     cargo = dp.loaded_cargo(dd.draft, dd.stops)     # №78: что уже в машинах — до правки (правки меняют черновик на месте)
     confirmed = payload.get('confirm_loaded') is True
+    rule: _StopRule | None = None   # «×» с правилом: правило пишется в транзакции черновика
     try:
         if payload.get('action') == 'defer_trip':
             _check_defer_same_day(dd, payload.get('trip'))
@@ -2370,6 +2519,9 @@ def api_dispatch_edit() -> Any:
             draft = _loaded_edit(dd, payload)
         elif payload.get('action') == 'apply_settings':   # день — по нынешним правилам настроек (№69, №74)
             draft = _apply_settings_edit(state, bundle, dd)
+        elif payload.get('action') == 'stop_rule':        # «×» у магазина с причиной-правилом на все дни
+            rule = _stop_rule_edit(state, bundle, dd, payload, confirmed)
+            draft, bundle = rule.draft, rule.bundle
         elif _is_same_day_edit(dd, payload):    # новые заказы дня (№72)
             draft = _same_day_edit(state, bundle, dd, payload)
         else:
@@ -2404,12 +2556,21 @@ def api_dispatch_edit() -> Any:
     _capture_prediction(dd, draft)
     if payload.get('action') in ('approve', 'send'):   # №81: водителям — план в том виде, в каком он сохраняется
         dp.send(draft, _same_day_now().isoformat(timespec='seconds'), session.get('username'))
-    rev = state.store.save_dispatch(day.isoformat(), draft.to_json(), session.get('username'), expected_rev=dd.rev)
+    try:
+        rev = state.store.save_dispatch(day.isoformat(), draft.to_json(), session.get('username'), expected_rev=dd.rev,
+                                        also=rule.also if rule is not None else None)
+    except dp.DispatchError as e:   # правило не записалось — и черновик тоже (одна транзакция)
+        return _bad_request({'_': str(e)})
     if rev is None:
         return _conflict('План изменили в другой вкладке — обновите страницу')
     dd.rev = rev
     body = _dispatch_page_body(dd)
     body['delta_km'] = round(body['plan']['summary']['km'] - km_before, 1) if body['plan'] else None
+    if payload.get('action') == 'trip_stops' and payload.get('reason') == 'today':
+        logger.info('[Routes] «Развоз» %s: из рейса %s убраны %s — причина «միայն այսօր» (%s)', day, payload.get('trip'),
+                    payload.get('remove'), session.get('username'))
+    if rule is not None:
+        body['rule_kept_days'] = rule.kept   # «никогда»: дни, где магазин уже в загруженной машине, — не тронуты
     return jsonify({'success': True, **body})
 
 
