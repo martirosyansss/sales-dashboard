@@ -191,6 +191,29 @@ def test_eta_plan_end_is_depot_after_last_queued_trip():
     assert live.eta_plan(DAY, tr.t, tr.pos, queue, {0}, 0, plan, None, _road(), rules, False, False).end is None
 
 
+
+def test_eta_waits_for_window_opening_before_unloading():
+    """Ревью M3: приехала раньше начала окна приёма — ждёт его начала, потом разгрузка; прибытие — без ожидания, следующие
+    магазины и возврат — позже на ожидание (как «Развоз»). ETA онлайн-карты меняется так же (точнее)."""
+    tr, stops, plan = _day()
+    now = tr.t
+    rules = live.Rules(lunch_min=0.0)
+    m = ac.day_minutes(DAY, now)
+    base = _card(tr, stops, plan, detail=True)
+    card_ = _card(tr, stops, plan, detail=True, windows={2: (m + 20, float('inf'))})   # B — «не раньше» через 20 мин
+    eta = {x['stop_id']: datetime.fromisoformat(x['eta']) for x in card_['stops'] if x['eta']}
+    eta0 = {x['stop_id']: datetime.fromisoformat(x['eta']) for x in base['stops'] if x['eta']}
+    assert eta['S:B'] == eta0['S:B'] == now.replace(microsecond=0) + timedelta(minutes=6)   # прибытие то же
+    assert eta['S:C'] - eta0['S:C'] == timedelta(minutes=14)          # ждал с +6 до +20
+    assert datetime.fromisoformat(card_['return_eta']) - datetime.fromisoformat(base['return_eta']) == timedelta(minutes=14)
+    # окно уже открыто (начало в прошлом) — без ожидания
+    assert _card(tr, stops, plan, detail=True, windows={2: (m - 60, m + 600)})['stops'] == base['stops']
+    queue = [(0, [stops[1]]), (1, [stops[2]])]
+    end = live.eta_plan(DAY, now, tr.pos, queue, {0}, 0, plan, DEPOT, _road(), rules, False, False,
+                        windows={3: (m + 60, m + 120)}).end
+    assert end == now + timedelta(minutes=60 + 10 + 6)               # C: прибытие +28, ждёт до +60
+
+
 # ============================== API: карта и «Развоз» ==============================
 
 def _refresh(state):

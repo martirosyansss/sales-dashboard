@@ -33,6 +33,7 @@
   складом — дорожная модель «Развоза» (Road.legs: Valhalla или граф OSM, часовой профиль пробок, выученные поправки;
   нет — запасная по прямой × извилистость, и ETA помечен eta_source «model»); у каждого магазина — время №50/№60
   (Road.stay: введённое/выученное по GPS, иначе норма на точку + на тонну; у магазина, где машина уже стоит, — остаток);
+  приехала раньше начала окна приёма магазина — ждёт его начала, потом разгрузка (как «Развоз»; прибытие — без ожидания);
   обед (№61), если ещё не был: после разгрузки не раньше начала окна, а если перегон кончается позже конца окна —
   в дороге; рейс ещё не уехал — через склад, загрузка (настройки; первый рейс вне сезона утренней погрузки, №78, — без
   неё: загружен с вечера) и не раньше планового выезда. Машина в STOP_RADIUS_M от
@@ -622,10 +623,13 @@ def lunch_taken(actual: ac.DayActual, day: date, rules: Rules) -> bool:
 def eta_plan(day: date, now: datetime, pos: Point, queue: Sequence[tuple[int, Sequence[Mapping[str, Any]]]],
              gone: Collection[int], current: int | None, plan: Sequence[PlanTrip], depot: Point | None,
              road: Road, rules: Rules, lunch_pending: bool, at_depot: bool,
-             here: tuple[Mapping[str, Any], float] | None = None) -> EtaPlan:
+             here: tuple[Mapping[str, Any], float] | None = None,
+             windows: Mapping[int, tuple[float, float]] | None = None) -> EtaPlan:
     """Прибытия к оставшимся точкам по очереди queue (рейс, точки по порядку; рейс, где машина сейчас, — первым, даже
     пустой) и возвращение на склад после него — правило в описании модуля. here — (точка, минут уже стоит): разгрузка
-    идёт, её ETA — сейчас, дальше — после остатка стоянки."""
+    идёт, её ETA — сейчас, дальше — после остатка стоянки. windows — окна приёма клиентов (не раньше, не позже; минуты
+    от полуночи): у следующих магазинов разгрузка — не раньше начала окна."""
+    midnight = datetime(day.year, day.month, day.day, tzinfo=YEREVAN)
     t, live_pos, by_road = now, True, True
     arrive: dict[str, tuple[datetime, bool]] = {}
     back: tuple[datetime, bool] | None = None
@@ -675,6 +679,9 @@ def eta_plan(day: date, now: datetime, pos: Point, queue: Sequence[tuple[int, Se
             move(pos, p)
             rest(False)
             arrive[x['stop_id']] = (t, by_road)
+            opens = (windows or {}).get(x.get('customer_id'), (-math.inf, math.inf))[0]
+            if math.isfinite(opens):   # окно ещё не открылось — ждёт (прибытие то же)
+                t = max(t, midnight + timedelta(minutes=opens))
             t += timedelta(minutes=road.stay(p, float(x.get('weight_kg') or 0.0), rules))
             rest(True)
             pos, at_depot = p, False
@@ -813,7 +820,7 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
             here = (nxt, max(0.0, (now - arrived).total_seconds() / 60.0) if arrived is not None else 0.0)
             queue = [(k, [x for x in xs if x['stop_id'] != nxt['stop_id']]) for k, xs in queue]
         eta = eta_plan(day, now, last.point, queue, gone, current if gone else None, plan, depot, road, rules,
-                       not lunch_taken(actual, day, rules), at_depot, here)
+                       not lunch_taken(actual, day, rules), at_depot, here, windows)
         etas = dict(eta.arrive)
         if now - last.at <= LATE_FIX_MAX:   # давнее положение — прогноз «не успеет» не строится (нет GPS — нет тревоги)
             own = {s['stop_id']: e for s in stops if trips[s['stop_id']] < len(plan)
