@@ -22,6 +22,7 @@ from datetime import date, datetime, timedelta
 from enum import Enum
 from typing import Any, Callable, Collection, Literal, Mapping, Sequence
 
+from . import crew_pay
 from .geo import ARMENIA_LAT, ARMENIA_LON, Point, is_valid_point
 from .garage import KM_PER_DAY_MAX, SPREAD_MONTHS
 from .patterns import parse_freq_key, parse_pattern_key, parse_plan_freq_key, parse_transfer_key
@@ -29,6 +30,7 @@ from .running_costs import LOAD_COST_FIELDS, profile_fields
 from .vehicle_access import VehicleAccess, check_access
 
 SCHEMA_VERSION = 24
+CREW_PAY_KEY = 'crew_pay'   # строка settings с параметрами «Աշխատավարձ» (Store.crew_pay_params); не ключ DEFAULT_SETTINGS
 
 # manager_profile.included: 1/0 — выбор владельца, NULL — «авто» (в расчёте, если есть работа за 8 недель)
 _MANAGER_PROFILE_COLUMNS = (
@@ -2620,6 +2622,26 @@ class Store:
         self._transaction(lambda conn: conn.execute(
             "INSERT INTO meta(key, value) VALUES('learning_last_run', ?) ON CONFLICT(key) DO UPDATE SET value = "
             'excluded.value', (day,)), 'չհաջողվեց գրանցել ուսուցման վերահաշվարկի օրը')
+
+    # Параметры «Աշխատավարձ» (crew_pay) — строка CREW_PAY_KEY таблицы settings без смены схемы: load() читает только ключи
+    # DEFAULT_SETTINGS, поэтому формула зарплат не попадает ни в настройки маршрутов, ни в их отпечаток.
+    def crew_pay_params(self) -> crew_pay.Params:
+        """Сохранённые параметры формулы зарплат; не сохраняли — по умолчанию; битая запись — StoreError."""
+        row = self._read(lambda conn: conn.execute('SELECT value FROM settings WHERE key = ?', (CREW_PAY_KEY,)).fetchone())
+        if row is None:
+            return crew_pay.Params()
+        try:
+            params, errors = crew_pay.check_params(json.loads(row[0]))
+        except (TypeError, ValueError, RecursionError):
+            params, errors = None, {'_': 'JSON'}
+        if params is None:
+            raise StoreError(f'{self._name()}: վնասված են աշխատավարձի պարամետրերը ({", ".join(sorted(errors))}){_FIX_HINT}')
+        return params
+
+    def save_crew_pay_params(self, params: crew_pay.Params) -> None:
+        self._transaction(lambda conn: conn.execute(
+            'INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+            (CREW_PAY_KEY, json.dumps(params.json(), ensure_ascii=False))), 'չհաջողվեց պահպանել աշխատավարձի պարամետրերը')
 
     def learning_auto(self) -> dict[str, bool]:
         """Автообучение по виду, выбранное владельцем; нет строки — learning.DEFAULT_AUTO."""

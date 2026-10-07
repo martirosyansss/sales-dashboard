@@ -20,6 +20,7 @@ from typing import Any, Iterator, Sequence
 
 import pyodbc
 
+from .crew_pay import CrewData, Invoice
 from .demand import SaleDoc
 from .dispatch import DispatchData, DispatchOrder, FactData, Place, SameDayData, ShippedDoc, hint_reason
 from .evaluate import ActualVisit
@@ -430,6 +431,21 @@ OUTER APPLY (SELECT SUM(sd.fQUANTITY * pr.fWEIGHT) AS kg
 WHERE s.fSTATE = 2 AND s.fDATE >= ? AND s.fDATE < ?
 """
 
+# «Աշխատավարձ» (09-crew-pay.md): проведённые реализации, которые вёз экспедитор, а не сам менеджер, — по экспедитору,
+# дню, клиенту и линии (менеджеру): сумма и кг (вес — как в SQL_SHIPPED). Линии и люди-исключения — в crew_pay.compute.
+SQL_CREW_PAY = """
+SELECT s.fVANAGENTID, CAST(s.fDATE AS date), s.fCUSTOMERID, ISNULL(s.fSALESAGENTID, 0), SUM(s.fTOTALSUM),
+       SUM(ISNULL(k.kg, 0))
+FROM SALES s WITH (NOLOCK)
+OUTER APPLY (SELECT SUM(sd.fQUANTITY * pr.fWEIGHT) AS kg
+             FROM SALEDOCDETAILS sd WITH (NOLOCK)
+             JOIN PRODUCTS pr WITH (NOLOCK) ON pr.fID = sd.fPRODUCTID
+             WHERE sd.fISN = s.fISN) k
+WHERE s.fSTATE = 2 AND s.fDATE >= ? AND s.fDATE < ?
+  AND ISNULL(s.fVANAGENTID, 0) <> 0 AND s.fVANAGENTID <> ISNULL(s.fSALESAGENTID, 0)
+GROUP BY s.fVANAGENTID, CAST(s.fDATE AS date), s.fCUSTOMERID, ISNULL(s.fSALESAGENTID, 0)
+"""
+
 
 # --- Справочники ---
 
@@ -779,5 +795,17 @@ def load_fact_data(connection_string: str, day: date) -> FactData:
         ids = sorted({d.customer_id for d in docs})
         names = {c.id: (c.code, c.name) for c in customers(conn, ids).values()}
         return FactData(docs=tuple(docs), customers=names)
+    finally:
+        close_quietly(conn)
+
+
+def load_crew_pay(connection_string: str, since: date, until: date) -> CrewData:
+    """Накладные экспедиторов за [since, until) и справочник менеджеров/экспедиторов (код, имя) — одним соединением."""
+    conn = connect(connection_string)
+    try:
+        invoices = tuple(Invoice(int(r[0]), _day(r[1]), int(r[2] or 0), int(r[3] or 0), float(r[4] or 0),
+                                 float(r[5] or 0))
+                         for r in _select(conn, SQL_CREW_PAY, (since, until)))
+        return CrewData(invoices, {a.id: (a.code, ' '.join(a.name.split())) for a in agents(conn).values()})
     finally:
         close_quietly(conn)
