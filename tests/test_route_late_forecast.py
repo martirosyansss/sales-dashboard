@@ -9,7 +9,10 @@
 
 Синтетические данные, без ERP; базы — временные. Запуск из корня проекта:  python -m pytest tests/test_route_late_forecast.py -q
 """
+import json
+import sqlite3
 import sys
+from contextlib import closing
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -39,7 +42,9 @@ def pending(sid, cid, status='pending'):
 
 
 def late(stops, arrive, planned=None, windows=None, end=None, rules=RULES, here=None):
-    return live.late_forecast(DAY, stops, {k: (v, True) for k, v in arrive.items()}, planned or {}, windows or {}, end,
+    """planned — клиент → плановое ETA (у late_forecast — точка → ETA её рейса: здесь у точек один рейс)."""
+    by_stop = {s['stop_id']: (planned or {})[s['customer_id']] for s in stops if s['customer_id'] in (planned or {})}
+    return live.late_forecast(DAY, stops, {k: (v, True) for k, v in arrive.items()}, by_stop, windows or {}, end,
                               rules, here)
 
 
@@ -47,7 +52,7 @@ def late(stops, arrive, planned=None, windows=None, end=None, rules=RULES, here=
 
 def test_window_kinds_late_after_window_end_only():
     """«до», «от — до», «в ± допуск» — опоздание = прибытие позже конца окна; раньше начала — машина ждёт, не опоздание;
-    «не раньше» (конца нет) — опоздания нет, даже далеко позже плана: магазину с окном план не мерило."""
+    «не раньше» (конца нет) — как без окна: план + late_nowin_min (решение ревью L2)."""
     windows = {1: st.CustomerWindow('before', 600).span(),            # до 10:00
                2: st.CustomerWindow('between', 540, 660).span(),      # 09:00–11:00
                3: st.CustomerWindow('at', 720, None, 15).span(),      # 12:00 ± 15
@@ -56,7 +61,9 @@ def test_window_kinds_late_after_window_end_only():
     got = late(stops, {'S1': hm(10, 12), 'S2': hm(10, 59), 'S3': hm(12, 20), 'S4': hm(17)}, planned={4: hm(12)},
                windows=windows)
     assert [(x['target'], x['late_kind'], x['over_min'], x['limit']) for x in got] == [
-        ('c1', 'window', 12, hm(10).isoformat()), ('c3', 'window', 5, hm(12, 15).isoformat())]
+        ('c1', 'window', 12, hm(10).isoformat()), ('c3', 'window', 5, hm(12, 15).isoformat()),
+        ('c4', 'plan', 300, hm(12).isoformat())]
+    assert late(stops[3:], {'S4': hm(12, 20)}, planned={4: hm(12)}, windows=windows) == []   # «не раньше»: +20 < 30
     assert got[0] == {'target': 'c1', 'late_kind': 'window', 'stop_id': 'S1', 'customer_id': 1, 'name': 'Խանութ 1',
                       'eta': hm(10, 12).isoformat(), 'limit': hm(10).isoformat(), 'over_min': 12}
     # раньше начала окна и точно в конец окна — не опоздание; полминуты — округляется до 0
@@ -276,17 +283,38 @@ def test_late_message_groups_stores_of_a_car_once_per_day(tmp_path):
     box['cards'] = {'CAR1': card({**a, 'over_min': 42}, b, r)}
     assert alerter.tick() == 1 and 'Խանութ 7 — կուշանա պատուհանից 42 րոպեով' in sender.sent[1]
     assert 'Խանութ 8' not in sender.sent[1] and 'պահեստ' not in sender.sent[1]
-    # прогноз улучшился и снова «опаздывает» так же — не повторяется (одна тревога на магазин в день)
+    # прогноз улучшился (строки нет) — запись снята; снова «опаздывает» — снова сообщение (ревью L3)
     box['cards'] = {'CAR1': card(b, r)}
-    assert alerter.tick() == 0
+    assert alerter.tick() == 0 and not [k for k in alerter.state.sent if k.endswith('|c7')]
     box['cards'] = {'CAR1': card({**a, 'over_min': 42}, b, r)}
-    assert alerter.tick() == 0
+    assert alerter.tick() == 1 and 'Խանութ 7' in sender.sent[2] and 'Խանութ 8' not in sender.sent[2]
     # перезапуск — «уже отправлено» в файле
     again, sender2, _ = make(tmp_path, {'CAR1': card({**a, 'over_min': 42}, b, r)})
     assert again.tick() == 0 and sender2.sent == []
     # другой день — снова
     box['now'] = NOW + timedelta(days=1)
     assert alerter.tick() == 1
+
+
+def test_late_repeat_step_at_least_15_minutes(tmp_path):
+    """Повтор при ухудшении — на max(live_repeat_min, 15): при повторе 5 мин прогноз, скачущий на минуты, не шлёт
+    сообщение каждые 5 минут."""
+    a = late_alert('c7', 35, name='Խանութ 7')
+    alerter, sender, box = make(tmp_path, {'CAR1': card(a)}, rules=live.Rules(repeat_min=5.0))
+    assert alerter.tick() == 1
+    box['cards'] = {'CAR1': card({**a, 'over_min': 49})}
+    assert alerter.tick() == 0                                       # +14 < 15
+    box['cards'] = {'CAR1': card({**a, 'over_min': 50})}
+    assert alerter.tick() == 1                                       # +15
+    assert alerter.state.sent['CAR1|late|2026-10-06|c7']['over'] == 50
+
+
+def test_store_plan_eta_of_its_own_trip():
+    """Плановое ETA точки — из её рейса (live.trip_of), а не из последнего рейса с тем же клиентом (ревью L1)."""
+    tr, stops, plan = _day()
+    plan = [plan[0], live.PlanTrip((3, 2), {3: tr.t, 2: tr.t + timedelta(minutes=50)})]
+    b = next(x for x in _card(tr, stops, plan)['late'] if x['target'] == 'c2')
+    assert b['stop_id'] == 'S:B' and b['over_min'] == 46             # план рейса 1 — 40 мин назад
 
 
 def test_late_quiet_hours_toggle_and_other_kinds_unaffected(tmp_path):
@@ -354,3 +382,46 @@ def test_late_nowin_min_settings_api_admin_only(client, live_app):
         h = _session_as(client, who, base=LAN)
         r = client.post('/api/routes/settings', json={'settings': {'late_nowin_min': 60}}, base_url=LAN, headers=h)
         assert r.status_code == 403, who
+
+
+def _kinds_db(tmp_path, kinds, marker=None):
+    """База «Маршрутов» со списком видов тревог, сохранённым программой, знавшей виды marker (None — до №87, строки нет)."""
+    store = st.Store(str(tmp_path / 'routes.db'))
+    store.load()
+    with closing(sqlite3.connect(store.path)) as conn, conn:
+        conn.execute("INSERT INTO settings(key, value) VALUES('live_alert_kinds', ?) "
+                     "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (json.dumps(kinds),))
+        conn.execute('DELETE FROM settings WHERE key = ?', (st.LIVE_KINDS_KNOWN_KEY,))
+        if marker is not None:
+            conn.execute('INSERT INTO settings(key, value) VALUES(?, ?)', (st.LIVE_KINDS_KNOWN_KEY, json.dumps(marker)))
+    return store
+
+
+def test_alert_kinds_of_old_database_get_late(tmp_path):
+    """База до №87 хранит список видов без late (сохранение пишет все ключи): late добавляется включённым — владелец
+    просил тревогу в Telegram; выключенное после №87 — остаётся выключенным; пустой список («ничего не слать») — пустым."""
+    old = ['speed', 'stop', 'no_contact', 'gps']                     # «центр» владелец снял до №87
+    assert _kinds_db(tmp_path, old).load().settings['live_alert_kinds'] == old + ['late']
+    assert _kinds_db(tmp_path, old, list(st.LIVE_ALERT_KINDS)).load().settings['live_alert_kinds'] == old
+    assert _kinds_db(tmp_path, []).load().settings['live_alert_kinds'] == []
+    assert _kinds_db(tmp_path, old, 'garbage').load().settings['live_alert_kinds'] == old + ['late']   # битая отметка
+
+
+def test_saving_kinds_writes_known_marker(tmp_path):
+    store = _kinds_db(tmp_path, ['speed'])
+    b = store.load()
+    assert b.settings['live_alert_kinds'] == ['speed', 'late']
+    store.save(st.Changes({**b.settings, 'live_alert_kinds': ['speed']}, False, None, (), ()), 'qa')   # late сняли
+    with closing(sqlite3.connect(store.path)) as conn:
+        marker = conn.execute('SELECT value FROM settings WHERE key = ?', (st.LIVE_KINDS_KNOWN_KEY,)).fetchone()
+    assert json.loads(marker[0]) == list(st.LIVE_ALERT_KINDS)
+    assert store.load().settings['live_alert_kinds'] == ['speed']
+
+
+def test_unknown_alert_kind_in_database_is_dropped_not_fatal(tmp_path):
+    """Вид из более новой версии (откат программы) — при чтении молча мимо: база не «повреждена»; в API — по-прежнему
+    ошибка (validate_settings)."""
+    store = _kinds_db(tmp_path, ['speed', 'fire', 'late'], [*st.LIVE_ALERT_KINDS, 'fire'])
+    assert store.load().settings['live_alert_kinds'] == ['speed', 'late']
+    _, errors = st.validate_settings({**st.DEFAULT_SETTINGS, 'live_alert_kinds': ['speed', 'fire']}, None)
+    assert 'live_alert_kinds' in errors

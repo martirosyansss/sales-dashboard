@@ -17,7 +17,8 @@ CT115, и сообщений ПК не нужно.
   повторяет), недельные хвосты сами уходят. Тревога, которой не было видно в этот момент и которая кончилась больше
   RECENT_MIN назад, не рассылается задним числом (после простоя сервера и при первом запуске);
 - «не успеет» (late, №87) — прогноз, а не событие: одно сообщение на магазин (и на возврат машины на склад) в день; снова —
-  только если прогноз ухудшился не меньше чем на repeat_min минут против отправленного. Новые строки одной машины за проход —
+  если прогноз ухудшился не меньше чем на max(repeat_min, LATE_STEP_MIN) минут против отправленного или если строка
+  перестала «опаздывать» (запись снимается) и опаздывает опять. Новые строки одной машины за проход —
   одним сообщением. В тихие часы не шлётся и не отмечается: прогноз, который ещё в силе после них, уйдёт тогда. Окно повтора
   вида у машины к нему не применяется (иначе второй опаздывающий магазин той же машины пропал бы);
 - сбой отправки (сеть, Telegram) — в журнал без токена, повтор со всё большей паузой (до BACKOFF_MAX_S); поток не падает.
@@ -58,6 +59,7 @@ STATE_KEEP = timedelta(hours=48)
 CLIENT_ERRORS_MAX = 5             # ошибок 4xx подряд (кроме 429) — дальше не шлём, пока не перезапустят или не сменят настройки
 END_KINDS = ('no_contact', 'gps')   # окончание сообщается только у них
 MAP_URL = 'https://yandex.ru/maps/?pt={lon},{lat}&z=16&l=map'
+LATE_STEP_MIN = 15.0              # «не успеет»: повтор — при ухудшении прогноза на столько (и не меньше repeat_min)
 
 TITLE = {'speed': 'Արագության գերազանցում', 'stop': 'Երկար կանգառ ոչ խանութում', 'no_contact': 'Կապ չկա',
          'gps': 'GPS-ն անջատված է', 'center': 'Փոքր կենտրոնում (մուտքը թույլատրված չէ)',
@@ -226,20 +228,27 @@ def late_line(a: Mapping[str, Any]) -> str:
 
 
 def _plan_late(car: str, card: Mapping[str, Any], rules: Rules, now: datetime, state: AlertState,
-               out: list[Message]) -> None:
-    """«Не успеет» одной машины (правило — в описании модуля): новые строки и ухудшившиеся на repeat_min — одним
-    сообщением."""
+               out: list[Message]) -> bool:
+    """«Не успеет» одной машины (правило — в описании модуля): новые строки и ухудшившиеся на шаг — одним сообщением;
+    строки, которые больше не «опаздывают», снимаются. True — состояние менялось."""
     day = now.astimezone(ac.YEREVAN).date().isoformat()
+    prefix = f'{car}|late|{day}|'
+    step = max(rules.repeat_min, LATE_STEP_MIN)
     rows: list[tuple[str, int, Mapping[str, Any]]] = []
+    active: set[str] = set()
     for a in card.get('alerts_log') or ():
         if a.get('kind') != 'late' or not a.get('active') or not isinstance(a.get('over_min'), int):
             continue
-        key = f'{car}|late|{day}|{a.get("target")}'
+        key = prefix + str(a.get('target'))
+        active.add(key)
         sent = (state.sent.get(key) or {}).get('over')
-        if not isinstance(sent, int) or a['over_min'] >= sent + rules.repeat_min:
+        if not isinstance(sent, int) or a['over_min'] >= sent + step:
             rows.append((key, a['over_min'], a))
+    gone = [k for k in state.sent if k.startswith(prefix) and k not in active]
+    for k in gone:   # прогноз улучшился — снова «опаздывает» будет новым сообщением
+        del state.sent[k]
     if not rows:
-        return
+        return bool(gone)
     plate = [x for x in (card.get('car_code'), card.get('name')) if x]
     lines = [TITLE['late'], 'Մեքենա՝ ' + ' · '.join(plate)]
     driver = card.get('driver') or next(iter(card.get('drivers') or ()), None)
@@ -252,6 +261,7 @@ def _plan_late(car: str, card: Mapping[str, Any], rules: Rules, now: datetime, s
     lines.append('Ժամ՝ ' + now.astimezone(ac.YEREVAN).strftime('%H:%M'))
     out.append(Message(f'{car}|late|{day}', 'start', car, 'late', '\n'.join(lines),
                        tuple((key, over) for key, over, _ in rows)))
+    return bool(gone)
 
 
 def _plan_car(car: str, card: Mapping[str, Any], rules: Rules, now: datetime, state: AlertState, quiet: bool,
@@ -259,7 +269,7 @@ def _plan_car(car: str, card: Mapping[str, Any], rules: Rules, now: datetime, st
     """Решения по тревогам одной машины (plan_messages); True — состояние менялось."""
     changed = False
     if 'late' in rules.alert_kinds and not quiet:
-        _plan_late(car, card, rules, now, state, out)
+        changed = _plan_late(car, card, rules, now, state, out)
     for a in card.get('alerts_log') or ():
         kind = a.get('kind')
         if kind not in rules.alert_kinds or kind == 'late' or not a.get('from'):

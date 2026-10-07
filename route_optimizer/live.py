@@ -706,17 +706,17 @@ def _queue(stops: Sequence[Mapping[str, Any]], trips: Mapping[str, int], plan: S
 
 
 def late_forecast(day: date, stops: Sequence[Mapping[str, Any]], arrive: Mapping[str, tuple[datetime, bool]],
-                  planned: Mapping[int, datetime], windows: Mapping[int, tuple[float, float]], end: datetime | None,
+                  planned: Mapping[str, datetime], windows: Mapping[int, tuple[float, float]], end: datetime | None,
                   rules: Rules, here: str | None = None) -> list[dict[str, Any]]:
     """«Не успеет» (ответ владельца №87, п.2) по прогнозу eta_plan: arrive — точка → (прибытие, по дорогам), planned —
-    клиент → плановое ETA, windows — клиент → окно приёма (не раньше, не позже; минуты от полуночи,
+    точка → плановое ETA её клиента в её рейсе, windows — клиент → окно приёма (не раньше, не позже; минуты от полуночи,
     store.CustomerWindow.span), end — возвращение на склад после всех оставшихся рейсов, here — точка, у которой машина
     стоит (её прибытие — факт, не прогноз). Только ожидающие точки (pending) с прогнозом — in_progress водитель открывает
     у магазина, прибытие уже было:
-    - магазин с окном — прибытие позже конца окна (как window_miss «Развоза»: раньше начала — машина ждёт, не опоздание;
-      окно без конца — «не раньше» — опоздания нет); late_kind window, over_min — на сколько позже конца;
-    - без окна — прибытие позже планового ETA не меньше чем на rules.late_nowin_min; late_kind plan, over_min — насколько
-      позже плана; нет планового ETA — не оценивается;
+    - магазин с окном — прибытие позже конца окна (как window_miss «Развоза»: раньше начала — машина ждёт, не
+      опоздание); late_kind window, over_min — на сколько позже конца;
+    - без окна и с окном без конца («не раньше HH:MM») — прибытие позже планового ETA не меньше чем на
+      rules.late_nowin_min; late_kind plan, over_min — насколько позже плана; нет планового ETA — не оценивается;
     - машина — возвращение на склад позже rules.work_end (конец рабочего дня; возврат в запасе конца дня №78 — не
       опоздание, как в «Развозе»); late_kind return.
     Опоздание, округлённое до минут, меньше 1 — не опоздание. Магазин с несколькими накладными — одна строка (самое
@@ -730,13 +730,11 @@ def late_forecast(day: date, stops: Sequence[Mapping[str, Any]], arrive: Mapping
             continue
         at = arrive[sid][0]
         span = windows.get(cid) if isinstance(cid, int) else None
-        if span is not None:
-            if not math.isfinite(span[1]):
-                continue
+        if span is not None and math.isfinite(span[1]):
             limit = midnight + timedelta(minutes=span[1])
             kind = 'window'
         else:
-            limit = planned.get(cid) if isinstance(cid, int) else None   # type: ignore[assignment]
+            limit = planned.get(sid)   # type: ignore[assignment]
             if limit is None or (at - limit).total_seconds() / 60.0 < rules.late_nowin_min:
                 continue
             kind = 'plan'
@@ -818,8 +816,10 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
                        not lunch_taken(actual, day, rules), at_depot, here)
         etas = dict(eta.arrive)
         if now - last.at <= LATE_FIX_MAX:   # давнее положение — прогноз «не успеет» не строится (нет GPS — нет тревоги)
-            late = late_forecast(day, stops, etas, {c: e for t in plan for c, e in t.etas.items()}, windows or {},
-                                 eta.end, rules, nxt['stop_id'] if here is not None else None)   # type: ignore[index]
+            own = {s['stop_id']: e for s in stops if trips[s['stop_id']] < len(plan)
+                   and (e := plan[trips[s['stop_id']]].etas.get(s.get('customer_id'))) is not None}   # план её рейса
+            late = late_forecast(day, stops, etas, own, windows or {}, eta.end, rules,
+                                 nxt['stop_id'] if here is not None else None)   # type: ignore[index]
         if eta.back is not None and gone and not at_depot:
             return_eta, return_source = eta.back[0], 'road' if eta.back[1] else 'model'
         if nxt is not None:
@@ -897,7 +897,8 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
         marks = {k: v for k, v in visited.items()}
         out.update({
             'track': [[round(p[0], 6), round(p[1], 6)] for p in line],
-            'stops': [{'stop_id': s['stop_id'], 'name': s.get('name'), 'lat': s.get('lat'), 'lon': s.get('lon'),
+            'stops': [{'stop_id': s['stop_id'], 'customer_id': s.get('customer_id'), 'name': s.get('name'),
+                       'lat': s.get('lat'), 'lon': s.get('lon'),
                        'status': s.get('status'), 'seq': s.get('seq'), 'trip': trips[s['stop_id']] + 1,
                        'weight_kg': round(float(s.get('weight_kg') or 0.0), 1),
                        'planned_eta': _iso(planned_etas.get(s.get('customer_id'))),   # type: ignore[arg-type]
