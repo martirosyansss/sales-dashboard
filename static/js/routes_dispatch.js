@@ -525,7 +525,7 @@
     // тогда обновляются только подсказки, а страница — при следующей проверке.
     const interacting = () => {
         const a = document.activeElement;
-        return state.pickCid !== null || state.dragging || $('dpGeoDlg').open || $('dpUnloadDlg').open || $('dpDriverDlg').open
+        return state.pickCid !== null || state.dragging || !!state.mapDrag || $('dpGeoDlg').open || $('dpUnloadDlg').open || $('dpDriverDlg').open
             || $('dpSameDayDlg').open || $('dpAbsentDlg').open || $('dpSendFirstDlg').open
             || (!!a && $('dpBody').contains(a) && /^(SELECT|INPUT|TEXTAREA)$/.test(a.tagName));
     };
@@ -699,9 +699,10 @@
         const d = state.data, plan = d.plan, box = $('dpInbox');
         box.textContent = '';
         if (!plan) { box.hidden = true; return; }
-        const add = (tone, ico, label, count, act, href) => {
+        const add = (tone, ico, label, count, act, href, id) => {
             const el = document.createElement(href ? 'a' : 'button');
             el.className = 'dp-inchip' + (tone ? ' ' + tone : '');
+            if (id) el.id = id;
             if (href) el.href = href; else { el.type = 'button'; el.addEventListener('click', act); }
             el.innerHTML = '<i class="fas ' + ico + '" aria-hidden="true"></i><span></span>' + (count ? '<b></b>' : '');
             el.querySelector('span').textContent = label;
@@ -711,6 +712,14 @@
         const bad = plan.trucks.reduce((n, t) => n + t.trips.filter(tripBad).length, 0);
         if (bad) add('is-bad', 'fa-triangle-exclamation', 'Խնդիր երթերում', bad, () => showPlanPart(() => $('dpOverflow').firstElementChild));
         if (plan.unassigned.length) add('is-bad', 'fa-inbox', 'Երթերում չեն', plan.unassigned.length, () => showPlanPart(() => $('dpUnassigned').firstElementChild));
+        // №86: на рабочем экране плашка «Այսօրվա նոր պատվերներ» — счётчиком в этой строке (карта выше); нажатие — тот же диалог
+        if (wsOn() && sdData()) {
+            const later = sdLater(state.day), inv = sdInvoiced().filter(o => !sdOutside(o));
+            const fresh = sdNew().filter(o => !later.has(o.isn));
+            const all = sdOpenOrders().length + sdTaken().length;
+            if (fresh.length || inv.length) add('is-warn', 'fa-bolt', 'Նոր պատվերներ', fresh.length + inv.length, () => openSameDay(), null, 'dpSdChip');
+            else if (all) add('', 'fa-bolt', 'Այսօրվա պատվերներ', all, () => openSameDay(), null, 'dpSdChip');
+        }
         const o = d.orders;
         if (o.no_coords) add('is-warn', 'fa-location-dot', 'Առանց կետի', o.no_coords, () => openFold('dpNoCoords'));
         const gs = geoSug();
@@ -1093,6 +1102,7 @@
         setSdLater(state.day, [...later].filter(x => open.some(o => o.isn === x)));
         $('dpSameDayDlg').close();
         renderSameDay();
+        renderInbox();
         toast(pl(isns.length, 'պատվեր') + ' կմնա վաղվա առաքման մեջ։');
     }
 
@@ -2418,6 +2428,7 @@
     function stopItem(stop, idx, tripId, editing) {
         const li = document.createElement('li');
         li.className = 'dp-stop';
+        li.dataset.cid = String(stop.customer_id);
         const eta = document.createElement('span');
         eta.className = 'dp-stop-eta' + (stop.eta ? '' : ' is-none');
         if (stop.eta) eta.innerHTML = '<span class="rt-sr-only">ժամանում ≈ </span>' + esc(stop.eta);
@@ -3519,10 +3530,148 @@
         return fold;
     }
 
+    // №86: нажали магазин на карте (рабочий экран) — карточка его машины справа, строка магазина подсвечена. Та же машина
+    // (или тот же рейс) уже выбрана — карта не перерисовывается и не меняет масштаб, только строка
+    const MAP_HINT = '<br><small class="dp-tip-hint">Սեղմեք՝ քարտը, քաշեք՝ այլ երթի վրա</small>';
+    function pickFromMap(t, tr, s) {
+        if (state.mapDragged) return;   // конец перетаскивания — не нажатие
+        const f = state.mapFocus;
+        if (!(f && f.truck === t.car_code && (f.trip == null || f.trip === tr.id) && state.open.has(t.car_code))) focusFromBoard(t, tr);
+        flashStop(tr.id, s.customer_id);
+    }
+    function flashStop(tripId, cid) {
+        const row = $('dpTruckCards').querySelector('.dp-trip[data-trip="' + tripId + '"] .dp-stop[data-cid="' + cid + '"]');
+        if (!row) return;
+        const side = $('dpWsSide');
+        if (side.contains(row)) side.scrollTo({ top: row.getBoundingClientRect().top - side.getBoundingClientRect().top + side.scrollTop - side.clientHeight / 3,
+                                                behavior: calm() ? 'auto' : 'smooth' });
+        clearTimeout(row.dpFlash);
+        row.classList.remove('is-flash');
+        void row.offsetWidth;   // повторное нажатие — подсветка заново
+        row.classList.add('is-flash');
+        row.dpFlash = setTimeout(() => row.classList.remove('is-flash'), 1800);
+    }
+    // наведение на кружок шкалы или строку магазина в карточке — точка на карте обведена, подпись открыта
+    function hoverStop(tripId, cid, on) {
+        const map = state.map, m = state.mapMarks && state.mapMarks.get(tripId + ':' + cid);
+        if (state.hoverRing) { state.hoverRing.remove(); state.hoverRing = null; }
+        if (!map || !m || !map.hasLayer(m)) return;
+        if (!on) { m.closeTooltip(); return; }
+        state.hoverRing = L.circleMarker(m.getLatLng(), { radius: 17, color: '#fff', weight: 3, fill: false, interactive: false }).addTo(map);
+        m.openTooltip();
+    }
+    function initStopHover() {
+        const root = $('dpBody');
+        const key = (el) => {
+            if (!el || !el.closest) return null;
+            const tick = el.closest('i.dp-tick[data-cid]');
+            const bar = tick && tick.closest('.dp-bar[data-trip]');
+            if (bar) return bar.dataset.trip + ':' + tick.dataset.cid;
+            const row = el.closest('.dp-stop[data-cid]');
+            const trip = row && row.closest('.dp-trip[data-trip]');
+            return trip ? trip.dataset.trip + ':' + row.dataset.cid : null;
+        };
+        let cur = null;
+        const set = (k) => {
+            if (k === cur) return;
+            if (cur) hoverStop(...cur.split(':'), false);
+            cur = k;
+            if (k) hoverStop(...k.split(':'), true);
+        };
+        root.addEventListener('mouseover', (e) => { if (!state.dragStop) set(key(e.target)); });
+        root.addEventListener('mouseleave', () => set(null));
+    }
+    // №86: перенос магазина на карте (как в Routific): тянут точку — видны все рейсы дня, ближайшая линия другого рейса
+    // (до DROP_PX пикселей, у машины, которой магазин разрешён) выделена, подпись точки называет её; отпустили — правка
+    // move, как перенос на шкалу; мимо — точка возвращается на место
+    const DROP_PX = 28;
+    function mapDraggable(m, t, tr, s, tip) {
+        let drag = null;
+        // конец переноса: отпустили (dragend) или карту перерисовали посреди него (cancel из drawMap)
+        const finish = () => {
+            if (!drag) return null;
+            const hit = drag.hit, orig = drag.orig;
+            if (drag.raf) cancelAnimationFrame(drag.raf);
+            if (hit) hit.line.setStyle(hit.style);
+            drag.extra.remove();
+            drag = null;
+            state.mapDrag = null;
+            $('rtDispatch').classList.remove('is-mapdrag');
+            setTimeout(() => { state.mapDragged = false; }, 0);   // click сразу после переноса (если придёт) — не нажатие
+            const el = m.getTooltip().getElement();
+            if (el) el.classList.remove('dp-dragtip');
+            m.setTooltipContent(tip + MAP_HINT);
+            m.setLatLng(orig);   // новая карта придёт с ответом сервера; мимо рейса — точка на своём месте
+            return hit;
+        };
+        m.on('dragstart', () => {
+            const map = state.map, plan = state.data.plan, depot = state.data.depot ? [state.data.depot.lat, state.data.depot.lon] : null;
+            const extra = L.layerGroup().addTo(map);
+            const targets = [];
+            if (!state.busy) plan.trucks.forEach(tt => tt.trips.forEach((x, xi) => {
+                if (x.id === tr.id || !vehicleAllowed(s, tt.car_code)) return;
+                let line = state.mapLines.get(x.id);
+                if (!line) {   // рейс сейчас скрыт (выбрана одна машина) — на время переноса бледной линией
+                    const pts = x.stops.filter(q => q.lat !== null).map(q => [q.lat, q.lon]);
+                    const raw = depot ? [depot, ...pts, depot] : pts;
+                    if (raw.length < 2) return;
+                    const road = state.roadCache.get(raw.map(q => q[0].toFixed(5) + ',' + q[1].toFixed(5)).join(';'));
+                    line = L.polyline(Array.isArray(road) && road.length > 1 ? road : raw,
+                        { color: truckColor(tt.car_code), weight: 3, opacity: .55, dashArray: '4 6', interactive: false }).addTo(extra);
+                }
+                targets.push({ t: tt, tr: x, n: xi + 1, line, style: { weight: line.options.weight, opacity: line.options.opacity } });
+            }));
+            drag = { orig: m.getLatLng(), extra, targets, hit: null, raf: 0 };
+            state.mapDrag = { cancel: finish };
+            state.mapDragged = true;
+            m.closeTooltip();
+            if (state.busy) {
+                m.setTooltipContent('Սպասեք՝ նախորդ փոփոխությունը դեռ պահպանվում է').openTooltip();
+                const el = m.getTooltip().getElement();
+                if (el) el.classList.add('dp-dragtip');
+            }
+            $('rtDispatch').classList.add('is-mapdrag');
+        });
+        m.on('drag', (e) => {
+            if (!drag || drag.raf) return;
+            const ll = e.latlng;
+            drag.raf = requestAnimationFrame(() => {
+                if (!drag) return;
+                drag.raf = 0;
+                const map = state.map, p = map.latLngToContainerPoint(ll);
+                let best = null, bd = DROP_PX;
+                drag.targets.forEach(g => {   // по текущему экрану: линия могла смениться на дорогу, карту — сдвинуть колесом
+                    const px = g.line.getLatLngs().map(q => map.latLngToContainerPoint(q));
+                    for (let i = 1; i < px.length; i++) {
+                        const dd = L.LineUtil.pointToSegmentDistance(p, px[i - 1], px[i]);
+                        if (dd < bd) { bd = dd; best = g; }
+                    }
+                });
+                if (best === drag.hit) return;
+                if (drag.hit) drag.hit.line.setStyle(drag.hit.style);
+                drag.hit = best;
+                if (best) {
+                    best.line.setStyle({ weight: 7, opacity: 1 });
+                    best.line.bringToFront();
+                    m.setTooltipContent(esc(s.name || s.code) + '<br>→ ' + esc(truckLabel(best.t)) + ', երթ ' + best.n).openTooltip();
+                    const el = m.getTooltip().getElement();
+                    if (el) el.classList.add('dp-dragtip');   // подписи точек под курсором на время переноса скрыты
+                } else m.closeTooltip();
+            });
+        });
+        m.on('dragend', () => {
+            const hit = finish();
+            if (hit) edit({ action: 'move', customer_id: s.customer_id, from_trip: tr.id, to_trip: hit.tr.id, truck: null },
+                '«' + (s.name || s.code) + '» տեղափոխվեց՝ ' + truckLabel(hit.t) + ', երթ ' + hit.n);
+        });
+    }
+
     function drawMap() {
         ensureMap();
         if (!state.map) return;
         const d = state.data, plan = d.plan;
+        if (state.mapDrag) state.mapDrag.cancel();
+        if (state.hoverRing) state.hoverRing.remove();
         state.layers.clearLayers();
         state.map.invalidateSize();
         const bounds = [];
@@ -3537,26 +3686,46 @@
         // фильтр и «почему так» над картой меняют её высоту (в колонке справа) — вписывать точки по новому размеру
         state.map.invalidateSize({ pan: false });
         const routes = [];   // [линия на карте, точки рейса по порядку]
+        // №86: на рабочем экране точка — ссылка на строку в карточке машины, и её можно перетащить на другой рейс
+        const ws = wsOn();   // карта рисуется до layoutWs — класс is-ws может ещё не стоять
+        state.mapWs = ws;
+        const canDrag = ws && !d.is_past && finePointer();
+        state.mapMarks = new Map();   // «рейс:магазин» → маркер (подсветка со шкалы и из карточки)
+        state.mapLines = new Map();   // рейс → его линия на карте (цели переноса)
+        state.hoverRing = null;
         plan.trucks.forEach(t => {
             const color = truckColor(t.car_code);
             t.trips.forEach((tr, ti) => {
                 if (!shown(t, tr)) return;
                 const pts = tr.stops.filter(s => s.lat !== null).map(s => [s.lat, s.lon]);
                 const line = depot ? [depot, ...pts, depot] : pts;
-                if (line.length > 1) routes.push([L.polyline(line, { color, weight: state.mapFocus ? 4 : 3, opacity: .85, dashArray: ti % 2 ? '6 6' : null }).addTo(state.layers), line]);
+                if (line.length > 1) {
+                    const pl = L.polyline(line, { color, weight: state.mapFocus ? 4 : 3, opacity: .85, dashArray: ti % 2 ? '6 6' : null }).addTo(state.layers);
+                    routes.push([pl, line]);
+                    state.mapLines.set(tr.id, pl);
+                }
                 tr.stops.forEach((s, si) => {
                     if (s.lat === null) return;
                     bounds.push([s.lat, s.lon]);
                     // одна машина или рейс — точки с номерами по порядку объезда (у машины с несколькими рейсами — «рейс.точка»)
                     const label = state.mapFocus ? (state.mapFocus.trip == null && t.trips.length > 1 ? (ti + 1) + '.' : '') + (si + 1) : null;
-                    const m = label === null
-                        ? L.circleMarker([s.lat, s.lon], { radius: 7, color: '#0c0f14', weight: 2, fillColor: color, fillOpacity: 1 })
-                        : L.marker([s.lat, s.lon], { icon: L.divIcon({ className: 'dp-npin', html: '<span' + (String(label).length > 3 ? ' class="is-long"' : '') + ' style="background:' + color + '">' + label + '</span>', iconSize: [26, 26] }), keyboard: false });
-                    m.bindTooltip(esc(truckLabel(t)) + ' · երթ ' + (ti + 1) + ' · №' + (si + 1) + '<br>' + esc(s.name || s.code));
-                    const when = (s.eta ? 'ժամանում ≈ ' + s.eta : '') + (windowText(s.window) ? ' · ընդունման ժամ՝ ' + windowText(s.window) : '');
-                    m.bindPopup('<div class="rt-pop"><b>' + esc(s.name || s.code) + '</b><br>' + esc(s.address || '') + '<br>'
-                        + esc(kgText(s.kg)) + ' · ' + esc(money(s.revenue)) + '<br>' + esc(truckLabel(t)) + ', երթ ' + (ti + 1) + ', կետ ' + (si + 1)
-                        + (when ? '<br>' + esc(when) : '') + '</div>');
+                    const m = label !== null
+                        ? L.marker([s.lat, s.lon], { icon: L.divIcon({ className: 'dp-npin', html: '<span' + (String(label).length > 3 ? ' class="is-long"' : '') + ' data-trip="' + tr.id + '" style="background:' + color + '">' + label + '</span>', iconSize: [26, 26] }), keyboard: false, draggable: canDrag })
+                        : ws   // перетащить можно только маркер, не кружок на canvas
+                            ? L.marker([s.lat, s.lon], { icon: L.divIcon({ className: 'dp-dpin', html: '<span data-trip="' + tr.id + '" style="background:' + color + '"></span>', iconSize: [16, 16] }), keyboard: false, draggable: canDrag })
+                            : L.circleMarker([s.lat, s.lon], { radius: 7, color: '#0c0f14', weight: 2, fillColor: color, fillOpacity: 1 });
+                    const tip = esc(truckLabel(t)) + ' · երթ ' + (ti + 1) + ' · №' + (si + 1) + '<br>' + esc(s.name || s.code);
+                    m.bindTooltip(tip + (canDrag ? MAP_HINT : ''));
+                    state.mapMarks.set(tr.id + ':' + s.customer_id, m);
+                    if (ws) {
+                        m.on('click', () => pickFromMap(t, tr, s));
+                        if (canDrag) mapDraggable(m, t, tr, s, tip);
+                    } else {
+                        const when = (s.eta ? 'ժամանում ≈ ' + s.eta : '') + (windowText(s.window) ? ' · ընդունման ժամ՝ ' + windowText(s.window) : '');
+                        m.bindPopup('<div class="rt-pop"><b>' + esc(s.name || s.code) + '</b><br>' + esc(s.address || '') + '<br>'
+                            + esc(kgText(s.kg)) + ' · ' + esc(money(s.revenue)) + '<br>' + esc(truckLabel(t)) + ', երթ ' + (ti + 1) + ', կետ ' + (si + 1)
+                            + (when ? '<br>' + esc(when) : '') + '</div>');
+                    }
                     m.addTo(state.layers);
                 });
             });
@@ -3602,7 +3771,7 @@
         });
         // дорога уходит дальше магазинов — вписать её целиком, если логист ещё не двигал карту
         state.mapBounds = all.length ? all : state.mapBounds;
-        if (state.map && all.length && !state.mapUserMoved) fitMap(state.map, all);
+        if (state.map && all.length && !state.mapUserMoved && !state.mapDrag) fitMap(state.map, all);
     }
 
     // ---------- Действия ----------
@@ -3821,7 +3990,9 @@
         if (on) sizeWs();
         if (on !== was && state.map) setTimeout(() => {
             state.map.invalidateSize({ pan: false });
-            if (state.mapBounds && !state.mapUserMoved) fitMap(state.map, state.mapBounds);
+            // №86: точки на рабочем экране другие (нажатие ведёт в карточку, перенос) — карта нарисована для другого вида
+            if (state.data && state.data.plan && state.mapWs !== on) drawMap();
+            else if (state.mapBounds && !state.mapUserMoved) fitMap(state.map, state.mapBounds);
         }, 0);
         // M3: подписи Яндекса / Leaflet справа внизу — не под карточкой машины
         $('dpWs').classList.toggle('has-side', on && !!state.mapFocus);
@@ -4497,6 +4668,7 @@
         initTabs();
         initWs();
         dropStops();
+        initStopHover();
         $('dpSfSend').addEventListener('click', () => {
             const go = paperNext;
             paperNext = null;

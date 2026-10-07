@@ -546,6 +546,37 @@ def main() -> int:
                   and ws.locator('#dpBoard .dp-blabel .dp-blx-t').first.is_visible(), 'Y board: numbered stops, load line per truck')
             box = ws.evaluate("(() => { const r = document.getElementById('dpWs').getBoundingClientRect(); return [r.top, r.bottom, innerHeight]; })()")
             check(box[1] <= box[2] + 1, f'Y workspace fits the window {box}')
+            # №86 (до переноса на шкалу ниже): карта ↔ карточка — наведение на кружок шкалы подсвечивает точку; нажатие точки открывает машину и строку;
+            # точку можно перетащить на линию другого рейса → правка move (отпустили мимо — ничего)
+            ws.locator('#dpBoard .dp-bar i.dp-tick').first.hover()
+            ws.wait_for_timeout(300)
+            check(ws.locator('.dp-ws-map .leaflet-tooltip').count() >= 1, 'Y hover a board stop → its point on the map is shown')
+            ws.mouse.move(5, 5)
+            ws.locator('.dp-ws-map .dp-dpin').first.click(force=True)
+            ws.wait_for_selector('#dpWsSide:not([hidden]) .dp-stop.is-flash', timeout=5000)
+            check(ws.locator('#dpWsSide .dp-tcard.is-focus .dp-stop.is-flash').count() == 1, 'Y click a map point → truck card, the store row flashes')
+            ws.click('#dpWsClose')
+            ws.wait_for_timeout(600)
+            map_moves = []
+            ws.on('request', lambda r: map_moves.append(r.post_data) if r.method == 'POST' and r.url.endswith('/dispatch/edit') else None)
+            pair = ws.evaluate('''() => { const ps = [...document.querySelectorAll('.dp-ws-map .dp-dpin')].map(e => { const r = e.getBoundingClientRect();
+                return {x: r.left + r.width / 2, y: r.top + r.height / 2, c: e.firstElementChild.dataset.trip}; });
+              // тянем из рейса, где точек больше одной: оба рейса остаются для переноса на шкалу ниже
+              const n = c => ps.filter(p => p.c === c).length;
+              for (const a of ps) for (const b of ps) if (a.c !== b.c && n(a.c) > 1 && Math.hypot(a.x - b.x, a.y - b.y) > 40) return [a, b];
+              return null; }''')
+            dbg = ws.evaluate("[...document.querySelectorAll('.dp-ws-map .dp-dpin')].map(e => { const r = e.getBoundingClientRect(); return [Math.round(r.left), Math.round(r.top), e.firstElementChild.dataset.trip]; })")
+            check(pair is not None, f'Y map has points of two trips to drag between {dbg}')
+            if pair:
+                a, b = pair
+                ws.mouse.move(a['x'], a['y'])
+                ws.mouse.down()
+                ws.mouse.move((a['x'] + b['x']) / 2, (a['y'] + b['y']) / 2, steps=6)
+                ws.mouse.move(b['x'] + 2, b['y'] + 2, steps=6)
+                ws.wait_for_timeout(300)
+                ws.mouse.up()
+                ws.wait_for_timeout(1500)
+                check(any('"move"' in (m or '') for m in map_moves), f'Y drag a map point onto another trip line → move ({len(map_moves)} edit)')
             ws.locator('#dpBoard .dp-blabel').first.click()
             ws.wait_for_selector('#dpWsSide:not([hidden]) .dp-tcard.is-focus', timeout=5000)
             check(ws.locator('#dpWsSide .dp-tcard.is-focus .dp-editbtn').first.is_visible(), 'Y truck click → its card on the right with «Փոփոխել»')
