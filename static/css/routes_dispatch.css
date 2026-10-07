@@ -1044,8 +1044,14 @@ body.dp-ws-on .rt-secbar .rt-tabs a { padding-top: 3px; padding-bottom: 3px; }
 #rtDispatch.is-ws .dp-datenote .rt-linkbtn:hover { color: var(--rt-acc); border-color: var(--rt-acc-dim); text-decoration: none; }
 #rtDispatch.is-ws .dp-datenote .rt-linkbtn i { font-size: .875rem; }
 /* статус: короткая подпись целиком; полная — в подсказке (title) и для экранного диктора */
-.dp-sp-s { display: none; }
-#rtDispatch.is-ws .dp-sp-l { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.dp-sp-s, .dp-sp-a { display: none; }
+#rtDispatch.is-ws .dp-sp-a { display: inline; }
+#rtDispatch.is-ws :is(.dp-sp-l, .dp-sp-a),
+#rtDispatch.is-ws .dp-dayboard.tb-t1 :is(#dpExcel, #dpWsAi) span,
+#rtDispatch.is-ws .dp-dayboard.tb-t2 #dpPrepOpen span,
+#rtDispatch.is-ws .dp-dayboard.tb-t3 #dpSendBtn span {
+    position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
+}
 #rtDispatch.is-ws .dp-sp-s { display: inline-flex; align-items: center; gap: 6px; }
 #rtDispatch.is-ws .dp-sendpill { position: relative; height: 30px; min-height: 0; padding: 0 12px 0 10px; gap: 7px; font-size: .8125rem; }
 #rtDispatch.is-ws .dp-sendpill > i { font-size: .8125rem; }
@@ -1054,19 +1060,14 @@ body.dp-ws-on .rt-secbar .rt-tabs a { padding-top: 3px; padding-bottom: 3px; }
 #rtDispatch.is-ws #dpSendBtn { height: 30px; padding: 0 12px; font-size: .8125rem; }
 /* «Չեղարկել հաստատումը» и «Չեղարկել փոփոխությունները» — пунктами меню «⋯» */
 #rtDispatch.is-ws #dpUnapprove, #rtDispatch.is-ws #dpDiscardBtn { display: none; }
-#rtDispatch.is-ws .dp-approve:not(:has(#dpApproveBtn)) { display: none; }
+#rtDispatch.is-ws .dp-approve.is-approved { display: none; }
 /* группы: [Մեքենաներ, պատվերներ][AI] | [Հաստատել][Տպել][Excel] [⋯] */
-.dp-wsacts > #dpPrepOpen { order: 1; }
-.dp-wsacts > #dpWsAi { order: 2; }
-.dp-wsacts > .dp-tbsep { order: 3; width: 1px; height: 24px; margin: 0 4px; background: var(--rt-line); flex: none; }
-.dp-wsacts > .dp-approve { order: 4; }
-.dp-wsacts > .dp-summary-cta { order: 5; }
-.dp-wsacts > .dp-more { order: 6; }
+.dp-wsacts > .dp-tbsep { width: 1px; height: 24px; margin: 0 4px; background: var(--rt-line); flex: none; }
 .dp-wsacts .rt-btn.dp-icobtn { width: 36px; padding: 0; }
 #rtDispatch.is-ws #dpExcel i { color: #34a853; }
 #rtDispatch.is-ws #dpExcel:hover i { color: inherit; }
 /* меню «⋯» */
-.dp-more { position: relative; }
+.dp-tbmore { position: relative; }
 .dp-menu {
     position: absolute; right: 0; top: calc(100% + 6px); z-index: 1200; min-width: 260px; padding: 6px;
     display: flex; flex-direction: column; gap: 2px;
@@ -1087,11 +1088,6 @@ body.dp-ws-on .rt-secbar .rt-tabs a { padding-top: 3px; padding-bottom: 3px; }
 #rtDispatch.is-ws .dp-dayboard.tb-t2 #dpPrepOpen,
 #rtDispatch.is-ws .dp-dayboard.tb-t3 :is(#dpPrint, #dpApproveBtn, #dpSendBtn) { width: 36px; padding: 0; }
 #rtDispatch.is-ws .dp-dayboard.tb-t3 #dpSendBtn { width: 30px; }
-#rtDispatch.is-ws .dp-dayboard.tb-t1 :is(#dpExcel, #dpWsAi) span,
-#rtDispatch.is-ws .dp-dayboard.tb-t2 #dpPrepOpen span,
-#rtDispatch.is-ws .dp-dayboard.tb-t3 #dpSendBtn span {
-    position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
-}
 #rtDispatch.is-ws .dp-dayboard.tb-t3 :is(#dpPrint, #dpApproveBtn)::after { content: none; }
 
 /* «Ի՞նչ անել հիմա» — одна строка (как баннер «Routes not yet shared → Send routes» у OptimoRoute) */

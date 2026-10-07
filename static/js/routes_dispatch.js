@@ -570,6 +570,7 @@
         if (!d.plan || (d.is_past && !d.approved)) { box.hidden = true; return; }
         box.hidden = false;
         const a = d.approved;
+        box.classList.toggle('is-approved', !!a);   // №82: на рабочем экране — только кнопка «Հաստատել», снять — в меню «⋯»
         if (a) {
             const badge = document.createElement('span');
             badge.className = 'rt-badge b-ok';
@@ -660,11 +661,15 @@
         long.textContent = !d.sent ? 'Սևագիր — վարորդները դեռ չեն տեսնում'
             : unsent ? unsentTitle(d.unsent) : 'Ուղարկված է վարորդներին · ' + builtWhen(d.sent.at);
         // шапка рабочего экрана — коротко и целиком (полный текст — в подсказке и для экранного диктора)
-        const sentDay = d.sent && typeof d.sent.at === 'string' ? d.sent.at.slice(0, 10) : '';
+        const at = d.sent && typeof d.sent.at === 'string' ? d.sent.at : '';
         short.textContent = !d.sent ? 'Սևագիր'
             : unsent ? 'Չուղարկված' + (d.unsent.trucks.length ? ' · ' + pl(d.unsent.trucks.length, 'մեքենա') : '')
-            : 'Ուղարկված · ' + (sentDay && sentDay !== d.today ? dayHuman(sentDay) : d.sent.at.slice(11, 16));
-        if (d.approved) short.insertAdjacentHTML('afterbegin', '<i class="fas fa-lock dp-sp-lock" aria-hidden="true"></i>');
+            : 'Ուղարկված' + (!at ? '' : ' · ' + (at.slice(0, 10) !== d.today ? dayHuman(at.slice(0, 10)) : at.slice(11, 16)));
+        if (d.approved) {
+            short.insertAdjacentHTML('afterbegin', '<i class="fas fa-lock dp-sp-lock" aria-hidden="true"></i>');
+            // на рабочем экране бейджа «հաստատված» нет — диктору говорит статус
+            long.insertAdjacentHTML('afterend', '<span class="dp-sp-a"> · Պլանը հաստատված է</span>');
+        }
         pill.title = (unsent ? unsentDetail(d.unsent) : long.textContent) + (d.approved ? ' · Պլանը հաստատված է' : '');
         box.appendChild(pill);
         if (!unsent) return;
@@ -3987,12 +3992,15 @@
         const on = wsOn(), root = $('rtDispatch'), was = root.classList.contains('is-ws');
         if (on) wsNodes().forEach(([n, slot]) => wsPark(n, $(slot)));
         else if (was) wsNodes().forEach(([n]) => wsUnpark(n));
+        // меню «⋯» — последним и в DOM: Tab идёт в том же порядке, что видно (утверждение и печать паркуются в конец)
+        const more = $('dpWsMoreBox');
+        if (on && more.parentNode.lastElementChild !== more) more.parentNode.appendChild(more);
         root.classList.toggle('is-ws', on);
         document.body.classList.toggle('dp-ws-on', on);
         $('dpWs').hidden = !on;
         $('dpWsActs').hidden = !on;
-        syncMenu();
         if (!on) openMenu(false);
+        syncMenu();
         if (!on && !$('dpDrawer').hidden) { $('dpDrawer').hidden = true; $('dpPrepOpen').setAttribute('aria-expanded', 'false'); renderSteps(); }
         $('dpWsSide').hidden = !on || !state.mapFocus;
         if (on && !$('dpMapBox').open) $('dpMapBox').open = true;
@@ -4046,6 +4054,11 @@
     function syncMenu() {
         $('dpMenuUnapprove').hidden = !$('dpUnapprove');
         $('dpMenuDiscard').hidden = !$('dpDiscardBtn');
+        // перерисовка спрятала пункт с фокусом — фокус на первый видимый, а не на <body> (иначе Esc не сработает)
+        if (!$('dpWsMenu').hidden && !$('dpWsMenu').contains(document.activeElement)) {
+            const f = $('dpWsMenu').querySelector('[role="menuitem"]:not([hidden])');
+            if (f) f.focus();
+        }
     }
     function initWs() {
         $('dpPrepOpen').addEventListener('click', () => openDrawer($('dpDrawer').hidden));
@@ -4070,23 +4083,28 @@
         }));
         $('dpWsMenu').addEventListener('keydown', (e) => {
             const items = [...$('dpWsMenu').querySelectorAll('[role="menuitem"]:not([hidden])')], i = items.indexOf(document.activeElement);
+            const n = items.length, down = e.key === 'ArrowDown';
             if (e.key === 'Escape' || e.key === 'Tab') { if (e.key === 'Escape') e.preventDefault(); openMenu(false, e.key === 'Escape'); }
-            else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+            else if ((down || e.key === 'ArrowUp') && n) {
                 e.preventDefault();
-                items[(i + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length].focus();
-            }
+                items[i < 0 ? (down ? 0 : n - 1) : (i + (down ? 1 : n - 1)) % n].focus();
+            } else if ((e.key === 'Home' || e.key === 'End') && n) { e.preventDefault(); items[e.key === 'Home' ? 0 : n - 1].focus(); }
         });
-        document.addEventListener('click', (e) => { if (!$('dpWsMenu').hidden && !e.target.closest('#dpWsMoreBox')) openMenu(false); });
+        // закрыть: нажатие мимо (в захвате — до stopPropagation шкалы и карты) или фокус ушёл из меню
+        document.addEventListener('pointerdown', (e) => { if (!$('dpWsMenu').hidden && !e.target.closest('#dpWsMoreBox')) openMenu(false); }, true);
+        $('dpWsMoreBox').addEventListener('focusout', (e) => { if (!$('dpWsMenu').hidden && e.relatedTarget && !$('dpWsMoreBox').contains(e.relatedTarget)) openMenu(false); });
         $('dpViewWs').addEventListener('click', () => setView('ws'));
         if (WIDE) {
             const sync = () => { if (state.data) { layoutWs(); renderInbox(); } };
             if (WIDE.addEventListener) WIDE.addEventListener('change', sync); else if (WIDE.addListener) WIDE.addListener(sync);
         }
-        window.addEventListener('resize', () => { if ($('rtDispatch').classList.contains('is-ws')) { fitToolbar(); sizeWs(); } });
+        window.addEventListener('resize', () => { if ($('rtDispatch').classList.contains('is-ws')) sizeWs(); });
         if (document.fonts && document.fonts.ready) document.fonts.ready.then(fitToolbar);   // ширина подписей — после загрузки шрифтов
         // шапка, подсказка и счётчики меняют высоту после отрисовки (шрифты, переносы) — высота рабочего экрана следом
         if (typeof window.ResizeObserver !== 'undefined') {
             const ro = new ResizeObserver(() => { if ($('rtDispatch').classList.contains('is-ws')) sizeWs(); });
+            // ширина шапки меняется и без resize окна (полоса прокрутки, масштаб) — подписи кнопок следом; классы ширину не меняют
+            new ResizeObserver(() => window.requestAnimationFrame(fitToolbar)).observe(document.querySelector('#rtDispatch .dp-dayboard'));
             [document.querySelector('#rtDispatch .dp-mast'), $('dpTodo'), $('dpInbox'), $('dpSameDay'), $('dpActionError')].forEach(el => el && ro.observe(el));
         }
     }
