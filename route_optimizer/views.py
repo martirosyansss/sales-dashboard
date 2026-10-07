@@ -4430,47 +4430,46 @@ def _warehouse_body(state: RoutesState, bundle: Bundle, day: date) -> dict[str, 
     seats = dp.crew_view(dd.draft, _crew(state, day, bundle.trucks)[0])   # водители — плана водителей, как и рейсы
     by_id = {t.id: t for t in dd.draft.trips}
     marks = {t.id: t.loaded for t in draft.trips}
-    shifted = dp.shares_shifted(draft)   # доля магазина изменилась правкой рейса другой машины — тоже «логист меняет»
+    changing = _changing_trucks(draft)   # логист меняет машину и не отправил — ни отметки, ни печати (одно правило)
     trucks = []
     for t in plan['trucks']:
         trips = []
         for no, tr in enumerate(t['trips'], 1):
-            # №81: рейса водителей нет в черновике — логист его убрал или переложил и ещё не отправил: отметку не ставить
-            changing = tr['id'] not in marks or tr['id'] in shifted
-            mark = None if changing else marks[tr['id']]
+            mark = marks.get(tr['id'])   # рейса водителей нет в черновике — отметки нет (машина и так «меняется»)
             loaded = {'at': mark['at'][11:16], 'by': mark['by']} if mark is not None else None
             trips.append({'id': tr['id'], 'no': no, 'of': len(t['trips']), 'kg': tr['kg'], 'stops': len(tr['stops']),
                           'loading_start': tr['loading_start'], 'depart': tr['depart'],
                           'preloaded': bool(tr.get('preloaded')), 'loaded': loaded,
-                          **({'changing': True} if changing else {})})
+                          **({'changing': True} if t['car_code'] in changing else {})})
         trucks.append({'car_code': t['car_code'], 'name': t['name'], 'capacity_kg': t['capacity_kg'],
                        'driver': (seats.get(t['car_code']) or {}).get('name'), 'trips': trips,
-                       **({'unsent': True} if _waybill_unsent(draft, t['car_code']) else {})})
+                       **({'changing': True} if t['car_code'] in changing else {})})
     return {**head, 'approved': True, 'planned': True, 'trucks': trucks}
 
 
-def _waybill_unsent(draft: dp.Draft, car: str) -> bool:
-    """У машины неотправленные правки логиста (№81) — Բեռնագիր складу не печатать до «Ուղարկել» (ответ владельца 07.10
-    «Запретить до отправки»). Правка — если у водителей и в черновике разные:
-    - рейсы машины (номер и точки по порядку) — сюда входит и рейс «changing», который прячет «Բեռնված է»;
+def _changing_trucks(draft: dp.Draft) -> set[str]:
+    """Машины, которые логист меняет и ещё не отправил водителям (№81) — склад их не грузит: ни «Բեռնված է» (поставить и
+    снять), ни Բեռնագիր (ответы владельца 07.10 «Запретить до отправки», «Запретить и отметку» — одно правило). Машина
+    «меняется», если у водителей и в черновике разные:
+    - её рейсы (номер и точки по порядку) — рейс убрали, переложили, поменяли точки или их порядок;
     - доли её магазинов (dp.trip_parts — тот же расчёт, что у листа): убрали магазин из рейса другой машины, и доля здесь
       стала целой;
-    - отбор заказов дня (dp.unsent: orders) — груз любой машины.
-    План не отправляли — водители увидят сам черновик, правок «до отправки» нет."""
+    - отбор заказов дня (dp.unsent: orders) — груз любой машины, «меняются» все.
+    План не отправляли — водители видят сам черновик, правок «до отправки» нет."""
     if draft.sent is None:
-        return False
-    out = dp.unsent(draft)
-    if out is not None and (out['orders'] or car in out['trucks']):
-        return True
+        return set()
     sent = draft.for_drivers()
-
-    def trips(d: dp.Draft) -> list[tuple[int, tuple[int, ...]]]:
-        return sorted((t.id, tuple(t.stops)) for t in d.trips if t.truck == car)
-    if trips(draft) != trips(sent):
-        return True
-    mine = {t.id for t in draft.trips if t.truck == car}
+    every = {t.truck for d in (draft, sent) for t in d.trips}
+    out = dp.unsent(draft)
+    if out is not None and out['orders']:
+        return every
     now, was = dp.trip_parts(draft), dp.trip_parts(sent)
-    return any(now[tid] != was[tid] for tid in mine)
+
+    def trips(d: dp.Draft, car: str) -> list[tuple[int, tuple[int, ...]]]:
+        return sorted((t.id, tuple(t.stops)) for t in d.trips if t.truck == car)
+    return {car for car in every
+            if (out is not None and car in out['trucks']) or trips(draft, car) != trips(sent, car)
+            or any(now[t.id] != was[t.id] for t in draft.trips if t.truck == car)}
 
 
 @bp.get('/api/routes/warehouse')
@@ -4526,7 +4525,7 @@ def api_warehouse_waybill() -> Any:
     """Բեռնագիր машины для склада (?date=&truck=&rev=): тот же ответ, что у «Развоза» (_waybill_body), — страница печатает
     тот же документ; плюс weekday (у склада дня недели нет). План — как у всей страницы склада: утверждённый (ответ 15),
     отправленный водителям (№81; не отправляли — он и есть черновик «Развоза»). rev не тот или машины нет — 409; у машины
-    неотправленные правки логиста — 409 с unsent (ответ владельца 07.10, _waybill_unsent); отказы — без ERP. Без basis
+    неотправленные правки логиста — 409 с changing (ответы владельца 07.10, _changing_trucks); отказы — без ERP. Без basis
     (сверка «Развоза»: номера заказов ERP). API «Развоза» складу закрыт (app_v2: default-deny) — Բեռնագիր только здесь."""
     state = _state()
     bundle = _bundle(state)
@@ -4540,8 +4539,8 @@ def api_warehouse_waybill() -> Any:
     draft, cur = _stored_draft(state, day)   # проверки — по сохранённому черновику, до заказов и строк ERP
     if int(rev) != cur or draft is None or draft.approved is None:
         return _conflict(WAREHOUSE_STALE)
-    if _waybill_unsent(draft, car):          # ответ владельца 07.10: до «Ուղարկել» — не печатать
-        return jsonify({'success': False, 'error': WAREHOUSE_WAYBILL_UNSENT, 'conflict': True, 'unsent': True}), 409
+    if car in _changing_trucks(draft):       # ответ владельца 07.10: до «Ուղարկել» — не печатать
+        return jsonify({'success': False, 'error': WAREHOUSE_WAYBILL_CHANGING, 'conflict': True, 'changing': True}), 409
     if all(t.truck != car for t in draft.for_drivers().trips):
         return _conflict(WAREHOUSE_STALE)
     dd = _load_day(state, bundle, day, draft=draft.for_drivers(), rev=cur)   # №81: как страница — план водителей
@@ -4559,8 +4558,8 @@ def api_warehouse_waybill() -> Any:
 
 
 WAREHOUSE_CHANGING = 'Լոգիստը փոխել է այս երթը և դեռ չի ուղարկել վարորդին — զանգահարեք լոգիստին'
-WAREHOUSE_WAYBILL_UNSENT = ('Լոգիստը փոխել է այս մեքենայի երթերը և դեռ չի ուղարկել վարորդին — բեռնագիրը կարելի է տպել '
-                            'ուղարկելուց հետո, զանգահարեք լոգիստին')
+WAREHOUSE_WAYBILL_CHANGING = ('Լոգիստը փոխել է այս մեքենայի երթերը և դեռ չի ուղարկել վարորդին — բեռնագիրը կարելի է տպել '
+                              'ուղարկելուց հետո, զանգահարեք լոգիստին')
 
 
 @bp.post('/api/routes/warehouse/loaded')
@@ -4584,9 +4583,12 @@ def api_warehouse_loaded() -> Any:
         return _conflict(WAREHOUSE_NO_PLAN)
     if payload.get('rev') != rev:
         return _conflict(WAREHOUSE_STALE)
-    if (all(t.id != payload.get('trip') for t in draft.trips) or payload.get('trip') in dp.shares_shifted(draft)) \
-            and any(t.id == payload.get('trip') for t in draft.for_drivers().trips):
-        return _conflict(WAREHOUSE_CHANGING)   # №81: рейс водителей логист изменил (и долю магазина) и ещё не отправил
+    # №81 и ответ владельца 07.10 «Запретить и отметку»: машину рейса логист меняет и не отправил — ни поставить, ни снять
+    # (снятие убрало бы защиту груза, который уже в машине, пока логист её правит: его правки и «Ուղարկել» перестали бы
+    # спрашивать подтверждение). Машина рейса — у водителей, нет там — в черновике.
+    car = next((t.truck for d in (draft.for_drivers(), draft) for t in d.trips if t.id == payload.get('trip')), None)
+    if car is not None and car in _changing_trucks(draft):
+        return _conflict(WAREHOUSE_CHANGING)
     me = session.get('username')
     now = _same_day_now()
     try:

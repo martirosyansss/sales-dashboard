@@ -1800,17 +1800,6 @@ def trip_parts(draft: Draft, routable: Collection[int] | None = None) -> dict[in
     return {tid: {c: parts[(tid, c)] for c in cids} for tid, cids in order}
 
 
-def shares_shifted(draft: Draft) -> set[int]:
-    """Рейсы, которые есть и у водителей (№81), и в черновике, а доля общего магазина в них разная: правка рейса другой
-    машины (убрали или добавили там тяжёлый магазин, переставили рейсы с ним) меняет груз этого рейса. Не отправляли —
-    пусто."""
-    if draft.sent is None:
-        return set()
-    now, was = trip_parts(draft), trip_parts(draft.for_drivers())
-    return {tid for tid in now.keys() & was.keys()
-            if any(now[tid][c] != was[tid][c] for c in now[tid].keys() & was[tid].keys())}
-
-
 def loaded_cargo(draft: Draft, stops: Sequence[Stop], ids: Collection[int] | None = None
                  ) -> dict[int, tuple[str, frozenset[int], frozenset[str], frozenset[tuple[int, int, int]]]]:
     """Что везёт загруженный рейс (№78; ids — эти рейсы, загружены они ещё или нет): машина, магазины, заказы их точек

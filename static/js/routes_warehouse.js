@@ -127,8 +127,8 @@
         const title = h('h3', { class: 'wh-trip-t', text: tr.of > 1 ? 'Երթ ' + tr.no + ' / ' + tr.of : 'Երթ' });
         let act;
         if (tr.changing) {
-            // №81: логист изменил рейс и ещё не отправил водителю — грузить нельзя, пока не уточнили
-            act = h('span', { class: 'wh-changing' }, icon('fa-phone'), 'Լոգիստը փոխում է երթը՝ զանգահարեք');
+            // №81: логист меняет машину и ещё не отправил водителю — грузить нельзя, пока не уточнили (и снять отметку)
+            act = h('span', { class: 'wh-changing', id: 'whChg' + tr.id }, icon('fa-phone'), 'Լոգիստը փոխում է երթը՝ զանգահարեք');
         } else if (tr.loaded) {
             // №78, ответ 19: снять отметку можно в любое время — с вопросом (рейс снова может поменяться при պլանի վերակազմում)
             const u = h('button', { type: 'button', class: 'wh-undo', text: 'Հանել նշումը' });
@@ -152,10 +152,11 @@
     // ---------- Բեռնագիր машины (тот же документ, что печатает логист на «Развозе») ----------
     // Окно — сразу по нажатию (открытое после ответа сервера браузер счёл бы всплывающим). Не открылось (телефон,
     // блокировщик) — лист на этой же странице и печать её (printHere). Ответ сверяется с планом на экране после запроса:
-    // rev и рейсы машины не те — «план изменился, обновите», а не лист по другому плану. У машины неотправленные правки
-    // логиста (unsent, ответ владельца 07.10 «Запретить до отправки») — кнопка выключена, сервер тоже откажет (409 unsent).
+    // rev и рейсы машины не те — «план изменился, обновите», а не лист по другому плану. Машину логист меняет и не
+    // отправил (changing — то же правило, что у «Բեռնված է», ответы владельца 07.10) — кнопка выключена, сервер тоже
+    // откажет (409 changing).
     async function printWaybill(truck, btn) {
-        if (truck.unsent || state.busy || state.stale || !state.data || btn.getAttribute('aria-busy') === 'true') return;
+        if (truck.changing || state.busy || state.stale || !state.data || btn.getAttribute('aria-busy') === 'true') return;
         const d = state.data;
         let w = null;
         try { w = window.open('', '_blank'); } catch (e) { w = null; }
@@ -176,7 +177,7 @@
             if (!same) throw Object.assign(new Error('Պլանը փոխվել է — թարմացրեք էջը'), { status: 409 });
         } catch (e) {
             if (w) { try { w.close(); } catch (x) { /* уже закрыто */ } }
-            if (e.status === 409 && e.body && e.body.unsent) showAlert(e.message, true);   // правки после открытия страницы
+            if (e.status === 409 && e.body && e.body.changing) showAlert(e.message, true);   // правки после открытия страницы
             else if (e.status === 409) markStale(); else showAlert(e.message, false);
             return;
         } finally {
@@ -231,18 +232,17 @@
         const trips = d.trucks.flatMap(t => t.trips);
         const done = trips.filter(t => t.loaded).length;
         $('whSummary').textContent = d.trucks.length + NB + 'մեքենա · ' + trips.length + NB + 'երթ · բեռնված՝ ' + done + ' / ' + trips.length;
-        d.trucks.forEach((t, k) => {
-            // неотправленные правки логиста — та же подсказка, что вместо «Բեռնված է» (№81)
-            const hint = t.unsent ? h('span', { class: 'wh-changing', id: 'whUnsent' + k }, icon('fa-phone'),
-                'Լոգիստը փոխում է երթը՝ զանգահարեք') : null;
+        d.trucks.forEach(t => {
+            // машину логист меняет — печати нет; подсказка — у рейсов (вместо «Բեռնված է»), кнопка ссылается на первую
             const pr = h('button', { type: 'button', class: 'wh-print', 'aria-label': 'Տպել բեռնագիրը՝ ' + (t.name || t.car_code),
-                disabled: !!t.unsent, 'aria-describedby': hint ? hint.id : null }, icon('fa-print'), 'Տպել բեռնագիրը');
+                disabled: !!t.changing, 'aria-describedby': t.changing && t.trips.length ? 'whChg' + t.trips[0].id : null },
+                icon('fa-print'), 'Տպել բեռնագիրը');
             pr.addEventListener('click', () => printWaybill(t, pr));
             list.append(h('section', { class: 'wh-truck', 'aria-label': t.name || t.car_code },
                 h('div', { class: 'wh-truck-head' }, h('h2', { class: 'wh-truck-name', text: t.name || t.car_code }),
                     t.name ? h('span', { class: 'wh-truck-code', text: t.car_code }) : null),
                 h('div', { class: 'wh-truck-meta' },
-                    h('p', { class: 'wh-driver' }, icon('fa-id-card'), t.driver ? t.driver : 'վարորդը նշված չէ'), pr, hint),
+                    h('p', { class: 'wh-driver' }, icon('fa-id-card'), t.driver ? t.driver : 'վարորդը նշված չէ'), pr),
                 t.trips.map(tr => tripRow(d, t, tr))));
         });
     }

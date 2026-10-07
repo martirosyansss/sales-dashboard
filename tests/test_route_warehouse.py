@@ -326,30 +326,30 @@ def _wb(client, car, rev):
 
 def test_warehouse_waybill_refused_until_logist_sends_edits(client, monkeypatch):
     """Ответ владельца 07.10 «Запретить до отправки»: у машины неотправленные правки логиста (№81) — на странице склада
-    признак unsent (кнопка выключена), Բեռնագիր — 409 с unsent, ERP не читается; после «Ուղարկել» — печатается, по
+    признак changing (кнопка выключена), Բեռնագիր — 409 с changing, ERP не читается; после «Ուղարկել» — печатается, по
     отправленному плану, тот же ответ, что у «Развоза»."""
     from test_route_dispatch_send import _move_one
     state, d, asked = _sent_day(client, monkeypatch)
     w = client.get('/api/routes/warehouse?date=' + DAY).get_json()
-    assert all('unsent' not in t for t in w['trucks'])
+    assert all('changing' not in t for t in w['trucks'])
     assert all(_wb(client, t['car_code'], w['rev']).status_code == 200 for t in w['trucks'])
     d = client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': d['rev'], **_move_one(d)}).get_json()
     assert d['unsent'] is not None and not d['unsent']['orders']
     changed = set(d['unsent']['trucks'])
     w = client.get('/api/routes/warehouse?date=' + DAY).get_json()
-    assert changed and {t['car_code'] for t in w['trucks'] if t.get('unsent')} == changed
+    assert changed and {t['car_code'] for t in w['trucks'] if t.get('changing')} == changed
     asked.clear()
     orders, erp = [], state.dispatch_loader
     state.dispatch_loader = lambda *a: orders.append(a) or erp(*a)   # заказы ERP
     for car in changed:
         r = _wb(client, car, w['rev'])
-        assert r.status_code == 409 and r.get_json() == {'success': False, 'error': views.WAREHOUSE_WAYBILL_UNSENT,
-                                                         'conflict': True, 'unsent': True}
+        assert r.status_code == 409 and r.get_json() == {'success': False, 'error': views.WAREHOUSE_WAYBILL_CHANGING,
+                                                         'conflict': True, 'changing': True}
     assert asked == [] and orders == []                              # отказ — до чтения ERP
     d = client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': d['rev'], 'action': 'send'}).get_json()
     assert d['unsent'] is None
     w = client.get('/api/routes/warehouse?date=' + DAY).get_json()
-    assert all('unsent' not in t for t in w['trucks'])
+    assert all('changing' not in t for t in w['trucks'])
     for t in w['trucks']:
         r = _wb(client, t['car_code'], w['rev'])
         assert r.status_code == 200, r.get_json()
@@ -361,45 +361,49 @@ def test_warehouse_waybill_refused_until_logist_sends_edits(client, monkeypatch)
     assert asked
 
 
-def test_warehouse_waybill_unsent_rules():
-    """_waybill_unsent: не отправляли — нет; рейс машины другой (точки, их порядок; рейс «changing» — номера у водителей
+def _chg(draft, car):
+    return car in views._changing_trucks(draft)
+
+
+def test_warehouse_changing_trucks_rules():
+    """_changing_trucks (одно правило печати и отметки склада): не отправляли — нет; рейс машины другой (точки, их порядок; рейс «changing» — номера у водителей
     нет в черновике) — да, только у этой машины; доля клиента этой машины изменилась правкой ДРУГОЙ машины (разделили,
     объединили, переставили рейсы с ним) — да; изменён отбор заказов дня — у всех."""
     *_, draft = _two_trips()                     # FORD — рейсы 1 [101] и 3 [201], HOWO — рейс 2 [102, 103]
     cars = (FORD.car_code, HOWO.car_code)
-    assert draft.sent is None and not any(views._waybill_unsent(draft, c) for c in cars)
+    assert draft.sent is None and not any(_chg(draft, c) for c in cars)
     dp.approve(draft, 'at', 'logist')            # утверждение отправляет план водителям (№81)
-    assert draft.sent is not None and not any(views._waybill_unsent(draft, c) for c in cars)
+    assert draft.sent is not None and not any(_chg(draft, c) for c in cars)
 
     def edited(change, base=draft):
         out = dp.Draft.from_json(base.to_json())
         change(out)
         return out
     rev = edited(lambda x: setattr(dp.trip_of(x, 2), 'stops', [103, 102]))
-    assert views._waybill_unsent(rev, HOWO.car_code) and not views._waybill_unsent(rev, FORD.car_code)
+    assert _chg(rev, HOWO.car_code) and not _chg(rev, FORD.car_code)
     renum = edited(lambda x: setattr(dp.trip_of(x, 1), 'id', x.next_id))   # тот же состав под новым номером
-    assert views._waybill_unsent(renum, FORD.car_code) and not views._waybill_unsent(renum, HOWO.car_code)
+    assert _chg(renum, FORD.car_code) and not _chg(renum, HOWO.car_code)
     excl = edited(lambda x: x.excluded.add('X1'))                            # «այսօր չենք տանում» — груз любой машины
-    assert all(views._waybill_unsent(excl, c) for c in cars)
+    assert all(_chg(excl, c) for c in cars)
 
     # ревью: 102 в двух рейсах разных машин (доля 1/2 у каждой) — правка одной меняет долю у другой
     split = edited(lambda x: dp.trip_of(x, 1).stops.append(102))             # FORD [101, 102], HOWO [102, 103]
     dp.send(split, 'at2', 'logist')
-    assert not any(views._waybill_unsent(split, c) for c in cars)
+    assert not any(_chg(split, c) for c in cars)
     merged = edited(lambda x: dp.trip_of(x, 2).stops.remove(102), split)     # убрали 102 у HOWO: у FORD доля стала целой
     assert dp.unsent(merged)['trucks'] == [HOWO.car_code]                    # dp.unsent о FORD молчит
-    assert views._waybill_unsent(merged, FORD.car_code) and views._waybill_unsent(merged, HOWO.car_code)
+    assert _chg(merged, FORD.car_code) and _chg(merged, HOWO.car_code)
     again = edited(lambda x: dp.trip_of(x, 3).stops.append(102), merged)     # 102 делится между рейсами FORD 1 и 3
     dp.send(again, 'at3', 'logist')
-    assert not any(views._waybill_unsent(again, c) for c in cars)
+    assert not any(_chg(again, c) for c in cars)
 
     def swap(x):                                                             # рейсы FORD с 102 поменялись местами
         a, b = (i for i, t in enumerate(x.trips) if t.id in (1, 3))
         x.trips[a], x.trips[b] = x.trips[b], x.trips[a]
     reorder = edited(swap, again)
-    assert views._waybill_unsent(reorder, FORD.car_code) and not views._waybill_unsent(reorder, HOWO.car_code)
+    assert _chg(reorder, FORD.car_code) and not _chg(reorder, HOWO.car_code)
     split_other = edited(lambda x: dp.trip_of(x, 2).stops.append(101), again)   # 101 FORD делится с рейсом HOWO
-    assert views._waybill_unsent(split_other, FORD.car_code) and views._waybill_unsent(split_other, HOWO.car_code)
+    assert _chg(split_other, FORD.car_code) and _chg(split_other, HOWO.car_code)
 
 def test_reset_race_with_warehouse_mark_is_409(client, monkeypatch):
     """«Ջնջել երթերը» стирает ровно прочитанный черновик: склад успел отметить — 409, отметка цела."""
@@ -525,21 +529,22 @@ def test_other_truck_edit_changing_loaded_share_is_seen():
     ctx, base, ids, draft = _split_trips()
     cargo = dp.loaded_cargo(draft, base)
     assert cargo[1][3] == frozenset({(101, 1, 0), (102, 2, 0)})
-    assert not dp.loaded_changed(draft) and dp.shares_shifted(draft) == set()
+    assert not dp.loaded_changed(draft) and views._changing_trucks(draft) == set()
     got = dp.apply_edit(ctx, base, dp.Draft.from_json(draft.to_json()),
                         {'action': 'move', 'customer_id': 102, 'from_trip': 2, 'to_trip': None, 'truck': None}, ids)
     assert dp.trip_of(got, 1).stops == [101, 102]                     # сам рейс не тронут, правка прошла без LoadedEdit
     assert dp.loaded_cargo(got, base, cargo) != cargo                 # но груз другой — views спросит (/edit, /build)
-    assert dp.loaded_changed(got) and dp.shares_shifted(got) == {1}   # «Ուղարկել» — с подтверждением; склад — changing
+    assert dp.loaded_changed(got)                                     # «Ուղարկել» — с подтверждением
+    assert views._changing_trucks(got) == {FORD.car_code, HOWO.car_code}   # склад: обе машины «меняются»
     # обратное: 101 загруженного рейса теперь и в рейсе HOWO — его доля в машине FORD стала половиной
     rev = dp.Draft.from_json(draft.to_json())
     dp.trip_of(rev, 2).stops.append(101)
-    assert dp.loaded_cargo(rev, base, cargo) != cargo and dp.loaded_changed(rev) and 1 in dp.shares_shifted(rev)
+    assert dp.loaded_cargo(rev, base, cargo) != cargo and dp.loaded_changed(rev) and _chg(rev, FORD.car_code)
     # нейтрально: 103 (не делится, не в загруженном рейсе) — новым рейсом FORD; доли рейса 1 те же — вопроса нет
     same = dp.apply_edit(ctx, base, dp.Draft.from_json(draft.to_json()),
                          {'action': 'move', 'customer_id': 103, 'from_trip': 2, 'to_trip': None, 'truck': FORD.car_code}, ids)
     assert dp.loaded_cargo(same, base, cargo) == cargo and not dp.loaded_changed(same)
-    assert 1 not in dp.shares_shifted(same)
+    assert views._changing_trucks(same) == {FORD.car_code, HOWO.car_code}   # склад: 103 переложили — обе «меняются»
     # лист и проверки — одним расчётом: доли рейса 1 в плане (plan_view share) — те же, что в trip_parts
     assert dp.trip_parts(got)[1] == {101: (1, 0), 102: (1, 0)} and dp.trip_parts(draft)[1][102] == (2, 0)
 

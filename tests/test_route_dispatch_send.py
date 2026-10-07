@@ -308,8 +308,9 @@ def test_discard_keeps_next_id_growing():
 # ============================== склад «Բեռնված է» (№78) и отправленный план ==============================
 
 def test_warehouse_sees_sent_plan_and_discard_keeps_loaded_marks(client, monkeypatch):
-    """Склад грузит то, что отправлено водителям: неотправленная правка на складе не видна; «Չեղարկել
-    փոփոխությունները» не снимает отметку «Բեռնված է»."""
+    """Склад грузит то, что отправлено водителям: неотправленная правка на складе не видна; машину, которую логист
+    меняет, склад не отмечает и не снимает (ответ владельца 07.10 «Запретить и отметку»: и рейс с тем же номером, но
+    другими точками); «Չեղարկել փոփոխությունները» не снимает отметку «Բեռնված է»."""
     _page_setup(client, monkeypatch, now=NOW)
     d = _build(client, ('CAR1', 'CAR2'))
     d = _edit(client, d, action='approve')
@@ -317,21 +318,33 @@ def test_warehouse_sees_sent_plan_and_discard_keeps_loaded_marks(client, monkeyp
     def wh():
         w = client.get('/api/routes/warehouse?date=' + DAY).get_json()
         return w, sorted((t['car_code'], tr['id'], tr['stops']) for t in w['trucks'] for tr in t['trips'])
+
+    def mark(w, trip, loaded=True):
+        return client.post('/api/routes/warehouse/loaded', json={'date': DAY, 'rev': w['rev'], 'trip': trip, 'loaded': loaded})
     w, sent_view = wh()
-    d = _edit(client, d, **_move_one(d))                          # правка — новый рейс или другой рейс
+    trip = w['trucks'][0]['trips'][0]['id']
+    assert mark(w, trip).status_code == 200                       # до правки — как обычно
+    d = client.get('/api/routes/dispatch?date=' + DAY).get_json()
+    move = _move_one(d)                                           # первый магазин первого рейса — в рейс другой машины
+    d = _edit(client, d, **move, confirm_loaded=True)             # загруженный рейс — с подтверждением логиста
     assert d['unsent'] is not None
     w, now_view = wh()
     assert now_view == sent_view                                  # склад — по отправленному плану
-    trip = w['trucks'][0]['trips'][0]['id']
-    r = client.post('/api/routes/warehouse/loaded', json={'date': DAY, 'rev': w['rev'], 'trip': trip, 'loaded': True})
-    assert r.status_code == 200, r.get_json()
+    changed = set(d['unsent']['trucks'])
+    assert {t['car_code'] for t in w['trucks'] if t.get('changing')} == changed
+    assert all(tr.get('changing') for t in w['trucks'] if t['car_code'] in changed for tr in t['trips'])
+    for t in w['trucks']:
+        for tr in t['trips']:
+            if t['car_code'] in changed:                          # и поставить, и снять — 409, «զանգահարեք»
+                r = mark(w, tr['id'], loaded=tr['loaded'] is None)
+                assert r.status_code == 409 and r.get_json()['error'] == views.WAREHOUSE_CHANGING
     d = client.get('/api/routes/dispatch?date=' + DAY).get_json()
     d = _edit(client, d, action='discard')
     assert d['unsent'] is None
     w, back = wh()
-    assert back == sent_view
+    assert back == sent_view and all('changing' not in t for t in w['trucks'])
     assert next(tr for t in w['trucks'] for tr in t['trips'] if tr['id'] == trip)['loaded'] is not None
-
+    assert mark(w, trip, loaded=False).status_code == 200          # правок нет — снимать снова можно
 
 def test_send_changing_loaded_trip_needs_confirmation():
     *_, draft = _base((FORD,))
