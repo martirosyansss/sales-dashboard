@@ -20,9 +20,15 @@
   (without_zone: без рёбер, у которых конец или середина в центре), остальные — по обычному графу. Кэш объезда —
   <карта>.dist-center.npz (отпечаток графа без центра — карта и граница центра; сменились — пересчёт), точки — только
   точки развоза и склад.
+- рельеф (№85, terrain): есть кэш высот узлов <карта>.elev.npz (команда dem) — RoadDistances.climb(a, b): эффективный
+  подъём участка A → B, м (terrain.edge_climb по рёбрам того же кратчайшего пути, что и км; привязка — без подъёма).
+  Считается только для точек ensure_climb («Развоз»), Dijkstra от их узлов с предшественниками: подъём — суммой по дереву
+  кратчайших путей (_tree_sums), а не обходом путей. Кэш — <карта>.climb.npz (<карта>.climb-center.npz у объезда центра):
+  узлы графа и матрица подъёмов между ними; ключ — граф, высоты и CLIMB_C. Кэша высот нет — terrain False, climb None.
 
-Команды:  python -m route_optimizer.roads download | build | warm [--if-stale]
-(warm --if-stale — только если кэш расстояний не годится нынешнему графу и формату: задача обновления сервера)
+Команды:  python -m route_optimizer.roads download | build | warm [--if-stale] | dem [--force]
+(warm --if-stale — только если кэш расстояний не годится нынешнему графу и формату: задача обновления сервера;
+dem — скачать недостающие тайлы SRTM для графа в data/roads/dem и собрать кэш высот узлов)
 """
 from __future__ import annotations
 
@@ -38,6 +44,7 @@ from dataclasses import dataclass, field
 from functools import cached_property
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping, Sequence
 
+from . import terrain
 from .geo import EARTH_RADIUS_KM, Point, haversine_km, in_polygon
 
 if TYPE_CHECKING:
@@ -384,6 +391,26 @@ class RoadNetwork:
             out[k:k + DIJKSTRA_BATCH] = rows[:, targets]
         return out
 
+    def climbs(self, sources: Any, targets: Any, z: Any, reverse: bool = False) -> Any:
+        """Эффективный подъём, м [len(sources) × len(targets)] по тем же кратчайшим путям, что у distances (reverse — от
+        targets[j] к sources[i]); z — высоты узлов. Ребро дерева Dijkstra p → v — terrain.edge_climb, его длина — разность
+        расстояний от источника; сумма по пути — _tree_sums. Пути нет — NaN."""
+        g = self._gt if reverse else self._g
+        out = np.empty((len(sources), len(targets)), dtype=np.float32)
+        for k in range(0, len(sources), DIJKSTRA_BATCH):
+            dist, pred = dijkstra(g, directed=True, indices=sources[k:k + DIJKSTRA_BATCH], return_predecessors=True)
+            for i in range(len(dist)):
+                d, p = dist[i], pred[i]
+                root = p < 0
+                q = np.where(root, 0, p)
+                length = np.where(root, 0.0, d - d[q])
+                # по обратному графу предшественник — следующий узел пути к источнику: ребро узел → предшественник
+                w = terrain.edge_climb(z, z[q], length) if reverse else terrain.edge_climb(z[q], z, length)
+                w[root] = 0.0
+                up = _tree_sums(p, w)[targets]
+                out[k + i] = np.where(np.isfinite(d[targets]), up, np.nan)
+        return out
+
     def lines(self, lines: Sequence[Sequence[Point]]) -> list[list[Point]]:
         """Ломаные вдоль дорог для карты: каждая линия (точки по порядку объезда) → точки по кратчайшему
         пути A → B между соседними точками (paths), упрощённые до PATH_SIMPLIFY_KM (draw). Участок, где точка не
@@ -453,6 +480,20 @@ def _walk_back(pred: Any, source: int, target: int) -> Any:
     return np.array(path[::-1], dtype=np.int64)
 
 
+def _tree_sums(pred: Any, w: Any) -> Any:
+    """Сумма w по пути от корня дерева Dijkstra до каждого узла (w[v] — ребро предшественник → v; корень и узлы без пути —
+    0): удвоение указателей — log₂(глубины) векторных шагов по всем узлам вместо обхода каждого пути в Python."""
+    idx = np.arange(len(pred))
+    p = np.where(pred < 0, idx, pred)
+    acc = np.where(pred < 0, 0.0, w)
+    while True:
+        nxt = p[p]
+        if np.array_equal(nxt, p):   # все указывают на корень: суммы полные
+            return acc
+        acc = acc + acc[p]
+        p = nxt
+
+
 def _simplify(xy: Any, tol: float) -> Any:
     """Индексы точек ломаной xy (км) после упрощения Рамера — Дугласа — Пекера с допуском tol км;
     первая и последняя точки остаются всегда."""
@@ -495,6 +536,52 @@ def _empty_table() -> _Table:
     return _Table({}, np.zeros(0, dtype=np.int64), np.zeros((0, 0), dtype=np.float32))
 
 
+@dataclass(frozen=True)
+class _Climbs:
+    """Неизменяемое состояние кэша подъёмов (№85): узлы графа и матрица подъёмов между ними (м, NaN — пути нет)."""
+    key: str                  # граф, высоты и CLIMB_C (_climb_key); '' — не посчитано
+    graph: str | None         # отпечаток графа таблицы км, к которой относится
+    nodes: Any                # np.ndarray int64: узел графа строки
+    up: Any                   # np.ndarray float32 [c × c]
+    index: dict[int, int] = field(default_factory=dict)   # узел графа → строка
+
+
+def _empty_climbs(key: str = '', graph: str | None = None) -> _Climbs:
+    return _Climbs(key, graph, np.zeros(0, dtype=np.int64), np.zeros((0, 0), dtype=np.float32))
+
+
+def _climb_key(graph_identity: str, elev: str) -> str:
+    return f'{_dist_key(graph_identity)}|{elev}|c{terrain.CLIMB_C:g}'
+
+
+def elevation_loader(path: str, version: str) -> Callable[[], tuple[str, Any] | None]:
+    """Высоты узлов графа карты path из её кэша <карта>.elev.npz: () → (ключ высот, массив) или None (кэша нет, он от
+    другого графа или параметров DEM). Файл перечитывается, только когда он сменился (os.stat на вызов): собранный
+    командой dem кэш подхватывается без перезапуска сервера."""
+    elev_path = _cache_path(path, 'elev')
+    graph_path = _cache_path(path, 'graph')
+    state: dict[str, Any] = {}
+    lock = threading.Lock()
+
+    def load() -> tuple[str, Any] | None:
+        if not terrain.terrain_supported():
+            return None
+        sig = map_signature(elev_path)
+        with lock:
+            if sig is None:
+                state.clear()
+                return None
+            if state.get('sig') != sig:
+                identity = RoadGraph.stored_identity(graph_path, version)
+                key = terrain.elev_key(identity) if identity is not None else None
+                z = terrain.load_elevation(elev_path, key) if key is not None else None
+                stored = terrain.stored_elevation(elev_path) if z is not None else None
+                # в ключе — и отпечаток тайлов: докачан тайл, высоты те же по ключу, но другие — подъёмы пересчитываются
+                state.update(sig=sig, got=(f'{key}|{stored[1]}', z) if z is not None and stored is not None else None)
+            return state['got']
+    return load
+
+
 class RoadDistances:
     """Км между точками по дорогам. ensure(точки) — один расчёт на весь набор (первый раз — минуты,
     дальше кэш), km(a, b) — O(1). Потокобезопасно: дозаполнение под lock, чтение — без него.
@@ -508,7 +595,8 @@ class RoadDistances:
 
     def __init__(self, version: str, load_network: Callable[[], RoadNetwork],
                  cache_path: str | None = None,
-                 graph_identity: Callable[[], str | None] | None = None, map_path: str | None = None):
+                 graph_identity: Callable[[], str | None] | None = None, map_path: str | None = None,
+                 elevation: Callable[[], tuple[str, Any] | None] | None = None, climb_path: str | None = None):
         self.version = version
         self.map_path = map_path   # файл карты (для отпечатка содержимого в road_model_id); None — граф в памяти
         self._load_network = load_network
@@ -519,28 +607,40 @@ class RoadDistances:
         self._table = _empty_table()
         self._identity: str | None = None   # отпечаток графа, на котором посчитана таблица
         self.failed = False
+        # рельеф (№85): высоты узлов графа () → (ключ, массив) или None, кэш подъёмов; нет высот — рельефа нет
+        self.elevation = elevation
+        self._climb_path = climb_path
+        self._climbs = _empty_climbs()
+        self._climb_failed = False
 
     @classmethod
     def for_map(cls, path: str, version: str, cache_name: str = 'dist') -> RoadDistances:
         graph_path = _cache_path(path, 'graph')
         return cls(version, lambda: RoadNetwork(load_graph(path, version)),
                    _cache_path(path, cache_name),
-                   lambda: RoadGraph.stored_identity(graph_path, version), path)
+                   lambda: RoadGraph.stored_identity(graph_path, version), path,
+                   elevation_loader(path, version), _cache_path(path, cache_name.replace('dist', 'climb', 1)))
 
     @classmethod
     def for_graph(cls, graph: RoadGraph, version: str = 'memory',
-                  cache_path: str | None = None) -> RoadDistances:
-        """Готовый граф (тесты и разовые расчёты); cache_path=None — без файла кэша."""
-        return cls(version, lambda: RoadNetwork(graph), cache_path, lambda: graph.identity)
+                  cache_path: str | None = None, elevation: Any | None = None) -> RoadDistances:
+        """Готовый граф (тесты и разовые расчёты); cache_path=None — без файла кэша; elevation — высоты узлов (рельеф)."""
+        got = None if elevation is None else (f'memory|{zlib.crc32(np.ascontiguousarray(elevation).tobytes()):08x}',
+                                              np.asarray(elevation, dtype=np.float32))
+        return cls(version, lambda: RoadNetwork(graph), cache_path, lambda: graph.identity,
+                   elevation=(lambda: got) if got is not None else None)
 
     @classmethod
     def around_zone(cls, load: Callable[[], RoadGraph], zone: Sequence[Point], version: str,
-                    cache_path: str | None = None, map_path: str | None = None) -> RoadDistances:
+                    cache_path: str | None = None, map_path: str | None = None,
+                    elevation: Callable[[], tuple[str, Any] | None] | None = None,
+                    climb_path: str | None = None) -> RoadDistances:
         """Км в объезд зоны: граф load() без зоны (without_zone). Отпечаток графа без зоны — только после загрузки
-        обычного графа (из кэша на диске — доли секунды), один раз на объект: при первом чтении файла кэша."""
+        обычного графа (из кэша на диске — доли секунды), один раз на объект: при первом чтении файла кэша. Узлы —
+        те же, что у графа load(): высоты elevation — его."""
         zone = tuple(zone)
         return cls(f'{version}|center:{zone_key(zone)}', lambda: RoadNetwork(without_zone(load(), zone)),
-                   cache_path, lambda: without_zone(load(), zone).identity, map_path)
+                   cache_path, lambda: without_zone(load(), zone).identity, map_path, elevation, climb_path)
 
     @property
     def size(self) -> tuple[int, int]:
@@ -627,6 +727,104 @@ class RoadDistances:
         t = self._table
         keys = {point_key(p) for p in points if p is not None}
         return sum(1 for k in keys if k in t.points and t.points[k][0] < 0)
+
+    # --- Рельеф (№85) ---
+
+    @property
+    def terrain(self) -> bool:
+        """Есть высоты узлов графа (кэш высот годится) и дороги не сломаны: участки получают подъём (climb)."""
+        return (not self.failed and not self._climb_failed and self.elevation is not None
+                and self.elevation() is not None)
+
+    def ensure_climb(self, points: Iterable[Point | None]) -> None:
+        """Досчитать подъёмы между точками (и со всеми точками кэша подъёмов): км — ensure, подъём — Dijkstra от новых
+        узлов вперёд и по обратному графу (RoadNetwork.climbs). Высот нет — кэш подъёмов пуст, climb → None."""
+        got = self.elevation() if self.elevation is not None and not self._climb_failed else None
+        if got is None:
+            self._climbs = _empty_climbs()
+            return
+        points = [p for p in points if p is not None]
+        self.ensure(points)
+        if self.failed:
+            return
+        with self._lock:
+            try:
+                t, identity = self._table, self._identity
+                if identity is None:
+                    return
+                key = _climb_key(identity, got[0])
+                if self._climbs.key != key:
+                    self._read_climbs(key, identity)
+                c = self._climbs
+                rows = {t.points[k][0] for k in {point_key(p) for p in points} if k in t.points}
+                new = sorted({int(t.nodes[r]) for r in rows if r >= 0} - c.index.keys())
+                if not new:
+                    return
+                started = time.perf_counter()
+                net = self._load_network()
+                if net.graph.identity != identity:   # граф сменился — км пересчитает следующий ensure, подъёмы — за ним
+                    return
+                z = got[1]
+                k_old = len(c.nodes)
+                nodes = np.concatenate([c.nodes, np.array(new, dtype=np.int64)])
+                up = np.full((len(nodes), len(nodes)), np.nan, dtype=np.float32)
+                up[:k_old, :k_old] = c.up
+                src = np.array(new, dtype=np.int64)
+                up[k_old:, :] = net.climbs(src, nodes, z)                              # новый узел → все
+                if k_old:
+                    up[:k_old, k_old:] = net.climbs(src, c.nodes, z, reverse=True).T   # прежние → новый
+                self._climbs = _Climbs(key, identity, nodes, up, {int(n): i for i, n in enumerate(nodes)})
+                logger.info('[Routes] Подъёмы участков: +%d узлов, всего %d; %.1f с', len(new), len(nodes),
+                            time.perf_counter() - started)
+                self._write_climbs()
+            except Exception:
+                logger.exception('[Routes] Подъёмы участков не посчитаны — без рельефа')
+                self._climb_failed = True
+                self._climbs = _empty_climbs()
+
+    def climb(self, a: Point, b: Point) -> float | None:
+        """Эффективный подъём участка A → B, м (может быть < 0: спуск); точки в одном узле — 0. None — рельефа нет,
+        точка не привязана, пути нет или подъём не досчитан (ensure_climb)."""
+        c, t = self._climbs, self._table
+        if not c.key or c.graph != self._identity:
+            return None
+        pa, pb = t.points.get(point_key(a)), t.points.get(point_key(b))
+        if pa is None or pb is None or pa[0] < 0 or pb[0] < 0:
+            return None
+        na, nb = int(t.nodes[pa[0]]), int(t.nodes[pb[0]])
+        if na == nb:
+            return 0.0
+        ia, ib = c.index.get(na), c.index.get(nb)
+        if ia is None or ib is None:
+            return None
+        v = c.up.item(ia, ib)
+        return v if math.isfinite(v) else None
+
+    def _read_climbs(self, key: str, identity: str) -> None:
+        """Кэш подъёмов из файла, если он посчитан на том же графе и тех же высотах; иначе пустой с этим ключом."""
+        self._climbs = _empty_climbs(key, identity)
+        path = self._climb_path
+        if path is None or not os.path.exists(path):
+            return
+        try:
+            with open(path, 'rb') as f, np.load(f, allow_pickle=False) as z:
+                if str(z['key']) != key:
+                    logger.info('[Routes] Кэш подъёмов %s — от других дорог или высот, пересчёт', os.path.basename(path))
+                    return
+                nodes = z['nodes'].astype(np.int64)
+                self._climbs = _Climbs(key, identity, nodes, z['up'].astype(np.float32),
+                                       {int(n): i for i, n in enumerate(nodes)})
+        except Exception:   # zipfile.BadZipFile, EOFError, KeyError, ValueError, OSError…
+            logger.warning('[Routes] Кэш подъёмов %s не прочитан — пересчёт', os.path.basename(path), exc_info=True)
+
+    def _write_climbs(self) -> None:
+        path, c = self._climb_path, self._climbs
+        if path is None or not c.key:
+            return
+        try:
+            _save_npz(path, key=c.key, nodes=c.nodes, up=c.up)
+        except OSError:   # кэш в памяти остаётся — не сохранился только файл
+            logger.exception('[Routes] Кэш подъёмов %s не записан', path)
 
     def _extend(self, net: RoadNetwork, new: Sequence[Point]) -> None:
         """Граф (~100 МБ в памяти) держится только на время дозаполнения: из кэша на диске он
@@ -770,6 +968,25 @@ class CenterBypassRoads:
                 return d
         return self.base.km(a, b)
 
+    @property
+    def terrain(self) -> bool:
+        return self.base.terrain
+
+    def ensure_climb(self, points: Iterable[Point | None]) -> None:
+        """Подъёмы — по тем же графам, что км: обычный — для всех точек, объезд — для точек вне центра."""
+        points = [p for p in points if p is not None]
+        self.ensure(points)
+        self.base.ensure_climb(points)
+        if not self.base.failed:
+            self.bypass.ensure_climb([p for p in points if not self._inside_zone(p)])
+
+    def climb(self, a: Point, b: Point) -> float | None:
+        """Подъём участка по тому же пути, что km: в объезд, если у объезда есть км (подъёма нет — None, не путь обычного
+        графа), иначе по обычному графу."""
+        if self.around(a, b) and self.bypass.km(a, b) is not None:
+            return self.bypass.climb(a, b)
+        return self.base.climb(a, b)
+
     def detour(self, a: Point, b: Point) -> float:
         """Во сколько раз объезд длиннее кратчайшего пути по дорогам (≥ 1; не в объезд или км нет — 1). Им
         ValhallaRoads растягивает свои км и минуты (путь Valhalla — кратчайший): км и минуты участка — про один путь."""
@@ -847,7 +1064,8 @@ class RoadProvider:
             cur = self._bypass
             if cur is None or cur.base is not base or cur.zone != zone:
                 bypass = RoadDistances.around_zone(lambda: load_graph(self.path, base.version), zone, base.version,
-                                                   _cache_path(self.path, 'dist-center'), self.path)
+                                                   _cache_path(self.path, 'dist-center'), self.path, base.elevation,
+                                                   _cache_path(self.path, 'climb-center'))
                 cur = self._bypass = CenterBypassRoads(base, bypass, zone)
             return cur
 
@@ -962,6 +1180,31 @@ def _warm(path: str) -> None:
         print(f'Объезд малого центра: в кэше точек {n_points}, узлов {n_nodes}; {time.perf_counter() - started:.0f} с')
 
 
+def _dem(path: str, force: bool = False) -> int:
+    """Рельеф (№85): тайлы SRTM для узлов графа карты — в terrain.dem_dir() (скачанные не трогаются), затем кэш высот
+    узлов <карта>.elev.npz. Кэш годится (тот же граф, параметры и тайлы) — не пересобирается (force — пересобрать)."""
+    version = map_signature(path)
+    if version is None or not roads_supported():
+        print(f'Карты нет или нет numpy/scipy: {path}')
+        return 1
+    graph = load_graph(path, version)
+    names = terrain.tiles_for(graph.lat, graph.lon)
+    started = time.perf_counter()
+    got = terrain.download_tiles(names)
+    missing = [n for n in names if not os.path.exists(terrain.tile_path(n))]
+    print(f'Тайлов высот {len(names)}: скачано сейчас {len(got)}, нет {len(missing)} {missing or ""}; '
+          f'{time.perf_counter() - started:.0f} с')
+    key, tiles = terrain.elev_key(graph.identity), terrain.tiles_key(names)
+    elev_path = _cache_path(path, 'elev')
+    if not force and terrain.stored_elevation(elev_path) == (key, tiles):
+        print(f'Кэш высот годится: {elev_path}')
+        return 0
+    z = terrain.build_elevation(graph.lat, graph.lon)
+    terrain.save_elevation(elev_path, key, tiles, z)
+    print(f'Высоты узлов: {len(z)}, без высоты {int(np.sum(~np.isfinite(z)))} → {elev_path}')
+    return 0
+
+
 def main(argv: Sequence[str]) -> int:
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s')
     try:   # ROUTES_OSM_PATH, ROUTES_DB_PATH — из .env сервера, как у app_v2: карта и база те же, что у сервера
@@ -981,6 +1224,8 @@ def main(argv: Sequence[str]) -> int:
         graph = load_graph(path, version, rebuild=True)
         RoadNetwork(graph)   # проверка: связность и KD-дерево строятся
         print(f'Граф: узлов {graph.n_nodes}, рёбер {len(graph.src)} → {_cache_path(path, "graph")}')
+    elif command == 'dem':
+        return _dem(path, '--force' in argv)
     elif command == 'warm':
         if '--if-stale' in argv:
             zone: list[Point] = []
@@ -995,7 +1240,7 @@ def main(argv: Sequence[str]) -> int:
                 return 0
         _warm(path)
     else:
-        print('Команды: download [url] | build | warm [--if-stale]')
+        print('Команды: download [url] | build | warm [--if-stale] | dem [--force]')
         return 2
     return 0
 

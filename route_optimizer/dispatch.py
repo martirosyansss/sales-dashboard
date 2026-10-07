@@ -2662,6 +2662,9 @@ def plan_view(ctx: DayContext, stops: Sequence[Stop], draft: Draft,
             'wear_amd': round(cost.wear_amd) if cost else None,
             'operating_cost_amd': round(cost.total_amd(ctx.tn.fuel_price)) if cost else None,
             'payload_tonne_km': _r(cost.payload_tonne_km) if cost else None,
+            # рельеф (№85): эффективный подъём рейса и его литры (уже в liters); без высот — ключей нет
+            **({'climb_m': round(cost.climb_m), 'terrain_l': _r(cost.terrain_liters)}
+               if cost is not None and cost.terrain_liters is not None else {}),
             'fuel_load_configured': cost.fuel_load_configured if cost else False,
             'wear_configured': cost.wear_configured if cost else False,
             'load_pct': round(kg / cap * 100.0) if cap else None,

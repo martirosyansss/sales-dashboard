@@ -3311,6 +3311,7 @@
                     + fmt(x.fuel_full_l100, 1) + NB + 'լ/100' + NB + 'կմ, հաշվարկված է ըստ յուրաքանչյուր հատվածում մնացած բեռի։'
                 : '≈ ' + fmt(tr.liters, 1) + NB + 'լ = ' + fmt(tr.km, 1) + NB + 'կմ × ' + fmt(x.l100, 1) + NB + 'լ/100' + NB + 'կմ։');
             if (model.learned && (model.learned.fuel || []).includes(t.car_code)) fuel.push('Նորմը սովորած է այս մեքենայի լիցքավորումներից։');
+            if (num(tr.terrain_l) !== null) fuel.push('Վերելք՝ ' + fmt(tr.climb_m) + NB + 'մ · ' + (tr.terrain_l > 0 ? '+' : '') + fmt(tr.terrain_l, 1) + NB + 'լ։');
         }
         const center = [];
         if (!day.zone) center.push('Փոքր կենտրոնի սահմանը կարգավորումներում նշված չէ։');

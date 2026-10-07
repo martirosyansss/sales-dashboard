@@ -100,7 +100,7 @@ from typing import TYPE_CHECKING, Any, Callable, Collection, Mapping, Sequence
 
 from . import vrp
 from .geo import Point, in_city, in_polygon
-from .running_costs import RunningCost, configured, profile_fields, route_cost
+from .running_costs import TERRAIN_K, TERRAIN_U_BAR, RunningCost, configured, curb_tonnes, profile_fields, route_cost
 from .tsp import TWO_OPT_MAX_PASSES, is_symmetric
 
 logger = logging.getLogger(__name__)
@@ -115,6 +115,12 @@ NO_PACE = (1.0, 1.0)        # темп машины без выученных м
 BIG_YEREVAN_KM = 3.0        # приоритет малых машин в Ереване (№68) по умолчанию: точка зоны на большой — как 3 км её пути
 
 Matrix = list[list[float]]
+
+
+class KmMatrix(list):
+    """Км дня (строки, как Matrix) с подъёмами участков (рельеф, №85): climb[a][b] — эффективный подъём, м (None — нет).
+    Только «Развоз» (route_day): у матрицы без рельефа атрибута нет, расчёт прежний."""
+    climb: list[list[float | None]]
 
 
 # --- Машины и нормы ---
@@ -685,20 +691,32 @@ def _time_head(seq: Sequence[int], stops: Sequence[_Stop], m: Matrix, trucks: Se
 
 def _sequence_cost(seq: Sequence[int], stops: Sequence[_Stop], d: Matrix, truck: FleetTruck) -> RunningCost:
     nodes = [0, *(stops[i].node for i in seq), 0]
-    return route_cost([d[a][b] for a, b in zip(nodes, nodes[1:])], [stops[i].kg for i in seq], truck)
+    up = getattr(d, 'climb', None)   # рельеф (№85): подъёмы участков — в литрах
+    return route_cost([d[a][b] for a, b in zip(nodes, nodes[1:])], [stops[i].kg for i in seq], truck,
+                      None if up is None else [up[a][b] for a, b in zip(nodes, nodes[1:])])
+
+
+def _leg_climbs(nodes: Sequence[Point], norms: Norms) -> list[float | None] | None:
+    """Подъёмы участков по порядку nodes (№85, roads.RoadDistances.climb); рельефа нет — None."""
+    roads = norms.roads
+    if roads is None or not getattr(roads, 'terrain', False):
+        return None
+    roads.ensure_climb(nodes)
+    return [roads.climb(a, b) for a, b in zip(nodes, nodes[1:])]
 
 
 def trip_running_cost(points: Sequence[Point], kgs: Sequence[float], depot: Point,
                       norms: Norms, truck: FleetTruck) -> RunningCost:
     norms = norms.for_trucks()
     nodes = [depot, *points, depot]
-    return route_cost([norms.km(a, b) for a, b in zip(nodes, nodes[1:])], kgs, truck)
+    return route_cost([norms.km(a, b) for a, b in zip(nodes, nodes[1:])], kgs, truck, _leg_climbs(nodes, norms))
 
 
 def _cost_order(seq: list[int], stops: Sequence[_Stop], d: Matrix, truck: FleetTruck,
                 tn: TruckNorms, allowed: Callable[[list[int]], bool]) -> list[int]:
-    """2-opt по топливу и износу; допустимость проверяется на полном новом порядке."""
-    if not configured(truck) or len(seq) < 2:
+    """2-opt по топливу и износу (и рельефу, №85: груз вниз — дешевле); допустимость проверяется на полном новом
+    порядке."""
+    if not (configured(truck) or hasattr(d, 'climb')) or len(seq) < 2:
         return seq
     best = list(seq)
     value = _sequence_cost(best, stops, d, truck).total_amd(tn.fuel_price)
@@ -1532,7 +1550,8 @@ def _polish_orders(trips: list[Trip], stops: Sequence[_Stop], d: Matrix, m: Matr
     Каждый ход проверяется по всему дню машины, включая следующие окна, смену и закрепления.
     Закреплённый порядок и уже недопустимый день не меняются; доли тяжёлого заказа считаются один раз.
     """
-    if not trips or not any(configured(t) for t in trucks):
+    terrain = hasattr(d, 'climb')   # рельеф (№85): порядок меняет литры и без норм по загрузке
+    if not trips or not (terrain or any(configured(t) for t in trucks)):
         return trips
     by_code = {t.car_code: t for t in trucks}
     vs = _shared(trips, stops, tn)
@@ -1551,7 +1570,7 @@ def _polish_orders(trips: list[Trip], stops: Sequence[_Stop], d: Matrix, m: Matr
     for k, trip in enumerate(out):
         code = trip.truck
         truck = by_code[code]
-        if trip.extra or k in pins or code in locked or not configured(truck) or len(trip.items) < 2:
+        if trip.extra or k in pins or code in locked or not (terrain or configured(truck)) or len(trip.items) < 2:
             continue
         indices = order[code]
 
@@ -1696,14 +1715,21 @@ def _solver(trips: list[Trip], stops: Sequence[_Stop], d: Matrix, m: Matrix, tru
             origin.append(i)
     # большая машина в Ереване (№68): надбавка к разгрузке и плата tn.yerevan_km км — профилем машины
     yer = any(p.yerevan for p in pieces)
+    # рельеф (№85): литры подъёма участка — по средней массе машины (собственная + полгруза), сверх среднего подъёма
+    up = getattr(d, 'climb', None)
     vehicles = [vrp.Vehicle(t.car_code, t.capacity_kg, t.l100, t.center_ok, t.wear_amd_per_km, tn.fuel_price,
                             tn.pace_of(t.car_code), tn.yerevan_of(t.car_code) if yer else 0.0,
-                            round(tn.yerevan_km * 1000) if yer and t.big else 0) for t in trucks]
+                            round(tn.yerevan_km * 1000) if yer and t.big else 0,
+                            TERRAIN_K * (curb_tonnes(t.capacity_kg) + t.capacity_kg / 2000.0) if up is not None else 0.0)
+                for t in trucks]
     begin = sorted(start.items())
-    loading: dict[str, float] = ({'load_fixed_min': tn.warehouse_load_fixed_min,
-                                  'load_tonne_min': tn.warehouse_load_min_per_tonne} if tn.load(1000) > 0 else {})
+    loading: dict[str, Any] = ({'load_fixed_min': tn.warehouse_load_fixed_min,
+                                'load_tonne_min': tn.warehouse_load_min_per_tonne} if tn.load(1000) > 0 else {})
     loading['iterations'] = iterations
-    tries: list[dict[str, float]] = [loading]
+    if up is not None:
+        loading['climb'] = [[0.0 if u is None else u - TERRAIN_U_BAR * d[a][b] for b, u in enumerate(row)]
+                            for a, row in enumerate(up)]
+    tries: list[dict[str, Any]] = [loading]
     if tn.buffer_c > 0:   # запас на рейс (№66): касательная к c·√D в типичном рейсе сборки (см. выше)
         tries = [{**loading, 'trip_reserve_min': f * tn.buffer_c * root / 2, 'reserve_slope': f * tn.buffer_c / (2 * root)}
                  for f in (1.0, RESERVE_RETRY)]
@@ -1728,7 +1754,7 @@ RESERVE_RETRY = 1.5   # решение PyVRP с запасом на рейс н�
 def _solver_try(trips: list[Trip], stops: Sequence[_Stop], d: Matrix, m: Matrix, trucks: Sequence[FleetTruck],
                 tn: TruckNorms, fed: Collection[str], pieces: list[vrp.Piece], origin: list[int],
                 vehicles: list[vrp.Vehicle], shifts: list[vrp.Shift], begin: list[tuple[int, list[list[int]]]],
-                kw: Mapping[str, float], keep: set[int], when: Mapping[int, tuple[float, float]], placed: Counter,
+                kw: Mapping[str, Any], keep: set[int], when: Mapping[int, tuple[float, float]], placed: Counter,
                 start0: Mapping[str, float], locked: set[str], pinned: set[tuple[str, tuple[int, ...]]], pins: set[int],
                 wait0: float) -> tuple[list[Trip] | None, str | None]:
     """Одна попытка _solver: PyVRP с параметрами kw (загрузка, запас на рейс) и проверка «Развоза». (рейсы, None) или
@@ -1826,7 +1852,7 @@ def route_day(points: Sequence[Point], kgs: Sequence[float], revenues: Sequence[
         raise ValueError('load_cap должен быть в пределах (0, 1]')
     uniq = sorted(set(points))
     node = {p: i + 1 for i, p in enumerate(uniq)}
-    d, m = _matrices(uniq, depot, norms, tn)
+    d, m = _matrices(uniq, depot, norms, tn, True)   # с подъёмами участков (рельеф, №85)
     yerevan = {p for p in uniq if tn.in_yerevan(p)}      # зона Еревана (№68); зоны нет — пусто
     stops = [_Stop(node[p], float(kg), float(rev), tn.unload_at(float(kg), p),
                    *(windows[i] if windows is not None else (0.0, math.inf)), center is not None and bool(center[i]),
@@ -2049,11 +2075,12 @@ class FleetDay:
         return self.peak_kg_total / self.peak_capacity * 100.0 if self.peak_capacity > 0 else None
 
 
-def _matrices(points: Sequence[Point], depot: Point, norms: Norms, tn: TruckNorms | None = None) -> tuple[Matrix, Matrix]:
+def _matrices(points: Sequence[Point], depot: Point, norms: Norms, tn: TruckNorms | None = None,
+              climb: bool = False) -> tuple[Matrix, Matrix]:
     """Км (norms.km — по дорогам или по прямой × извилистость) и минуты езды между складом (0) и точками дня —
     направленно: d[a][b] — от a до b (одностороннее движение, Valhalla). Дороги — профиль грузовика
     (Norms.for_trucks); скорость участка — Norms.leg_speed (время Valhalla; иначе скорость города, если оба конца в
-    городе, или области)."""
+    городе, или области). climb — км с подъёмами участков (KmMatrix, рельеф №85: «Развоз»), если у дорог есть высоты."""
     norms = norms.for_trucks()
     if norms.traffic is not None and tn is not None and tn.work_start_minute is not None:
         norms = replace(norms, traffic_start_min=tn.work_start_minute)
@@ -2083,6 +2110,11 @@ def _matrices(points: Sequence[Point], depot: Point, norms: Norms, tn: TruckNorm
     if norms.provider is not None or norms.traffic is not None or (tn is not None and tn.load(1000) > 0):
         from .traffic_validation import TravelMatrix
         m = TravelMatrix(m, d, city, norms, tn, pts, v)
+    roads = norms.roads
+    if climb and roads is not None and getattr(roads, 'terrain', False):
+        roads.ensure_climb(pts)
+        d = KmMatrix(d)
+        d.climb = [[0.0 if a == b else roads.climb(pts[a], pts[b]) for b in range(n)] for a in range(n)]
     return d, m
 
 

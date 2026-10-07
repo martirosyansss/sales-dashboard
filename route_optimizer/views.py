@@ -2178,7 +2178,10 @@ def _capture_prediction(dd, draft):
                                               'return': back(tr),
                                               'stops': [[x['customer_id'], x.get('eta')] for x in tr['stops']],
                                               **({'lunch': _planned_lunch(tr)} if tr.get('lunch') else {}),
-                                              **({'buffer': tr['buffer']['minutes']} if tr.get('buffer') else {})}
+                                              **({'buffer': tr['buffer']['minutes']} if tr.get('buffer') else {}),
+                                              # рельеф (№85): подъём и литры рейса по плану; без высот — ключей нет
+                                              **({key: tr[key] for key in ('climb_m', 'terrain_l')}
+                                                 if 'terrain_l' in tr else {})}
                                              for tr in t['trips']]}
                    for t in view['trucks']}}
 
