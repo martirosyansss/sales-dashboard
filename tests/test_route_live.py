@@ -606,6 +606,24 @@ def test_no_contact_current_and_journal():
 NEW_APK = {'battery': 50, 'charging': False, 'gps': 'on', 'net': 'cell', 'app': '2.2.0'}
 
 
+def test_offline_reason_only_when_offline_and_latest_state_has_exit():
+    tr = Track().park(DEPOT, 5).drive(A)
+    st = [stop('S:A', 1, A, 100.0)]
+    contacts = [T0, T0 + timedelta(minutes=3)]
+    quit_ = {**NEW_APK, 'exit': 'closed'}
+    # офлайн + последнее состояние с exit — причина есть
+    card = view(facts(tr.pts, st, contacts, quit_), T0 + timedelta(minutes=13))
+    assert card['state'] == 'offline' and card['offline_reason'] == 'closed'
+    card = view(facts(tr.pts, st, contacts, {**NEW_APK, 'exit': 'shutdown'}), T0 + timedelta(minutes=13))
+    assert card['offline_reason'] == 'shutdown'
+    # офлайн, но exit в последнем состоянии нет (приложение жило дальше) — причины нет
+    card = view(facts(tr.pts, st, contacts, NEW_APK), T0 + timedelta(minutes=13))
+    assert card['state'] == 'offline' and card['offline_reason'] is None
+    # не офлайн (свежая связь) при exit — причины нет
+    card = view(facts(tr.pts, st, contacts, quit_), T0 + timedelta(minutes=5))
+    assert card['state'] != 'offline' and card['offline_reason'] is None
+
+
 def test_no_contact_alarm_only_for_new_apk_before_20_and_within_3h():
     tr = Track().park(DEPOT, 5).drive(A)
     st = [stop('S:A', 1, A, 100.0)]

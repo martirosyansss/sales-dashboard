@@ -57,6 +57,7 @@ MAP_URL = 'https://yandex.ru/maps/?pt={lon},{lat}&z=16&l=map'
 
 TITLE = {'speed': 'Արագության գերազանցում', 'stop': 'Երկար կանգառ ոչ խանութում', 'no_contact': 'Կապ չկա',
          'gps': 'GPS-ն անջատված է', 'center': 'Փոքր կենտրոնում (մուտքը թույլատրված չէ)'}
+EXIT_TEXT = {'closed': 'հավելվածը փակվել է', 'shutdown': 'հեռախոսն անջատվել է'}   # live.offline_reason (APK 2.2.5)
 TITLE_END = {'no_contact': 'Կապը վերականգնվեց', 'gps': 'GPS-ը կրկին միացված է'}
 
 
@@ -197,6 +198,8 @@ def build_text(card: Mapping[str, Any], a: Mapping[str, Any], phase: str, rules:
         lines.append(f'Կանգառի տևողությունը՝ {a.get("minutes")} րոպե' + (' (ճաշի ժամին)։' if a.get('lunch') else '։'))
     elif kind == 'no_contact':
         lines.append(f'Կապ չկա՝ {a.get("minutes")} րոպե։')
+        if card.get('offline_reason') in EXIT_TEXT:
+            lines.append(EXIT_TEXT[card['offline_reason']].capitalize() + '։')
     elif kind == 'center':
         lines.append('Մեքենան մտել է փոքր կենտրոն, որտեղ նրան թույլատրված չէ։')
     lat, lon, last_known = a.get('lat'), a.get('lon'), False
