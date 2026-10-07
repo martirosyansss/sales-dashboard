@@ -57,7 +57,11 @@
                     <input type="hidden" id="crDriverId">
                     <div class="cr-add-grid">
                         <div class="rt-field"><label for="crDriverName">Անուն</label>
-                            <input id="crDriverName" class="rt-input" maxlength="60" required placeholder="Անուն Ազգանուն"></div>
+                            <input id="crDriverName" class="rt-input" maxlength="60" required placeholder="Անուն Ազգանուն"
+                                list="crDriverNameList" aria-describedby="crDriverNameHint">
+                            <!-- №84: имена водителей «Развоза» (ERP и свои) — вход по PIN сравнивается с ними строкой -->
+                            <datalist id="crDriverNameList"></datalist>
+                            <span class="rt-field-hint" id="crDriverNameHint" hidden>Այս անունը չկա ERP-ի վարորդների ցուցակում — գրեք ինչպես ERP-ում (Ազգանուն Անուն)</span></div>
                         <div class="rt-field"><label for="crDriverPin">PIN <span class="cr-hint" id="crDriverPinHint">(4–6 թվանշան)</span></label>
                             <input id="crDriverPin" class="rt-input cr-pin-input" inputmode="numeric" pattern="\d{4,6}" maxlength="6" autocomplete="new-password" placeholder="••••"></div>
                     </div>
@@ -238,5 +242,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/courier.js') }}?v=19"></script>
+<script src="{{ url_for('static', filename='js/courier.js') }}?v=20"></script>
 {% endblock %}

@@ -26,12 +26,14 @@ from flask import (Blueprint, Response, current_app, g, has_app_context, has_req
 
 from . import actuals as ac
 from . import ai_chat
+from . import crew_pay as cp
 from . import dispatch as dp
 from . import evaluate, garage, learning, live, optimize
 from . import scorecard as sc
 from . import fleet as fl
 from . import waybill as wb
-from .running_costs import profile_fields
+from . import terrain as dem
+from .running_costs import TERRAIN_U_BAR_TRACK, curb_tonnes, profile_fields, terrain_liters
 from .erp import CUSTOMER_FIND_MAX_LEN, CustomerHint, CustomerRef, ErpError
 from .geo import Point, haversine_km, in_city, is_valid_point
 from .roads import SNAP_MAX_KM, CenterBypassRoads, RoadDistances, RoadProvider, roads_version
@@ -155,8 +157,17 @@ class RoutesState:
     # Армении»; None — без ERP (поиск пуст)
     customer_ref_loader: Callable[[str, Sequence[int]], list[CustomerRef]] | None = None
     customer_hint_loader: Callable[[date, date], list[CustomerHint]] | None = None
+    # «Աշխատավարձ»: накладные экспедиторов ERP за [с, по) и справочник менеджеров; кэш — (с, по) → (time.monotonic(), данные)
+    crew_pay_loader: Callable[[date, date], cp.CrewData] | None = None
+    crew_pay_cache: dict[tuple[date, date], tuple[float, cp.CrewData]] = field(default_factory=dict)
+    crew_pay_lock: threading.Lock = field(default_factory=threading.Lock)
     driver_list_cache: tuple[float, list[str]] | None = None
     driver_list_lock: threading.Lock = field(default_factory=threading.Lock)   # перечитывает один запрос
+    # (машина ERP, имя, день) — кто возил машины за [since, until) (№84, waybill.load_car_crew_days): экипаж машин без
+    # записей; None — без подбора по ERP, всё как раньше. Подбор — не чаще ERP_CREW_TTL_S (time.monotonic() следующего)
+    crew_days_loader: Callable[[date, date], list[tuple[str, str, date]]] | None = None
+    erp_crew_next: float = 0.0
+    erp_crew_lock: threading.Lock = field(default_factory=threading.Lock)
     dispatch_cache: dict[tuple[date, date, date], tuple[float, dp.DispatchData]] = field(default_factory=dict)
     dispatch_lock: threading.Lock = field(default_factory=threading.Lock)
     same_day_cache: dict[date, tuple[float, dp.SameDayData]] = field(default_factory=dict)   # под dispatch_lock
@@ -186,6 +197,8 @@ class RoutesState:
     # сводка дня «Վարորդներ»: день → (отпечаток данных дня, сводка) — views._scorecard_days
     scorecard_cache: dict[str, tuple[Any, dict[str, Any]]] = field(default_factory=dict)
     scorecard_lock: threading.Lock = field(default_factory=threading.Lock)   # только словарь кэша: расчёт не под ним
+    # рельеф трека машино-дня (№85): (машина, день) → (отпечаток трека и высот, (подъём м, км) или None) — _track_climbs
+    track_climbs: dict[tuple[str, str], tuple[Any, Any]] = field(default_factory=dict)
 
 
 def _now() -> str:
@@ -1946,6 +1959,64 @@ def _erp_drivers(state: RoutesState) -> list[str]:
         state.driver_list_lock.release()
 
 
+def driver_name_hints(state: RoutesState) -> list[str]:
+    """Имена водителей для подсказки в офисе «Առաքիչ» (№84, ревью: имя водителя APK сравнивается с записями «Развоза»
+    строкой) — тот же список, что у «Վարորդ»: ERP (кэш _erp_drivers) и свои за DRIVER_LIST_DAYS, по алфавиту. ERP
+    здесь не ждём: кэша нет или он устарел — перечитывается в фоне (один поток за раз), ответ — с тем, что есть."""
+    cached = state.driver_list_cache
+    if (cached is None or time.monotonic() >= cached[0]) and state.driver_list_loader is not None \
+            and state.driver_list_lock.acquire(blocking=False):
+        today = _clock().date()
+
+        def refresh() -> None:
+            names, ttl = (cached[1] if cached is not None else []), DRIVER_LIST_RETRY_S   # сбой — прежний, повтор скоро
+            try:
+                names = state.driver_list_loader(today - timedelta(days=DRIVER_LIST_DAYS), today + timedelta(days=1))
+                ttl = DRIVER_LIST_TTL_S
+            except ErpError:
+                logger.warning('[Routes] Список водителей ERP не прочитан — прежний список', exc_info=True)
+            except Exception:   # фоновый поток не должен падать молча
+                logger.exception('[Routes] Список водителей ERP: сбой')
+            finally:
+                state.driver_list_cache = (time.monotonic() + ttl, names)
+                state.driver_list_lock.release()
+        try:
+            threading.Thread(target=refresh, name='routes-driver-list', daemon=True).start()
+        except BaseException:   # поток не запустился — замок не должен остаться занятым навсегда
+            state.driver_list_lock.release()
+            logger.exception('[Routes] Список водителей ERP: фоновое чтение не запущено')
+    since = (_clock().date() - timedelta(days=DRIVER_LIST_DAYS)).isoformat()
+    return sorted(set(cached[1] if cached is not None else []) | set(state.store.driver_names(since)))
+
+
+ERP_CREW_DAYS = 30        # экипаж по ERP (№84) — кто возил машину за 30 дней
+ERP_CREW_TTL_S = 3600     # подбор по ERP — не чаще раза в час
+ERP_CREW_RETRY_S = 60     # ERP недоступна — снова через минуту (страница работает с прежними записями)
+
+
+def _erp_crew(state: RoutesState, trucks: Collection[str]) -> None:
+    """Экипаж по ERP машинам без записей (ответ владельца №84: waybill.pick_car_crews за ERP_CREW_DAYS, запись —
+    store.fill_erp_crew). Как _erp_drivers: только GET (открытие дня), один запрос за раз, не чаще ERP_CREW_TTL_S; ERP
+    недоступна — повтор через ERP_CREW_RETRY_S. Любой сбой — в лог: страница работает с прежними записями."""
+    if state.crew_days_loader is None or time.monotonic() < state.erp_crew_next \
+            or not (has_request_context() and request.method == 'GET') or not state.erp_crew_lock.acquire(blocking=False):
+        return
+    try:
+        today = _clock().date()
+        ttl = ERP_CREW_TTL_S
+        try:
+            rows = state.crew_days_loader(today - timedelta(days=ERP_CREW_DAYS), today + timedelta(days=1))
+            written = state.store.fill_erp_crew(today.isoformat(), lambda taken: wb.pick_car_crews(rows, trucks, taken))
+            if written:
+                logger.info('[Routes] Экипаж по ERP с %s: %s', today, ', '.join(f'{c} {r}' for c, r, _ in written))
+        except Exception:   # ERP, база настроек — подбор необязателен: страница не падает
+            logger.warning('[Routes] Экипаж по ERP не подобран — прежние записи', exc_info=True)
+            ttl = ERP_CREW_RETRY_S
+        state.erp_crew_next = time.monotonic() + ttl
+    finally:
+        state.erp_crew_lock.release()
+
+
 def _drivers_json(state: RoutesState, day: date) -> dict[str, Any]:
     """Водители машин на день (№62): drivers — машина → имя, substitutes — машины с подменой на этот день (только он);
     helpers, helper_substitutes — то же для առաքիչ (второй человек в машине);
@@ -1992,8 +2063,11 @@ def _crew_json(state: RoutesState, day: date, draft: dp.Draft | None, trucks: Co
         or any(crew.own.get(c) and crew.own[c] not in crew.absent and crew.own[c] not in driving for c in draft.unmanned)
         or bool(draft.unmanned and set(dp.seating(crew, [*draft.trucks, *draft.unmanned])[2]) - driving)
         or any(v['stale'] for v in view.values()))
+    sources = state.store.crew_sources(day.isoformat())    # №84: запись из «Առաքիչ» или ERP — у первой машины человека
     return {'crew': {'drivers': [{'name': n, 'trucks': codes, 'absent': n in crew.absent,
-                                  **({'until': away[n]} if n in crew.absent else {})} for n, codes in sorted(names.items())],
+                                  **({'until': away[n]} if n in crew.absent else {}),
+                                  **({'source': sources[codes[0]]} if codes[0] in sources else {})}
+                                 for n, codes in sorted(names.items())],
                      'trucks': view, 'stale': stale}}
 
 
@@ -2103,6 +2177,7 @@ def api_dispatch() -> Any:
                                                       dp.holidays_of(bundle.settings))
     if day is None:
         return _bad_request({'date': 'дата в формате ГГГГ-ММ-ДД'})
+    _erp_crew(state, bundle.trucks)     # №84: машинам без записей — экипаж по ERP, до чтения водителей дня
     dd = _load_day(state, bundle, day, refresh=request.args.get('refresh') == '1')
     return jsonify({'success': True, **_dispatch_page_body(dd)})
 
@@ -2184,7 +2259,10 @@ def _capture_prediction(dd, draft):
                                               'return': back(tr),
                                               'stops': [[x['customer_id'], x.get('eta')] for x in tr['stops']],
                                               **({'lunch': _planned_lunch(tr)} if tr.get('lunch') else {}),
-                                              **({'buffer': tr['buffer']['minutes']} if tr.get('buffer') else {})}
+                                              **({'buffer': tr['buffer']['minutes']} if tr.get('buffer') else {}),
+                                              # рельеф (№85): подъём и литры рейса по плану; без высот — ключей нет
+                                              **({key: tr[key] for key in ('climb_m', 'terrain_l')}
+                                                 if 'terrain_l' in tr else {})}
                                              for tr in t['trips']]}
                    for t in view['trucks']}}
 
@@ -2262,7 +2340,7 @@ def api_dispatch_build() -> Any:
 @bp.post('/api/routes/dispatch/edit')
 @_api
 def api_dispatch_edit() -> Any:
-    """Правка логиста: {"date", "rev", "action": move | pin | unpin | exclude | include | agents | defer_trip | resize | undo, …}
+    """Правка логиста: {"date", "rev", "action": move | trip_stops | pin | unpin | exclude | include | agents | defer_trip | resize | undo, …}
     (dispatch.apply_edit). rev — номер черновика, от которого правка: план изменён в другой вкладке — 409.
     В ответе — день целиком и delta_km: как изменились км плана. resize с "preview": true — только подсказка во время
     перетаскивания (ничего не сохраняется): {"preview": {delta_km, stops — сколько точек у машины рейса прибавилось
@@ -2621,18 +2699,26 @@ def api_dispatch_waybill() -> Any:
     truck = next((t for t in plan['trucks'] if t['car_code'] == car), None)
     if truck is None:
         return jsonify({'success': False, 'error': WAYBILL_NO_TRUCK, 'stale': True}), 409
+    logger.info('[Routes] Բեռնագիր %s на %s (%s)', car, day, session.get('username'))
+    return jsonify(_waybill_body(state, dd, plan, truck))
+
+
+def _waybill_body(state: RoutesState, dd: _DispatchDay, plan: Mapping[str, Any],
+                  truck: Mapping[str, Any]) -> dict[str, Any]:
+    """Ответ Բեռնագիր машины плана дня (общий у «Развоза» и склада): рейсы с товаром (waybill.truck_waybill; строки
+    накладных и заказов — из ERP, только чтение), водитель и առաքիչ дня."""
     if state.waybill_loader is None:
         raise ErpError('Загрузчик строк заказов не подключён')
+    car = truck['car_code']
     lines = state.waybill_loader([o['isn'] for tr in truck['trips'] for s in tr['stops'] for o in s['orders']])
-    logger.info('[Routes] Բեռնագիր %s на %s (%s)', car, day, session.get('username'))
-    seat = dp.crew_view(dd.draft, _crew(state, day, dd.bundle.trucks)[0]).get(car) or {'name': None, 'seat': False,
-                                                                                      'warn': None}
+    seat = dp.crew_view(dd.draft, _crew(state, dd.day, dd.bundle.trucks)[0]).get(car) or {'name': None, 'seat': False,
+                                                                                         'warn': None}
     # водитель — кто в этот день за рулём (№77: посаженный сборкой вместо водителя машины — с пометкой driver_seat); не
     # вышел (закреплённый рейс остался) — строка пустая, вписать от руки
-    return jsonify({'success': True, 'day': day.isoformat(), 'rev': dd.rev, **wb.truck_waybill(plan, car, lines),
-                    'driver': seat['name'] if seat['warn'] != 'absent' else None,
-                    **({'driver_seat': True} if seat['seat'] else {}),
-                    'helper': state.store.truck_drivers(day.isoformat(), 'helper')[0].get(car)})
+    return {'success': True, 'day': dd.day.isoformat(), 'rev': dd.rev, **wb.truck_waybill(plan, car, lines),
+            'driver': seat['name'] if seat['warn'] != 'absent' else None,
+            **({'driver_seat': True} if seat['seat'] else {}),
+            'helper': state.store.truck_drivers(dd.day.isoformat(), 'helper')[0].get(car)}
 
 
 DRIVER_NO_TRUCK = 'Մեքենան չի գտնվել — թարմացրեք էջը'
@@ -4396,10 +4482,11 @@ def _garage_month(raw: str, today: date) -> date | None:
 
 
 def _warm_days(state: RoutesState, bundle: Bundle, since: date, until: date) -> None:
-    """Фоновый расчёт факта за since…until (в кэш _learning_days). Сбой — в журнал и в garage_warm_failed: следующий
-    запрос этого периода получит {failed: true}, а не тот же долгий пересчёт с 500."""
+    """Фоновый расчёт факта за since…until (в кэш _learning_days и рельеф треков _track_climbs). Сбой — в журнал и в
+    garage_warm_failed: следующий запрос этого периода получит {failed: true}, а не тот же долгий пересчёт с 500."""
     try:
         _learning_days(state, bundle, since, until)
+        _track_climbs(state, since, until)
     except Exception:
         logger.exception('[Routes] «Նորմ և փաստ»: факт %s…%s не посчитан', since, until)
         with state.actuals_lock:
@@ -4407,6 +4494,53 @@ def _warm_days(state: RoutesState, bundle: Bundle, since: date, until: date) -> 
     finally:
         with state.actuals_lock:
             state.garage_warm.pop((since, until), None)
+
+
+GARAGE_TRACK_STEP_KM = 0.05   # рельеф трека (№85): точки не ближе 50 м друг к другу — дрожание на стоянке не подъём
+# флаг расхода месяца — от нормы с рельефом, только если км треков с рельефом ≥ этой доли км интервалов заправок машины за
+# месяц (решение по №85): иначе норма с рельефом описывает малую часть пробега — флаг от прежней нормы (low_coverage)
+GARAGE_TERRAIN_MIN_COVER = 0.5
+
+
+def _track_climbs(state: RoutesState, since: date, until: date) -> dict[tuple[str, str], tuple[float, float]]:
+    """Рельеф GPS-треков машино-дней since…until (№85): (машина, день) → (эффективный подъём, м; км трека) — высоты прямо из
+    сглаженного DEM в точках трека (terrain.track_climbs; точки — не ближе GARAGE_TRACK_STEP_KM). Кэш — пока не сменились
+    трек (FleetFacts.version), параметры DEM и тайлы. Тайлов нет — {}; сбой — в журнал и {}: страница — без рельефа, не
+    ошибка."""
+    try:
+        sig = dem.dem_signature() if dem.terrain_supported() else None
+        if state.fleet_facts is None or sig is None:
+            return {}
+        key = (dem.elev_params(), sig)
+        out: dict[tuple[str, str], tuple[float, float]] = {}
+        todo = []
+        for car, ds in state.fleet_facts.car_days(since.isoformat(), until.isoformat()):
+            version = (state.fleet_facts.version(car, ds), key)
+            with state.actuals_lock:
+                hit = state.track_climbs.get((car, ds))
+            if hit is not None and hit[0] == version:
+                if hit[1] is not None:
+                    out[car, ds] = hit[1]
+                continue
+            line: list[Point] = []
+            for f in ac.clean_track(learning.track_fixes(state.fleet_facts.day(car, ds)['track'])):
+                if not line or haversine_km(line[-1], f.point) >= GARAGE_TRACK_STEP_KM:
+                    line.append(f.point)
+            todo.append(((car, ds), version, line))
+        if todo:
+            got = dem.track_climbs([line for _, _, line in todo])
+            with state.actuals_lock:
+                for (k, version, _), climb in zip(todo, got):
+                    state.track_climbs.pop(k, None)
+                    state.track_climbs[k] = (version, climb)
+                    if climb is not None:
+                        out[k] = climb
+                while len(state.track_climbs) > ACTUALS_CACHE_MAX:
+                    state.track_climbs.pop(next(iter(state.track_climbs)))
+        return out
+    except Exception:
+        logger.exception('[Routes] «Նորմ և փաստ»: рельеф треков %s…%s не посчитан — без рельефа', since, until)
+        return {}
 
 
 def _month_ready(state: RoutesState, bundle: Bundle, since: date, until: date) -> str:
@@ -4468,7 +4602,9 @@ def api_garage_norm() -> Any:
     ручная, выученный — рядом) и расход по заправкам (garage.fuel_month: интервал — в месяц закрывающей заправки;
     расход вне learning.FUEL_L100 — подозрительные заправки), км плана «Развоза» и GPS в дни, где есть оба
     (garage.km_month), стоянки вне плана и точки не по порядку, флаги выше нормы / плана больше чем на
-    garage.ALERT_PCT %, по дням — строки learning.day_report. Дни GPS — до вчера (сегодня ещё не кончилось). Месяц
+    garage.ALERT_PCT %, по дням — строки learning.day_report. Флаг расхода — от нормы с рельефом треков (№85: норма
+    дня — км GPS × норма + литры подъёма трека, норма месяца — по дням с треком; norm.basis terrain), рельефа нет — от
+    прежней нормы (basis flat, terrain_missing). Дни GPS — до вчера (сегодня ещё не кончилось). Месяц
     раньше GARAGE_NORM_MONTHS назад — too_old, без данных. Факт месяца не успел посчитаться за GARAGE_NORM_WAIT_S —
     {pending: true}: досчитывается в фоне, страница спрашивает снова; фоновый расчёт упал — {failed: true}. Карта дня —
     /api/routes/garage/day."""
@@ -4490,8 +4626,9 @@ def api_garage_norm() -> Any:
         if ready != 'ready':
             return jsonify({**head, 'pending': ready == 'pending', 'failed': ready == 'failed'})
         days = _learning_days(state, bundle, first, gps_to)
+        climbs = _track_climbs(state, first, gps_to)   # уже в кэше: считал фоновый _warm_days
     else:
-        days = []
+        days, climbs = [], {}
     since = (first - timedelta(days=GARAGE_REFUEL_LOOKBACK_DAYS)).isoformat()
     refuels = [r for r in (facts.refuels(since) if facts is not None else [])
                if (r.get('eff_date') or r.get('date') or '') >= since]
@@ -4517,6 +4654,19 @@ def api_garage_norm() -> Any:
             refuel_days.setdefault(r['car_code'], []).append(when)
     norms = _fuel_norms(state, bundle, _add_months(first, 1).isoformat())
     known = {t['car_code']: t for t in _garage_trucks(state, bundle)}
+
+    has_dem = dem.terrain_supported() and dem.dem_signature() is not None
+
+    def hills(code: str, r: Mapping[str, Any], l100: float | None) -> tuple[dict[str, Any], float | None]:
+        """Норма дня по треку с рельефом (№85): км GPS × норма + литры подъёма трека сверх среднего (ū трека — постоянная
+        масса: собственная + полгруза, груз по участкам трека не известен); не ниже нуля. (поля строки, норма дня в литрах
+        без округления); рельефа или нормы нет — ({}, None): строка прежняя."""
+        climb, cap = climbs.get((code, r['day'])), bundle.truck_capacity(code, erp_capacity)
+        if climb is None or l100 is None or not cap or r['fact']['km'] is None:
+            return {}, None
+        extra = terrain_liters(curb_tonnes(cap) + cap / 2000.0, *climb, u_bar=TERRAIN_U_BAR_TRACK)
+        norm_l = max(0.0, r['fact']['km'] * l100 / 100.0 + extra)
+        return {'climb_m': round(climb[0]), 'terrain_l': round(extra, 1), 'norm_l': round(norm_l, 1)}, norm_l
     out = []
     for code in sorted(set(known) | set(reports) | set(ends) | set(odd) | set(refuel_days)):
         t = known.get(code, {'car_code': code, 'name': '', 'active': False})
@@ -4526,12 +4676,27 @@ def api_garage_norm() -> Any:
             continue   # не в работе и в месяце ничего нет
         norm = norms.get(code, {'l100': None, 'source': None, 'learned': None})
         rows = sorted(reports.get(code, ()), key=lambda r: r['day'], reverse=True)
-        out.append({**t, 'norm': {'l100': _r1(norm['l100']), 'source': norm['source'], 'learned': _r1(norm['learned'])},
+        by_day = {r['day']: hills(code, r, norm['l100']) for r in rows}
+        hilly = [(r['fact']['km'], by_day[r['day']][1]) for r in rows if by_day[r['day']][1] is not None]
+        hill_km = math.fsum(k for k, _ in hilly)
+        # норма месяца по трекам с рельефом (№85): по ней — красный флаг (решение владельца), если треки покрывают не меньше
+        # GARAGE_TERRAIN_MIN_COVER км интервалов заправок; иначе — прежняя норма, и ответ говорит почему (basis,
+        # terrain_missing: no_dem — нет тайлов высот, no_track — нет дней с треком и нормой, low_coverage — треков мало;
+        # норма с рельефом тогда — только рядом)
+        terrain_l100 = 100.0 * math.fsum(x for _, x in hilly) / hill_km if hill_km > 0 else None
+        covered = terrain_l100 is not None and (fuel.km <= 0 or hill_km >= GARAGE_TERRAIN_MIN_COVER * fuel.km)
+        flag_l100 = terrain_l100 if covered else norm['l100']
+        hill_note = {'terrain_l100': _r1(terrain_l100), 'terrain_days': len(hilly), 'terrain_km': round(hill_km, 1)}
+        basis = ({'basis': 'terrain', **hill_note} if covered else
+                 {'basis': 'flat', 'terrain_missing': 'low_coverage', **hill_note} if terrain_l100 is not None else
+                 {'basis': 'flat', 'terrain_missing': 'no_dem' if not has_dem else 'no_track'})
+        out.append({**t, 'norm': {'l100': _r1(norm['l100']), 'source': norm['source'], 'learned': _r1(norm['learned']),
+                                  **basis},
                     'fuel': {'l100': _r1(fuel.l100), 'liters': round(fuel.liters, 1), 'km': round(fuel.km, 1),
                              'intervals': fuel.intervals, 'refuels': fuel.refuels, 'reason': fuel.reason,
                              'too_high': fuel.too_high, 'too_low': fuel.too_low,
-                             'delta_pct': _r1(garage.delta_pct(fuel.l100, norm['l100'])),
-                             'over': garage.over(fuel.l100, norm['l100'])},
+                             'delta_pct': _r1(garage.delta_pct(fuel.l100, flag_l100)),
+                             'over': garage.over(fuel.l100, flag_l100)},
                     'km': {'days': km.days, 'plan_days': km.plan_days, 'plan': round(km.plan_km, 1),
                            'fact': round(km.fact_km, 1),
                            'delta': round(km.fact_km - km.plan_km, 1) if km.plan_days else None,
@@ -4541,7 +4706,8 @@ def api_garage_norm() -> Any:
                     'days': [{'day': r['day'], 'plan_km': r['plan']['km'], 'fact_km': r['fact']['km'],
                               'liters': r['fact']['liters'], 'unplanned_stays': r['fact']['unplanned_stays'],
                               'order_changes': r['kpi']['order_changes'],
-                              'over': garage.over(r['fact']['km'], r['plan']['km'])} for r in rows]})
+                              'over': garage.over(r['fact']['km'], r['plan']['km']), **by_day[r['day']][0]}
+                             for r in rows]})
     # сначала машины с флагом (и с подозрительными заправками), затем с данными — начальнику гаража на телефоне не листать
     out.sort(key=lambda x: (not (x['fuel']['over'] or x['km']['over'] or x['fuel']['too_high'] or x['fuel']['too_low']),
                             not (x['km']['days'] or x['fuel']['refuels'])))
@@ -4609,21 +4775,46 @@ def _warehouse_body(state: RoutesState, bundle: Bundle, day: date) -> dict[str, 
     seats = dp.crew_view(dd.draft, _crew(state, day, bundle.trucks)[0])   # водители — плана водителей, как и рейсы
     by_id = {t.id: t for t in dd.draft.trips}
     marks = {t.id: t.loaded for t in draft.trips}
+    changing = _changing_trucks(draft)   # логист меняет машину и не отправил — ни отметки, ни печати (одно правило)
     trucks = []
     for t in plan['trucks']:
         trips = []
         for no, tr in enumerate(t['trips'], 1):
-            # №81: рейса водителей нет в черновике — логист его убрал или переложил и ещё не отправил: отметку не ставить
-            changing = tr['id'] not in marks
-            mark = None if changing else marks[tr['id']]
+            mark = marks.get(tr['id'])   # рейса водителей нет в черновике — отметки нет (машина и так «меняется»)
             loaded = {'at': mark['at'][11:16], 'by': mark['by']} if mark is not None else None
             trips.append({'id': tr['id'], 'no': no, 'of': len(t['trips']), 'kg': tr['kg'], 'stops': len(tr['stops']),
                           'loading_start': tr['loading_start'], 'depart': tr['depart'],
                           'preloaded': bool(tr.get('preloaded')), 'loaded': loaded,
-                          **({'changing': True} if changing else {})})
+                          **({'changing': True} if t['car_code'] in changing else {})})
         trucks.append({'car_code': t['car_code'], 'name': t['name'], 'capacity_kg': t['capacity_kg'],
-                       'driver': (seats.get(t['car_code']) or {}).get('name'), 'trips': trips})
+                       'driver': (seats.get(t['car_code']) or {}).get('name'), 'trips': trips,
+                       **({'changing': True} if t['car_code'] in changing else {})})
     return {**head, 'approved': True, 'planned': True, 'trucks': trucks}
+
+
+def _changing_trucks(draft: dp.Draft) -> set[str]:
+    """Машины, которые логист меняет и ещё не отправил водителям (№81) — склад их не грузит: ни «Բեռնված է» (поставить и
+    снять), ни Բեռնագիր (ответы владельца 07.10 «Запретить до отправки», «Запретить и отметку» — одно правило). Машина
+    «меняется», если у водителей и в черновике разные:
+    - её рейсы (номер и точки по порядку) — рейс убрали, переложили, поменяли точки или их порядок;
+    - доли её магазинов (dp.trip_parts — тот же расчёт, что у листа): убрали магазин из рейса другой машины, и доля здесь
+      стала целой;
+    - отбор заказов дня (dp.unsent: orders) — груз любой машины, «меняются» все.
+    План не отправляли — водители видят сам черновик, правок «до отправки» нет."""
+    if draft.sent is None:
+        return set()
+    sent = draft.for_drivers()
+    every = {t.truck for d in (draft, sent) for t in d.trips}
+    out = dp.unsent(draft)
+    if out is not None and out['orders']:
+        return every
+    now, was = dp.trip_parts(draft), dp.trip_parts(sent)
+
+    def trips(d: dp.Draft, car: str) -> list[tuple[int, tuple[int, ...]]]:
+        return sorted((t.id, tuple(t.stops)) for t in d.trips if t.truck == car)
+    return {car for car in every
+            if (out is not None and car in out['trucks']) or trips(draft, car) != trips(sent, car)
+            or any(now[t.id] != was[t.id] for t in draft.trips if t.truck == car)}
 
 
 @bp.get('/api/routes/warehouse')
@@ -4673,7 +4864,47 @@ def api_warehouse_goods() -> Any:
     return jsonify({'success': True, 'kg': got['kg'], 'rows': [{k: r[k] for k in keys} for r in got['rows']]})
 
 
+@bp.get('/api/routes/warehouse/waybill')
+@_api
+def api_warehouse_waybill() -> Any:
+    """Բեռնագիր машины для склада (?date=&truck=&rev=): тот же ответ, что у «Развоза» (_waybill_body), — страница печатает
+    тот же документ; плюс weekday (у склада дня недели нет). План — как у всей страницы склада: утверждённый (ответ 15),
+    отправленный водителям (№81; не отправляли — он и есть черновик «Развоза»). rev не тот или машины нет — 409; у машины
+    неотправленные правки логиста — 409 с changing (ответы владельца 07.10, _changing_trucks); отказы — без ERP. Без basis
+    (сверка «Развоза»: номера заказов ERP). API «Развоза» складу закрыт (app_v2: default-deny) — Բեռնագիր только здесь."""
+    state = _state()
+    bundle = _bundle(state)
+    day = _warehouse_day(bundle, request.args.get('date'))
+    car = (request.args.get('truck') or '').strip()
+    rev = request.args.get('rev') or ''
+    if day is None:
+        return _bad_request({'date': WAREHOUSE_BAD_DAY})
+    if not car or len(car) > 64 or not _REV_RE.match(rev):
+        return _bad_request({'_': WAREHOUSE_STALE})
+    draft, cur = _stored_draft(state, day)   # проверки — по сохранённому черновику, до заказов и строк ERP
+    if int(rev) != cur or draft is None or draft.approved is None:
+        return _conflict(WAREHOUSE_STALE)
+    if car in _changing_trucks(draft):       # ответ владельца 07.10: до «Ուղարկել» — не печатать
+        return jsonify({'success': False, 'error': WAREHOUSE_WAYBILL_CHANGING, 'conflict': True, 'changing': True}), 409
+    if all(t.truck != car for t in draft.for_drivers().trips):
+        return _conflict(WAREHOUSE_STALE)
+    dd = _load_day(state, bundle, day, draft=draft.for_drivers(), rev=cur)   # №81: как страница — план водителей
+    if dd.ctx is None:
+        return _bad_request({'_': WAREHOUSE_NO_SETUP})
+    plan = dp.plan_view(dd.ctx, dd.stops, dd.draft, _stop_info(dd), explain=False)
+    truck = next((t for t in plan['trucks'] if t['car_code'] == car), None)
+    if truck is None:
+        return _conflict(WAREHOUSE_STALE)
+    logger.info('[Routes] Склад: Բեռնագիր %s на %s (%s)', car, day, session.get('username'))
+    body = _waybill_body(state, dd, plan, truck)
+    # basis (номера заказов ERP, доли) — сверка «Развоза»; на лист не нужен, роли из интернета не отдаётся
+    return jsonify({**body, 'trips': [{k: v for k, v in tr.items() if k != 'basis'} for tr in body['trips']],
+                    'weekday': day.isoweekday()})
+
+
 WAREHOUSE_CHANGING = 'Լոգիստը փոխել է այս երթը և դեռ չի ուղարկել վարորդին — զանգահարեք լոգիստին'
+WAREHOUSE_WAYBILL_CHANGING = ('Լոգիստը փոխել է այս մեքենայի երթերը և դեռ չի ուղարկել վարորդին — բեռնագիրը կարելի է տպել '
+                              'ուղարկելուց հետո, զանգահարեք լոգիստին')
 
 
 @bp.post('/api/routes/warehouse/loaded')
@@ -4697,9 +4928,12 @@ def api_warehouse_loaded() -> Any:
         return _conflict(WAREHOUSE_NO_PLAN)
     if payload.get('rev') != rev:
         return _conflict(WAREHOUSE_STALE)
-    if all(t.id != payload.get('trip') for t in draft.trips) \
-            and any(t.id == payload.get('trip') for t in draft.for_drivers().trips):
-        return _conflict(WAREHOUSE_CHANGING)   # №81: рейс водителей логист изменил и ещё не отправил
+    # №81 и ответ владельца 07.10 «Запретить и отметку»: машину рейса логист меняет и не отправил — ни поставить, ни снять
+    # (снятие убрало бы защиту груза, который уже в машине, пока логист её правит: его правки и «Ուղարկել» перестали бы
+    # спрашивать подтверждение). Машина рейса — у водителей, нет там — в черновике.
+    car = next((t.truck for d in (draft.for_drivers(), draft) for t in d.trips if t.id == payload.get('trip')), None)
+    if car is not None and car in _changing_trucks(draft):
+        return _conflict(WAREHOUSE_CHANGING)
     me = session.get('username')
     now = _same_day_now()
     try:
@@ -4717,3 +4951,230 @@ def api_warehouse_loaded() -> Any:
         return jsonify(_warehouse_body(state, bundle, day))
     except dp.DispatchError as e:
         return _bad_request({'_': str(e)})
+
+
+# --- «Աշխատավարձ» (09-crew-pay.md): зарплата առաքիչ за месяц по формуле владельца, только администратору ---
+
+PAY_MONTHS = 12            # выбор месяца: этот и 11 до него
+PAY_TTL_SECONDS = 300      # накладные месяца из ERP: CSV, правка параметров и повтор не перечитывают ERP
+PAY_FORBIDDEN = 'Доступ запрещён'
+
+
+def _admin_only(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Зарплаты — только администратору. Гейт app_v2 и так пускает в «Маршруты» лишь admin (прочие роли — default-deny);
+    эта проверка — вторая линия: роль, которой когда-нибудь откроют раздел, зарплат всё равно не увидит."""
+    @wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        if g.get('user_role') != 'admin':
+            logger.warning('[Routes] Աշխատավարձ: отказ роли %r (%s)', g.get('user_role'), request.path)
+            return jsonify({'success': False, 'error': PAY_FORBIDDEN}), 403
+        return fn(*args, **kwargs)
+    return wrapper
+
+
+@bp.get('/routes/pay')
+@_admin_only
+def pay_page() -> str:
+    return render_template('routes_pay.html')
+
+
+def _pay_month(raw: str, today: date) -> date | None:
+    """«YYYY-MM» из PAY_MONTHS последних месяцев → первый день; пусто — этот месяц; иначе None."""
+    first = _garage_month(raw, today)
+    return first if first is not None and first >= _add_months(today.replace(day=1), 1 - PAY_MONTHS) else None
+
+
+def _pay_data(state: RoutesState, since: date, until: date) -> cp.CrewData:
+    if state.crew_pay_loader is None:
+        raise ErpError('Загрузчик накладных не подключён')
+    key = (since, until)
+    with state.crew_pay_lock:
+        hit = state.crew_pay_cache.get(key)
+    if hit is not None and time.monotonic() - hit[0] < PAY_TTL_SECONDS:
+        return hit[1]
+    data = state.crew_pay_loader(since, until)
+    with state.crew_pay_lock:
+        state.crew_pay_cache.pop(key, None)   # перечитанный месяц — в конец очереди: вытесняется самый давний
+        state.crew_pay_cache[key] = (time.monotonic(), data)
+        while len(state.crew_pay_cache) > PAY_MONTHS:
+            state.crew_pay_cache.pop(next(iter(state.crew_pay_cache)))
+    return data
+
+
+@dataclass(frozen=True)
+class _PayMonth:
+    first: date
+    params: cp.Params
+    params_at: str | None    # когда и кем параметры сохранены (None — значения по умолчанию)
+    params_by: str | None
+    result: cp.Result
+    calendar_warning: str | None = None   # календарь «Маршрутов» не прочитан: текущий месяц посчитан от D
+
+
+def _calendar_rest(today: date, settings: Mapping[str, Any]) -> frozenset[date]:
+    """Рабочие дни с today (включительно) до конца месяца по календарю «Маршрутов»: дни недели settings['workdays'] без
+    нерабочих дат (№64) — тот же dp.is_workday, что у «Развоза»."""
+    workdays, off = settings['workdays'], dp.holidays_of(settings)
+    end = _add_months(today.replace(day=1), 1)
+    return frozenset(d for d in (today + timedelta(days=i) for i in range((end - today).days))
+                     if dp.is_workday(d, workdays, off))
+
+
+PAY_CALENDAR_WARNING = ('Աշխատանքային օրացույցը (կարգավորումները) չհաջողվեց կարդալ․ ընթացիկ ամիսը հաշվված է միայն '
+                        'առաքման օրերով, ուստի ֆիքսը և նորմը կարող են ավելի մեծ լինել։')
+
+
+def _pay_month_result(state: RoutesState, first: date, today: date) -> _PayMonth:
+    """Расчёт месяца first: текущий — по сегодня включительно (накладные «из будущего» не берём), фикс и норма — от
+    D_month: прошедшие дни с доставкой + рабочие дни календаря с сегодня до конца месяца (начислено по сегодня);
+    прошлый — от D, как раньше. Календарь не читается — текущий месяц от D и предупреждение, а не 500."""
+    until = min(_add_months(first, 1), today + timedelta(days=1))
+    params, at, by = state.store.crew_pay_params()
+    rest, warning = None, None
+    if first == today.replace(day=1):
+        try:
+            rest = _calendar_rest(today, state.store.load().settings)
+        except StoreError:
+            logger.exception('[Routes] Աշխատավարձ: календарь настроек не читается — текущий месяц от D')
+            warning = PAY_CALENDAR_WARNING
+    return _PayMonth(first, params, at, by, cp.compute(_pay_data(state, first, until), params, rest), warning)
+
+
+def _pay_row_json(r: cp.Row) -> dict[str, Any]:
+    return {'agent_ids': list(r.agent_ids), 'code': r.code, 'name': r.name, 'days': r.days, 'points': r.points,
+            'tonnes': round(r.tonnes, 3), 'sales': r.sales, 'fix': r.fix, 'piece': r.piece, 'minimum': r.minimum,
+            'pay': r.pay, 'old': r.old, 'diff': r.diff, 'min_applied': r.min_applied,
+            'by_day': [{'date': d.day.isoformat(), 'points': d.points, 'tonnes': round(d.tonnes, 3), 'piece': d.piece}
+                       for d in r.by_day]}
+
+
+def _pay_request() -> tuple[_PayMonth | None, Any]:
+    """(месяц из ?month=, None) или (None, ответ 400)."""
+    today = _yerevan_now().date()   # дата Еревана, а не часов сервера: месяц и «по сегодня»
+    first = _pay_month(request.args.get('month', ''), today)
+    if first is None:
+        return None, _bad_request({'month': 'Ընտրեք ամիսը վերջին 12 ամիսներից'})
+    return _pay_month_result(_state(), first, today), None
+
+
+@bp.get('/api/routes/pay')
+@_admin_only
+@_api
+def api_pay() -> Any:
+    """Месяц ?month=YYYY-MM (пусто — этот): люди, итог, D, параметры формулы и список месяцев для выбора."""
+    m, error = _pay_request()
+    if m is None:
+        return error
+    this = _yerevan_now().date().replace(day=1)
+    result = m.result
+    return jsonify({'success': True, 'month': m.first.strftime('%Y-%m'), 'current': m.first == this,
+                    'months': [_add_months(this, -i).strftime('%Y-%m') for i in range(PAY_MONTHS)],
+                    'params': m.params.json(), 'params_updated_at': m.params_at, 'params_updated_by': m.params_by,
+                    'workdays': result.workdays, 'workdays_month': result.workdays_month,
+                    'unknown_codes': list(result.unknown_codes),
+                    'overlapping_codes': [list(c) for c in result.overlapping_codes],
+                    'excluded_kin': list(result.excluded_kin), 'calendar_warning': m.calendar_warning,
+                    'rows': [_pay_row_json(r) for r in result.rows],
+                    'totals': {k: round(v, 3) if k == 'tonnes' else v for k, v in cp.totals(result.rows).items()}})
+
+
+def _csv_cell(value: Any) -> str:
+    """Текст ячейки CSV: начало «=+-@» Excel принял бы за формулу — экранируем апострофом (как missing.csv)."""
+    text = str(value)
+    return "'" + text if text[:1] in ('=', '+', '-', '@', '\t', '\r') else text
+
+
+# Подписи параметров в шапке CSV — как на странице
+PAY_PARAM_LABELS = (('fix', 'Ֆիքս ամսական, ֏'), ('rate_point', 'Մեկ կետի համար, ֏'),
+                    ('rate_tonne', 'Մեկ տոննայի համար, ֏'), ('minimum', 'Նվազագույն ամսական, ֏'),
+                    ('norm_per_day', 'Նորմ՝ կետ մեկ աշխատանքային օրում'), ('old_fix', 'Հին սխեմա՝ ֆիքս, ֏'),
+                    ('old_pct', 'Հին սխեմա՝ վաճառքի տոկոս, %'), ('excluded_lines', 'Չհաշվվող գծեր'),
+                    ('excluded_people', 'Չհաշվվող առաքիչներ'))
+
+
+@bp.get('/api/routes/pay.csv')
+@_admin_only
+@_api
+def api_pay_csv() -> Any:
+    """Таблица месяца для Excel: «;», десятичная запятая, UTF-8 с BOM. Параметры применяются и к прошлым месяцам,
+    поэтому в начале файла — с какими параметрами и когда он посчитан."""
+    import csv
+    import io
+    m, error = _pay_request()
+    if m is None:
+        return error
+    result, params = m.result, m.params
+
+    def n(x: float) -> str:   # число параметра без лишних нулей, десятичная запятая (Excel ru)
+        return f'{x:.3f}'.rstrip('0').rstrip('.').replace('.', ',')
+
+    out = io.StringIO()
+    w = csv.writer(out, delimiter=';', lineterminator='\r\n')
+    w.writerow(['Աշխատավարձ', m.first.strftime('%Y-%m')])
+    w.writerow(['Հաշվված է', _yerevan_now().strftime('%Y-%m-%d %H:%M')])
+    if m.params_at:
+        w.writerow(['Պարամետրերը փոխվել են', m.params_at.replace('T', ' ')[:16], _csv_cell(m.params_by or '')])
+    for key, label in PAY_PARAM_LABELS:
+        value = getattr(params, key)
+        w.writerow([label, _csv_cell(', '.join(value)) if isinstance(value, tuple) else n(value)])
+    # D_month — знаменатель фикса и нормы: у текущего месяца — рабочие дни всего месяца, в таблице «Աշխատանքային օրեր» — D
+    w.writerow(['Աշխատանքային օրեր ամսում', result.workdays_month])
+    # то же, что предупреждения на странице: тёзки с общими днями и исключённые с учтённым кодом того же имени
+    for codes in result.overlapping_codes:
+        w.writerow(['Ստուգել', _csv_cell('Նույն անունով կոդեր, որոնցից մի քանիսը աշխատել են նույն օրերին՝ '
+                                         + ', '.join(codes) + ' — հաշվված են առանձին')])
+    if m.calendar_warning:
+        w.writerow(['Ստուգել', m.calendar_warning])
+    if result.excluded_kin:
+        w.writerow(['Ստուգել', _csv_cell('Հաշվվում են, բայց նույն անունով կոդ կա չհաշվվողների մեջ՝ '
+                                         + ', '.join(result.excluded_kin))])
+    w.writerow([])
+    w.writerow(['Կոդ', 'Առաքիչ', 'Օրեր', 'Աշխատանքային օրեր', 'Կետեր', 'Տոննա', 'Ֆիքս', 'Գործավարձ', 'Նվազագույն',
+                'Վճարել', 'Նվազագույնը կիրառված է', f'Հին սխեմա ({n(params.old_pct)}%)', 'Տարբերություն'])
+    for r in result.rows:
+        w.writerow([_csv_cell(r.code), _csv_cell(r.name), r.days, result.workdays, r.points, f'{r.tonnes:.3f}'.replace('.', ','),
+                    r.fix, r.piece, r.minimum, r.pay, 'այո' if r.min_applied else '', r.old, r.diff])
+    if result.rows:
+        s = cp.totals(result.rows)
+        w.writerow(['', 'Ընդամենը', '', result.workdays, s['points'], f"{s['tonnes']:.3f}".replace('.', ','), s['fix'],
+                    s['piece'], '', s['pay'], '', s['old'], s['diff']])
+    name = f'crew-pay-{m.first:%Y-%m}.csv'
+    return Response('\ufeff' + out.getvalue(), mimetype='text/csv',
+                    headers={'Content-Disposition': f'attachment; filename="{name}"'})
+
+
+def _pay_params_body(state: RoutesState) -> dict[str, Any]:
+    """Параметры формулы без ERP: форма редактируется, даже когда ERP недоступна. Битая запись в базе — значения по
+    умолчанию и store_error: сохранение формы перезапишет её."""
+    try:
+        params, at, by = state.store.crew_pay_params()
+        broken = False
+    except StoreError:
+        logger.exception('[Routes] Աշխատավարձ: параметры в базе не читаются — форма с значениями по умолчанию')
+        params, at, by, broken = cp.Params(), None, None, True
+    return {'success': True, 'params': params.json(), 'updated_at': at, 'updated_by': by, 'store_error': broken}
+
+
+@bp.get('/api/routes/pay/params')
+@_admin_only
+@_api
+def api_pay_params_get() -> Any:
+    return jsonify(_pay_params_body(_state()))
+
+
+@bp.post('/api/routes/pay/params')
+@_admin_only
+@_api
+def api_pay_params() -> Any:
+    """Сохранить параметры формулы (все поля; ошибки — по полям). ERP не трогается: только route_optimizer.db; битую
+    запись перезаписывает. Ответ — как у GET: параметры и кто/когда сохранил."""
+    payload, error = _json_body()
+    if error is not None:
+        return error
+    params, errors = cp.check_params(payload)
+    if params is None:
+        return _bad_request(errors)
+    state = _state()
+    state.store.save_crew_pay_params(params, session.get('username'))
+    logger.info('[Routes] Աշխատավարձ: параметры сохранены пользователем %s: %s', session.get('username'), params.json())
+    return jsonify(_pay_params_body(state))

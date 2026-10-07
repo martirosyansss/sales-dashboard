@@ -2,9 +2,11 @@
 """Связь с разделом «Маршруты»: склад, ручные точки клиентов, рабочие дни, план «Развоза» на дату, экипаж машин, дороги.
 
 Только чтение через публичный API route_optimizer (Store.load, Store.load_dispatch, Store.truck_drivers, Draft.from_json,
-RoadProvider.get); отметка выпуска плана (№80, Draft.released) — в route_optimizer/dispatch. Раздела нет — пустой вид: порядок «auto» от склада не строится
-(склада нет), точки без ручных координат. База раздела не читается — RoutesStoreError (№80): пустой вид значил бы «плана
-нет» — терминалы потеряли бы точки плана и /day сохранил бы урезанный снимок; ошибка оставляет терминалу прежний день.
+RoadProvider.get); запись — только экипаж машины из входа и решения экипажа (№84, record_crew → Store.save_apk_crew);
+отметка выпуска плана (№80, Draft.released) — в route_optimizer/dispatch. Раздела нет — пустой вид: порядок «auto» от
+склада не строится (склада нет), точки без ручных координат. База раздела не читается — RoutesStoreError (№80): пустой
+вид значил бы «плана нет» — терминалы потеряли бы точки плана и /day сохранил бы урезанный снимок; ошибка оставляет
+терминалу прежний день.
 
 План «Развоза» идёт на терминал только выпущенный (ответ владельца №80): утверждён «Հաստատել օրվա պլանը» хотя бы раз за
 день (Draft.released). До этого и без плана терминал не получает из плана ничего — ни заказов (O:), ни накладных без
@@ -22,7 +24,7 @@ from typing import Any, Callable, Collection, Mapping, Sequence
 from route_optimizer import dispatch as dp
 from route_optimizer.dispatch import DispatchOrder
 from route_optimizer.geo import Point, haversine_km
-from route_optimizer.store import Bundle
+from route_optimizer.store import CREW_BY_APK, Bundle, check_driver_name
 from route_optimizer.store import StoreError as RoutesStoreError
 from route_optimizer.tsp import Distance
 
@@ -148,6 +150,42 @@ def planned_crew(state: Any, day: date) -> dict[str, dict[str, str | None]] | No
         logger.warning('[Courier] Экипаж плана «Развоза» на %s не прочитан', day, exc_info=True)
         return None
     return {car: {'driver': drivers.get(car), 'helper': helpers.get(car)} for car in sorted({*drivers, *helpers})}
+
+
+def driver_name_hints(state: Any) -> list[str]:
+    """Имена водителей «Развоза» (ERP и свои, route_optimizer.views.driver_name_hints) — подсказка имени в офисе: правила
+    №84 сравнивают имя водителя APK с записями «Маршрутов» строкой. Раздела нет или любой сбой — пусто (в лог)."""
+    if state is None:
+        return []
+    try:
+        from route_optimizer.views import driver_name_hints as hints   # раздел подключён — его модуль уже загружен
+        return hints(state)
+    except Exception:   # подсказка — необязательна: сбой «Маршрутов» не мешает офису
+        logger.warning('[Courier] Имена водителей «Маршрутов» не прочитаны — без подсказки', exc_info=True)
+        return []
+
+
+def record_crew(state: Any, car_code: str, day: date, role: str, name: str, only_day: bool, terminal_id: int) -> bool:
+    """Экипаж машины из «Առաքիչ» — в «Маршруты» (ответ владельца №84: терминал привязан к машине, вход по PIN — её
+    водитель, решение экипажа — её առաքիչ): Store.save_apk_crew с меткой CREW_BY_APK + id терминала, день — рабочий день
+    события по Еревану. Зовётся после записи в courier.db; только машины из настроек «Маршрутов». Необязательно для
+    терминала: раздела нет — ничего; негодное имя и любой сбой «Маршрутов» — только в лог, ответ терминалу тот же. True —
+экипаж в «Маршрутах» изменён."""
+    if state is None:
+        return False
+    try:
+        clean, bad = check_driver_name(name)
+        if bad is not None or (not clean and (name or not only_day)):   # «никого» — только «один» на день
+            logger.warning('[Courier] Экипаж машины %s не передан в «Маршруты»: имя не прошло проверку', car_code)
+            return False
+        if not state.store.save_apk_crew(car_code, day.isoformat(), role, clean, only_day, f'{CREW_BY_APK}{terminal_id}'):
+            return False
+    except Exception:   # «Маршруты» — дополнение: вход и экипаж терминала от них не зависят
+        logger.warning('[Courier] Экипаж машины %s не передан в «Маршруты»', car_code, exc_info=True)
+        return False
+    logger.info('[Courier] Экипаж машины %s на %s из терминала %s: %s%s', car_code, day, terminal_id, role,
+                ' (на день)' if only_day else '')
+    return True
 
 
 def _carried(state: Any, day: date, workdays: Sequence[int], holidays: Collection[date] = ()) -> set[str]:

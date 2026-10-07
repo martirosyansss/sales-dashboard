@@ -109,7 +109,21 @@
         try {
             drv.data = await api('/api/courier/admin/drivers');
             renderDrivers();
+            renderNameHints();
         } catch (e) { showError(e.message); }
+    }
+    // №84: имена водителей «Развоза» (ERP и свои) — подсказка; имени нет в списке — только предупреждение, сохранить можно
+    const nameHints = () => (drv.data && Array.isArray(drv.data.name_hints) ? drv.data.name_hints : []);
+    function renderNameHints() {
+        const list = $('crDriverNameList');
+        list.textContent = '';
+        nameHints().forEach(n => { const o = document.createElement('option'); o.value = n; list.appendChild(o); });
+        checkDriverName();
+    }
+    function checkDriverName() {
+        const name = $('crDriverName').value.trim().split(/\s+/).join(' ');
+        const hints = nameHints();
+        $('crDriverNameHint').hidden = !name || !hints.length || hints.includes(name);
     }
     // Инициалы в кружке водителя: первые буквы двух первых слов (армянская буква — целым символом)
     const initials = (name) => String(name || '').trim().split(/\s+/).slice(0, 2).map(w => Array.from(w)[0] || '').join('').toUpperCase() || '?';
@@ -241,6 +255,7 @@
         if (!x) return;
         $('crDriverId').value = String(x.id);
         $('crDriverName').value = x.name;
+        checkDriverName();
         $('crDriverPin').value = '';
         $('crDriverActive').checked = x.active;
         $('crDriverFormTitle').textContent = 'Փոփոխել՝ ' + x.name;
@@ -258,6 +273,7 @@
         $('crDriverPinHint').textContent = '(4–6 թվանշան)';
         $('crDriverNew').hidden = true;
         $('crDriverErr').textContent = '';
+        checkDriverName();
         markEditing(null);
     }
     async function saveDriver(ev, reset) {
@@ -604,6 +620,7 @@
     function init() {
         $('crTodayDate').value = today();
         $('crDriverForm').addEventListener('submit', saveDriver);
+        $('crDriverName').addEventListener('input', checkDriverName);
         $('crDriverNew').addEventListener('click', resetDriverForm);
         $('crTermForm').addEventListener('submit', createTerminal);
         $('crQrHide').addEventListener('click', () => { $('crQrBox').hidden = true; $('crQr').innerHTML = ''; $('crQrText').textContent = ''; $('crQrAdminPin').textContent = ''; $('crQrFor').textContent = ''; });

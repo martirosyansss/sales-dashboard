@@ -1,0 +1,179 @@
+{% extends "base_v2.html" %}
+
+{% block title %}Աշխատավարձ — Sales Dashboard{% endblock %}
+
+{% block extra_css %}
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400..700&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+Armenian:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=24">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_pay.css') }}?v=2">
+{% endblock %}
+
+{% block content %}
+<!-- Вкладки раздела — одинаковая полоса на всех страницах «Маршрутов» (одно место, один вид) -->
+<div class="rt-page rt-secbar" lang="hy">
+    <nav class="rt-tabs" aria-label="Երթուղիների բաժիններ">
+        <a href="/routes">Ակնարկ</a>
+        <a href="/routes/optimize">Օպտիմալացում</a>
+        <a href="/routes/dispatch">Առաքում</a>
+        <a href="/routes/learning">Ուսուցում</a>
+        <a href="/routes/drivers">Վարորդներ</a>
+        <a href="/routes/settings">Կարգավորումներ</a>
+        <a href="/routes/garage">Ավտոտնակ</a>
+        <a href="/routes/pay" aria-current="page">Աշխատավարձ</a>
+    </nav>
+</div>
+<!-- «Աշխատավարձ» (docs/research/09-crew-pay.md): зарплата առաքիչ за месяц по ERP; только администратору -->
+<div class="rt-page" id="cpPage" lang="hy">
+
+    <header class="rt-head">
+        <div class="rt-head-row">
+            <h1 class="rt-title">Աշխատավարձ</h1>
+            <div class="rt-head-tools">
+                <label for="cpMonth" class="cp-month-label">Ամիս</label>
+                <select id="cpMonth" class="rt-select cp-month"></select>
+                <button type="button" id="cpCsv" class="rt-btn rt-btn-ghost">
+                    <i class="fas fa-file-csv" aria-hidden="true"></i>Ներբեռնել CSV</button>
+            </div>
+        </div>
+        <p class="rt-head-lead">Առաքիչների ամսական աշխատավարձը՝ ըստ ERP-ի անցկացված ապրանքագրերի։ Առաքիչը ապրանքագրում նշված
+            առաքիչն է, եթե նա ինքը մենեջերը չէ։ Սեղմեք տողի վրա՝ օր առ օր տեսնելու համար։</p>
+    </header>
+
+    <div id="cpStatus" class="rt-sr-only" role="status" aria-live="polite"></div>
+    <div id="cpAlert" class="rt-alert" role="alert" hidden>
+        <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
+        <span id="cpAlertText" class="rt-alert-text"></span>
+    </div>
+    <div id="cpWarn" class="rt-alert is-warn" role="status" hidden>
+        <i class="fas fa-circle-exclamation" aria-hidden="true"></i>
+        <span id="cpWarnText" class="rt-alert-text"></span>
+    </div>
+
+    <!-- Формула простыми словами с текущими числами (заполняет routes_pay.js) -->
+    <section class="rt-card" aria-labelledby="cpFormulaTitle">
+        <div class="rt-card-head">
+            <h2 class="rt-card-title" id="cpFormulaTitle"><i class="fas fa-calculator" aria-hidden="true"></i>Ինչպես է հաշվվում</h2>
+        </div>
+        <div id="cpFormula" class="cp-formula"></div>
+    </section>
+
+    <section class="rt-card" aria-labelledby="cpTableTitle">
+        <div class="rt-card-head">
+            <h2 class="rt-card-title" id="cpTableTitle"><i class="fas fa-people-carry-box" aria-hidden="true"></i>Առաքիչներ</h2>
+            <span id="cpSub" class="cp-sub"></span>
+        </div>
+        <div id="cpLoading" class="rt-loading"><div class="rt-spinner"></div>Կարդում եմ ERP-ից…</div>
+        <p id="cpEmpty" class="rt-empty" hidden>Այս ամսում առաքիչների ապրանքագրեր չկան։</p>
+        <div id="cpTableWrap" class="cp-scroll" hidden>
+            <table class="rt-numtable cp-table">
+                <caption class="rt-sr-only">Առաքիչների աշխատավարձը ամսվա համար</caption>
+                <thead>
+                    <tr>
+                        <th scope="col">Կոդ</th>
+                        <th scope="col" class="cp-name">Առաքիչ</th>
+                        <th scope="col">Օրեր</th>
+                        <th scope="col">Կետեր</th>
+                        <th scope="col">Տոննա</th>
+                        <th scope="col">Ֆիքս</th>
+                        <th scope="col">Գործավարձ</th>
+                        <th scope="col">Նվազագույն</th>
+                        <th scope="col">Վճարել</th>
+                        <th scope="col" id="cpOldHead">Հին սխեմա (2%)</th>
+                        <th scope="col">Տարբերություն</th>
+                    </tr>
+                </thead>
+                <tbody id="cpRows"></tbody>
+                <tfoot id="cpTotals"></tfoot>
+            </table>
+        </div>
+        <p class="rt-field-hint cp-legend"><span class="rt-badge b-warn">նվազագույն</span> — վճարվում է նվազագույնը, քանի որ
+            այն ավելի մեծ է, քան ֆիքսը և գործավարձը միասին։ Գումարները՝ ֏, կլորացված մինչև դրամ։</p>
+    </section>
+
+    <!-- День за днём выбранного человека -->
+    <section class="rt-card" id="cpDays" aria-labelledby="cpDaysTitle" hidden tabindex="-1">
+        <div class="rt-card-head">
+            <h2 class="rt-card-title" id="cpDaysTitle"></h2>
+            <button type="button" id="cpDaysClose" class="rt-btn rt-btn-ghost rt-btn-sm cp-close">
+                <i class="fas fa-xmark" aria-hidden="true"></i>Փակել</button>
+        </div>
+        <div class="cp-scroll">
+            <table class="rt-numtable cp-days">
+                <thead>
+                    <tr><th scope="col">Ամսաթիվ</th><th scope="col">Կետեր</th><th scope="col">Տոննա</th><th scope="col">Գործավարձ (մոտավոր)</th></tr>
+                </thead>
+                <tbody id="cpDayRows"></tbody>
+            </table>
+        </div>
+        <p class="rt-field-hint cp-legend">Օրվա գործավարձը մոտավոր է՝ կլորացված օր առ օր, ամսվա գումարը հաշվվում է ամբողջ ամսվա կետերով և տոննաներով։</p>
+    </section>
+
+    <!-- Параметры формулы: route_optimizer.db (ERP не меняется) -->
+    <form class="rt-card" id="cpParams" aria-labelledby="cpParamsTitle" novalidate>
+        <div class="rt-card-head">
+            <h2 class="rt-card-title" id="cpParamsTitle"><i class="fas fa-sliders" aria-hidden="true"></i>Պարամետրեր</h2>
+        </div>
+        <p class="rt-card-lead">Փոխեք թվերը և պահպանեք․ աղյուսակը կվերահաշվվի։ ERP-ում ոչինչ չի փոխվում։</p>
+        <p id="cpChanged" class="rt-field-hint cp-changed"></p>
+        <div class="cp-grid">
+            <div class="rt-field">
+                <label for="cpFix">Ֆիքս ամսական, ֏</label>
+                <input id="cpFix" name="fix" class="rt-input" type="number" min="0" step="1000" inputmode="numeric" aria-describedby="cpFixErr">
+                <span id="cpFixErr" class="rt-ferr" data-for="fix"></span>
+            </div>
+            <div class="rt-field">
+                <label for="cpRatePoint">Մեկ կետի համար, ֏</label>
+                <input id="cpRatePoint" name="rate_point" class="rt-input" type="number" min="0" step="1" inputmode="numeric" aria-describedby="cpRatePointErr">
+                <span id="cpRatePointErr" class="rt-ferr" data-for="rate_point"></span>
+            </div>
+            <div class="rt-field">
+                <label for="cpRateTonne">Մեկ տոննայի համար, ֏</label>
+                <input id="cpRateTonne" name="rate_tonne" class="rt-input" type="number" min="0" step="1" inputmode="numeric" aria-describedby="cpRateTonneErr">
+                <span id="cpRateTonneErr" class="rt-ferr" data-for="rate_tonne"></span>
+            </div>
+            <div class="rt-field">
+                <label for="cpMin">Նվազագույն ամսական, ֏</label>
+                <input id="cpMin" name="minimum" class="rt-input" type="number" min="0" step="1000" inputmode="numeric" aria-describedby="cpMinErr">
+                <span id="cpMinErr" class="rt-ferr" data-for="minimum"></span>
+            </div>
+            <div class="rt-field">
+                <label for="cpNorm">Նորմ՝ կետ մեկ աշխատանքային օրում</label>
+                <input id="cpNorm" name="norm_per_day" class="rt-input" type="number" min="1" step="1" inputmode="decimal" aria-describedby="cpNormErr">
+                <span id="cpNormErr" class="rt-ferr" data-for="norm_per_day"></span>
+            </div>
+            <div class="rt-field">
+                <label for="cpOldFix">Հին սխեմա՝ ֆիքս, ֏</label>
+                <input id="cpOldFix" name="old_fix" class="rt-input" type="number" min="0" step="1000" inputmode="numeric" aria-describedby="cpOldFixErr">
+                <span id="cpOldFixErr" class="rt-ferr" data-for="old_fix"></span>
+            </div>
+            <div class="rt-field">
+                <label for="cpOldPct">Հին սխեմա՝ վաճառքի տոկոս, %</label>
+                <input id="cpOldPct" name="old_pct" class="rt-input" type="number" min="0" max="100" step="0.1" inputmode="decimal" aria-describedby="cpOldPctErr">
+                <span id="cpOldPctErr" class="rt-ferr" data-for="old_pct"></span>
+            </div>
+            <div class="rt-field cp-wide">
+                <label for="cpLines">Չհաշվվող գծեր՝ մենեջերների կոդերը ստորակետով</label>
+                <input id="cpLines" name="excluded_lines" class="rt-input" type="text" autocomplete="off" spellcheck="false" aria-describedby="cpLinesHint cpLinesErr">
+                <span id="cpLinesHint" class="rt-field-hint">Այս մենեջերների ապրանքագրերը չեն հաշվվում (օրինակ՝ 19 լ գիծը)։</span>
+                <span id="cpLinesErr" class="rt-ferr" data-for="excluded_lines"></span>
+            </div>
+            <div class="rt-field cp-wide">
+                <label for="cpPeople">Չհաշվվող առաքիչներ՝ կոդերը ստորակետով</label>
+                <input id="cpPeople" name="excluded_people" class="rt-input" type="text" autocomplete="off" spellcheck="false" aria-describedby="cpPeopleHint cpPeopleErr">
+                <span id="cpPeopleHint" class="rt-field-hint">Եթե մարդը ERP-ում ունի մի քանի կոդ, նշեք մարդու բոլոր կոդերը։</span>
+                <span id="cpPeopleErr" class="rt-ferr" data-for="excluded_people"></span>
+            </div>
+        </div>
+        <div class="cp-actions">
+            <button type="submit" id="cpSave" class="rt-btn rt-btn-primary" disabled><i class="fas fa-floppy-disk" aria-hidden="true"></i>Պահպանել</button>
+            <span id="cpSaved" class="cp-saved" role="status"></span>
+        </div>
+    </form>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/routes_pay.js') }}?v=6"></script>
+{% endblock %}

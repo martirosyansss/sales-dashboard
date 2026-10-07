@@ -901,6 +901,19 @@ class ValhallaRoads:
             return d
         return self.fallback.km(a, b)
 
+    @property
+    def terrain(self) -> bool:
+        """Рельеф (№85) — по графу OSM (fallback): у Valhalla высот нет."""
+        return self.fallback is not None and self.fallback.terrain
+
+    def ensure_climb(self, points: Iterable[Point | None], wait: bool | None = None) -> bool:
+        return self.fallback is not None and self.fallback.ensure_climb(points, wait)
+
+    def climb(self, a: Point, b: Point) -> float | None:
+        """Подъём участка — по кратчайшему пути графа OSM (fallback): км из графа — тот же путь; км Valhalla — его путь
+        почти всегда тот же (принятое приближение)."""
+        return self.fallback.climb(a, b) if self.fallback is not None else None
+
     def valhalla_minutes(self, a: Point, b: Point, city: bool) -> float | None:
         """Минуты Valhalla A → B × поправка зоны (city — оба конца в городе; объезд центра — × detour) — независимо от
         переключателей; нет — None."""

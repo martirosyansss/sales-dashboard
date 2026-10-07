@@ -35,7 +35,7 @@ from route_optimizer.store import StoreError as RoutesStoreError
 
 from . import clock, events as ev, merge as mg
 from .facts import gps_summary, office_window, refuel_flags
-from .routes_link import RoutesView, planned_crew, routes_depot, routes_view
+from .routes_link import RoutesView, driver_name_hints, planned_crew, routes_depot, routes_view
 from .state import state
 from .store import MarkSetting, PinConflict, PinPepperMissing, PinUnverifiable, Release, StoreError, Terminal
 
@@ -161,6 +161,8 @@ def drivers_list() -> Any:
                                    'revoked_at': t.revoked_at, 'last_seen_at': t.last_seen_at,
                                    'locked_until': t.locked_until} for t in st.store.list_terminals()],
                     'cars': cars, 'cars_erp_failed': failed,
+                    # №84: имена водителей «Развоза» — подсказка имени (с ними сравнивается вход по PIN)
+                    'name_hints': driver_name_hints(_routes_state()),
                     'public_url': st.public_url, 'lan_url': request.host_url.rstrip('/') + '/api/courier/v1'})
 
 

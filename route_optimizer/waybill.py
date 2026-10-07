@@ -24,10 +24,11 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from datetime import date
-from typing import Any, Mapping, Sequence
+from typing import Any, Collection, Iterable, Mapping, Sequence
 
 from . import erp
-from .store import check_driver_name
+from .dispatch import visit_parts
+from .store import check_driver_name, code_key
 
 QTY_SCALE = 10_000   # дробное количество ERP (money) — 4 знака: делим целые десятитысячные
 
@@ -73,6 +74,19 @@ WHERE s.fSTATE = 2 AND s.fDATE >= ? AND s.fDATE < ? AND s.fVANAGENTID <> ISNULL(
   AND ISNULL(a.fCLOSED, 0) = 0
 GROUP BY a.fNAME
 """
+
+
+# Кто возил машину (ответ владельца №84): экспедитор проведённой накладной с машиной (fDELIVERYCAR) — (машина, имя,
+# день) без повторов за [since, until); как SQL_DRIVERS — не сам менеджер, закрытые агенты ERP — нет.
+SQL_CAR_CREW_DAYS = """
+SELECT LTRIM(RTRIM(s.fDELIVERYCAR)), a.fNAME, CAST(s.fDATE AS date)
+FROM SALES s WITH (NOLOCK)
+JOIN SALESAGENTS a WITH (NOLOCK) ON a.fID = s.fVANAGENTID
+WHERE s.fSTATE = 2 AND s.fDATE >= ? AND s.fDATE < ? AND LTRIM(RTRIM(ISNULL(s.fDELIVERYCAR, ''))) <> ''
+  AND s.fVANAGENTID <> ISNULL(s.fSALESAGENTID, 0) AND ISNULL(a.fCLOSED, 0) = 0
+GROUP BY LTRIM(RTRIM(s.fDELIVERYCAR)), a.fNAME, CAST(s.fDATE AS date)
+"""
+CREW_HELPER_MIN_DAYS = 3   # առաքիչ по ERP — не меньше стольких общих с водителем дней на машине
 
 
 @dataclass(frozen=True)
@@ -162,6 +176,68 @@ def load_drivers(connection_string: str, since: date, until: date) -> list[str]:
     return sorted(n for n in names if n)
 
 
+def load_car_crew_days(connection_string: str, since: date, until: date) -> list[tuple[str, str, date]]:
+    """(машина, имя, день) — кто возил машины за [since, until) (SQL_CAR_CREW_DAYS); имя — как его напечатает накладная
+    (check_driver_name; негодное — пропускается). Необязательно для страницы — короткие таймауты."""
+    conn = erp.connect(connection_string, login_timeout=3, query_timeout=20)
+    try:
+        rows = erp._select(conn, SQL_CAR_CREW_DAYS, (since, until))
+    finally:
+        erp.close_quietly(conn)
+    out = set()
+    for car, name, day in rows:
+        clean = check_driver_name(erp._str(name))[0]
+        if clean and erp._str(car):
+            out.add((erp._str(car), clean, erp._day(day)))
+    return sorted(out)
+
+
+def pick_car_crews(rows: Iterable[tuple[str, str, date]], trucks: Collection[str],
+                   taken_names: Collection[str] = ()) -> dict[str, tuple[str, str | None]]:
+    """Экипаж машин по ERP (ответ владельца №84): машина настроек → (Վարորդ, Առաքիչ | None). rows — (машина ERP, имя,
+    день): машина ERP сопоставляется с машиной trucks по code_key. Водитель — больше всех разных дней на машине (равно —
+    у кого последний день позже, затем по имени); առաքիչ — больше всех общих с ним дней на этой машине, не меньше
+    CREW_HELPER_MIN_DAYS (равно — последний день позже, затем имя); третий и дальше — нет. Один человек — на одной машине
+    (в любой роли): попал на несколько — остаётся там, где его последний день позже (равно — где дней больше, затем по
+    коду машины), с остальных снимается, и они берут следующего; так до конца (каждый шаг снимает кого-то — конечно).
+    taken_names — уже на машинах по записям логиста и «Առաքիչ»: не берутся. Машины без подходящих людей — нет в ответе."""
+    by_key = {code_key(t): t for t in trucks}
+    days: dict[str, dict[str, set[date]]] = {}             # машина → имя → дни
+    for car, name, day in rows:
+        truck = by_key.get(code_key(car))
+        if truck is not None and name and name not in taken_names:
+            days.setdefault(truck, {}).setdefault(name, set()).add(day)
+    banned: dict[str, set[str]] = {car: set() for car in days}
+
+    def rank(car: str, name: str, n: int) -> tuple[int, int, str]:
+        return -n, -max(days[car][name]).toordinal(), name
+
+    while True:
+        picks: dict[str, tuple[str, str | None]] = {}
+        for car in sorted(days):
+            people = {n: d for n, d in days[car].items() if n not in banned[car]}
+            if not people:
+                continue
+            driver = min(people, key=lambda n: rank(car, n, len(people[n])))
+            shared = {n: len(d & people[driver]) for n, d in people.items() if n != driver}
+            helpers = [n for n, k in shared.items() if k >= CREW_HELPER_MIN_DAYS]
+            picks[car] = (driver, min(helpers, key=lambda n: rank(car, n, shared[n])) if helpers else None)
+        seats: dict[str, list[str]] = {}
+        for car, crew in picks.items():
+            for name in crew:
+                if name:
+                    seats.setdefault(name, []).append(car)
+        clash = sorted(name for name, cars in seats.items() if len(cars) > 1)
+        if not clash:
+            return picks
+        for name in clash:
+            cars = seats[name]
+            keep = min(cars, key=lambda c: (-max(days[c][name]).toordinal(), -len(days[c][name]), c))
+            for car in cars:
+                if car != keep:
+                    banned[car].add(name)
+
+
 def _even(n: int, parts: int, index: int) -> int:
     base, rest = divmod(n, parts)
     return base + (1 if index < rest else 0)
@@ -244,18 +320,15 @@ def truck_waybill(plan: Mapping[str, Any], car_code: str, lines: Lines) -> dict[
     truck = next((t for t in plan['trucks'] if t['car_code'] == car_code), None)
     if truck is None:
         return None
-    visits: dict[int, list[int]] = {}       # клиент → рейсы плана с ним, по порядку плана (как dispatch._shares)
-    for t in plan['trucks']:
-        for tr in t['trips']:
-            for s in tr['stops']:
-                visits.setdefault(s['customer_id'], []).append(tr['id'])
+    # (рейс, клиент) → (частей, своя часть): рейсы плана с клиентом по порядку плана — общий расчёт с проверками
+    # «Բեռնված է» (dispatch.trip_parts)
+    visits = visit_parts([(tr['id'], [s['customer_id'] for s in tr['stops']]) for t in plan['trucks'] for tr in t['trips']])
     trips = []
     for no, tr in enumerate(truck['trips'], 1):
         qty: dict[int, float] = {}
         orders = invoiced = mixed = split = 0
         for s in tr['stops']:
-            seen = visits[s['customer_id']]
-            parts, index = len(seen), seen.index(tr['id'])
+            parts, index = visits[(tr['id'], s['customer_id'])]
             split += parts > 1
             isns = [o['isn'].upper() for o in s['orders']]
             orders += len(isns)

@@ -29,7 +29,7 @@ from route_optimizer import views  # noqa: E402
 from route_optimizer import waybill as wb  # noqa: E402
 from test_route_dispatch_approve import _two_trips  # noqa: E402
 from test_route_dispatch_same_day import DAY, FORD, HOWO, _build, _page_setup, _plan_stops, client  # noqa: E402,F401
-from test_route_optimizer import _isn  # noqa: E402
+from test_route_optimizer import _dorder, _isn  # noqa: E402
 
 AT = '2026-10-01T18:42:05'
 
@@ -252,6 +252,159 @@ def test_warehouse_goods_rows_of_trip(client, monkeypatch):
     assert client.get(f"/api/routes/warehouse/goods?date={DAY}&truck=CAR1&trip=x&rev=1").status_code == 400
 
 
+def _as_warehouse(dispatch_waybill):
+    """Ответ Բեռնագիր «Развоза» глазами склада: без basis (номера заказов ERP — сверка «Развоза») и с днём недели."""
+    trips = [{k: v for k, v in tr.items() if k != 'basis'} for tr in dispatch_waybill['trips']]
+    assert all('basis' in tr for tr in dispatch_waybill['trips'])
+    return {**dispatch_waybill, 'trips': trips, 'weekday': date.fromisoformat(DAY).isoweekday()}
+
+
+def test_warehouse_waybill_is_dispatch_waybill_of_approved_plan(client, monkeypatch):
+    """«Տպել բեռնագիրը» склада: ровно ответ Բեռնագիր «Развоза» той же машины и дня (общий _waybill_body; страница печатает
+    тем же рендером) плюс день недели; только утверждённый план (ответ 15), rev плана на странице; ERP до проверок не
+    читается."""
+    state = _setup(client, monkeypatch)
+    asked = []
+    products = {10: wb.Product(10, '0101', 'Կաթ 1լ', 'հատ', 1.05, 12)}
+
+    def loader(isns):
+        asked.append(sorted(isns))
+        return wb.Lines({i.upper(): ((10, 30.0),) for i in isns}, frozenset(), products)
+
+    state.waybill_loader = loader
+    d = _build(client, ('CAR1', 'CAR2'))
+    code = d['plan']['trucks'][0]['car_code']
+    get = lambda **q: client.get('/api/routes/warehouse/waybill', query_string={'date': DAY, 'truck': code, **q})  # noqa
+    r = get(rev=d['rev'])
+    assert r.status_code == 409 and r.get_json()['error'] == views.WAREHOUSE_STALE      # не утверждён
+    d = client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': d['rev'], 'action': 'approve'}).get_json()
+    r = get(rev=d['rev'])
+    assert r.status_code == 200, r.get_json()
+    got = r.get_json()
+    same = client.get('/api/routes/dispatch/waybill', query_string={'date': DAY, 'truck': code, 'rev': d['rev']}).get_json()
+    assert got == _as_warehouse(same)
+    truck = next(t for t in d['plan']['trucks'] if t['car_code'] == code)
+    assert (got['rev'], got['day'], [x['id'] for x in got['trips']]) == (d['rev'], DAY, [x['id'] for x in truck['trips']])
+    assert got['trips'][0]['rows'] and got['trips'][0]['rows'][0]['code'] == '0101'
+    asked.clear()
+    orders, erp = [], state.dispatch_loader
+    state.dispatch_loader = lambda *a: orders.append(a) or erp(*a)   # заказы ERP
+    for q, status in (({'rev': d['rev'] - 1}, 409), ({'rev': d['rev'] + 1}, 409), ({'rev': d['rev'], 'truck': 'ZZZ'}, 409),
+                      ({}, 400), ({'rev': 'x'}, 400), ({'rev': '-1'}, 400), ({'rev': d['rev'], 'truck': ' '}, 400),
+                      ({'rev': d['rev'], 'truck': 'X' * 65}, 400), ({'rev': d['rev'], 'date': '2026-10-05'}, 400),
+                      ({'rev': d['rev'], 'date': 'x'}, 400)):
+        r = get(**q)
+        assert r.status_code == status, (q, r.get_json())
+        if status == 409:
+            assert r.get_json()['error'] == views.WAREHOUSE_STALE, q
+    assert asked == [] and orders == []                              # отказы — без чтения ERP
+    # утверждение сняли после открытия страницы — тот же rev уже не тот, а и с новым rev — 409 (план не утверждён)
+    d = client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': d['rev'], 'action': 'unapprove'}).get_json()
+    assert get(rev=d['rev']).status_code == 409 and asked == []
+
+
+def _sent_day(client, monkeypatch):
+    """План 01.10 двумя машинами утверждён (= отправлен водителям, №81); строки заказов — подделка, вызовы — в asked."""
+    state = _setup(client, monkeypatch)
+    asked = []
+    products = {10: wb.Product(10, '0101', 'Կաթ 1լ', 'հատ', 1.05, 12)}
+
+    def loader(isns):
+        asked.append(sorted(isns))
+        return wb.Lines({i.upper(): ((10, 30.0),) for i in isns}, frozenset(), products)
+
+    state.waybill_loader = loader
+    d = _build(client, ('CAR1', 'CAR2'))
+    d = client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': d['rev'], 'action': 'approve'}).get_json()
+    assert d['sent'] and d['unsent'] is None
+    return state, d, asked
+
+
+def _wb(client, car, rev):
+    return client.get('/api/routes/warehouse/waybill', query_string={'date': DAY, 'truck': car, 'rev': rev})
+
+
+def test_warehouse_waybill_refused_until_logist_sends_edits(client, monkeypatch):
+    """Ответ владельца 07.10 «Запретить до отправки»: у машины неотправленные правки логиста (№81) — на странице склада
+    признак changing (кнопка выключена), Բեռնագիր — 409 с changing, ERP не читается; после «Ուղարկել» — печатается, по
+    отправленному плану, тот же ответ, что у «Развоза»."""
+    from test_route_dispatch_send import _move_one
+    state, d, asked = _sent_day(client, monkeypatch)
+    w = client.get('/api/routes/warehouse?date=' + DAY).get_json()
+    assert all('changing' not in t for t in w['trucks'])
+    assert all(_wb(client, t['car_code'], w['rev']).status_code == 200 for t in w['trucks'])
+    d = client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': d['rev'], **_move_one(d)}).get_json()
+    assert d['unsent'] is not None and not d['unsent']['orders']
+    changed = set(d['unsent']['trucks'])
+    w = client.get('/api/routes/warehouse?date=' + DAY).get_json()
+    assert changed and {t['car_code'] for t in w['trucks'] if t.get('changing')} == changed
+    asked.clear()
+    orders, erp = [], state.dispatch_loader
+    state.dispatch_loader = lambda *a: orders.append(a) or erp(*a)   # заказы ERP
+    for car in changed:
+        r = _wb(client, car, w['rev'])
+        assert r.status_code == 409 and r.get_json() == {'success': False, 'error': views.WAREHOUSE_WAYBILL_CHANGING,
+                                                         'conflict': True, 'changing': True}
+    assert asked == [] and orders == []                              # отказ — до чтения ERP
+    d = client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': d['rev'], 'action': 'send'}).get_json()
+    assert d['unsent'] is None
+    w = client.get('/api/routes/warehouse?date=' + DAY).get_json()
+    assert all('changing' not in t for t in w['trucks'])
+    for t in w['trucks']:
+        r = _wb(client, t['car_code'], w['rev'])
+        assert r.status_code == 200, r.get_json()
+        got = r.get_json()
+        assert [x['id'] for x in got['trips']] == [x['id'] for x in t['trips']]
+        same = client.get('/api/routes/dispatch/waybill', query_string={'date': DAY, 'truck': t['car_code'],
+                                                                        'rev': w['rev']}).get_json()
+        assert got == _as_warehouse(same)
+    assert asked
+
+
+def _chg(draft, car):
+    return car in views._changing_trucks(draft)
+
+
+def test_warehouse_changing_trucks_rules():
+    """_changing_trucks (одно правило печати и отметки склада): не отправляли — нет; рейс машины другой (точки, их порядок; рейс «changing» — номера у водителей
+    нет в черновике) — да, только у этой машины; доля клиента этой машины изменилась правкой ДРУГОЙ машины (разделили,
+    объединили, переставили рейсы с ним) — да; изменён отбор заказов дня — у всех."""
+    *_, draft = _two_trips()                     # FORD — рейсы 1 [101] и 3 [201], HOWO — рейс 2 [102, 103]
+    cars = (FORD.car_code, HOWO.car_code)
+    assert draft.sent is None and not any(_chg(draft, c) for c in cars)
+    dp.approve(draft, 'at', 'logist')            # утверждение отправляет план водителям (№81)
+    assert draft.sent is not None and not any(_chg(draft, c) for c in cars)
+
+    def edited(change, base=draft):
+        out = dp.Draft.from_json(base.to_json())
+        change(out)
+        return out
+    rev = edited(lambda x: setattr(dp.trip_of(x, 2), 'stops', [103, 102]))
+    assert _chg(rev, HOWO.car_code) and not _chg(rev, FORD.car_code)
+    renum = edited(lambda x: setattr(dp.trip_of(x, 1), 'id', x.next_id))   # тот же состав под новым номером
+    assert _chg(renum, FORD.car_code) and not _chg(renum, HOWO.car_code)
+    excl = edited(lambda x: x.excluded.add('X1'))                            # «այսօր չենք տանում» — груз любой машины
+    assert all(_chg(excl, c) for c in cars)
+
+    # ревью: 102 в двух рейсах разных машин (доля 1/2 у каждой) — правка одной меняет долю у другой
+    split = edited(lambda x: dp.trip_of(x, 1).stops.append(102))             # FORD [101, 102], HOWO [102, 103]
+    dp.send(split, 'at2', 'logist')
+    assert not any(_chg(split, c) for c in cars)
+    merged = edited(lambda x: dp.trip_of(x, 2).stops.remove(102), split)     # убрали 102 у HOWO: у FORD доля стала целой
+    assert dp.unsent(merged)['trucks'] == [HOWO.car_code]                    # dp.unsent о FORD молчит
+    assert _chg(merged, FORD.car_code) and _chg(merged, HOWO.car_code)
+    again = edited(lambda x: dp.trip_of(x, 3).stops.append(102), merged)     # 102 делится между рейсами FORD 1 и 3
+    dp.send(again, 'at3', 'logist')
+    assert not any(_chg(again, c) for c in cars)
+
+    def swap(x):                                                             # рейсы FORD с 102 поменялись местами
+        a, b = (i for i, t in enumerate(x.trips) if t.id in (1, 3))
+        x.trips[a], x.trips[b] = x.trips[b], x.trips[a]
+    reorder = edited(swap, again)
+    assert _chg(reorder, FORD.car_code) and not _chg(reorder, HOWO.car_code)
+    split_other = edited(lambda x: dp.trip_of(x, 2).stops.append(101), again)   # 101 FORD делится с рейсом HOWO
+    assert _chg(split_other, FORD.car_code) and _chg(split_other, HOWO.car_code)
+
 def test_reset_race_with_warehouse_mark_is_409(client, monkeypatch):
     """«Ջնջել երթերը» стирает ровно прочитанный черновик: склад успел отметить — 409, отметка цела."""
     state = _setup(client, monkeypatch)
@@ -355,3 +508,117 @@ def test_build_with_new_manager_filter_dropping_loaded_stop_needs_confirmation(c
     assert r.status_code == 200, r.get_json()
     # тот же фильтр, что у плана, — без вопроса
     assert client.post('/api/routes/dispatch/build', json={'date': DAY, 'trucks': ['CAR1', 'CAR2']}).status_code == 200
+
+
+# ============================== ревью: доля тяжёлого магазина в грузе загруженного рейса ==============================
+
+
+def _split_trips():
+    """FORD рейс 1 [101, 102] утверждён и загружен, HOWO рейс 2 [102, 103]: 102 делится пополам между машинами."""
+    ctx, base, orders, new, draft = _two_trips()
+    dp.trip_of(draft, 1).stops = [101, 102]
+    dp.approve(draft, 'at', 'logist')
+    dp.mark_loaded(draft, 1, AT, 'sklad')
+    return ctx, base, {o.isn for o in orders}, draft
+
+
+def test_other_truck_edit_changing_loaded_share_is_seen():
+    """Ревью: правка рейса ДРУГОЙ машины (убрали 102 у HOWO) меняет долю 102 в загруженном рейсе FORD (1/2 → целый) —
+    груз (loaded_cargo) другой, отправка (loaded_changed) — с подтверждением, у склада рейс «changing»; обратное —
+    магазин загруженного рейса стал делиться с рейсом другой машины — так же. Правка без смены долей — без вопроса."""
+    ctx, base, ids, draft = _split_trips()
+    cargo = dp.loaded_cargo(draft, base)
+    assert cargo[1][3] == frozenset({(101, 1, 0), (102, 2, 0)})
+    assert not dp.loaded_changed(draft) and views._changing_trucks(draft) == set()
+    got = dp.apply_edit(ctx, base, dp.Draft.from_json(draft.to_json()),
+                        {'action': 'move', 'customer_id': 102, 'from_trip': 2, 'to_trip': None, 'truck': None}, ids)
+    assert dp.trip_of(got, 1).stops == [101, 102]                     # сам рейс не тронут, правка прошла без LoadedEdit
+    assert dp.loaded_cargo(got, base, cargo) != cargo                 # но груз другой — views спросит (/edit, /build)
+    assert dp.loaded_changed(got)                                     # «Ուղարկել» — с подтверждением
+    assert views._changing_trucks(got) == {FORD.car_code, HOWO.car_code}   # склад: обе машины «меняются»
+    # обратное: 101 загруженного рейса теперь и в рейсе HOWO — его доля в машине FORD стала половиной
+    rev = dp.Draft.from_json(draft.to_json())
+    dp.trip_of(rev, 2).stops.append(101)
+    assert dp.loaded_cargo(rev, base, cargo) != cargo and dp.loaded_changed(rev) and _chg(rev, FORD.car_code)
+    # нейтрально: 103 (не делится, не в загруженном рейсе) — новым рейсом FORD; доли рейса 1 те же — вопроса нет
+    same = dp.apply_edit(ctx, base, dp.Draft.from_json(draft.to_json()),
+                         {'action': 'move', 'customer_id': 103, 'from_trip': 2, 'to_trip': None, 'truck': FORD.car_code}, ids)
+    assert dp.loaded_cargo(same, base, cargo) == cargo and not dp.loaded_changed(same)
+    assert views._changing_trucks(same) == {FORD.car_code, HOWO.car_code}   # склад: 103 переложили — обе «меняются»
+    # лист и проверки — одним расчётом: доли рейса 1 в плане (plan_view share) — те же, что в trip_parts
+    assert dp.trip_parts(got)[1] == {101: (1, 0), 102: (1, 0)} and dp.trip_parts(draft)[1][102] == (2, 0)
+
+
+def _ok(client, d, **body):
+    r = _edit(client, d, **body)
+    assert r.status_code == 200, r.get_json()
+    return r.get_json()
+
+
+def _heavy_split_day(client, monkeypatch):
+    """План 01.10: 104 тяжелее машины — два рейса; второй закреплён за CAR2 (доля 104 — между машинами); утверждён,
+    рейс CAR1 с 104 загружен. (state, ответ дня, загруженный рейс, рейс CAR2 с 104)."""
+    state, _ = _page_setup(client, monkeypatch, now=datetime(2026, 10, 1, 8, 0, tzinfo=ac.YEREVAN),
+                           extra_orders=(_dorder(20, 104, 14000.0, agent=2),))
+    _as(client, 'logist')
+    d = _build(client, ('CAR1', 'CAR2'))
+    with104 = [tr for t in d['plan']['trucks'] for tr in t['trips'] if any(s['customer_id'] == 104 for s in tr['stops'])]
+    assert len(with104) == 2, with104
+    first, second = with104
+    d = _ok(client, d, action='pin', trip=second['id'], truck='CAR2')
+    d = _ok(client, d, action='approve')
+    d = _ok(client, d, action='loaded', trip=first['id'])
+    cars = {tr['id']: t['car_code'] for t in d['plan']['trucks'] for tr in t['trips']}
+    assert cars[first['id']] != cars[second['id']] == 'CAR2'
+    return state, d, first['id'], second['id']
+
+
+def test_api_other_truck_edit_of_heavy_store_needs_confirmation_send_and_changing(client, monkeypatch):
+    """Ревью (репро на API): убрали 104 из рейса CAR2 — у загруженного рейса CAR1 доля 104 стала целой (вес другой):
+    /edit — loaded_confirm, без подтверждения ничего не сохраняется; с подтверждением — склад видит рейс «changing»
+    («Բեռնված է» не показывается, снять/поставить — 409), «Ուղարկել» — снова с подтверждением; после — как обычно."""
+    state, d, loaded, other = _heavy_split_day(client, monkeypatch)
+    before = state.store.load_dispatch(DAY)
+    move = {'action': 'move', 'customer_id': 104, 'from_trip': other, 'to_trip': None, 'truck': None}
+    r = _edit(client, d, **move)
+    assert r.status_code == 400 and r.get_json()['loaded_confirm'] is True
+    assert state.store.load_dispatch(DAY) == before
+    d = _ok(client, d, **move, confirm_loaded=True)
+    assert d['unsent'] is not None
+    w = client.get('/api/routes/warehouse?date=' + DAY).get_json()
+    tr = next(x for t in w['trucks'] for x in t['trips'] if x['id'] == loaded)
+    assert tr.get('changing') is True
+    r = client.post('/api/routes/warehouse/loaded', json={'date': DAY, 'rev': w['rev'], 'trip': loaded, 'loaded': False})
+    assert r.status_code == 409 and r.get_json()['error'] == views.WAREHOUSE_CHANGING
+    r = _edit(client, d, action='send')
+    assert r.status_code == 400 and r.get_json()['loaded_confirm'] is True
+    d = _ok(client, d, action='send', confirm_loaded=True)
+    assert d['unsent'] is None
+    w = client.get('/api/routes/warehouse?date=' + DAY).get_json()
+    assert all('changing' not in x for t in w['trucks'] for x in t['trips'])
+
+
+def test_api_build_changing_share_of_loaded_trip_needs_confirmation(client, monkeypatch):
+    """/build: сборка, после которой доля 104 в загруженном рейсе другая (рейс CAR2 с 104 пропал), — loaded_confirm и
+    ничего не сохраняется; та же сборка без смены долей — без вопроса."""
+    state, d, loaded, other = _heavy_split_day(client, monkeypatch)
+    d = _ok(client, d, action='unapprove')
+    real = dp.build_crewed
+
+    def drop_other(*a, **k):
+        out = real(*a, **k)
+        for t in out.trips:
+            if t.id != loaded and 104 in t.stops:
+                t.stops.remove(104)
+        return out
+    monkeypatch.setattr(dp, 'build_crewed', drop_other)
+    before = state.store.load_dispatch(DAY)
+    r = client.post('/api/routes/dispatch/build', json={'date': DAY, 'trucks': ['CAR1', 'CAR2']})
+    assert r.status_code == 400 and r.get_json()['loaded_confirm'] is True
+    assert state.store.load_dispatch(DAY) == before
+    monkeypatch.setattr(dp, 'build_crewed', real)
+    shares = lambda d: sorted(s['share'] for t in d['plan']['trucks'] for tr in t['trips'] for s in tr['stops']  # noqa
+                              if s['customer_id'] == 104)
+    r = client.post('/api/routes/dispatch/build', json={'date': DAY, 'trucks': ['CAR1', 'CAR2']})
+    assert r.status_code == 200, r.get_json()
+    assert shares(r.get_json()) == [2, 2]
