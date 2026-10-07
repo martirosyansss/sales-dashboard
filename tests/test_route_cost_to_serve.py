@@ -20,7 +20,7 @@ from test_route_optimizer import (DP_DEPOT, _dispatch_setup, _dp_ctx, _dp_stops,
                                   client)
 
 D1, D2 = date(2026, 9, 1), date(2026, 9, 2)
-P = cp.Params()                                   # 250 ֏ за точку, 1 750 ֏ за тонну
+P = cp.Params(rate_point=250, rate_tonne=1750)   # ставки тестов — явно: умолчания «Աշխատավարձ» меняются
 DEPOT = (0.0, 0.0)
 
 
@@ -334,6 +334,7 @@ def cost(client, monkeypatch):
             g.user_role = role['value']
     _dispatch_setup(client, [])
     state = app.extensions['route_optimizer']
+    state.store.save_crew_pay_params(P, 'qa')   # ставки экипажа — сохранённые «Աշխատավարձ» (тест — явные 250 / 1 750)
     state.store.save_dispatch(DAY_SENT, plan([('CAR1', [104])], sent_trips=[('CAR1', [101, 102]), ('CAR2', [104, 999])]), 'qa')
     state.store.save_dispatch(DAY_DRAFT, plan([('CAR2', [101, 104])]), 'qa')
     state.store.save_dispatch(DAY_UNSENT, plan([('CAR1', [102, 104])]), 'qa')
