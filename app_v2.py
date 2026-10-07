@@ -8916,6 +8916,9 @@ def api_users_save():
             if not password:
                 return jsonify({'success': False,
                                 'error': 'Для нового пользователя нужен пароль'}), 400
+            # «:» — в метках записей не от человека (экипаж из «Առաքիչ» и ERP, №84): логин с ним спутался бы с ними
+            if ':' in username:
+                return jsonify({'success': False, 'error': 'Логин не может содержать «:»'}), 400
             entry = {
                 'password_hash': new_hash,
                 'role': role,

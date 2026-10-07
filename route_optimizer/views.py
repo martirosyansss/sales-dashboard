@@ -26,6 +26,7 @@ from flask import (Blueprint, Response, current_app, g, has_app_context, has_req
 
 from . import actuals as ac
 from . import ai_chat
+from . import crew_pay as cp
 from . import dispatch as dp
 from . import evaluate, garage, learning, live, optimize
 from . import fleet as fl
@@ -155,8 +156,17 @@ class RoutesState:
     # Армении»; None — без ERP (поиск пуст)
     customer_ref_loader: Callable[[str, Sequence[int]], list[CustomerRef]] | None = None
     customer_hint_loader: Callable[[date, date], list[CustomerHint]] | None = None
+    # «Աշխատավարձ»: накладные экспедиторов ERP за [с, по) и справочник менеджеров; кэш — (с, по) → (time.monotonic(), данные)
+    crew_pay_loader: Callable[[date, date], cp.CrewData] | None = None
+    crew_pay_cache: dict[tuple[date, date], tuple[float, cp.CrewData]] = field(default_factory=dict)
+    crew_pay_lock: threading.Lock = field(default_factory=threading.Lock)
     driver_list_cache: tuple[float, list[str]] | None = None
     driver_list_lock: threading.Lock = field(default_factory=threading.Lock)   # перечитывает один запрос
+    # (машина ERP, имя, день) — кто возил машины за [since, until) (№84, waybill.load_car_crew_days): экипаж машин без
+    # записей; None — без подбора по ERP, всё как раньше. Подбор — не чаще ERP_CREW_TTL_S (time.monotonic() следующего)
+    crew_days_loader: Callable[[date, date], list[tuple[str, str, date]]] | None = None
+    erp_crew_next: float = 0.0
+    erp_crew_lock: threading.Lock = field(default_factory=threading.Lock)
     dispatch_cache: dict[tuple[date, date, date], tuple[float, dp.DispatchData]] = field(default_factory=dict)
     dispatch_lock: threading.Lock = field(default_factory=threading.Lock)
     same_day_cache: dict[date, tuple[float, dp.SameDayData]] = field(default_factory=dict)   # под dispatch_lock
@@ -1943,6 +1953,64 @@ def _erp_drivers(state: RoutesState) -> list[str]:
         state.driver_list_lock.release()
 
 
+def driver_name_hints(state: RoutesState) -> list[str]:
+    """Имена водителей для подсказки в офисе «Առաքիչ» (№84, ревью: имя водителя APK сравнивается с записями «Развоза»
+    строкой) — тот же список, что у «Վարորդ»: ERP (кэш _erp_drivers) и свои за DRIVER_LIST_DAYS, по алфавиту. ERP
+    здесь не ждём: кэша нет или он устарел — перечитывается в фоне (один поток за раз), ответ — с тем, что есть."""
+    cached = state.driver_list_cache
+    if (cached is None or time.monotonic() >= cached[0]) and state.driver_list_loader is not None \
+            and state.driver_list_lock.acquire(blocking=False):
+        today = _clock().date()
+
+        def refresh() -> None:
+            names, ttl = (cached[1] if cached is not None else []), DRIVER_LIST_RETRY_S   # сбой — прежний, повтор скоро
+            try:
+                names = state.driver_list_loader(today - timedelta(days=DRIVER_LIST_DAYS), today + timedelta(days=1))
+                ttl = DRIVER_LIST_TTL_S
+            except ErpError:
+                logger.warning('[Routes] Список водителей ERP не прочитан — прежний список', exc_info=True)
+            except Exception:   # фоновый поток не должен падать молча
+                logger.exception('[Routes] Список водителей ERP: сбой')
+            finally:
+                state.driver_list_cache = (time.monotonic() + ttl, names)
+                state.driver_list_lock.release()
+        try:
+            threading.Thread(target=refresh, name='routes-driver-list', daemon=True).start()
+        except BaseException:   # поток не запустился — замок не должен остаться занятым навсегда
+            state.driver_list_lock.release()
+            logger.exception('[Routes] Список водителей ERP: фоновое чтение не запущено')
+    since = (_clock().date() - timedelta(days=DRIVER_LIST_DAYS)).isoformat()
+    return sorted(set(cached[1] if cached is not None else []) | set(state.store.driver_names(since)))
+
+
+ERP_CREW_DAYS = 30        # экипаж по ERP (№84) — кто возил машину за 30 дней
+ERP_CREW_TTL_S = 3600     # подбор по ERP — не чаще раза в час
+ERP_CREW_RETRY_S = 60     # ERP недоступна — снова через минуту (страница работает с прежними записями)
+
+
+def _erp_crew(state: RoutesState, trucks: Collection[str]) -> None:
+    """Экипаж по ERP машинам без записей (ответ владельца №84: waybill.pick_car_crews за ERP_CREW_DAYS, запись —
+    store.fill_erp_crew). Как _erp_drivers: только GET (открытие дня), один запрос за раз, не чаще ERP_CREW_TTL_S; ERP
+    недоступна — повтор через ERP_CREW_RETRY_S. Любой сбой — в лог: страница работает с прежними записями."""
+    if state.crew_days_loader is None or time.monotonic() < state.erp_crew_next \
+            or not (has_request_context() and request.method == 'GET') or not state.erp_crew_lock.acquire(blocking=False):
+        return
+    try:
+        today = _clock().date()
+        ttl = ERP_CREW_TTL_S
+        try:
+            rows = state.crew_days_loader(today - timedelta(days=ERP_CREW_DAYS), today + timedelta(days=1))
+            written = state.store.fill_erp_crew(today.isoformat(), lambda taken: wb.pick_car_crews(rows, trucks, taken))
+            if written:
+                logger.info('[Routes] Экипаж по ERP с %s: %s', today, ', '.join(f'{c} {r}' for c, r, _ in written))
+        except Exception:   # ERP, база настроек — подбор необязателен: страница не падает
+            logger.warning('[Routes] Экипаж по ERP не подобран — прежние записи', exc_info=True)
+            ttl = ERP_CREW_RETRY_S
+        state.erp_crew_next = time.monotonic() + ttl
+    finally:
+        state.erp_crew_lock.release()
+
+
 def _drivers_json(state: RoutesState, day: date) -> dict[str, Any]:
     """Водители машин на день (№62): drivers — машина → имя, substitutes — машины с подменой на этот день (только он);
     helpers, helper_substitutes — то же для առաքիչ (второй человек в машине);
@@ -1989,8 +2057,11 @@ def _crew_json(state: RoutesState, day: date, draft: dp.Draft | None, trucks: Co
         or any(crew.own.get(c) and crew.own[c] not in crew.absent and crew.own[c] not in driving for c in draft.unmanned)
         or bool(draft.unmanned and set(dp.seating(crew, [*draft.trucks, *draft.unmanned])[2]) - driving)
         or any(v['stale'] for v in view.values()))
+    sources = state.store.crew_sources(day.isoformat())    # №84: запись из «Առաքիչ» или ERP — у первой машины человека
     return {'crew': {'drivers': [{'name': n, 'trucks': codes, 'absent': n in crew.absent,
-                                  **({'until': away[n]} if n in crew.absent else {})} for n, codes in sorted(names.items())],
+                                  **({'until': away[n]} if n in crew.absent else {}),
+                                  **({'source': sources[codes[0]]} if codes[0] in sources else {})}
+                                 for n, codes in sorted(names.items())],
                      'trucks': view, 'stale': stale}}
 
 
@@ -2100,6 +2171,7 @@ def api_dispatch() -> Any:
                                                       dp.holidays_of(bundle.settings))
     if day is None:
         return _bad_request({'date': 'дата в формате ГГГГ-ММ-ДД'})
+    _erp_crew(state, bundle.trucks)     # №84: машинам без записей — экипаж по ERP, до чтения водителей дня
     dd = _load_day(state, bundle, day, refresh=request.args.get('refresh') == '1')
     return jsonify({'success': True, **_dispatch_page_body(dd)})
 
@@ -4781,3 +4853,202 @@ def api_warehouse_loaded() -> Any:
         return jsonify(_warehouse_body(state, bundle, day))
     except dp.DispatchError as e:
         return _bad_request({'_': str(e)})
+
+
+# --- «Աշխատավարձ» (09-crew-pay.md): зарплата առաքիչ за месяц по формуле владельца, только администратору ---
+
+PAY_MONTHS = 12            # выбор месяца: этот и 11 до него
+PAY_TTL_SECONDS = 300      # накладные месяца из ERP: CSV, правка параметров и повтор не перечитывают ERP
+PAY_FORBIDDEN = 'Доступ запрещён'
+
+
+def _admin_only(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Зарплаты — только администратору. Гейт app_v2 и так пускает в «Маршруты» лишь admin (прочие роли — default-deny);
+    эта проверка — вторая линия: роль, которой когда-нибудь откроют раздел, зарплат всё равно не увидит."""
+    @wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        if g.get('user_role') != 'admin':
+            logger.warning('[Routes] Աշխատավարձ: отказ роли %r (%s)', g.get('user_role'), request.path)
+            return jsonify({'success': False, 'error': PAY_FORBIDDEN}), 403
+        return fn(*args, **kwargs)
+    return wrapper
+
+
+@bp.get('/routes/pay')
+@_admin_only
+def pay_page() -> str:
+    return render_template('routes_pay.html')
+
+
+def _pay_month(raw: str, today: date) -> date | None:
+    """«YYYY-MM» из PAY_MONTHS последних месяцев → первый день; пусто — этот месяц; иначе None."""
+    first = _garage_month(raw, today)
+    return first if first is not None and first >= _add_months(today.replace(day=1), 1 - PAY_MONTHS) else None
+
+
+def _pay_data(state: RoutesState, since: date, until: date) -> cp.CrewData:
+    if state.crew_pay_loader is None:
+        raise ErpError('Загрузчик накладных не подключён')
+    key = (since, until)
+    with state.crew_pay_lock:
+        hit = state.crew_pay_cache.get(key)
+    if hit is not None and time.monotonic() - hit[0] < PAY_TTL_SECONDS:
+        return hit[1]
+    data = state.crew_pay_loader(since, until)
+    with state.crew_pay_lock:
+        state.crew_pay_cache.pop(key, None)   # перечитанный месяц — в конец очереди: вытесняется самый давний
+        state.crew_pay_cache[key] = (time.monotonic(), data)
+        while len(state.crew_pay_cache) > PAY_MONTHS:
+            state.crew_pay_cache.pop(next(iter(state.crew_pay_cache)))
+    return data
+
+
+@dataclass(frozen=True)
+class _PayMonth:
+    first: date
+    params: cp.Params
+    params_at: str | None    # когда и кем параметры сохранены (None — значения по умолчанию)
+    params_by: str | None
+    result: cp.Result
+
+
+def _pay_month_result(state: RoutesState, first: date, today: date) -> _PayMonth:
+    """Расчёт месяца first: текущий — по сегодня включительно (накладные «из будущего» не берём)."""
+    until = min(_add_months(first, 1), today + timedelta(days=1))
+    params, at, by = state.store.crew_pay_params()
+    return _PayMonth(first, params, at, by, cp.compute(_pay_data(state, first, until), params))
+
+
+def _pay_row_json(r: cp.Row) -> dict[str, Any]:
+    return {'agent_ids': list(r.agent_ids), 'code': r.code, 'name': r.name, 'days': r.days, 'points': r.points,
+            'tonnes': round(r.tonnes, 3), 'sales': r.sales, 'fix': r.fix, 'piece': r.piece, 'minimum': r.minimum,
+            'pay': r.pay, 'old': r.old, 'diff': r.diff, 'min_applied': r.min_applied,
+            'by_day': [{'date': d.day.isoformat(), 'points': d.points, 'tonnes': round(d.tonnes, 3), 'piece': d.piece}
+                       for d in r.by_day]}
+
+
+def _pay_request() -> tuple[_PayMonth | None, Any]:
+    """(месяц из ?month=, None) или (None, ответ 400)."""
+    today = _clock().date()
+    first = _pay_month(request.args.get('month', ''), today)
+    if first is None:
+        return None, _bad_request({'month': 'Ընտրեք ամիսը վերջին 12 ամիսներից'})
+    return _pay_month_result(_state(), first, today), None
+
+
+@bp.get('/api/routes/pay')
+@_admin_only
+@_api
+def api_pay() -> Any:
+    """Месяц ?month=YYYY-MM (пусто — этот): люди, итог, D, параметры формулы и список месяцев для выбора."""
+    m, error = _pay_request()
+    if m is None:
+        return error
+    this = _clock().date().replace(day=1)
+    result = m.result
+    return jsonify({'success': True, 'month': m.first.strftime('%Y-%m'), 'current': m.first == this,
+                    'months': [_add_months(this, -i).strftime('%Y-%m') for i in range(PAY_MONTHS)],
+                    'params': m.params.json(), 'params_updated_at': m.params_at, 'params_updated_by': m.params_by,
+                    'workdays': result.workdays, 'unknown_codes': list(result.unknown_codes),
+                    'overlapping_codes': [list(c) for c in result.overlapping_codes],
+                    'excluded_kin': list(result.excluded_kin),
+                    'rows': [_pay_row_json(r) for r in result.rows],
+                    'totals': {k: round(v, 3) if k == 'tonnes' else v for k, v in cp.totals(result.rows).items()}})
+
+
+def _csv_cell(value: Any) -> str:
+    """Текст ячейки CSV: начало «=+-@» Excel принял бы за формулу — экранируем апострофом (как missing.csv)."""
+    text = str(value)
+    return "'" + text if text[:1] in ('=', '+', '-', '@', '\t', '\r') else text
+
+
+# Подписи параметров в шапке CSV — как на странице
+PAY_PARAM_LABELS = (('fix', 'Ֆիքս ամսական, ֏'), ('rate_point', 'Մեկ կետի համար, ֏'),
+                    ('rate_tonne', 'Մեկ տոննայի համար, ֏'), ('minimum', 'Նվազագույն ամսական, ֏'),
+                    ('norm_per_day', 'Նորմ՝ կետ մեկ աշխատանքային օրում'), ('old_fix', 'Հին սխեմա՝ ֆիքս, ֏'),
+                    ('old_pct', 'Հին սխեմա՝ վաճառքի տոկոս, %'), ('excluded_lines', 'Չհաշվվող գծեր'),
+                    ('excluded_people', 'Չհաշվվող առաքիչներ'))
+
+
+@bp.get('/api/routes/pay.csv')
+@_admin_only
+@_api
+def api_pay_csv() -> Any:
+    """Таблица месяца для Excel: «;», десятичная запятая, UTF-8 с BOM. Параметры применяются и к прошлым месяцам,
+    поэтому в начале файла — с какими параметрами и когда он посчитан."""
+    import csv
+    import io
+    m, error = _pay_request()
+    if m is None:
+        return error
+    result, params = m.result, m.params
+
+    def n(x: float) -> str:   # число параметра без лишних нулей, десятичная запятая (Excel ru)
+        return f'{x:.3f}'.rstrip('0').rstrip('.').replace('.', ',')
+
+    out = io.StringIO()
+    w = csv.writer(out, delimiter=';', lineterminator='\r\n')
+    w.writerow(['Աշխատավարձ', m.first.strftime('%Y-%m')])
+    w.writerow(['Հաշվված է', _clock().strftime('%Y-%m-%d %H:%M')])
+    if m.params_at:
+        w.writerow(['Պարամետրերը փոխվել են', m.params_at.replace('T', ' ')[:16], _csv_cell(m.params_by or '')])
+    for key, label in PAY_PARAM_LABELS:
+        value = getattr(params, key)
+        w.writerow([label, _csv_cell(', '.join(value)) if isinstance(value, tuple) else n(value)])
+    # то же, что предупреждения на странице: тёзки с общими днями и исключённые с учтённым кодом того же имени
+    for codes in result.overlapping_codes:
+        w.writerow(['Ստուգել', _csv_cell('Նույն անունով կոդեր, որոնցից մի քանիսը աշխատել են նույն օրերին՝ '
+                                         + ', '.join(codes) + ' — հաշվված են առանձին')])
+    if result.excluded_kin:
+        w.writerow(['Ստուգել', _csv_cell('Հաշվվում են, բայց նույն անունով կոդ կա չհաշվվողների մեջ՝ '
+                                         + ', '.join(result.excluded_kin))])
+    w.writerow([])
+    w.writerow(['Կոդ', 'Առաքիչ', 'Օրեր', 'Աշխատանքային օրեր', 'Կետեր', 'Տոննա', 'Ֆիքս', 'Գործավարձ', 'Նվազագույն',
+                'Վճարել', 'Նվազագույնը կիրառված է', f'Հին սխեմա ({n(params.old_pct)}%)', 'Տարբերություն'])
+    for r in result.rows:
+        w.writerow([_csv_cell(r.code), _csv_cell(r.name), r.days, result.workdays, r.points, f'{r.tonnes:.3f}'.replace('.', ','),
+                    r.fix, r.piece, r.minimum, r.pay, 'այո' if r.min_applied else '', r.old, r.diff])
+    if result.rows:
+        s = cp.totals(result.rows)
+        w.writerow(['', 'Ընդամենը', '', result.workdays, s['points'], f"{s['tonnes']:.3f}".replace('.', ','), s['fix'],
+                    s['piece'], '', s['pay'], '', s['old'], s['diff']])
+    name = f'crew-pay-{m.first:%Y-%m}.csv'
+    return Response('\ufeff' + out.getvalue(), mimetype='text/csv',
+                    headers={'Content-Disposition': f'attachment; filename="{name}"'})
+
+
+def _pay_params_body(state: RoutesState) -> dict[str, Any]:
+    """Параметры формулы без ERP: форма редактируется, даже когда ERP недоступна. Битая запись в базе — значения по
+    умолчанию и store_error: сохранение формы перезапишет её."""
+    try:
+        params, at, by = state.store.crew_pay_params()
+        broken = False
+    except StoreError:
+        logger.exception('[Routes] Աշխատավարձ: параметры в базе не читаются — форма с значениями по умолчанию')
+        params, at, by, broken = cp.Params(), None, None, True
+    return {'success': True, 'params': params.json(), 'updated_at': at, 'updated_by': by, 'store_error': broken}
+
+
+@bp.get('/api/routes/pay/params')
+@_admin_only
+@_api
+def api_pay_params_get() -> Any:
+    return jsonify(_pay_params_body(_state()))
+
+
+@bp.post('/api/routes/pay/params')
+@_admin_only
+@_api
+def api_pay_params() -> Any:
+    """Сохранить параметры формулы (все поля; ошибки — по полям). ERP не трогается: только route_optimizer.db; битую
+    запись перезаписывает. Ответ — как у GET: параметры и кто/когда сохранил."""
+    payload, error = _json_body()
+    if error is not None:
+        return error
+    params, errors = cp.check_params(payload)
+    if params is None:
+        return _bad_request(errors)
+    state = _state()
+    state.store.save_crew_pay_params(params, session.get('username'))
+    logger.info('[Routes] Աշխատավարձ: параметры сохранены пользователем %s: %s', session.get('username'), params.json())
+    return jsonify(_pay_params_body(state))

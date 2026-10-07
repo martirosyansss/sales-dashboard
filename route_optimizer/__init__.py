@@ -61,9 +61,11 @@ def init_app(app: Flask, db: Any, db_path: str | None = None) -> None:
         same_day_loader=lambda day: erp.load_same_day_data(connection_string, day),
         waybill_loader=lambda isns: waybill.load_lines(connection_string, isns),
         driver_list_loader=lambda since, until: waybill.load_drivers(connection_string, since, until),
+        crew_days_loader=lambda since, until: waybill.load_car_crew_days(connection_string, since, until),
         group_loader=lambda ids: erp.load_customer_groups(connection_string, ids),
         customer_ref_loader=lambda query, ids: erp.load_customer_refs(connection_string, query, ids),
         customer_hint_loader=lambda since, until: erp.load_customer_hints(connection_string, since, until),
+        crew_pay_loader=lambda since, until: erp.load_crew_pay(connection_string, since, until),
     )
     app.register_blueprint(bp)
     logger.info('[Routes] Раздел «Маршруты» подключён; база настроек: %s; карта дорог: %s%s', path,

@@ -9,10 +9,12 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 TABS = [('/routes', 'Ակնարկ'), ('/routes/optimize', 'Օպտիմալացում'), ('/routes/dispatch', 'Առաքում'),
-        ('/routes/learning', 'Ուսուցում'), ('/routes/settings', 'Կարգավորումներ'), ('/routes/garage', 'Ավտոտնակ')]
+        ('/routes/learning', 'Ուսուցում'), ('/routes/settings', 'Կարգավորումներ'), ('/routes/garage', 'Ավտոտնակ'),
+        ('/routes/pay', 'Աշխատավարձ')]
 PAGES = {'routes_overview.html': '/routes', 'routes_optimize.html': '/routes/optimize',
          'routes_dispatch.html': '/routes/dispatch', 'routes_learning.html': '/routes/learning',
-         'routes_settings.html': '/routes/settings', 'routes_garage.html': '/routes/garage'}
+         'routes_settings.html': '/routes/settings', 'routes_garage.html': '/routes/garage',
+         'routes_pay.html': '/routes/pay'}
 
 
 def _tabs(template):

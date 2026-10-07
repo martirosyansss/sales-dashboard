@@ -1021,6 +1021,12 @@ details.dp-costnote p { margin: 6px 0 0; }
 body.dp-ws-on .rt-secbar { margin-bottom: 0; }
 body.dp-ws-on .rt-secbar .rt-tabs { padding: 3px; }
 body.dp-ws-on .rt-secbar .rt-tabs a { padding-top: 5px; padding-bottom: 5px; }
+/* №86: шапка ниже — меньше отступов над рабочим экраном (карта выше) */
+body.dp-ws-on main.py-4 { padding-top: 8px !important; }
+body.dp-ws-on .rt-secbar .rt-tabs { padding: 2px; }
+body.dp-ws-on .rt-secbar .rt-tabs a { padding-top: 3px; padding-bottom: 3px; }
+#rtDispatch.is-ws .dp-mast { margin-bottom: 8px; }
+#rtDispatch.is-ws .dp-dayboard { margin-top: 0; }
 /* печать и Excel — в шапке рабочего экрана, в подсказке не повторяются */
 #rtDispatch.is-ws .dp-todo-btns [data-ico="fa-print"], #rtDispatch.is-ws .dp-todo-btns [data-ico="fa-file-excel"] { display: none; }
 
@@ -1043,22 +1049,27 @@ body.dp-ws-on .rt-secbar .rt-tabs a { padding-top: 5px; padding-bottom: 5px; }
 #rtDispatch.is-ws .dp-todo-lines p + p { display: none; }
 #rtDispatch.is-ws .dp-todo-btns { margin: 0; flex-wrap: nowrap; }
 #rtDispatch.is-ws .dp-todo-btns .rt-btn { height: 34px; }
-#rtDispatch.is-ws .dp-inbox { margin: 0 0 8px; flex-wrap: nowrap; overflow-x: auto; }
+/* №86: счётчики не обрезаются — переносятся строкой ниже (справа), а не уходят за край */
+#rtDispatch.is-ws .dp-inbox { margin: 0 0 8px; flex-wrap: wrap; justify-content: flex-end; gap: 6px; overflow: visible; }
 /* подсказка и счётчики — одной строкой над рабочим экраном */
 #rtDispatch.is-ws #dpBody { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 10px; align-items: start; }
 #rtDispatch.is-ws #dpBody > * { grid-column: 1 / -1; }
 #rtDispatch.is-ws #dpBody > #dpTodo { grid-column: 1; min-width: 0; }
-#rtDispatch.is-ws #dpBody > #dpInbox { grid-column: 2; grid-row: 1; max-width: 52vw; }
-#rtDispatch.is-ws #dpBody > #dpInbox .dp-inchip { height: 44px; white-space: nowrap; flex: none; }
+#rtDispatch.is-ws #dpBody > #dpInbox { grid-column: 2; grid-row: 1; max-width: 64vw; }
+#rtDispatch.is-ws #dpBody > #dpInbox .dp-inchip { height: 40px; padding: 0 12px; gap: 7px; font-size: .8125rem; white-space: nowrap; flex: none; }
+/* №86: плашка новых заказов дня — счётчиком «Նոր պատվերներ» в строке выше (renderInbox) */
+#rtDispatch.is-ws #dpSameDay { display: none !important; }
 #rtDispatch.is-ws .dp-nodriver, #rtDispatch.is-ws .dp-sameday { margin-bottom: 8px; }
 #rtDispatch.is-ws .dp-sameday { padding: 8px 14px; }
 #rtDispatch.is-ws .dp-sameday .dp-todo-ico { display: none; }
 
 /* рабочий экран */
 .dp-ws {
-    height: var(--ws-h, calc(100vh - 220px)); margin-bottom: 14px; display: grid; grid-template-rows: minmax(0, 1fr) minmax(210px, 40%);
+    height: var(--ws-h, calc(100vh - 220px)); margin-bottom: 14px; display: grid; grid-template-rows: minmax(0, 1fr) minmax(150px, 30%);
     border: 1px solid var(--rt-line); border-radius: var(--rt-radius); overflow: hidden; background: var(--rt-panel);
 }
+/* шкала свёрнута («Ծալել») — карта на всю высоту рабочего экрана */
+.dp-ws:has(.dp-board.is-folded) { grid-template-rows: minmax(0, 1fr) auto; }
 .dp-ws-main { position: relative; min-height: 0; }
 .dp-ws-map { position: absolute; inset: 0; }
 #rtDispatch .dp-ws-map .dp-mapbox { position: absolute; inset: 0; border: 0; border-radius: 0; box-shadow: none; }
@@ -1067,23 +1078,32 @@ body.dp-ws-on .rt-secbar .rt-tabs a { padding-top: 5px; padding-bottom: 5px; }
 #rtDispatch .dp-ws-map .dp-mapbox-body { position: absolute; inset: 0; height: auto; min-height: 0; }
 #rtDispatch .dp-ws-map .dp-mapbox-body > .dp-map { position: absolute; inset: 0; height: auto; min-height: 0; }
 #rtDispatch .dp-ws-map .dp-mapfilter {
-    position: absolute; z-index: 500; left: 112px; bottom: 12px; max-width: min(720px, 50%); max-height: 50px; flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; border: 1px solid var(--rt-line);
+    position: absolute; z-index: 500; left: 112px; bottom: 10px; max-width: min(640px, 50%); max-height: 42px; padding: 5px 6px; gap: 4px; flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; border: 1px solid var(--rt-line);
     border-radius: 12px; background: rgba(23, 28, 36, .92); backdrop-filter: blur(6px);
 }
-#rtDispatch .dp-ws-map .dp-mapfocus { position: absolute; z-index: 500; left: 64px; top: 78px; max-width: 46%; border: 1px solid var(--rt-line); border-radius: 10px; background: rgba(23, 28, 36, .94); }
+/* на карте меньше надписей: что выбрано — в карточке машины справа, рейс — на шкале; кнопки внизу — цвет и номер машины */
+#rtDispatch .dp-ws-map .dp-mapfocus { display: none !important; }
+#rtDispatch .dp-ws-map .dp-mapfilter .rt-lg { height: 26px; padding: 0 9px; font-size: .75rem; }
+#rtDispatch .dp-ws-map .dp-mapfilter .rt-lg.is-trip, #rtDispatch .dp-ws-map .dp-mapfilter .rt-lg:has(.n-short) .n { display: none; }
+.rt-lg .n-short { display: none; }
+#rtDispatch .dp-ws-map .dp-mapfilter .rt-lg .n-short { display: inline; font-family: var(--rt-mono); }
+#rtDispatch .dp-ws-map .dp-mapfilter .dp-lg { font-size: .75rem; white-space: nowrap; }
+#rtDispatch .dp-ws.has-side .dp-ws-map .dp-mapfilter { display: none; }
+#rtDispatch .dp-ws-map .dp-npin span { width: 22px; height: 22px; margin: 2px; font-size: 11px; border-width: 1.5px; }
+#rtDispatch .dp-ws-map .dp-npin span.is-long { font-size: 9px; }
 /* итоги дня поверх карты (плашка Routific) */
 .dp-ws-kpi { position: absolute; z-index: 600; top: 12px; left: 50%; transform: translateX(-50%); pointer-events: none; }
 #rtDispatch .dp-ws-kpi .dp-stats {
-    pointer-events: auto; display: flex; gap: 0; margin: 0; border: 1px solid var(--rt-line); border-radius: 14px; overflow: hidden;
-    background: rgba(23, 28, 36, .94); box-shadow: 0 10px 30px rgba(0, 0, 0, .45); backdrop-filter: blur(6px);
+    pointer-events: auto; display: flex; gap: 0; margin: 0; border: 1px solid var(--rt-line); border-radius: 10px; overflow: hidden;
+    background: rgba(23, 28, 36, .88); box-shadow: 0 4px 14px rgba(0, 0, 0, .35); backdrop-filter: blur(6px);
 }
-#rtDispatch .dp-ws-kpi .dp-stat { padding: 7px 14px; border: 0; border-left: 1px solid var(--rt-line-soft); text-align: center; min-width: 0; }
+#rtDispatch .dp-ws-kpi .dp-stat { padding: 3px 10px 4px; border: 0; border-left: 1px solid var(--rt-line-soft); text-align: center; min-width: 0; }
 #rtDispatch .dp-ws-kpi .dp-stat:first-child { border-left: 0; }
-#rtDispatch .dp-ws-kpi .dp-stat b { font-size: 1.0625rem; font-family: var(--rt-mono); white-space: nowrap; }
-#rtDispatch .dp-ws-kpi .dp-stat span { font-size: .6875rem; }
+#rtDispatch .dp-ws-kpi .dp-stat b { font-size: .875rem; font-family: var(--rt-mono); white-space: nowrap; }
+#rtDispatch .dp-ws-kpi .dp-stat span { font-size: .625rem; line-height: 1.2; }
 /* выбранная машина — справа поверх карты */
 .dp-ws-side {
-    position: absolute; z-index: 650; top: 12px; right: 12px; bottom: 12px; width: min(460px, 44%); overflow: auto; overscroll-behavior: contain;
+    position: absolute; z-index: 650; top: 10px; right: 10px; bottom: 10px; width: min(400px, 36%); overflow: auto; overscroll-behavior: contain;
     padding: 44px 10px 10px; border: 1px solid var(--rt-line); border-radius: 16px; background: rgba(23, 28, 36, .97);
     box-shadow: 0 18px 50px rgba(0, 0, 0, .55);
 }
@@ -1108,7 +1128,8 @@ body.dp-ws-on .rt-secbar .rt-tabs a { padding-top: 5px; padding-bottom: 5px; }
 /* снизу: машины и шкала дня (таблица слева — подписи шкалы) */
 .dp-ws-bottom { min-height: 0; overflow: auto; border-top: 1px solid var(--rt-line); }
 #rtDispatch .dp-ws-bottom .dp-board { border: 0; border-radius: 0; padding: 8px 14px 6px; background: transparent; }
-#rtDispatch .dp-ws-bottom .dp-board-head { margin-bottom: 2px; }
+/* шкала ниже — прокручивается; заголовок со «Ծալել» остаётся сверху */
+#rtDispatch .dp-ws-bottom .dp-board-head { margin: -8px -14px 2px; padding: 8px 14px 4px; position: sticky; top: 0; z-index: 4; background: var(--rt-panel); }
 #rtDispatch .dp-ws-bottom .dp-board-legend { display: none; }
 #rtDispatch .dp-ws-bottom .dp-board-grid { grid-template-columns: minmax(260px, 300px) minmax(0, 1fr) minmax(70px, auto); }
 #rtDispatch.is-ws .dp-blabel { height: 46px; }
@@ -1152,12 +1173,9 @@ body.dp-ws-on .rt-secbar .rt-tabs a { padding-top: 5px; padding-bottom: 5px; }
 @media (min-width: 1101px) { #rtDispatch:not(.is-ws) .dp-view-ws { display: inline-flex; } }
 #rtDispatch.is-ws .dp-view-ws { display: none !important; }
 /* подписи Яндекса и Leaflet справа внизу (их нельзя перекрывать) — левее открытой карточки машины */
-.dp-ws.has-side .leaflet-bottom.leaflet-right { margin-right: calc(min(460px, 44%) + 24px); }
-.dp-ws.has-side .dp-ws-kpi { left: calc((100% - min(460px, 44%)) / 2); }
-/* узкий рабочий экран с карточкой машины — итоги дня переносятся, а не уходят под карточку */
-.dp-ws.has-side .dp-ws-kpi { max-width: calc(100% - min(460px, 44%) - 40px); }
-#rtDispatch .dp-ws.has-side .dp-ws-kpi .dp-stats { flex-wrap: wrap; justify-content: center; }
-#rtDispatch .dp-ws.has-side .dp-ws-kpi .dp-stat { padding: 6px 10px; }
+.dp-ws.has-side .leaflet-bottom.leaflet-right { margin-right: calc(min(400px, 36%) + 20px); }
+/* выбрана машина — её цифры в карточке справа, итоги дня над картой убраны (вернутся, когда карточку закрыть) */
+.dp-ws.has-side .dp-ws-kpi { display: none; }
 /* №82: ход дня на шкале — кружок магазина по факту «Առաքիչ» (цвет + знак: не только цветом) */
 #rtDispatch .dp-bar i.dp-tick.pg-done { background: var(--rt-ok); }
 #rtDispatch .dp-bar i.dp-tick.pg-partial { background: var(--rt-warn); }
@@ -1178,3 +1196,13 @@ body.dp-ws-on .rt-secbar .rt-tabs a { padding-top: 5px; padding-bottom: 5px; }
 #rtDispatch.is-ws .dp-blx-pg { position: absolute; right: 0; top: 1px; font-size: .75rem; }
 .dp-blx-pg.is-late { color: var(--rt-danger); }
 .dp-blx-pg[hidden] { display: none; }
+/* №86: карта ↔ карточка — точка всех машин (перетаскивается), строка магазина, найденная на карте, подсветка */
+.dp-dpin span { display: block; width: 14px; height: 14px; margin: 1px; border-radius: 50%; border: 2px solid #0c0f14; box-shadow: 0 1px 3px rgba(0, 0, 0, .45); }
+.dp-dpin.leaflet-marker-draggable, .dp-npin.leaflet-marker-draggable { cursor: grab; }
+.dp-dpin.leaflet-drag-target, .dp-npin.leaflet-drag-target { cursor: grabbing; }
+#rtDispatch.is-mapdrag .dp-ws-map .leaflet-container { cursor: grabbing; }
+#rtDispatch.is-mapdrag .leaflet-tooltip:not(.dp-dragtip) { display: none; }
+.dp-tip-hint { color: #8b95a5; }
+@keyframes dp-flash { 0%, 60% { background: color-mix(in srgb, var(--rt-acc) 26%, transparent); box-shadow: 0 0 0 2px var(--rt-acc) inset; } 100% { background: transparent; box-shadow: none; } }
+#rtDispatch .dp-stop.is-flash { animation: dp-flash 1.8s ease-out; border-radius: 10px; }
+@media (prefers-reduced-motion: reduce) { #rtDispatch .dp-stop.is-flash { animation: none; box-shadow: 0 0 0 2px var(--rt-acc) inset; } }

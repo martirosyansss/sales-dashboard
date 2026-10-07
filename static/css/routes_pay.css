@@ -1,0 +1,44 @@
+/* «Աշխատավարձ» /routes/pay — поверх routes.css (тема и карточки раздела); свои классы .cp-* */
+#cpPage { max-width: 1280px; margin: 0 auto; }
+
+.cp-month-label { font-size: .9375rem; color: var(--rt-fg-dim); margin: 0; }
+.cp-month { min-width: 230px; }
+.cp-sub { font-size: .9375rem; color: var(--rt-fg-dim); }
+
+/* формула: строки «Название = …», числа моноширинным */
+.cp-formula { display: grid; gap: 8px; font-size: .9375rem; line-height: 1.55; max-width: 92ch; }
+.cp-formula p { margin: 0; }
+.cp-formula b { color: var(--rt-fg); }
+.cp-formula .num { font-family: var(--rt-mono); color: var(--rt-acc); white-space: nowrap; }
+.cp-formula .note { color: var(--rt-fg-mute); font-size: .875rem; }
+
+/* таблица прокручивается внутри карточки — страница не шире экрана */
+.cp-scroll { max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch;
+    border: 1px solid var(--rt-line); border-radius: var(--rt-radius-sm); }
+.cp-table { min-width: 980px; }
+.cp-days { min-width: 420px; }
+.rt-numtable.cp-table thead th:nth-child(2) { text-align: left; }
+.cp-table td.txt { white-space: nowrap; }
+.cp-table tbody tr { cursor: pointer; }
+.cp-table tbody tr:hover td { background: var(--rt-panel-2); }
+.cp-table tbody tr.is-open td { background: var(--rt-acc-glow); }
+.cp-table td.pay { font-weight: 700; }
+.cp-table td.is-min { color: var(--rt-warn); }
+.cp-table .rt-badge { margin-left: 6px; vertical-align: 1px; }
+.cp-table tfoot td { font-weight: 700; border-top: 1px solid var(--rt-line); padding: 10px 12px; }
+.cp-legend { margin: 10px 0 0; }
+.cp-changed { margin: -8px 0 12px; }
+
+.cp-close { margin-left: auto; }
+
+.cp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 0 18px; }
+.cp-grid .rt-input { width: 100%; }
+.cp-wide { grid-column: 1 / -1; }
+.cp-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; }
+.cp-saved { font-size: .9375rem; color: var(--rt-ok); }
+
+@media (max-width: 575px) {
+    .cp-month { flex: 1 1 auto; min-width: 0; }
+    #cpCsv { flex: 1 1 100%; }
+    .cp-actions .rt-btn { flex: 1 1 auto; }
+}
