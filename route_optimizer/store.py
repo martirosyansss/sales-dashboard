@@ -2750,6 +2750,14 @@ class Store:
             out.append((day, data if isinstance(data, dict) and _is_int(rev) else None, rev if _is_int(rev) else 0))
         return out
 
+    def first_sent_day(self) -> str | None:
+        """Первый день (YYYY-MM-DD), чей план выпущен водителям (№80/№81: есть sent, released или — до №80 — approved; как
+        Draft.from_json); ни одного — None. Битый JSON не считается и не роняет запрос."""
+        row = self._read(lambda conn: conn.execute(
+            "SELECT MIN(day) FROM dispatch_plan WHERE json_valid(data) AND (json_type(data, '$.sent') = 'object' "
+            "OR json_type(data, '$.released') = 'object' OR json_type(data, '$.approved') = 'object')").fetchone())
+        return row[0] if row and isinstance(row[0], str) else None
+
     def count_dispatch_overtime(self, since: str, until: str) -> int:
         """Дней в [since, until] (YYYY-MM-DD), когда машины по плану развоза работали дольше дня
         (черновик с "overtime": true). Битый JSON черновика не считается и не роняет запрос."""

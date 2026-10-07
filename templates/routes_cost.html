@@ -114,7 +114,7 @@
             <input id="ctSearch" class="rt-input ct-search" type="search" placeholder="Որոնել՝ անուն կամ կոդ" autocomplete="off" spellcheck="false">
             <label class="ct-only-red"><input type="checkbox" id="ctOnlyRed"> Միայն կարմիրները</label>
         </div>
-        <div id="ctLoading" class="rt-loading"><div class="rt-spinner"></div>Հաշվում եմ…</div>
+        <div id="ctLoading" class="rt-loading"><div class="rt-spinner"></div><span id="ctLoadingText">Հաշվում եմ…</span></div>
         <p id="ctEmpty" class="rt-empty" hidden>Այս ժամանակահատվածում երթեր չկան։</p>
         <div id="ctTableWrap" class="ct-scroll" hidden>
             <table class="rt-numtable ct-table">
@@ -171,7 +171,8 @@
             <p><b>Վաճառքից, %</b> = առաքում ÷ խանութի վաճառք × 100։ Վաճառքը՝ ERP-ի բոլոր անցկացված ապրանքագրերը այն օրերին,
                 որոնց համար կա առաքման պլան (առանց պլանի օրերի առաքումը հայտնի չէ)։ Ընդհանուր տոկոսը՝ միայն երթերում եղած
                 խանութների վաճառքից։</p>
-            <p class="note">Երթերը՝ վարորդներին ուղարկված պլանից, իսկ եթե այդ օրը պլանը չի ուղարկվել՝ պահպանված պլանից։ Բեռը՝ ERP-ի
+            <p class="note">Երթերը՝ վարորդներին ուղարկված պլանից։ Մինչև առաջին ուղարկված պլանի օրը՝ պահպանված պլանից, իսկ դրանից
+                հետո չուղարկված պլանը (և այսօրվա չուղարկվածը) հաշվի չի առնվում։ Բեռը՝ ERP-ի
                 առաքիչների ապրանքագրերից։ Գները՝ այսօրվա. դիզելը՝ <span id="ctFuel">—</span> ֏/լ (կարգավորումներ), մաշվածքը՝
                 ավտոտնակից։ Առանց կոորդինատի խանութը երթի մեջ չի մտնում՝ նրան հասնում է միայն առաքիչի մասը։</p>
         </div>

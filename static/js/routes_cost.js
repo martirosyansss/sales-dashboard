@@ -27,17 +27,18 @@
         return el;
     }
 
-    // query — строка периода последнего успешного (или запрошенного) расчёта; sort — колонка и направление
+    // query — строка периода последнего УСПЕШНОГО расчёта (CSV и пересчёт после наценки берут её); sort — колонка и направление
     const state = { data: null, query: 'days=30', seq: 0, sort: { key: 'cost', dir: -1 }, open: null, marginLoaded: false };
 
     function announce(text) { $('ctStatus').textContent = ''; setTimeout(() => { $('ctStatus').textContent = text; }, 30); }
     function showError(text) { $('ctAlert').hidden = !text; $('ctAlertText').textContent = text || ''; }
 
     class ApiError extends Error {
-        constructor(message, errors) { super(message); this.errors = errors || {}; }
+        constructor(message, errors, pending) { super(message); this.errors = errors || {}; this.pending = !!pending; }
     }
     function httpError(status, body) {
         const text = body && typeof body.error === 'string' ? body.error : '';
+        if (body && body.pending) return HY.test(text) ? text : 'Հաշվարկը դեռ ընթանում է։ Կրկնեք մի փոքր ուշ։';
         if (status === 403) return text === 'csrf' ? 'Էջը հնացել է՝ թարմացրեք այն և կրկնեք։' : 'Այս էջը ձեզ թույլատրված չէ։';
         if (status === 400 && HY.test(text)) return text;
         if (status === 400 || status === 415) return 'Հարցումը չընդունվեց։ Թարմացրեք էջը և կրկնեք։';
@@ -59,7 +60,7 @@
         if (!resp.ok || !body || body.success === false) {
             const errors = Object.fromEntries(Object.entries((body && body.errors) || {})
                 .filter(([, v]) => typeof v === 'string' && HY.test(v)));
-            throw new ApiError(httpError(resp.status, body), errors);
+            throw new ApiError(httpError(resp.status, body), errors, body && body.pending);
         }
         return body;
     }
@@ -88,10 +89,12 @@
     });
 
     // ---------- загрузка ----------
-    async function load(query) {
-        const seq = ++state.seq;          // ответ на прежний период не перетирает новый
-        state.query = query;
+    const PENDING_RETRY_MS = 3000;   // сервер считает период в фоне (холодный старт — до минут): спросить снова
+    async function load(query, again) {
+        const seq = again ? state.seq : ++state.seq;   // ответ на прежний период не перетирает новый
+        let pending = false;
         showError('');
+        if (!again) $('ctLoadingText').textContent = 'Հաշվում եմ…';
         $('ctLoading').hidden = false;
         $('ctTableWrap').hidden = true;
         $('ctEmpty').hidden = true;
@@ -100,16 +103,23 @@
         try {
             const data = await api('/api/routes/cost?' + query);
             if (seq !== state.seq) return;
+            state.query = query;              // неудачный период не подменяет тот, что на экране
             state.data = data;
             render();
             announce('Առաքման արժեքը հաշվված է՝ ' + dayHy(data.from) + ' – ' + dayHy(data.to));
         } catch (e) {
             if (seq !== state.seq) return;
+            if (e.pending) {                  // ещё считается — ждём, а не показываем ошибку
+                pending = true;
+                $('ctLoadingText').textContent = e.message;
+                setTimeout(() => { if (seq === state.seq) load(query, true); }, PENDING_RETRY_MS);
+                return;
+            }
             state.data = null;                // ERP недоступна — ошибка, а не нули
             clearTiles();
             showError(e.message);
         } finally {
-            if (seq === state.seq) $('ctLoading').hidden = true;
+            if (seq === state.seq && !pending) $('ctLoading').hidden = true;
         }
     }
 
@@ -123,9 +133,9 @@
 
     function render() {
         const d = state.data, t = d.totals;
-        const planned = d.sources.sent + d.sources.draft;
+        const s = d.sources, planned = s.sent + s.draft;
         $('ctSub').textContent = dayHy(d.from) + ' – ' + dayHy(d.to) + ' · ' + d.days + ' օր, որից պլանով՝ ' + planned
-            + ' · ' + fmt(t.stores) + ' խանութ · ' + fmt(t.trips) + ' երթ';
+            + ' (ուղարկված՝ ' + s.sent + ', պահպանված՝ ' + s.draft + ') · ' + fmt(t.stores) + ' խանութ · ' + fmt(t.trips) + ' երթ';
         $('ctTotal').textContent = fmt(t.cost);
         $('ctTotalSub').replaceChildren('դիզել և մաշվածք ', h('b', { text: fmt(t.fuel) }), ' ֏ + առաքիչ ',
             h('b', { text: fmt(t.crew) }), ' ֏ · ', fmt(t.visits), ' այց');
@@ -140,9 +150,9 @@
         $('ctRatePoint').textContent = fmt(d.rates.rate_point);
         $('ctRateTonne').textContent = fmt(d.rates.rate_tonne);
         $('ctFuel').textContent = fmt(d.fuel_price) + (d.fuel_price_estimated ? ' (գինը նշված չէ, պայմանական)' : '');
-        const s = d.sources;
         const warn = [
-            s.draft ? s.draft + ' օր հաշվված է պահպանված պլանով (վարորդներին չի ուղարկվել)։' : '',
+            s.draft ? s.draft + ' օր հաշվված է պահպանված պլանով՝ պլանները վարորդներին ուղարկելուց առաջ։' : '',
+            s.unsent ? s.unsent + ' օրվա պլանը վարորդներին չի ուղարկվել՝ հաշվի չի առնված։' : '',
             s.broken ? s.broken + ' օրվա պլանը վնասված է և հաշվի չի առնված։' : '',
             t.unpriced_trips ? t.unpriced_trips + ' երթի մեքենան առանց տոննաժի կամ ծախսի է՝ դիզել և մաշվածք չեն հաշվված։' : '',
             d.margin_store_error ? 'Պահպանված հավելագինը վնասված է՝ նշեք այն նորից։' : '',

@@ -43,8 +43,8 @@ def line_cost(price=100.0, per_kg=0.01):
 
 
 def deliv(**kg):
-    """{(D1, клиент): Delivery} из c<id>=кг (точка экипажа — если кг > 0)."""
-    return {(D1, int(k[1:])): cts.Delivery(v, v > 0) for k, v in kg.items()}
+    """{(D1, клиент): Delivery} из c<id>=кг (одна точка экипажа с этими кг — если кг > 0)."""
+    return {(D1, int(k[1:])): cts.Delivery(v, int(v > 0), v) for k, v in kg.items()}
 
 
 # ============================== деньги ==============================
@@ -140,7 +140,8 @@ def test_random_trips_never_lose_or_add_a_dram():
             trips.append(cts.Trip(day, tid, rnd.choice(['T', 'T', 'NOPE']), stops))
         for c in range(1, 40):
             if rnd.random() < 0.8:
-                delivered[(day, c)] = cts.Delivery(rnd.uniform(0, 900), rnd.random() < 0.9)
+                kg = rnd.uniform(0, 900)
+                delivered[(day, c)] = cts.Delivery(kg, rnd.choice([0, 1, 1, 2]), kg * rnd.random())
         res = cts.trip_costs(trips, delivered, coords, line_cost(), P)
         for t in res:
             assert sum(s.fuel for s in t.stops) == t.fuel and sum(s.crew for s in t.stops) == t.crew
@@ -148,7 +149,7 @@ def test_random_trips_never_lose_or_add_a_dram():
         # экипаж магазина за день — ровно один раз, сколько бы рейсов его ни везли
         for c in {c for t in trips for c in t.stops}:
             d = delivered.get((day, c))
-            want = cp.money(P.rate_point + P.rate_tonne * d.kg / 1000) if d and d.point else 0
+            want = cp.money(P.rate_point * d.points + P.rate_tonne * d.crew_kg / 1000) if d and d.points else 0
             assert sum(s.crew for t in res for s in t.stops if s.customer_id == c) == want
         rep = cts.report(res, {}, None)
         assert rep.fuel + rep.crew == sum(t.fuel + t.crew for t in res) == sum(r.cost for r in rep.rows)
@@ -168,7 +169,7 @@ def test_same_model_as_plan_view():
     def leg(code, pts, kgs):
         c = fl.trip_running_cost(pts, kgs, ctx.depot, ctx.norms, ctx.trucks[code])
         return cts.Leg(c.total_amd(ctx.tn.fuel_price), 0.0)
-    delivered = {(D1, c): cts.Delivery(kg, True) for c, _, kg in spec}
+    delivered = {(D1, c): cts.Delivery(kg, 1, kg) for c, _, kg in spec}
     [t] = cts.trip_costs([cts.Trip(D1, 1, '991AT61', (101, 102, 103))], delivered, {c: p for c, p, _ in spec}, leg, P)
     assert abs(t.fuel - shown) <= 1 and sum(s.fuel for s in t.stops) == t.fuel
 
@@ -204,26 +205,45 @@ def test_view_leg_equals_trip_running_cost(hilly):
 
 # ============================== ERP и отчёт ==============================
 
-AGENTS = {1: 'A001/4', 2: 'A008/3'}                 # 2 — линия 19 л (исключена по умолчанию в «Աշխատավարձ»)
+# 1 — менеджер, 2 — линия 19 л, 11/12 — экспедиторы, 13 и 14 — один код B008/10 дважды (помощник-исключение по умолчанию)
+AGENTS = {1: 'A001/4', 2: 'A008/3', 11: 'B001/1', 12: 'B002/1', 13: 'B008/10', 14: ' b008/10 '}
 
 
-def sale(day, c, total, kg=0.0, crew=True, line=1):
-    return cts.Sale(day, c, line, crew, total, kg)
+def sale(day, c, total, kg=0.0, crew=True, line=1, van=11):
+    return cts.Sale(day, c, line, van if crew else line, total, kg)
 
 
 def test_deliveries_mirror_crew_pay_points():
     data = cts.SalesData((sale(D1, 1, 1000, 100), sale(D1, 1, 500, 50, line=2),           # 19 л — не груз экипажа
                           sale(D1, 2, 9000, 300, crew=False),                             # вёз сам менеджер
                           sale(D1, 3, 0.2, 0.0001), sale(D1, 4, -500, -10), sale(D2, 1, 10, 0)), AGENTS, {})
-    got = cts.deliveries(data, P.excluded_lines)
-    assert got[(D1, 1)] == cts.Delivery(100.0, True)
+    got = cts.deliveries(data, P.excluded_lines, P.excluded_people)
+    assert got[(D1, 1)] == cts.Delivery(100.0, 1, 100.0)
     assert (D1, 2) not in got
-    assert got[(D1, 3)].point is False and got[(D1, 4)] == cts.Delivery(0.0, False)      # шум float и возврат — не точка
-    assert got[(D2, 1)].point is True                                                     # сумма есть, веса нет — точка
+    assert got[(D1, 3)].points == 0 and got[(D1, 4)] == cts.Delivery(0.0, 0, 0.0)       # шум float и возврат — не точка
+    assert got[(D2, 1)].points == 1                                                       # сумма есть, веса нет — точка
     assert cts.deliveries(data, ())[(D1, 1)].kg == 150.0
     sales = cts.sales_by_customer(data)
     assert sales[1] == 1510 and sales[2] == 9000                                           # продажи — все накладные
     assert cts.sales_by_customer(data, {D2}) == {1: 10}                                   # только дни с планом
+
+
+def test_crew_points_per_expeditor_like_crew_pay():
+    """Как crew_pay.compute: точка — (экспедитор, день, магазин); двое вёзли одному магазину — две точки; экспедитор из
+    excluded_people (все fID его кода, без учёта регистра и пробелов) — ни точки, ни тонн зарплаты, но груз машины — да."""
+    data = cts.SalesData((sale(D1, 1, 1000, 100, van=11), sale(D1, 1, 2000, 200, van=12),
+                          sale(D1, 2, 3000, 300, van=13), sale(D1, 2, 100, 10, van=14), sale(D1, 2, 500, 40, van=11),
+                          sale(D1, 3, 700, 70, van=13)), AGENTS, {})
+    got = cts.deliveries(data, P.excluded_lines, P.excluded_people)
+    assert got[(D1, 1)] == cts.Delivery(300.0, 2, 300.0)
+    assert got[(D1, 2)] == cts.Delivery(350.0, 1, 40.0)                                  # 13 и 14 — один код-исключение
+    assert got[(D1, 3)] == cts.Delivery(70.0, 0, 0.0)                                    # только помощник: груз без оплаты
+    assert got[(D1, 1)].crew_amd(P) == cp.money(250 * 2 + 1750 * 0.3)
+    assert got[(D1, 3)].crew_amd(P) == 0 and cts.Delivery(0.0, 1, -500.0).crew_amd(P) == 0   # минус — не доплата
+    # то же, что зарплата: Σ сдельной по магазинам = сдельная crew_pay по людям (кроме округления)
+    inv = [cp.Invoice(s.van_id, s.day, s.customer_id, s.line_id, s.total, s.kg) for s in data.sales]
+    res = cp.compute(cp.CrewData(tuple(inv), {k: (v.strip(), f'n{k}') for k, v in AGENTS.items()}), P)
+    assert sum(r.piece for r in res.rows) == sum(d.crew_amd(P) for d in got.values())
 
 
 def test_report_visits_flags_and_totals():
@@ -257,6 +277,19 @@ def test_check_margin_and_period():
                  (None, '2026-10-02', '2026-10-01'), (None, '2026-10-01', '2026-10-08'), (None, '01.10.2026', '2026-10-02')):
         span, err = cts.period(*args, today)
         assert span is None and err, args
+    for args in (('²', None, None), ('٣٠', None, None), ('30.0', None, None), (None, '２０２６-10-01', '2026-10-02')):
+        span, err = cts.period(*args, today)
+        assert span is None and err, args
+
+
+def test_plan_source_drafts_only_before_first_sent_day():
+    first, today = date(2026, 10, 6), date(2026, 10, 7)
+    assert cts.plan_source(date(2026, 10, 5), False, first, today) == 'draft'
+    assert cts.plan_source(date(2026, 10, 6), False, first, today) is None              # с первой отправки — только sent
+    assert cts.plan_source(date(2026, 10, 6), True, first, today) == 'sent'
+    assert cts.plan_source(today, False, None, today) is None                            # сегодня — только отправленный
+    assert cts.plan_source(today, True, None, today) == 'sent'
+    assert cts.plan_source(date(2026, 9, 1), False, None, today) == 'draft'
 
 
 def test_sql_is_read_only():
@@ -268,7 +301,7 @@ def test_sql_is_read_only():
 
 NOW = datetime(2026, 10, 7, 10, 0)
 YEREVAN = timezone(timedelta(hours=4))
-DAY_SENT, DAY_DRAFT = '2026-10-01', '2026-10-02'
+DAY_SENT, DAY_DRAFT, DAY_UNSENT = '2026-10-01', '2026-09-30', '2026-10-02'
 NAMES = {101: ('C101', 'Խանութ 101'), 102: ('C102', 'Խանութ 102'), 104: ('C104', 'Խանութ 104'), 999: ('C999', 'Առանց կետի')}
 
 
@@ -287,7 +320,8 @@ def plan(trips, sent_trips=None):
 @pytest.fixture
 def cost(client, monkeypatch):
     """Клиент «Маршрутов» с депо и машинами CAR1/CAR2 (_dispatch_setup), «сегодня» — 07.10.2026 по Еревану, роль — admin;
-    два дня планов: 01.10 — отправленный (в черновике после отправки другие рейсы), 02.10 — только черновик."""
+    дни планов: 30.09 — черновик до первой отправки (считается), 01.10 — отправленный (в черновике после отправки другие
+    рейсы), 02.10 — неотправленный черновик после первой отправки (не считается)."""
     monkeypatch.setattr(views, '_clock', lambda: NOW)
     monkeypatch.setattr(views, '_yerevan_now', lambda: NOW.replace(tzinfo=YEREVAN))
     app = client.application
@@ -302,8 +336,9 @@ def cost(client, monkeypatch):
     state = app.extensions['route_optimizer']
     state.store.save_dispatch(DAY_SENT, plan([('CAR1', [104])], sent_trips=[('CAR1', [101, 102]), ('CAR2', [104, 999])]), 'qa')
     state.store.save_dispatch(DAY_DRAFT, plan([('CAR2', [101, 104])]), 'qa')
+    state.store.save_dispatch(DAY_UNSENT, plan([('CAR1', [102, 104])]), 'qa')
     calls = []
-    d1, d2 = date(2026, 10, 1), date(2026, 10, 2)
+    d1, d2 = date(2026, 10, 1), date(2026, 9, 30)
     source = {'sales': [sale(d1, 101, 200_000, 400), sale(d1, 102, 20_000, 50), sale(d1, 104, 900_000, 1500),
                         sale(d1, 999, 5_000, 10), sale(d2, 101, 100_000, 300), sale(d2, 104, 300_000, 800),
                         sale(d2, 104, 50_000, 0, crew=False), sale(date(2026, 9, 20), 102, 1_000_000)],
@@ -323,14 +358,15 @@ def test_api_report_uses_sent_plan_then_draft(cost):
     body = cost.get('/api/routes/cost?days=30').get_json()
     assert body['success'] and (body['from'], body['to'], body['days']) == ('2026-09-07', '2026-10-06', 30)
     assert cost.calls == [(date(2026, 9, 7), date(2026, 10, 7))]                  # одним запросом, по вчера включительно
-    assert body['sources'] == {'sent': 1, 'draft': 1, 'broken': 0}
+    assert body['sources'] == {'sent': 1, 'draft': 1, 'unsent': 1, 'broken': 0}
     rows = {r['customer_id']: r for r in body['rows']}
     assert set(rows) == {101, 102, 104, 999}
     t = body['totals']
     assert t['trips'] == 3 and t['cost'] == t['fuel'] + t['crew'] == sum(r['cost'] for r in body['rows'])
     assert t['fuel'] == sum(r['fuel'] for r in body['rows']) and t['fuel'] > 0
     # 01.10 — отправленный план: 101 в рейсе CAR1, а не черновик (там только 104)
-    assert [(v['date'], v['truck']) for v in rows[101]['trips']] == [('2026-10-01', 'CAR1'), ('2026-10-02', 'CAR2')]
+    assert [(v['date'], v['truck']) for v in rows[101]['trips']] == [('2026-09-30', 'CAR2'), ('2026-10-01', 'CAR1')]
+    assert [v['date'] for v in rows[102]['trips']] == ['2026-10-01']                     # 02.10 не отправлен — не считан
     assert rows[101]['visits'] == 2 and rows[102]['visits'] == 1
     # экипаж: 101 — 250 + 1 750 × 0,4 и 250 + 1 750 × 0,3; продажи — накладные дней с планом (20.09 плана нет — его
     # доставка неизвестна, продажи того дня % не занижают)
@@ -350,14 +386,24 @@ def test_day_cache_by_plan_revision(cost, monkeypatch):
     real = cts.trip_costs
     monkeypatch.setattr(views.cts, 'trip_costs', lambda trips, *a: seen.append(trips[0].day) or real(trips, *a))
     first = cost.get('/api/routes/cost?days=30').get_json()
-    assert sorted(seen) == [date(2026, 10, 1), date(2026, 10, 2)]
+    assert sorted(seen) == [date(2026, 9, 30), date(2026, 10, 1)]
     seen.clear()
     assert cost.get('/api/routes/cost?days=30').get_json() == first and seen == []     # оба дня — из кэша
     assert len(cost.calls) == 1                                                          # и накладные — тоже
-    cost.state.store.save_dispatch(DAY_DRAFT, plan([('CAR2', [101])]), 'qa')            # новая правка дня 02.10
+    cost.state.store.save_dispatch(DAY_DRAFT, plan([('CAR2', [101])]), 'qa')            # новая правка дня 30.09
     body = cost.get('/api/routes/cost?days=30').get_json()
-    assert seen == [date(2026, 10, 2)]                                                   # пересчитан только он
+    assert seen == [date(2026, 9, 30)]                                                   # пересчитан только он
     assert [v['date'] for r in body['rows'] if r['customer_id'] == 104 for v in r['trips']] == ['2026-10-01']
+    seen.clear()
+    with cost.state.cost_lock:                                                           # запись старше часа — пересчёт
+        key, costs, _, pending = cost.state.cost_days[date(2026, 10, 1)]
+        cost.state.cost_days[date(2026, 10, 1)] = (key, costs, views.time.monotonic() - views.COST_DAY_TTL_SECONDS - 1, pending)
+    assert cost.get('/api/routes/cost?days=30').get_json() == body and seen == [date(2026, 10, 1)]
+    seen.clear()
+    r = cost.post('/api/routes/settings', json={'settings': {'center_zone': [[40.17, 44.49], [40.17, 44.53], [40.20, 44.53]]}})
+    assert r.status_code == 200, r.get_json()
+    cost.get('/api/routes/cost?days=30')
+    assert sorted(seen) == [date(2026, 9, 30), date(2026, 10, 1)]                        # дороги другие — всё заново
 
 
 def test_margin_flags_red_and_validation(cost):
@@ -397,7 +443,11 @@ def test_period_errors_and_custom_range(cost):
         assert r.status_code == 400 and r.get_json()['errors']['period'], q
     assert cost.calls == []
     body = cost.get('/api/routes/cost?from=2026-10-02&to=2026-10-07').get_json()
-    assert body['sources'] == {'sent': 0, 'draft': 1, 'broken': 0} and cost.calls == [(date(2026, 10, 2), date(2026, 10, 8))]
+    assert body['sources'] == {'sent': 0, 'draft': 0, 'unsent': 1, 'broken': 0}
+    assert cost.calls == [(date(2026, 10, 2), date(2026, 10, 8))] and body['rows'] == []
+    for q in ('days=²', 'days=٣٠', 'from=２０２６-10-01&to=2026-10-02', 'from=2026-10-01'):
+        assert cost.get('/api/routes/cost?' + q).status_code == 400, q
+        assert cost.get('/api/routes/cost.csv?' + q).status_code == 400, q
 
 
 def test_broken_plan_day_is_counted_not_fatal(cost):
@@ -405,6 +455,33 @@ def test_broken_plan_day_is_counted_not_fatal(cost):
         "INSERT INTO dispatch_plan(day, data, rev, updated_at, updated_by) VALUES('2026-10-03', '{bad', 1, 'x', 'qa')"), 'qa')
     body = cost.get('/api/routes/cost?days=30').get_json()
     assert body['success'] and body['sources']['broken'] == 1 and body['sources']['sent'] == 1
+
+
+def test_cold_period_is_computed_in_background_and_polled(cost, monkeypatch):
+    """Холодный расчёт (дороги без кэша — минуты) не держит запрос: ответ 503 {pending: true}, страница спрашивает снова;
+    пока считается один период, другой ждёт очереди; готово — обычный ответ того же расчёта."""
+    import threading
+    import time
+    gate = threading.Event()
+    real = cost.state.cost_sales_loader
+
+    def slow(since, until):
+        gate.wait(10)
+        return real(since, until)
+    cost.state.cost_sales_loader = slow
+    monkeypatch.setattr(views, 'COST_WAIT_S', 0.05)
+    r = cost.get('/api/routes/cost?days=30')
+    assert r.status_code == 503 and r.get_json()['pending'] is True and r.get_json()['error'] == views.COST_PENDING
+    assert cost.get('/api/routes/cost?days=90').get_json()['pending'] is True       # второй период — в очереди
+    assert cost.get('/api/routes/cost.csv?days=30').status_code == 503
+    gate.set()
+    for _ in range(200):
+        r = cost.get('/api/routes/cost?days=30')
+        if r.status_code == 200:
+            break
+        time.sleep(0.05)
+    assert r.status_code == 200 and r.get_json()['success'] and r.get_json()['totals']['trips'] == 3
+    assert not cost.state.cost_warm
 
 
 def test_erp_down_is_an_error_not_zeros(cost):

@@ -5,15 +5,23 @@
 магазина за период против его продаж. Себестоимости в ERP нет — владелец сравнивает доставку с продажами и своей средней
 наценкой (настройка cts_margin_pct): магазин, где доставка съедает больше наценки, — красный.
 
-Источник рейсов (views._cost_plans): за день — план, отправленный водителям (Draft.sent, №81: что водители получили);
-день без отправленного плана — сохранённый черновик дня. Так же читают план обучение и замеры (dispatch.sent_json:
-выпущенный — отправленный снимок, иначе сам черновик): до №73/№80 (05–06.10) планы не утверждались, без черновиков
-история была бы пустой. Источник каждого дня — в ответе (sources: sent / draft / broken). Цены — сегодняшние (дизель
-настроек, износ гаража на сегодня, ставки «Աշխատավարձ»): отчёт отвечает «сколько стоит обслуживать магазин сейчас».
+Источник рейсов (views._cost_plans, plan_source): за день — план, отправленный водителям (Draft.sent, №81: что водители
+получили). Сохранённый черновик — только за прошедшие дни РАНЬШЕ первого дня, когда хоть один план был отправлен: до
+№73/№80/№81 (05–06.10) планы не утверждались и не отправлялись, без черновиков история была бы пустой; с первого
+отправленного дня неотправленный черновик — не доставка (план могли не исполнить), такой день не считается (unsent).
+Сегодня и будущее — только отправленный план. Источник каждого дня — в ответе (sources: sent / draft / unsent / broken).
+Цены — сегодняшние (дизель настроек, износ гаража на сегодня, ставки «Աշխատավարձ»): отчёт отвечает «сколько стоит
+обслуживать магазин сейчас».
 
 Рейс — машина и магазины по порядку объезда; магазин без координаты в путь не входит (его доля дизеля и износа — 0, экипаж —
-как у всех). Груз точки — кг накладных экспедиторов магазину за день (deliveries) / k, k — в скольких рейсах дня магазин
-(тяжёлый заказ — несколько поездок поровну, как dispatch.plan_view).
+как у всех). Координата — как у «Развоза» (dispatch.build_stops ← views._load_day: evaluate.visit_coord с адресом 0 —
+ручная точка, точка водителей, адрес клиента по умолчанию, GPS): адреса заказа в плане нет, а у одного клиента в одном
+рейсе — одна точка. Повтор магазина в рейсе (A → B → A) схлопывается до первого, как dispatch._clean перед plan_view: план
+«Развоза» таких рейсов не содержит.
+Груз точки — кг проведённых накладных экспедиторов магазину за день (deliveries; без линий excluded_lines) / k, k — в
+скольких рейсах дня магазин (тяжёлый заказ — несколько поездок поровну, как dispatch.plan_view). Не кг заказов плана: план
+хранит только клиентов рейса, а заказы прошлого дня пришлось бы читать из ERP заново по дню (≈90 запросов) и они не
+равны отгруженному; накладная проведена в день доставки и это то, что машина везла на самом деле.
 
     C        = дизель ֏ + износ ֏ рейса «склад → магазины → склад» — модель plan_view (fl.trip_running_cost: литры с
                рельефом №85, как показанные; цена дизеля — настройки; износ ֏/км — гараж); считает функция cost
@@ -23,10 +31,13 @@
                доме, что соседний) — не ноль, а малый пол: магазин рейса не бывает бесплатным, деления на ноль нет
     fuelᵢ    = наибольшие остатки (T, w)            — Σ fuelᵢ = T ровно
     detourᵢ  = max(0, км − км₋ᵢ)                    — крюк ради магазина (для страницы)
-Экипаж — ставки «Աշխատավարձ» (crew_pay.Params: за точку и за тонну), прямо магазину за день:
-    crew(d, c) = money(RATE_POINT + RATE_TONNE · кг / 1000), если у магазина в день d есть учтённая накладная экспедитора
-               (как точка crew_pay: кг > KEEP_KG или сумма > KEEP_SUM; без линий excluded_lines и накладных, которые вёз
-               сам менеджер), иначе 0; в k рейсах дня — поровну наибольшими остатками: Σ по рейсам = crew(d, c).
+Экипаж — ставки «Աշխատավարձ» (crew_pay.Params: за точку и за тонну), прямо магазину за день, по правилам crew_pay.compute:
+    ячейка  = (экспедитор, день, магазин) — накладные, которые вёз экспедитор (fVANAGENTID ≠ 0 и ≠ менеджер), без линий
+              excluded_lines и экспедиторов excluded_people (все fID кода — код в SALESAGENTS может повторяться);
+              учтена, если кг > KEEP_KG или сумма > KEEP_SUM
+    crew(d, c) = max(0, money(RATE_POINT · точек + RATE_TONNE · Σ кг учтённых ячеек / 1000)), точек — экспедиторов с
+              учтённой ячейкой (двое вёзли одному магазину в день — две точки, как в их зарплате);
+    в k рейсах дня — поровну наибольшими остатками: Σ по рейсам = crew(d, c).
     Фикс и минимум месяца не распределяются: они не зависят от магазинов (сноска на странице).
 Магазин за период:
     visits  = дней, когда магазин в рейсах (тяжёлый магазин в двух рейсах дня — 1 визит)
@@ -57,42 +68,62 @@ SAVING_FLOOR = 0.01        # пол экономии магазина: 1 % ср�
 
 @dataclass(frozen=True)
 class Sale:
-    """Накладные магазину за день одной линии (менеджера) — строка erp.SQL_COST_SALES."""
+    """Накладные магазину за день одной линии (менеджера) и одного экспедитора — строка erp.SQL_COST_SALES."""
     day: date
     customer_id: int
-    line_id: int        # SALES.fSALESAGENTID
-    crew: bool          # вёз экспедитор (fVANAGENTID ≠ 0 и ≠ менеджер) — как SQL_CREW_PAY
+    line_id: int        # SALES.fSALESAGENTID (0 — нет)
+    van_id: int         # SALES.fVANAGENTID (0 — нет)
     total: float        # Σ fTOTALSUM
     kg: float
+
+    @property
+    def crew(self) -> bool:
+        """Вёз экспедитор, а не сам менеджер — как SQL_CREW_PAY."""
+        return self.van_id != 0 and self.van_id != self.line_id
 
 
 @dataclass(frozen=True)
 class SalesData:
     sales: tuple[Sale, ...]
-    agents: Mapping[int, str]                     # fID → код менеджера (линии excluded_lines)
+    agents: Mapping[int, str]                     # fID → код SALESAGENTS (линии excluded_lines, люди excluded_people)
     customers: Mapping[int, tuple[str, str]]      # клиент → (код, имя)
 
 
 @dataclass(frozen=True)
 class Delivery:
-    kg: float           # кг накладных экспедиторов магазину за день
-    point: bool         # учтённая точка crew_pay — экипажу за неё платят
+    kg: float               # груз: кг накладных экспедиторов магазину за день (без линий excluded_lines), не меньше 0
+    points: int = 0         # точек crew_pay: экспедиторов с учтённой ячейкой (без excluded_people)
+    crew_kg: float = 0.0    # кг учтённых ячеек — тонны зарплаты
+
+    def crew_amd(self, p: Params) -> int:
+        """Сдельная часть экипажа за магазин в этот день, целые ֏ (минус — возвраты — не доплачиваем: 0)."""
+        return max(0, money(p.rate_point * self.points + p.rate_tonne * self.crew_kg / 1000.0)) if self.points else 0
 
 
-def deliveries(data: SalesData, excluded_lines: Collection[str]) -> dict[tuple[date, int], Delivery]:
-    """(день, клиент) → груз и точка экипажа: накладные экспедиторов без линий excluded_lines (коды без учёта регистра)."""
-    off = {c.strip().upper() for c in excluded_lines}
-    lines = {aid for aid, code in data.agents.items() if code.strip().upper() in off}
-    kg: dict[tuple[date, int], list[float]] = defaultdict(list)
-    total: dict[tuple[date, int], list[float]] = defaultdict(list)
+def deliveries(data: SalesData, excluded_lines: Collection[str],
+               excluded_people: Collection[str] = ()) -> dict[tuple[date, int], Delivery]:
+    """(день, клиент) → груз и точки экипажа по правилам crew_pay.compute (шапка модуля). Коды — без учёта регистра и
+    пробелов по краям, каждый — все свои fID."""
+    by_code: dict[str, set[int]] = defaultdict(set)
+    for aid, code in data.agents.items():
+        by_code[code.strip().upper()].add(aid)
+    lines = {aid for c in excluded_lines for aid in by_code.get(c.strip().upper(), ())}
+    people = {aid for c in excluded_people for aid in by_code.get(c.strip().upper(), ())}
+    cargo: dict[tuple[date, int], list[float]] = defaultdict(list)
+    cells: dict[tuple[date, int], dict[int, list[list[float]]]] = defaultdict(lambda: defaultdict(lambda: [[], []]))
     for s in data.sales:
-        if s.crew and s.line_id not in lines:
-            kg[(s.day, s.customer_id)].append(s.kg)
-            total[(s.day, s.customer_id)].append(s.total)
+        if not s.crew or s.line_id in lines:
+            continue
+        cargo[(s.day, s.customer_id)].append(s.kg)
+        if s.van_id not in people:
+            cell = cells[(s.day, s.customer_id)][s.van_id]
+            cell[0].append(s.kg)
+            cell[1].append(s.total)
     out = {}
-    for key in kg:
-        w, t = math.fsum(kg[key]), math.fsum(total[key])
-        out[key] = Delivery(max(0.0, w), w > KEEP_KG or t > KEEP_SUM)
+    for key, kgs in cargo.items():
+        kept = [(math.fsum(w), math.fsum(t)) for w, t in cells.get(key, {}).values()]
+        kept = [w for w, t in kept if w > KEEP_KG or t > KEEP_SUM]
+        out[key] = Delivery(max(0.0, math.fsum(kgs)), len(kept), math.fsum(kept))
     return out
 
 
@@ -188,7 +219,7 @@ def trip_costs(trips: Sequence[Trip], delivered: Mapping[tuple[date, int], Deliv
     crew: dict[tuple[int, date, int], int] = {}
     for (day, c), idx in where.items():
         d = delivered.get((day, c))
-        amount = money(params.rate_point + params.rate_tonne * d.kg / 1000.0) if d is not None and d.point else 0
+        amount = d.crew_amd(params) if d is not None else 0
         for i, part in zip(idx, largest_remainder(amount, [1.0] * len(idx))):
             crew[(i, day, c)] = part
     out = []
@@ -310,11 +341,22 @@ def check_margin(raw: Any) -> tuple[float | None, str | None]:
     return x, None
 
 
+def plan_source(day: date, sent: bool, first_sent: date | None, today: date) -> str | None:
+    """Чем считать день (шапка модуля): 'sent' — отправленный план; 'draft' — черновик прошедшего дня раньше первого
+    отправленного (first_sent; None — ни одного ещё не было); None — не считать (неотправленный черновик с первого
+    отправленного дня, сегодня или будущего)."""
+    if sent:
+        return 'sent'
+    return 'draft' if day < today and (first_sent is None or day < first_sent) else None
+
+
 def period(days: str | None, since: str | None, until: str | None, today: date) -> tuple[tuple[date, date] | None, str | None]:
     """Период отчёта (включительно): «с — по» (since, until: ГГГГ-ММ-ДД; по — не позже сегодня, не длиннее MAX_DAYS) или
     days из PRESET_DAYS — столько полных дней по вчера; ничего — PRESET_DAYS[0]."""
     if since or until:
         try:
+            if not (since or '').isascii() or not (until or '').isascii():
+                raise ValueError
             a, b = date.fromisoformat(since or ''), date.fromisoformat(until or '')
         except ValueError:
             return None, 'Ամսաթվերը՝ ՏՏՏՏ-ԱԱ-ՕՕ'
@@ -325,7 +367,8 @@ def period(days: str | None, since: str | None, until: str | None, today: date) 
         if (b - a).days + 1 > MAX_DAYS:
             return None, f'Ոչ ավելի, քան {MAX_DAYS} օր'
         return (a, b), None
-    n = PRESET_DAYS[0] if not days else int(days) if days.isdigit() else 0
+    # только ASCII-цифры: «²» и «٣» — isdigit(), но int() их не берёт (было 500)
+    n = PRESET_DAYS[0] if not days else int(days) if days.isascii() and days.isdecimal() and len(days) < 4 else 0
     if n not in PRESET_DAYS:
         return None, 'Ընտրեք 30 կամ 90 օր'
     return (today - timedelta(days=n), today - timedelta(days=1)), None

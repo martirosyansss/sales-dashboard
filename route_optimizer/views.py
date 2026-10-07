@@ -162,13 +162,17 @@ class RoutesState:
     crew_pay_cache: dict[tuple[date, date], tuple[float, cp.CrewData]] = field(default_factory=dict)
     crew_pay_lock: threading.Lock = field(default_factory=threading.Lock)
     # «Առաքման արժեք» (№87, п. 6): накладные ERP за [с, по) по дню и клиенту; кэш — (с, по) → (time.monotonic(), данные);
-    # расчёт дня — день → (ключ входа, рейсы с долями магазинов, None или time.monotonic() расчёта без рельефа): прошлый день
-    # не пересчитывается, пока не изменились план (номер правки), его накладные, точки, машины, цена дизеля и ставки
-    # (_cost_compute); день без подъёмов точек — не дольше COST_RETRY_SECONDS
+    # расчёт дня — день → (ключ входа, рейсы с долями магазинов, time.monotonic() расчёта, посчитан без рельефа): прошлый
+    # день не пересчитывается, пока не изменились план (номер правки), его накладные, точки, машины, цена дизеля, ставки и
+    # дороги (_cost_compute) — но не дольше COST_DAY_TTL_SECONDS, без подъёмов точек — COST_RETRY_SECONDS
     cost_sales_loader: Callable[[date, date], cts.SalesData] | None = None
     cost_sales_cache: dict[tuple[date, date], tuple[float, cts.SalesData]] = field(default_factory=dict)
-    cost_days: dict[date, tuple[Any, list[cts.TripCost], float | None]] = field(default_factory=dict)
+    cost_days: dict[date, tuple[Any, list[cts.TripCost], float, bool]] = field(default_factory=dict)
     cost_lock: threading.Lock = field(default_factory=threading.Lock)   # только словари кэша: расчёт не под ним
+    # расчёт периода — в фоне (_cost_result): (с, по) → поток (не больше одного на сервер) и последний итог потока —
+    # (time.monotonic(), _CostResult или исключение расчёта); холодный первый расчёт (дороги без кэша) — минуты
+    cost_warm: dict[tuple[date, date], threading.Thread] = field(default_factory=dict)
+    cost_results: dict[tuple[date, date], tuple[float, Any]] = field(default_factory=dict)
     driver_list_cache: tuple[float, list[str]] | None = None
     driver_list_lock: threading.Lock = field(default_factory=threading.Lock)   # перечитывает один запрос
     # (машина ERP, имя, день) — кто возил машины за [since, until) (№84, waybill.load_car_crew_days): экипаж машин без
@@ -4872,12 +4876,12 @@ PAY_FORBIDDEN = 'Доступ запрещён'
 
 
 def _admin_only(fn: Callable[..., Any]) -> Callable[..., Any]:
-    """Зарплаты — только администратору. Гейт app_v2 и так пускает в «Маршруты» лишь admin (прочие роли — default-deny);
-    эта проверка — вторая линия: роль, которой когда-нибудь откроют раздел, зарплат всё равно не увидит."""
+    """Зарплаты и «Առաքման արժեք» — только администратору. Гейт app_v2 и так пускает в «Маршруты» лишь admin (прочие роли —
+    default-deny); эта проверка — вторая линия: роль, которой когда-нибудь откроют раздел, денег всё равно не увидит."""
     @wraps(fn)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
         if g.get('user_role') != 'admin':
-            logger.warning('[Routes] Աշխատավարձ: отказ роли %r (%s)', g.get('user_role'), request.path)
+            logger.warning('[Routes] Только администратору: отказ роли %r (%s)', g.get('user_role'), request.path)
             return jsonify({'success': False, 'error': PAY_FORBIDDEN}), 403
         return fn(*args, **kwargs)
     return wrapper
@@ -5097,6 +5101,9 @@ COST_TTL_SECONDS = 300     # накладные периода из ERP: CSV, с
 COST_SALES_KEPT = 6        # периодов накладных в кэше
 COST_DAYS_KEPT = 200       # дней расчёта в кэше (больше периода 92 дня — с запасом на смену периода)
 COST_RETRY_SECONDS = 60    # день, посчитанный без рельефа (подъёмы точек ещё в фоне, _cost_leg), — пересчитать не раньше
+COST_DAY_TTL_SECONDS = 3600   # страховка: день пересчитывается не реже раза в час, даже если ключ входа тот же
+COST_WAIT_S = 10.0         # запрос ждёт фоновый расчёт периода не дольше; дальше — {pending: true}, страница спросит снова
+COST_PENDING = 'Հաշվարկը դեռ ընթանում է (առաջին անգամ՝ մինչև մի քանի րոպե)։ Կրկնեք մի փոքր ուշ։'
 COST_NO_CTX = 'Սկզբում նշեք պահեստը և մեքենաների տոննաժն ու ծախսը կարգավորումներում'
 
 
@@ -5117,8 +5124,11 @@ def _cost_sales(state: RoutesState, since: date, until: date) -> cts.SalesData:
         return hit[1]
     data = state.cost_sales_loader(since, until)
     with state.cost_lock:
+        now = time.monotonic()
+        for k in [k for k, (at, _) in state.cost_sales_cache.items() if now - at >= COST_TTL_SECONDS]:
+            del state.cost_sales_cache[k]   # истёкшие не держим в памяти
         state.cost_sales_cache.pop(key, None)
-        state.cost_sales_cache[key] = (time.monotonic(), data)
+        state.cost_sales_cache[key] = (now, data)
         while len(state.cost_sales_cache) > COST_SALES_KEPT:
             state.cost_sales_cache.pop(next(iter(state.cost_sales_cache)))
     return data
@@ -5144,16 +5154,21 @@ class _CostResult:
     margin_at: str | None
     margin_by: str | None
     margin_broken: bool
-    sources: Mapping[str, int]      # дней по отправленному плану (sent), по черновику (draft), битых записей (broken)
+    sources: Mapping[str, int]      # дней: отправленный план (sent), черновик до первой отправки (draft), неотправленный
+                                    # черновик после неё / сегодня — не считан (unsent), битая запись (broken)
     fuel_price: float
     fuel_price_estimated: bool
 
 
 def _cost_plans(state: RoutesState, since: date, until: date) -> tuple[dict[date, tuple[str, int, list[cts.Trip]]],
                                                                        dict[str, int]]:
-    """Рейсы дней периода: отправленный водителям план (№81), без него — сохранённый черновик (шапка cost_to_serve)."""
+    """Рейсы дней периода: отправленный водителям план (№81); черновик — только прошедшего дня раньше первой отправки
+    (cts.plan_source, шапка cost_to_serve)."""
     days: dict[date, tuple[str, int, list[cts.Trip]]] = {}
-    sources = {'sent': 0, 'draft': 0, 'broken': 0}
+    sources = {'sent': 0, 'draft': 0, 'unsent': 0, 'broken': 0}
+    first = state.store.first_sent_day()
+    first_sent = date.fromisoformat(first) if first else None
+    today = _yerevan_now().date()
     for raw_day, raw, rev in state.store.dispatch_range(since.isoformat(), until.isoformat()):
         try:
             day: date | None = date.fromisoformat(raw_day)
@@ -5163,11 +5178,16 @@ def _cost_plans(state: RoutesState, since: date, until: date) -> tuple[dict[date
             sources['broken'] += 1
             continue
         draft = dp.Draft.from_json(raw)
-        source, plan = ('sent', draft.for_drivers()) if draft.sent is not None else ('draft', draft)
+        source = cts.plan_source(day, draft.sent is not None, first_sent, today)
+        plan = draft.for_drivers() if source == 'sent' else draft
         trips = [cts.Trip(day, t.id, t.truck, tuple(t.stops)) for t in plan.trips if t.stops]
-        if trips:
-            days[day] = (source, rev, trips)
-            sources[source] += 1
+        if not trips:
+            continue
+        if source is None:
+            sources['unsent'] += 1
+            continue
+        days[day] = (source, rev, trips)
+        sources[source] += 1
     return days, sources
 
 
@@ -5217,10 +5237,12 @@ def _cost_compute(state: RoutesState, since: date, until: date) -> _CostResult:
     if ctx is None:
         raise dp.DispatchError(COST_NO_CTX)
     data = _cost_sales(state, since, until + timedelta(days=1))   # ERP — только когда считать есть чем
-    delivered = cts.deliveries(data, params.excluded_lines)
+    delivered = cts.deliveries(data, params.excluded_lines, params.excluded_people)
     leg, terrain, pending = _cost_leg(ctx, [p for p in coords.values() if p is not None])
-    # общее для всех дней: машины с нормами, цена дизеля, ставки экипажа, откуда км, рельеф, склад
-    fixed = (sorted(ctx.trucks.items()), ctx.tn.fuel_price, params.rate_point, params.rate_tonne, ctx.model.get('km'),
+    # общее для всех дней: машины с нормами, цена дизеля, ставки экипажа, дороги (версия карты, объезд центра и его
+    # граница, извилистость, откуда км), рельеф, склад
+    fixed = (sorted(ctx.trucks.items()), ctx.tn.fuel_price, params.rate_point, params.rate_tonne,
+             roads_version(ctx.norms.roads), ctx.center_zone, ctx.norms.detour, ctx.model.get('bypass'), ctx.model.get('km'),
              terrain, pending, ctx.depot)
     out: list[cts.TripCost] = []
     for day in sorted(days):
@@ -5229,14 +5251,15 @@ def _cost_compute(state: RoutesState, since: date, until: date) -> _CostResult:
         key = (source, rev, trips, [(c, delivered.get((day, c)), coords.get(c)) for c in day_cids], fixed)
         with state.cost_lock:
             hit = state.cost_days.get(day)
-        if hit is not None and hit[0] == key and (hit[2] is None or time.monotonic() - hit[2] < COST_RETRY_SECONDS):
+        age = time.monotonic() - hit[2] if hit is not None else math.inf
+        if hit is not None and hit[0] == key and age < (COST_RETRY_SECONDS if hit[3] else COST_DAY_TTL_SECONDS):
             out += hit[1]
             continue
         costs = cts.trip_costs(trips, delivered, coords, leg, params)
         out += costs
         with state.cost_lock:
             state.cost_days.pop(day, None)
-            state.cost_days[day] = (key, costs, time.monotonic() if pending else None)
+            state.cost_days[day] = (key, costs, time.monotonic(), pending)
             while len(state.cost_days) > COST_DAYS_KEPT:
                 state.cost_days.pop(next(iter(state.cost_days)))
     names = {c: data.customers.get(c) or ((snap.customers[c].code, snap.customers[c].name) if c in snap.customers
@@ -5245,13 +5268,58 @@ def _cost_compute(state: RoutesState, since: date, until: date) -> _CostResult:
                        broken, sources, ctx.tn.fuel_price, ctx.tn.fuel_price_estimated)
 
 
+def _cost_warm(state: RoutesState, since: date, until: date) -> None:
+    """Фоновый расчёт периода: итог или исключение (ERP, нет склада, база) — в cost_results; запрос, дождавшийся потока,
+    отдаёт итог или поднимает то же исключение (_api: 503 / 400 / 500), как при расчёте в самом запросе."""
+    try:
+        got: Any = _cost_compute(state, since, until)
+    except Exception as e:   # noqa: BLE001 — передаём запросу как есть
+        got = e
+    with state.cost_lock:
+        state.cost_results.pop((since, until), None)
+        state.cost_results[(since, until)] = (time.monotonic(), got)
+        while len(state.cost_results) > COST_SALES_KEPT:
+            state.cost_results.pop(next(iter(state.cost_results)))
+        state.cost_warm.pop((since, until), None)
+
+
+def _cost_result(state: RoutesState, since: date, until: date) -> _CostResult | None:
+    """Отчёт периода — расчётом в фоне (как «Նորմ և փաստ», _month_ready): каждый запрос запускает свежий расчёт (кэш
+    дней делает его быстрым) и ждёт его не дольше COST_WAIT_S; не дождался — None (pending). Поток один на сервер: идёт
+    расчёт другого периода — этот ждёт очереди (None). Холодный первый расчёт после перезапуска или смены карты
+    (расстояния точек периода — с нуля) не держит запрос и воркер минутами."""
+    key = (since, until)
+    with state.cost_lock:
+        job = state.cost_warm.get(key)
+        if job is None:
+            if state.cost_warm:
+                return None
+            job = threading.Thread(target=_cost_warm, args=(state, since, until), name='routes-cost-to-serve',
+                                   daemon=True)
+            state.cost_warm[key] = job
+            job.start()
+    job.join(COST_WAIT_S)
+    if job.is_alive():
+        return None
+    with state.cost_lock:
+        hit = state.cost_results.get(key)
+    if hit is None:   # итог уже вытеснен другими периодами — пусть страница спросит снова
+        return None
+    if isinstance(hit[1], BaseException):
+        raise hit[1]
+    return hit[1]
+
+
 def _cost_request() -> tuple[_CostResult | None, Any]:
-    """(отчёт за период из ?days= или ?from=&to=, None) или (None, ответ 400)."""
+    """(отчёт за период из ?days= или ?from=&to=, None), (None, ответ 400) или (None, ответ 503 {pending: true})."""
     a = request.args
     span, error = cts.period(a.get('days'), a.get('from'), a.get('to'), _yerevan_now().date())
     if span is None:
         return None, _bad_request({'period': error or ''})
-    return _cost_compute(_state(), *span), None
+    res = _cost_result(_state(), *span)
+    if res is None:
+        return None, (jsonify({'success': False, 'pending': True, 'error': COST_PENDING}), 503)
+    return res, None
 
 
 def _cost_pct(x: float | None) -> float | None:

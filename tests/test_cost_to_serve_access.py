@@ -31,7 +31,7 @@ def calls(app_v2, monkeypatch):
     state = app_v2.app.extensions['route_optimizer']
     seen = []
     monkeypatch.setattr(state, 'cost_sales_loader', lambda since, until: seen.append((since, until)) or cts.SalesData(
-        (cts.Sale(date(2026, 10, 1), 101, 1, True, 50_000.0, 100.0),), {1: 'A001/4'}, {101: ('C101', 'Մեծ խանութ')}))
+        (cts.Sale(date(2026, 10, 1), 101, 1, 11, 50_000.0, 100.0),), {1: 'A001/4'}, {101: ('C101', 'Մեծ խանութ')}))
     monkeypatch.setattr(state, 'cost_sales_cache', {})
     monkeypatch.setattr(views, '_yerevan_now', lambda: datetime(2026, 10, 7, 10, 0, tzinfo=timezone(timedelta(hours=4))))
     # склад и CAR1 (10 т, 30 л) — без них считать нечего (COST_NO_CTX)

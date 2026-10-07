@@ -4,7 +4,7 @@
 Запуск из корня проекта:  python tests/routes_cost_browser_check.py
 Имя без префикса test_: pytest его не собирает (нужен Playwright с Chromium). Приложение — то же, что в
 tests/routes_dispatch_browser_check.py (настоящие шаблон, статика и blueprint, поддельная ERP, машины CAR1 и CAR2), плюс
-два дня планов (01.10 — отправленный водителям, 02.10 — черновик) и подменённые накладные; роль — администратор; всё во
+два дня планов (01.10 — отправленный водителям, 30.09 — черновик до первой отправки) и подменённые накладные; роль — администратор; всё во
 временной папке. Порт 8774 на 127.0.0.1.
 
 A загрузка: вкладка «Առաքման արժեք» текущая; плитки заполнены (֏ доставки = Σ таблицы, % от продаж); таблица — 4 магазина,
@@ -15,8 +15,8 @@ C поиск: «101» — одна строка; «zzz» — «Որոնմանը 
 D наценка: 150 — ошибка у поля и aria-invalid, ничего не сохранено; 0,5 — сохранено, есть красные строки с плашкой
   «կարմիր», плитка «Կարմիր խանութներ» = их числу; «Միայն կարմիրները» — только они; пусто — красных снова нет;
 E клик по магазину — карточка рейсов (строк = его рейсов, сумма ֏ = его ֏ доставки), «Փակել» — скрыта, фокус на строке;
-F период: «90 օր» — запрос days=90 и подзаголовок «90 օր»; «Ընտրել…» — поля дат, 01.10–02.10 → подзаголовок с датами;
-G CSV — файл cost-to-serve-….csv с BOM и шапкой;
+F период: «90 օր» — запрос days=90 и подзаголовок «90 օր»; «Ընտրել…» — поля дат, 30.09–01.10 → подзаголовок с датами;
+G CSV — файл cost-to-serve-….csv с BOM и шапкой, за последний УСПЕШНЫЙ период (неверный период его не подменил);
 H телефон 390×860: горизонтальной прокрутки страницы нет (таблица прокручивается внутри карточки).
 Ошибки страницы (pageerror) и консоли — провал (кроме сетевых для внешних ресурсов — шрифты, CDN).
 """
@@ -42,11 +42,11 @@ from route_optimizer import dispatch as dp  # noqa: E402
 
 PORT = 8774
 BASE = f'http://127.0.0.1:{PORT}'
-D1, D2 = date(2026, 10, 1), date(2026, 10, 2)
+D1, D2 = date(2026, 10, 1), date(2026, 9, 30)   # 30.09 — черновик до первой отправки
 NAMES = {101: ('C101', 'Խանութ Ա'), 102: ('C102', 'Խանութ Բ'), 104: ('C104', 'Խանութ Գ'), 999: ('C999', 'Առանց կետի')}
-SALES = [cts.Sale(D1, 101, 1, True, 200_000, 400), cts.Sale(D1, 102, 1, True, 20_000, 50),
-         cts.Sale(D1, 104, 1, True, 900_000, 1500), cts.Sale(D1, 999, 1, True, 5_000, 10),
-         cts.Sale(D2, 101, 1, True, 100_000, 300), cts.Sale(D2, 104, 1, True, 300_000, 800)]
+SALES = [cts.Sale(D1, 101, 1, 11, 200_000, 400), cts.Sale(D1, 102, 1, 11, 20_000, 50),
+         cts.Sale(D1, 104, 1, 11, 900_000, 1500), cts.Sale(D1, 999, 1, 11, 5_000, 10),
+         cts.Sale(D2, 101, 1, 11, 100_000, 300), cts.Sale(D2, 104, 1, 11, 300_000, 800)]
 
 
 def plan(trips, sent=None):
@@ -94,8 +94,10 @@ def main() -> int:
             ctx = browser.new_context(viewport={'width': 1366, 'height': 900}, accept_downloads=True)
             page = ctx.new_page()
             page.on('pageerror', lambda e: errors.append(f'pageerror: {e}'))
+            # 400 на заведомо неверный период (F) — ожидаемый ответ, браузер всё равно пишет его в консоль
+            expected = lambda m: 'from=2026-10-05' in ((m.location or {}).get('url') or '')   # noqa: E731
             page.on('console', lambda m: errors.append(f'console: {m.text}')
-                    if m.type == 'error' and not base.is_ignorable(m) else None)
+                    if m.type == 'error' and not base.is_ignorable(m) and not expected(m) else None)
             page.on('request', lambda r: gets.append(r.url) if '/api/routes/cost?' in r.url else None)
             rows = lambda: page.locator('#ctRows tr')   # noqa: E731
             names = lambda: page.eval_on_selector_all('#ctRows tr td.ct-name button', 'els => els.map(e => e.textContent)')  # noqa: E731
@@ -189,19 +191,23 @@ def main() -> int:
                   'F 90 օր — запрос days=90, кнопка нажата')
             page.click('.ct-period[data-days="custom"]')
             check(page.is_visible('#ctRange'), 'F «Ընտրել…» — поля дат')
-            page.fill('#ctFrom', '2026-10-01')
-            page.fill('#ctTo', '2026-10-02')
+            page.fill('#ctFrom', '2026-09-30')
+            page.fill('#ctTo', '2026-10-01')
             page.click('#ctRange button[type="submit"]')
-            page.wait_for_function("document.getElementById('ctSub').textContent.startsWith('01.10.2026 – 02.10.2026')",
+            page.wait_for_function("document.getElementById('ctSub').textContent.startsWith('30.09.2026 – 01.10.2026')",
                                    timeout=15000)
-            check(any('from=2026-10-01&to=2026-10-02' in u for u in gets), 'F период 01.10–02.10')
+            check(any('from=2026-09-30&to=2026-10-01' in u for u in gets), 'F период 30.09–01.10')
+            page.fill('#ctFrom', '2026-10-05')                       # начало позже конца — 400, на экране прежний период
+            page.click('#ctRange button[type="submit"]')
+            page.wait_for_selector('#ctAlert', state='visible')
+            check('Սկիզբը վերջից հետո է' in page.inner_text('#ctAlertText'), 'F неверный период — ошибка сервера показана')
 
             # G
             with page.expect_download() as dl:
                 page.click('#ctCsv')
             path = dl.value.path()
             text = Path(path).read_text(encoding='utf-8')
-            check(dl.value.suggested_filename == 'cost-to-serve-20261001-20261002.csv' and text.startswith('﻿Առաքման արժեք'),
+            check(dl.value.suggested_filename == 'cost-to-serve-20260930-20261001.csv' and text.startswith('﻿Առաքման արժեք'),
                   f'G CSV {dl.value.suggested_filename}')
 
             # H

@@ -448,11 +448,10 @@ GROUP BY s.fVANAGENTID, CAST(s.fDATE AS date), s.fCUSTOMERID, ISNULL(s.fSALESAGE
 """
 
 # «Առաքման արժեք» (№87, п. 6; cost_to_serve): все проведённые накладные за период по дню, клиенту, линии (менеджеру) и
-# «вёз экспедитор» (как SQL_CREW_PAY: fVANAGENTID ≠ 0 и ≠ менеджер) — сумма и кг (вес — как в SQL_SHIPPED). Продажи
-# магазина — все строки, груз и точка экипажа — строки экспедиторов (cost_to_serve.deliveries).
+# экспедитору — сумма и кг (вес — как в SQL_SHIPPED). Продажи магазина — все строки; груз и точки экипажа — строки, которые
+# вёз экспедитор (≠ 0 и ≠ менеджер), по правилам «Աշխատավարձ» (cost_to_serve.deliveries).
 SQL_COST_SALES = """
-SELECT CAST(s.fDATE AS date), s.fCUSTOMERID, ISNULL(s.fSALESAGENTID, 0),
-       CASE WHEN ISNULL(s.fVANAGENTID, 0) <> 0 AND s.fVANAGENTID <> ISNULL(s.fSALESAGENTID, 0) THEN 1 ELSE 0 END,
+SELECT CAST(s.fDATE AS date), s.fCUSTOMERID, ISNULL(s.fSALESAGENTID, 0), ISNULL(s.fVANAGENTID, 0),
        SUM(s.fTOTALSUM), SUM(ISNULL(k.kg, 0))
 FROM SALES s WITH (NOLOCK)
 OUTER APPLY (SELECT SUM(sd.fQUANTITY * pr.fWEIGHT) AS kg
@@ -460,8 +459,7 @@ OUTER APPLY (SELECT SUM(sd.fQUANTITY * pr.fWEIGHT) AS kg
              JOIN PRODUCTS pr WITH (NOLOCK) ON pr.fID = sd.fPRODUCTID
              WHERE sd.fISN = s.fISN) k
 WHERE s.fSTATE = 2 AND s.fDATE >= ? AND s.fDATE < ?
-GROUP BY CAST(s.fDATE AS date), s.fCUSTOMERID, ISNULL(s.fSALESAGENTID, 0),
-         CASE WHEN ISNULL(s.fVANAGENTID, 0) <> 0 AND s.fVANAGENTID <> ISNULL(s.fSALESAGENTID, 0) THEN 1 ELSE 0 END
+GROUP BY CAST(s.fDATE AS date), s.fCUSTOMERID, ISNULL(s.fSALESAGENTID, 0), ISNULL(s.fVANAGENTID, 0)
 """
 
 
@@ -830,11 +828,11 @@ def load_crew_pay(connection_string: str, since: date, until: date) -> CrewData:
 
 
 def load_cost_sales(connection_string: str, since: date, until: date) -> SalesData:
-    """Накладные за [since, until) по дню, клиенту, линии и «вёз экспедитор», коды менеджеров и имена клиентов — одним
+    """Накладные за [since, until) по дню, клиенту, линии и экспедитору, коды SALESAGENTS и имена клиентов — одним
     соединением, только чтение («Առաքման արժեք»)."""
     conn = connect(connection_string)
     try:
-        sales = tuple(Sale(_day(r[0]), int(r[1] or 0), int(r[2] or 0), bool(r[3]), float(r[4] or 0), float(r[5] or 0))
+        sales = tuple(Sale(_day(r[0]), int(r[1] or 0), int(r[2] or 0), int(r[3] or 0), float(r[4] or 0), float(r[5] or 0))
                       for r in _select(conn, SQL_COST_SALES, (since, until)))
         names = {c.id: (c.code, ' '.join(c.name.split())) for c in customers(conn, sorted({x.customer_id for x in sales})).values()}
         return SalesData(sales, {a.id: a.code for a in agents(conn).values()}, names)
