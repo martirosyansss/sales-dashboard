@@ -28,6 +28,7 @@ from . import actuals as ac
 from . import ai_chat
 from . import dispatch as dp
 from . import evaluate, garage, learning, live, optimize
+from . import scorecard as sc
 from . import fleet as fl
 from . import waybill as wb
 from .running_costs import profile_fields
@@ -180,6 +181,11 @@ class RoutesState:
     # упал (views._month_ready; под actuals_lock)
     garage_warm: dict[tuple[date, date], threading.Thread] = field(default_factory=dict)
     garage_warm_failed: set[tuple[date, date]] = field(default_factory=set)
+    # «Վարորդներ»: кто закрыл точки, деньги и тара по людям за день (courier.scorecard); None — страница пуста
+    crew_facts: sc.CrewFacts | None = None
+    # сводка дня «Վարորդներ»: день → (отпечаток данных дня, сводка) — views._scorecard_days
+    scorecard_cache: dict[str, tuple[Any, dict[str, Any]]] = field(default_factory=dict)
+    scorecard_lock: threading.Lock = field(default_factory=threading.Lock)   # только словарь кэша: расчёт не под ним
 
 
 def _now() -> str:
@@ -4076,6 +4082,98 @@ def api_dispatch_progress() -> Any:
         return jsonify({'success': True, 'live': False, 'trucks': {}})
     return jsonify({'success': True, 'live': True, 'now': _yerevan_now().strftime('%H:%M'),
                     'trucks': _day_progress(state, day)})
+
+
+# --- «Վարորդներ»: показатели водителей за период (как driver analytics Omnitracs / Routific) ---
+# Правила — route_optimizer.scorecard. Факт людей — «Առաքիչ» (crew_facts), GPS-факт машин — кэш обучения
+# (_learning_days → actuals_cache), план — отправленный водителям черновик «Развоза». ERP не читается. Сводка дня
+# хранится в памяти, пока не изменился отпечаток данных дня (события, снимки /day, «сдал фактически», правка плана,
+# склад и окна приёма): прошлые дни не пересчитываются.
+
+SCORECARD_DEFAULT_DAYS = 30
+SCORECARD_CACHE_DAYS = 400   # сводок дней в памяти; больше — вытесняется самая давняя по записи
+
+
+@bp.get('/routes/drivers')
+def drivers_page() -> str:
+    return render_template('routes_drivers.html')
+
+
+def _scorecard_range() -> tuple[tuple[date, date] | None, Any]:
+    """((с, по), None) или (None, ответ 400): ?from=&to= (по умолчанию — SCORECARD_DEFAULT_DAYS дней по сегодня
+    включительно), не длиннее scorecard.MAX_DAYS дней."""
+    raw_from, raw_to = request.args.get('from'), request.args.get('to')
+    until = _parse_day(raw_to) if raw_to is not None else _yerevan_now().date()
+    since = _parse_day(raw_from) if raw_from is not None else         (until - timedelta(days=SCORECARD_DEFAULT_DAYS - 1) if until is not None else None)
+    if since is None or until is None:
+        return None, _bad_request({'date': 'Ամսաթվերը՝ ՏՏՏՏ-ԱԱ-ՕՕ'})
+    if since > until:
+        return None, _bad_request({'date': 'Սկզբի ամսաթիվը չի կարող լինել վերջից ուշ'})
+    if (until - since).days + 1 > sc.MAX_DAYS:
+        return None, _bad_request({'date': f'Ժամանակահատվածը՝ առավելագույնը {sc.MAX_DAYS} օր'})
+    return (since, until), None
+
+
+def _scorecard_cars(state: RoutesState, bundle: Bundle, day: date) -> dict[str, sc.CarDay]:
+    """GPS-факт машин дня из кэша обучения (_learning_days): км, отметки визитов (actuals.stop_marks: прибытие, окно) и
+    плановые ETA клиентов машины — прогноз сборки отправленного водителям плана (live.plan_trips)."""
+    out: dict[str, sc.CarDay] = {}
+    for car, _, stops, actual, draft, _, _ in _learning_days(state, bundle, day, day):
+        trips = [list(t.get('stops') or ()) for t in (draft or {}).get('trips') or ()
+                 if isinstance(t, dict) and t.get('truck') == car]
+        pred = (((draft or {}).get('prediction') or {}).get('trucks') or {}).get(car)
+        eta = {c: e for t in live.plan_trips(trips, pred if isinstance(pred, dict) else None, day)
+               for c, e in t.etas.items()}
+        out[car] = sc.CarDay(actual.km_gps, ac.stop_marks(actual, stops, day), eta)
+    return out
+
+
+def _scorecard_days(state: RoutesState, since: date, until: date) -> list[tuple[date, dict[str, Any]]]:
+    """Сводки дней since…until (scorecard.day_summary), у которых есть данные «Առաքիչ»: из кэша, пока отпечаток дня
+    тот же, иначе расчёт. Отпечатки — двумя запросами на весь период (crew_facts.versions, store.dispatch_revs)."""
+    assert state.crew_facts is not None
+    bundle = state.store.load()
+    lo, hi = since.isoformat(), until.isoformat()
+    versions = state.crew_facts.versions(lo, hi)
+    revs = state.store.dispatch_revs(lo, hi)
+    base = (bundle.depot, tuple(sorted((cid, w.span()) for cid, w in bundle.windows.items())), sc.LATE_SLACK_MIN,
+            state.fleet_facts is not None)
+    out = []
+    for ds in sorted(versions):
+        key = (versions[ds], revs.get(ds), base)
+        with state.scorecard_lock:
+            hit = state.scorecard_cache.get(ds)
+        if hit is not None and hit[0] == key:
+            summary = hit[1]
+        else:
+            day = date.fromisoformat(ds)
+            summary = sc.day_summary(state.crew_facts.day(ds), _scorecard_cars(state, bundle, day))
+            with state.scorecard_lock:
+                state.scorecard_cache.pop(ds, None)
+                state.scorecard_cache[ds] = (key, summary)
+                while len(state.scorecard_cache) > SCORECARD_CACHE_DAYS:
+                    state.scorecard_cache.pop(next(iter(state.scorecard_cache)))
+        out.append((date.fromisoformat(ds), summary))
+    return out
+
+
+@bp.get('/api/routes/drivers/scorecard')
+@_api
+def api_drivers_scorecard() -> Any:
+    """Показатели людей за ?from=&to= (scorecard.period): строка на водителя (и отдельно на առաքիչ) с разбивкой по
+    дням и опоздавшими магазинами; coverage — сколько точек оценено и почему остальные нет."""
+    rng, error = _scorecard_range()
+    if error is not None:
+        return error
+    state = _state()
+    if state.crew_facts is None:
+        return _bad_request({'_': '«Առաքիչ» բաժինը միացված չէ — տվյալներ չկան'})
+    since, until = rng   # type: ignore[misc]
+    body = sc.period(_scorecard_days(state, since, until), state.crew_facts.names())
+    return jsonify({'success': True, 'from': since.isoformat(), 'to': until.isoformat(),
+                    'today': _yerevan_now().date().isoformat(), 'days': (until - since).days + 1,
+                    'gps': state.fleet_facts is not None,
+                    'rules': {'late_slack_min': sc.LATE_SLACK_MIN, 'max_days': sc.MAX_DAYS}, **body})
 
 
 # --- Журнал гаража «Ավտոտնակ» (№53, docs/plans/garage-journal-plan.md) ---

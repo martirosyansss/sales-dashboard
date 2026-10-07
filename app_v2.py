@@ -13336,6 +13336,8 @@ route_optimizer.attach_driver_geo(app, courier.driver_geo(app))
 route_optimizer.attach_fleet_facts(app, courier.fleet_facts(app))
 # машины на карте сейчас «Մեքենաները առցանց» (№76, live-map-plan.md)
 route_optimizer.attach_live_facts(app, courier.live_facts(app))
+# показатели водителей «Վարորդներ»: кто закрыл точки, деньги и тара по людям
+route_optimizer.attach_crew_facts(app, courier.crew_facts(app))
 
 from courier.web_security import init_web_security
 init_web_security(app, courier.API_PREFIX)

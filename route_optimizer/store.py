@@ -2519,6 +2519,11 @@ class Store:
             raise StoreError(f'{self._name()}: վնասված է {day} օրվա առաքման պլանը{_FIX_HINT}')
         return data, row[1]
 
+    def dispatch_revs(self, since: str, until: str) -> dict[str, int]:
+        """Номер правки черновика развоза по дням since…until (YYYY-MM-DD): без чтения самих черновиков."""
+        return {r[0]: r[1] for r in self._read(lambda conn: conn.execute(
+            'SELECT day, rev FROM dispatch_plan WHERE day >= ? AND day <= ?', (since, until)).fetchall())}
+
     def save_dispatch(self, day: str, data: Mapping[str, Any], user: str | None,
                       expected_rev: int | None = None) -> int | None:
         """Сохранить черновик на дату; возвращает новый номер правки. expected_rev — номер, от которого
