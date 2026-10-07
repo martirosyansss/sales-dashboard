@@ -1117,13 +1117,11 @@ body.dp-ws-on .rt-secbar .rt-tabs a { padding-top: 3px; padding-bottom: 3px; }
 
 /* рабочий экран */
 .dp-ws {
-    height: var(--ws-h, calc(100vh - 220px)); margin-bottom: 14px; display: grid; grid-template-rows: minmax(0, 1fr) minmax(140px, 26%) auto;
+    height: var(--ws-h, calc(100vh - 220px)); margin-bottom: 14px; display: grid; grid-template-rows: minmax(0, 1fr) minmax(140px, 26%);
     border: 1px solid var(--rt-line); border-radius: var(--rt-radius); overflow: hidden; background: var(--rt-panel);
 }
 /* шкала свёрнута («Ծալել») — карта на всю высоту рабочего экрана */
-.dp-ws:has(.dp-board.is-folded) { grid-template-rows: minmax(0, 1fr) auto auto; }
-/* выбрана машина — её карточка внизу справа от шкалы (не поверх карты): низ чуть выше, карта всё же главная (владелец 07.10 «карту выше») */
-.dp-ws.has-side, .dp-ws.has-side:has(.dp-board.is-folded) { grid-template-rows: minmax(0, 1fr) minmax(220px, 36%) auto; }
+.dp-ws:has(.dp-board.is-folded) { grid-template-rows: minmax(0, 1fr) auto; }
 .dp-ws-main { position: relative; min-height: 0; }
 .dp-ws-map { position: absolute; inset: 0; }
 #rtDispatch .dp-ws-map .dp-mapbox { position: absolute; inset: 0; border: 0; border-radius: 0; box-shadow: none; }
@@ -1155,46 +1153,20 @@ body.dp-ws-on .rt-secbar .rt-tabs a { padding-top: 3px; padding-bottom: 3px; }
 #rtDispatch .dp-ws-kpi .dp-stat:first-child { border-left: 0; }
 #rtDispatch .dp-ws-kpi .dp-stat b { font-size: .875rem; font-family: var(--rt-mono); white-space: nowrap; }
 #rtDispatch .dp-ws-kpi .dp-stat span { font-size: .625rem; line-height: 1.2; }
-/* выбранная машина — внизу, справа от шкалы дня (владелец 07.10: поверх карты закрывала точки) */
+/* выбранная машина — карточкой под рабочим экраном, на всю ширину (владелец №89, 07.10: «в самый низ страницы»);
+   карта и шкала дня при выборе машины не уменьшаются */
 .dp-ws-low { min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr); border-top: 1px solid var(--rt-line); }
-.dp-ws.has-side .dp-ws-low { grid-template-columns: minmax(0, 1fr) minmax(360px, 36%); }
-.dp-ws-side { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 8px 10px 10px; border-left: 1px solid var(--rt-line); background: var(--rt-bg); }
-/* крестик — в своей строке сверху и не уезжает при прокрутке списка */
+.dp-ws-side { margin: 0 0 14px; padding: 8px 12px 12px; border: 1px solid var(--rt-line); border-radius: var(--rt-radius); background: var(--rt-bg); }
+/* крестик — своей строкой над карточкой, справа */
 .dp-ws-close {
-    position: sticky; top: 0; margin: 0 0 6px auto; width: 32px; height: 32px; border-radius: 50%; border: 1px solid var(--rt-line);
-    background: var(--rt-panel-2); color: var(--rt-fg-dim); display: grid; place-items: center; cursor: pointer; z-index: 2;
-    box-shadow: 0 0 0 6px var(--rt-bg);   /* при прокрутке текст под ним не просвечивает по краю */
+    margin: 0 0 6px auto; width: 32px; height: 32px; border-radius: 50%; border: 1px solid var(--rt-line);
+    background: var(--rt-panel-2); color: var(--rt-fg-dim); display: grid; place-items: center; cursor: pointer;
 }
 .dp-ws-close:hover { color: var(--rt-fg); }
 #rtDispatch .dp-ws-side .dp-trucklist { position: static; max-height: none; overflow: visible; padding: 0; gap: 10px; }
 #rtDispatch .dp-ws-side .dp-tcard { display: none; }
 #rtDispatch .dp-ws-side .dp-tcard.is-focus { display: block; }
 #rtDispatch .dp-ws-side .dp-why { margin-top: 10px; max-height: none; }
-/* карточка машины в узкой панели: кнопки «Վարորդ · Բեռնագիր · Excel» — строкой под шапкой, с подписями */
-#rtDispatch .dp-ws-side .dp-ttop { flex-wrap: wrap; }
-#rtDispatch .dp-ws-side .dp-ttop > .dp-thead-h { flex-basis: 100%; }
-#rtDispatch .dp-ws-side .dp-tacts { width: 100%; padding: 0 12px 12px 16px; }
-#rtDispatch .dp-ws-side .dp-tacts .rt-btn { flex: 1 1 0; }
-#rtDispatch .dp-ws-side .dp-tacts .dp-wbbtn { padding: 0 10px; }
-#rtDispatch .dp-ws-side .dp-tacts .dp-wbbtn span { position: static; width: auto; height: auto; overflow: visible; clip-path: none; }
-#rtDispatch .dp-ws-side .dp-thead { grid-template-columns: minmax(0, 1fr) auto auto; }
-/* №89: шапка рейса выбранной машины — строкой на всю ширину внизу рабочего экрана (#dpWsTripBar, JS renderSideBar),
-   под шкалой и карточкой машины; в списке карточки над точками — только «Երթ N · время» */
-#rtDispatch .dp-ws-side .dp-tcard .dp-trip-acts, #rtDispatch .dp-ws-side .dp-tcard .dp-trip-line { display: none; }
-#rtDispatch .dp-ws-side .dp-tcard .dp-trip-head { margin-bottom: 6px; }
-.dp-ws-main { grid-row: 1; }
-.dp-ws-low { grid-row: 2; }
-.dp-ws-tripbar {
-    grid-row: 3; position: relative; min-width: 0; padding: 8px 14px 8px 18px;
-    border-top: 1px solid var(--rt-line); background: var(--rt-panel-2);
-}
-.dp-ws-tripbar[hidden] { display: none; }
-.dp-ws-tripbar::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: var(--dp-c, var(--rt-line)); }
-.dp-ws-tripbar.is-bad { border-top-color: var(--rt-danger-line); }
-/* одной строкой: «Երթ 1 · время · загрузка · км · пометки» и справа кнопки; не влезает — кнопки переносятся вниз */
-#rtDispatch .dp-ws-tripbar .dp-trip-head { margin: 0; gap: 6px 14px; flex-wrap: wrap; }
-#rtDispatch .dp-ws-tripbar .dp-trip-line { width: auto; flex: 1 1 320px; gap: 2px 14px; }
-#rtDispatch .dp-ws-tripbar .dp-trip-acts { order: 1; margin-left: auto; gap: 6px; }
 
 /* снизу: машины и шкала дня (таблица слева — подписи шкалы) */
 .dp-ws-bottom { min-height: 0; overflow: auto; }
@@ -1203,8 +1175,6 @@ body.dp-ws-on .rt-secbar .rt-tabs a { padding-top: 3px; padding-bottom: 3px; }
 #rtDispatch .dp-ws-bottom .dp-board-head { margin: -8px -14px 2px; padding: 8px 14px 4px; position: sticky; top: 0; z-index: 4; background: var(--rt-panel); }
 #rtDispatch .dp-ws-bottom .dp-board-legend { display: none; }
 #rtDispatch .dp-ws-bottom .dp-board-grid { grid-template-columns: minmax(260px, 300px) minmax(0, 1fr) minmax(70px, auto); }
-/* рядом карточка машины — подписи машин уже, шкале остаётся место */
-#rtDispatch .dp-ws.has-side .dp-ws-bottom .dp-board-grid { grid-template-columns: minmax(210px, 240px) minmax(0, 1fr) minmax(64px, auto); }
 #rtDispatch.is-ws .dp-blabel { height: 46px; }
 #rtDispatch.is-ws .dp-blabel-x { display: flex; align-items: center; gap: 8px; font-family: var(--rt-mono); font-size: .75rem; color: var(--rt-fg-dim); }
 #rtDispatch.is-ws .dp-blabel.has-bad .dp-blx-t { color: var(--rt-warn); }
