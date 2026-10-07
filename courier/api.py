@@ -24,7 +24,7 @@ from route_optimizer.erp import ErpError
 from . import clock, events as ev
 from .day import DEMO_DAY
 from .photos import MAX_PHOTO_BYTES, PHOTO_KINDS, image_ext, save_photo
-from .routes_link import planned_crew
+from .routes_link import planned_crew, record_crew
 from .security import token_hash, token_shape_ok, valid_pin
 from .state import state
 from .store import PHOTO_BYTES_PER_DAY, PHOTOS_PER_DAY, Driver, PhotoLimit, PinReset, Session, StoreError, Terminal
@@ -197,10 +197,18 @@ def login() -> Any:
         if current is None or current.revoked:   # «Նոր QR» или отозван: старый QR больше не действует
             return error(401, 'unauthorized')
         return error(401, 'session', 'Մեքենան փոխվել է․ մուտք գործեք PIN-ով նորից')
+    _to_routes(t, now.date(), 'driver', driver.name, False)     # №84: вошедший по PIN — водитель машины терминала
     return jsonify({'session': token, 'expires_at': clock.iso(expires),
                     'driver': {'id': driver.id, 'name': driver.name},
                     'car': {'code': t.car_code, 'name': _car_name(t.car_code)},
                     'helper': None, 'planned': _planned(t.car_code)})   # v1.4 §8: экипаж новой сессии не решён
+
+
+def _to_routes(t: Terminal, day: date, role: str, name: str, only_day: bool) -> None:
+    """Экипаж машины терминала — в «Маршруты» (№84, routes_link.record_crew: сбой — только в лог); изменён — экипаж
+    плана в ответах терминалу (_planned) читается заново."""
+    if record_crew(current_app.extensions.get('route_optimizer'), t.car_code, day, role, name, only_day, t.id):
+        state().crew_plan.clear()
 
 
 def _pin_driver(t: Terminal, pin: Any) -> tuple[Driver | None, Any]:
@@ -308,6 +316,8 @@ def post_crew() -> Any:
         if st.store.session(digest, t.id) is None:   # сессию закрыли (выход, новый вход, водитель выключен)
             return error(401, 'session')
         return error(403, 'pin')                     # помощника выключили или сменили PIN, пока проверялся PIN
+    # №84: подтвердивший PIN — առաքիչ машины с этого дня; «один» — без առաքիչ только сегодня (обычный завтра остаётся)
+    _to_routes(t, clock.today(), 'helper', helper.name if helper is not None else '', helper is None)
     return jsonify(_crew(t, s, helper))
 
 

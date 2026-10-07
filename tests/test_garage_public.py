@@ -411,6 +411,14 @@ def test_garage_password_min_length(client, app_v2):
     assert save({'username': 'u2', 'role': 'user', 'areas': ['01']}).status_code == 200
 
 
+def test_new_username_without_colon(client, app_v2):
+    """«:» — в метках записей экипажа не от человека (№84: 'apk:…', 'erp:auto'): нового логина с ним нет."""
+    users = app_v2.test_users
+    h = _session_as(client, 'boss', base=LAN)
+    r = client.post('/api/users', json={'username': 'apk:1', 'password': 'pw', 'role': 'admin'}, base_url=LAN, headers=h)
+    assert r.status_code == 400 and '«:»' in r.get_json()['error'] and 'apk:1' not in users
+
+
 # ============================== ревью: нагрузка входом из интернета (≤ 2 проверки пароля сразу) ==============================
 
 THROTTLED_HY = 'Չափազանց շատ փորձեր։ Կրկնեք մի քանի րոպեից։'

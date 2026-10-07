@@ -4180,6 +4180,11 @@
     // ---------- Водители дня (ответ владельца №77) ----------
     // По умолчанию все вышли; снятая отметка — «не вышел» только этот день или до даты (диалог dpAbsentDlg), поставленная —
     // вышел. Сборка берёт столько машин, сколько вышло водителей (dispatch.build_crewed); изменили — пересобрать (crew.stale)
+    // источник записи водителя (№84): вход в «Առաքիչ» или ERP; записи логиста — без пометки
+    const CREW_SOURCE_HY = {
+        apk: ['APK', 'Մուտք «Առաքիչ» հավելվածով'],
+        erp: ['ERP', 'ERP-ի ապրանքագրերից՝ վերջին 30 օրը'],
+    };
     function renderCrew() {
         const list = Array.isArray(crewOf().drivers) ? crewOf().drivers.filter(x => isObj(x) && typeof x.name === 'string') : [];
         const box = $('dpCrewList');
@@ -4198,10 +4203,20 @@
             txt.className = 'dp-truck-t';
             const nm = document.createElement('b');
             nm.textContent = x.name;
+            const head = document.createElement('span');
+            head.appendChild(nm);
+            const src = CREW_SOURCE_HY[x.source];        // №84: запись не логиста — откуда она
+            if (src) {
+                const tag = document.createElement('span');
+                tag.className = 'dp-truck-sub';
+                tag.textContent = ' ' + src[0];
+                tag.title = src[1];
+                head.appendChild(tag);
+            }
             const sub = document.createElement('span');
             sub.className = 'dp-truck-sub';
             sub.textContent = (Array.isArray(x.trucks) ? x.trucks : []).map(c => truckLabel(truckBy(c))).join(', ');
-            txt.append(nm, sub);
+            txt.append(head, sub);
             if (x.absent) {
                 const off = document.createElement('span');
                 off.className = 'dp-truck-sub is-warn';

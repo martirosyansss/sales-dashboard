@@ -169,6 +169,11 @@ _TRUCK_DRIVER_TABLE = (
 # та же структура и те же правила срока, что у водителя.
 _TRUCK_HELPER_TABLE = _TRUCK_DRIVER_TABLE.replace('truck_driver(', 'truck_helper(', 1)
 CREW_TABLES = {'driver': 'truck_driver', 'helper': 'truck_helper'}   # роль → таблица (только эти имена идут в SQL)
+# Кто сделал запись экипажа (ответ владельца №84) — updated_by: логин логиста (ручная правка «Վարորդ»), вход в «Առաքիչ»
+# (CREW_BY_APK + id терминала) или подбор по ERP (CREW_BY_ERP). Логин дашборда двоеточия не содержит (app_v2 не создаёт
+# такой) — метки с ним с пользователем не совпадут.
+CREW_BY_APK = 'apk:'
+CREW_BY_ERP = 'erp:auto'
 # Схема 23 (ответ владельца №77): водитель не вышел — дни с from_day по to_day включительно («только сегодня» — from_day =
 # to_day). Имя — как в truck_driver (check_driver_name, непустое). Только для «Развоза»: сколько машин выходит в день.
 _DRIVER_ABSENCE_TABLE = (
@@ -766,6 +771,38 @@ def _crew_table(role: str) -> str:
 # управляющие, форматные (направление текста, мягкий перенос, нулевой ширины), частные, несуществующие и разделители
 # строк — в печатаемом имени не нужны и могут переставить текст накладной
 _INVISIBLE_CATEGORIES = frozenset({'Cc', 'Cf', 'Co', 'Cs', 'Cn', 'Zl', 'Zp'})
+
+
+def crew_source(updated_by: str | None) -> str | None:
+    """Источник записи экипажа (№84) по updated_by: 'apk' — вход водителя или решение экипажа в «Առաքիչ», 'erp' — подбор
+    по ERP, None — логист."""
+    if isinstance(updated_by, str) and updated_by.startswith(CREW_BY_APK):
+        return 'apk'
+    return 'erp' if updated_by == CREW_BY_ERP else None
+
+
+def _crew_permanent(conn: sqlite3.Connection, table: str, car_code: str, day: str) -> tuple[str, str | None] | None:
+    """Постоянная запись роли машины, действующая в day (наибольший from_day ≤ day): (имя, кто записал) или None."""
+    return conn.execute(f'SELECT name, updated_by FROM {table} WHERE car_code = ? AND only_day = 0 AND from_day <= ? '
+                        'ORDER BY from_day DESC LIMIT 1', (car_code, day)).fetchone()
+
+
+def _crew_substitute(conn: sqlite3.Connection, table: str, car_code: str, day: str) -> tuple[str, str | None] | None:
+    """Подмена роли машины ровно на day: (имя, кто записал) или None."""
+    return conn.execute(f'SELECT name, updated_by FROM {table} WHERE car_code = ? AND only_day = 1 AND from_day = ?',
+                        (car_code, day)).fetchone()
+
+
+def _crew_upsert(conn: sqlite3.Connection, table: str, car_code: str, day: str, only_day: bool, name: str,
+                 user: str | None) -> None:
+    conn.execute(f'INSERT INTO {table}(car_code, from_day, only_day, name, updated_at, updated_by) VALUES(?, ?, ?, ?, ?, ?) '
+                 'ON CONFLICT(car_code, from_day, only_day) DO UPDATE SET name = excluded.name, '
+                 'updated_at = excluded.updated_at, updated_by = excluded.updated_by',
+                 (car_code, day, 1 if only_day else 0, name, _now(), user))
+
+
+def _crew_drop_substitute(conn: sqlite3.Connection, table: str, car_code: str, day: str) -> None:
+    conn.execute(f'DELETE FROM {table} WHERE car_code = ? AND from_day = ? AND only_day = 1', (car_code, day))
 
 
 def check_driver_name(raw: Any) -> tuple[str | None, str | None]:
@@ -2468,6 +2505,130 @@ class Store:
                     conn.execute(drop_sub, (car_code, day))
 
         self._transaction(write, 'не удалось сохранить водителя машины')
+
+    def crew_sources(self, day: str, role: str = 'driver') -> dict[str, str]:
+        """Откуда человек роли машины на день (№84): машина → 'apk' | 'erp' (crew_source) у действующей записи — подмены
+        дня, иначе постоянной; записи логиста — не в словаре."""
+        table = _crew_table(role)
+
+        def query(conn: sqlite3.Connection) -> dict[str, str | None]:
+            cars = [r[0] for r in conn.execute(f'SELECT DISTINCT car_code FROM {table} WHERE from_day <= ?', (day,))]
+            out = {}
+            for car in cars:
+                row = _crew_substitute(conn, table, car, day) or _crew_permanent(conn, table, car, day)
+                if row is not None:
+                    out[car] = crew_source(row[1])
+            return out
+
+        return {car: src for car, src in self._read(query).items() if src}
+
+    def save_apk_crew(self, car_code: str, day: str, role: str, name: str, only_day: bool, user: str) -> bool:
+        """Экипаж машины из «Առաքիչ» (ответ владельца №84) одной транзакцией; True — что-то записано. Вход водителя по PIN —
+        водитель машины терминала, решение экипажа — её առաքիչ: постоянно с day (подмена этого дня снимается — вход новее
+        неё) или only_day — только на day («один», '': обычный առաքիչ завтра остаётся; равное постоянному — подмена
+        снимается, как в save_truck_crew). Свежее событие главнее: правка логиста после входа снова главнее (та же строка
+        ON CONFLICT или подмена дня). Уже он — ничего не пишется (повторный вход не плодит строк). Машины нет в настройках —
+        False. Один человек — одно место: name в этот день ещё и в другой роли/машине — там с day никого (подмена дня с ним
+        — «никого» на день; чужая подмена дня остаётся)."""
+        table = _crew_table(role)
+        if check_driver_name(name) != (name, None) or not isinstance(only_day, bool) \
+                or not isinstance(user, str) or not user.startswith(CREW_BY_APK):
+            raise ValueError('имя, only_day или метка «Առաքիչ» не прошли проверку')
+
+        def write(conn: sqlite3.Connection) -> bool:
+            if conn.execute('SELECT 1 FROM trucks WHERE car_code = ?', (car_code,)).fetchone() is None:
+                return False
+            changed = False
+            perm, sub = _crew_permanent(conn, table, car_code, day), _crew_substitute(conn, table, car_code, day)
+            perm_name = perm[0] if perm is not None else ''
+            if only_day:
+                if (sub[0] if sub is not None else perm_name) != name:
+                    if name == perm_name:
+                        _crew_drop_substitute(conn, table, car_code, day)
+                    else:
+                        _crew_upsert(conn, table, car_code, day, True, name, user)
+                    changed = True
+            elif perm is not None and perm_name == name:
+                if sub is not None:                     # постоянный — он, а на день подменён: вход новее подмены
+                    _crew_drop_substitute(conn, table, car_code, day)
+                    changed = True
+            else:
+                _crew_upsert(conn, table, car_code, day, False, name, user)
+                _crew_drop_substitute(conn, table, car_code, day)
+                changed = True
+            if not name:
+                return changed
+            for other_role, other in CREW_TABLES.items():
+                cars = [r[0] for r in conn.execute(f'SELECT DISTINCT car_code FROM {other} WHERE name = ? AND from_day <= ?',
+                                                   (name, day))]
+                for car in cars:
+                    if (car, other_role) == (car_code, role):
+                        continue
+                    p, s = _crew_permanent(conn, other, car, day), _crew_substitute(conn, other, car, day)
+                    if p is not None and p[0] == name:
+                        _crew_upsert(conn, other, car, day, False, '', user)
+                        if s is not None and s[0] in (name, ''):
+                            _crew_drop_substitute(conn, other, car, day)
+                        changed = True
+                    elif s is not None and s[0] == name:
+                        if p is None or p[0] == '':
+                            _crew_drop_substitute(conn, other, car, day)
+                        else:
+                            _crew_upsert(conn, other, car, day, True, '', user)
+                        changed = True
+            return changed
+
+        return self._transaction(write, 'не удалось сохранить экипаж машины из «Առաքիչ»')
+
+    def fill_erp_crew(self, day: str, choose: Callable[[frozenset[str]], Mapping[str, tuple[str, str | None]]]
+                      ) -> list[tuple[str, str, str]]:
+        """Экипаж по ERP (ответ владельца №84) — только машинам без записей: одной транзакцией; [(машина, роль, имя)] —
+        что записано (CREW_BY_ERP, постоянно с day). choose(занятые) → машина → (водитель, առաքիչ | None) — подбор
+        (waybill.pick_car_crews); занятые — люди записей логиста и «Առաքիչ» (постоянных, действующих в day, и подмен
+        day): их ERP не ставит. Машина, у которой есть постоянная запись не от ERP (любая роль, в т.ч. «никого»), — не
+        трогается. Своя запись ERP заменяется, если подбор другой; машины нет в подборе (в ERP нет данных) — прежняя
+        остаётся, но человек, которого подбор поставил на другую машину, с неё снимается (одно место). Без изменений —
+        ничего не пишется."""
+        if not isinstance(day, str) or not _ISO_DAY_RE.match(day):
+            raise ValueError('day: дата YYYY-MM-DD')
+
+        def write(conn: sqlite3.Connection) -> list[tuple[str, str, str]]:
+            current: dict[str, dict[str, tuple[str, str | None]]] = {}   # машина → роль → постоянная запись
+            taken: set[str] = set()
+            locked: set[str] = set()
+            for role, table in CREW_TABLES.items():
+                for (car,) in conn.execute(f'SELECT DISTINCT car_code FROM {table} WHERE from_day <= ?', (day,)).fetchall():
+                    perm, sub = _crew_permanent(conn, table, car, day), _crew_substitute(conn, table, car, day)
+                    if perm is not None:
+                        current.setdefault(car, {})[role] = perm
+                        if perm[1] != CREW_BY_ERP:
+                            locked.add(car)
+                            taken.add(perm[0])
+                    if sub is not None and sub[1] != CREW_BY_ERP:
+                        taken.add(sub[0])
+            taken.discard('')
+            trucks = {r[0] for r in conn.execute('SELECT car_code FROM trucks')}
+            picks = {car: crew for car, crew in choose(frozenset(taken)).items() if car in trucks and car not in locked}
+            picked = {n for d, h in picks.values() for n in (d, h) if n}
+            out: list[tuple[str, str, str]] = []
+            for car in sorted(set(picks) | set(current)):
+                if car in locked or car not in trucks:
+                    continue
+                have = current.get(car, {})
+                for i, role in enumerate(CREW_TABLES):
+                    old = have.get(role)
+                    if car in picks:
+                        want = picks[car][i] or ''
+                    elif old is not None and old[0] in picked:
+                        want = ''
+                    else:
+                        continue
+                    if (old is None and want) or (old is not None and old[0] != want):
+                        _crew_upsert(conn, CREW_TABLES[role], car, day, False, want, CREW_BY_ERP)
+                        out.append((car, role, want))
+            return out
+
+        return self._transaction(write, 'не удалось сохранить экипаж по ERP')
 
     def driver_absences(self, day: str) -> dict[str, str]:
         """Водители, которые не вышли в день YYYY-MM-DD (№77): имя → по какой день (включительно) их нет — самый поздний

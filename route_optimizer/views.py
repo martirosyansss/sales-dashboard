@@ -156,6 +156,11 @@ class RoutesState:
     customer_hint_loader: Callable[[date, date], list[CustomerHint]] | None = None
     driver_list_cache: tuple[float, list[str]] | None = None
     driver_list_lock: threading.Lock = field(default_factory=threading.Lock)   # перечитывает один запрос
+    # (машина ERP, имя, день) — кто возил машины за [since, until) (№84, waybill.load_car_crew_days): экипаж машин без
+    # записей; None — без подбора по ERP, всё как раньше. Подбор — не чаще ERP_CREW_TTL_S (time.monotonic() следующего)
+    crew_days_loader: Callable[[date, date], list[tuple[str, str, date]]] | None = None
+    erp_crew_next: float = 0.0
+    erp_crew_lock: threading.Lock = field(default_factory=threading.Lock)
     dispatch_cache: dict[tuple[date, date, date], tuple[float, dp.DispatchData]] = field(default_factory=dict)
     dispatch_lock: threading.Lock = field(default_factory=threading.Lock)
     same_day_cache: dict[date, tuple[float, dp.SameDayData]] = field(default_factory=dict)   # под dispatch_lock
@@ -1940,6 +1945,34 @@ def _erp_drivers(state: RoutesState) -> list[str]:
         state.driver_list_lock.release()
 
 
+ERP_CREW_DAYS = 30        # экипаж по ERP (№84) — кто возил машину за 30 дней
+ERP_CREW_TTL_S = 3600     # подбор по ERP — не чаще раза в час
+ERP_CREW_RETRY_S = 60     # ERP недоступна — снова через минуту (страница работает с прежними записями)
+
+
+def _erp_crew(state: RoutesState, trucks: Collection[str]) -> None:
+    """Экипаж по ERP машинам без записей (ответ владельца №84: waybill.pick_car_crews за ERP_CREW_DAYS, запись —
+    store.fill_erp_crew). Как _erp_drivers: только GET (открытие дня), один запрос за раз, не чаще ERP_CREW_TTL_S; ERP
+    недоступна — повтор через ERP_CREW_RETRY_S. Любой сбой — в лог: страница работает с прежними записями."""
+    if state.crew_days_loader is None or time.monotonic() < state.erp_crew_next \
+            or not (has_request_context() and request.method == 'GET') or not state.erp_crew_lock.acquire(blocking=False):
+        return
+    try:
+        today = _clock().date()
+        ttl = ERP_CREW_TTL_S
+        try:
+            rows = state.crew_days_loader(today - timedelta(days=ERP_CREW_DAYS), today + timedelta(days=1))
+            written = state.store.fill_erp_crew(today.isoformat(), lambda taken: wb.pick_car_crews(rows, trucks, taken))
+            if written:
+                logger.info('[Routes] Экипаж по ERP с %s: %s', today, ', '.join(f'{c} {r}' for c, r, _ in written))
+        except Exception:   # ERP, база настроек — подбор необязателен: страница не падает
+            logger.warning('[Routes] Экипаж по ERP не подобран — прежние записи', exc_info=True)
+            ttl = ERP_CREW_RETRY_S
+        state.erp_crew_next = time.monotonic() + ttl
+    finally:
+        state.erp_crew_lock.release()
+
+
 def _drivers_json(state: RoutesState, day: date) -> dict[str, Any]:
     """Водители машин на день (№62): drivers — машина → имя, substitutes — машины с подменой на этот день (только он);
     helpers, helper_substitutes — то же для առաքիչ (второй человек в машине);
@@ -1955,8 +1988,12 @@ def _drivers_json(state: RoutesState, day: date) -> dict[str, Any]:
     # свои — вписанные за срок и все, кто в машинах сейчас или в этот день (давно закреплённый не пропадает из выбора)
     current = {n for role in CREW_TABLES for n in store.truck_drivers(today.isoformat(), role)[0].values()}
     own = sorted((set(store.driver_names(since)) | current | set(drivers.values()) | set(helpers.values())) - in_erp)
+    # №84: чьи записи из «Առաքիչ» или ERP (машина → 'apk' | 'erp'), только у машин с человеком; записи логиста — нет
+    sources = {key: {c: src for c, src in store.crew_sources(day.isoformat(), role).items() if c in people}
+               for key, role, people in (('driver_sources', 'driver', drivers), ('helper_sources', 'helper', helpers))}
     return {'drivers': drivers, 'substitutes': sorted(subs), 'helpers': helpers, 'helper_substitutes': sorted(helper_subs),
-            'driver_list': [{'name': n, 'erp': True} for n in erp_names] + [{'name': n, 'erp': False} for n in own]}
+            'driver_list': [{'name': n, 'erp': True} for n in erp_names] + [{'name': n, 'erp': False} for n in own],
+            **{key: value for key, value in sources.items() if value}}
 
 
 def _crew(state: RoutesState, day: date, trucks: Collection[str]) -> tuple[dp.Crew, dict[str, str]]:
@@ -1986,8 +2023,11 @@ def _crew_json(state: RoutesState, day: date, draft: dp.Draft | None, trucks: Co
         or any(crew.own.get(c) and crew.own[c] not in crew.absent and crew.own[c] not in driving for c in draft.unmanned)
         or bool(draft.unmanned and set(dp.seating(crew, [*draft.trucks, *draft.unmanned])[2]) - driving)
         or any(v['stale'] for v in view.values()))
+    sources = state.store.crew_sources(day.isoformat())    # №84: запись из «Առաքիչ» или ERP — у первой машины человека
     return {'crew': {'drivers': [{'name': n, 'trucks': codes, 'absent': n in crew.absent,
-                                  **({'until': away[n]} if n in crew.absent else {})} for n, codes in sorted(names.items())],
+                                  **({'until': away[n]} if n in crew.absent else {}),
+                                  **({'source': sources[codes[0]]} if codes[0] in sources else {})}
+                                 for n, codes in sorted(names.items())],
                      'trucks': view, 'stale': stale}}
 
 
@@ -2097,6 +2137,7 @@ def api_dispatch() -> Any:
                                                       dp.holidays_of(bundle.settings))
     if day is None:
         return _bad_request({'date': 'дата в формате ГГГГ-ММ-ДД'})
+    _erp_crew(state, bundle.trucks)     # №84: машинам без записей — экипаж по ERP, до чтения водителей дня
     dd = _load_day(state, bundle, day, refresh=request.args.get('refresh') == '1')
     return jsonify({'success': True, **_dispatch_page_body(dd)})
 
