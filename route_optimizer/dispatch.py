@@ -1831,6 +1831,9 @@ def _guard_loaded(draft: Draft, edit: Mapping[str, Any], routable: Mapping[int, 
         touched = edit.get('trip') in loaded and edit.get('truck') != loaded[edit.get('trip')].truck
     elif action == 'move':
         touched = edit.get('from_trip') in loaded or edit.get('to_trip') in loaded
+    elif action == 'trip_stops':   # рейс сам или рейс, из которого берут магазин
+        add = edit.get('add') if isinstance(edit.get('add'), list) else []
+        touched = (_is_int(edit.get('trip')) and edit.get('trip') in loaded) or any(c in t.stops for c in add for t in loaded.values())
     elif action == 'exclude':
         isn = edit.get('order')
         isn = isn.upper() if isinstance(isn, str) else None
@@ -1838,6 +1841,65 @@ def _guard_loaded(draft: Draft, edit: Mapping[str, Any], routable: Mapping[int, 
         touched = any(cids & set(t.stops) for t in loaded.values())
     if touched:
         raise LoadedEdit(LOADED_EDIT)
+
+
+TRIP_STOPS_MAX = 200   # магазинов в одной быстрой правке рейса — больше за день не бывает
+
+
+def _cids(raw: Any) -> list[int] | None:
+    """Список id клиентов из запроса без повторов (порядок — как прислали); не список целых — None."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or len(raw) > TRIP_STOPS_MAX or not all(_is_int(c) for c in raw):
+        return None
+    return list(dict.fromkeys(raw))
+
+
+def _trip_stops(ctx: DayContext, draft: Draft, routable: Mapping[int, Stop], edit: Mapping[str, Any]) -> Draft:
+    """Быстрая правка состава рейса (кнопки «×» у магазина и «Ավելացնել խանութ» у рейса): remove — из рейса в «ещё не в
+    рейсах», add — в рейс из «ещё не в рейсах» или из другого рейса (как move, но сразу несколько и одним пересчётом).
+    Магазин, разделённый между рейсами (тяжёлый заказ), здесь не трогается: часть в другом рейсе стала бы целым
+    грузом — его переносят «Տեղափոխել այլ երթ…»."""
+    if not _is_int(edit.get('trip')):   # True == 1 в Python — не номер рейса
+        raise DispatchError('Рейс не найден — обновите страницу')
+    trip = _trip(draft, edit.get('trip'))
+    add, remove = _cids(edit.get('add')), _cids(edit.get('remove'))
+    if add is None or remove is None:
+        raise DispatchError('Խանութների ցուցակը չի ընդունվել — թարմացրեք էջը')
+    if not add and not remove:
+        raise DispatchError('Ընտրեք գոնե մեկ խանութ')
+    if set(add) & set(remove):
+        raise DispatchError('Նույն խանութը և՛ ավելացվում է, և՛ հանվում — թարմացրեք էջը')
+    shares = _shares(draft.trips)
+    for cid in remove:
+        if cid not in trip.stops:
+            raise DispatchError('Այս խանութն արդեն երթում չէ — թարմացրեք էջը')
+    for cid in add:
+        if cid not in routable:
+            raise DispatchError('Խանութը չի գտնվել այս օրվա պատվերներում — թարմացրեք էջը')
+        if cid in trip.stops:
+            raise DispatchError('Խանութն արդեն այս երթում է — թարմացրեք էջը')
+    if any(shares.get(c, 1) > 1 for c in add + remove):
+        raise DispatchError('Ծանր պատվերով խանութը բաժանված է մի քանի երթի — տեղափոխեք այն «Փոփոխել» կոճակով')
+    _require_vehicle(ctx, add, trip.truck)
+    touched = {trip.id}
+    trip.stops = [c for c in trip.stops if c not in set(remove)]
+    for cid in add:
+        src = next((t for t in draft.trips if cid in t.stops), None)
+        if src is not None:
+            src.stops.remove(cid)
+            touched.add(src.id)
+        trip.stops = _insert_cheapest(ctx, trip.stops, cid, routable)
+        for left in (draft.no_room, draft.no_window, draft.no_center, draft.no_vehicle):
+            left.discard(cid)
+    draft.trips = [t for t in draft.trips if t.stops]
+    shares = _shares(draft.trips)
+    for t in draft.trips:
+        if t.id in touched:
+            # выезд — для окон приёма при 2-opt; заново для каждого рейса (рейсы одной машины идут друг за другом)
+            start = _timeline(ctx, draft.trips, routable, shares)[t.id][0]
+            t.stops, *_ = _route(ctx, t.stops, routable, shares, reorder=True, start=start, truck=t.truck)
+    return draft
 
 
 def apply_edit(ctx: DayContext, stops: Sequence[Stop], draft: Draft, edit: Mapping[str, Any],
@@ -1850,6 +1912,9 @@ def apply_edit(ctx: DayContext, stops: Sequence[Stop], draft: Draft, edit: Mappi
       {"action": "move", "customer_id", "from_trip": id|null, "to_trip": id|null, "truck": код|null}
           — перенести клиента в другой рейс; to_trip = null и truck — новый рейс этой машины;
             to_trip = null и truck = null — убрать из рейсов («ещё не в рейсах»);
+      {"action": "trip_stops", "trip": id, "add": [customer_id, …], "remove": [customer_id, …]} — быстрая правка
+          состава рейса (_trip_stops): убранные — «ещё не в рейсах», добавленные — из «ещё не в рейсах» или из
+          других рейсов; одна правка — одна «Չեղարկել» (Draft.undo, как resize);
       {"action": "pin", "trip": id, "truck": код} — закрепить машину за рейсом (рейс уходит к ней);
       {"action": "unpin", "trip": id};
       {"action": "resize", "trip": id, "return": минут от полуночи} — конец рейса потянули на шкале дня (_resize);
@@ -1940,6 +2005,11 @@ def apply_edit(ctx: DayContext, stops: Sequence[Stop], draft: Draft, edit: Mappi
     if action == 'resize':
         before = {k: v for k, v in draft.to_json().items() if k not in ('prediction', 'undo', 'sent')}   # №81: sent — свой
         draft = _resize(ctx, draft, routable, edit, now_min)
+        draft.undo = before
+        return draft
+    if action == 'trip_stops':
+        before = {k: v for k, v in draft.to_json().items() if k not in ('prediction', 'undo', 'sent')}
+        draft = _trip_stops(ctx, draft, routable, edit)
         draft.undo = before
         return draft
     if action != 'move':

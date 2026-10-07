@@ -2328,7 +2328,7 @@ def api_dispatch_build() -> Any:
 @bp.post('/api/routes/dispatch/edit')
 @_api
 def api_dispatch_edit() -> Any:
-    """Правка логиста: {"date", "rev", "action": move | pin | unpin | exclude | include | agents | defer_trip | resize | undo, …}
+    """Правка логиста: {"date", "rev", "action": move | trip_stops | pin | unpin | exclude | include | agents | defer_trip | resize | undo, …}
     (dispatch.apply_edit). rev — номер черновика, от которого правка: план изменён в другой вкладке — 409.
     В ответе — день целиком и delta_km: как изменились км плана. resize с "preview": true — только подсказка во время
     перетаскивания (ничего не сохраняется): {"preview": {delta_km, stops — сколько точек у машины рейса прибавилось
