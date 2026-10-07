@@ -345,6 +345,10 @@ def main() -> int:
             plan_trucks = page.locator('#dpTruckCards .dp-tcard').count()
             n_sheets = sheet_page.locator('.sheet').count()
             check(n_sheets > 0 and n_sheets == plan_trucks, f'F print page: {n_sheets} .sheet for {plan_trucks} trucks in the plan')
+            # №87 п. 4: «Բեռն. №» у каждой точки — обратный объезду (последняя грузится первой)
+            ld = sheet_page.locator('.sheet').first.locator('table').first.locator('td.ld').all_inner_texts()
+            check('Բեռն. №' in sheet_page.locator('.sheet').first.locator('thead').first.inner_text()
+                  and ld == [str(len(ld) - i) for i in range(len(ld))] and len(ld) > 0, f'F loading numbers per stop {ld}')
             sheet_page.close()
 
             # H (до сброса — нужен построенный план)

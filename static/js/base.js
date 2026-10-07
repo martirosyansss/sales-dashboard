@@ -49,6 +49,30 @@ window.RtWaybill = (function () {
         if (tr.unknown) out.push('Ուշադրություն՝ ' + pl(tr.unknown, 'ապրանք') + ' ERP-ի ցուցակում չի գտնվել (նշված է ID-ով)։');
         return out;
     }
+    // «Բեռնման հերթականություն» (ответ владельца №87 п. 4): магазины рейса в обратном порядке объезда (tr.loading с
+    // сервера) — последний магазин грузится первым, в глубину кузова; итоги рейса выше не меняются
+    const LOAD_HINT = 'Վերջին խանութի ապրանքը բեռնել առաջինը՝ թափքի խորքում, առաջին խանութինը՝ վերջինը՝ դռան մոտ։';
+    const kgText = (kg) => '≈' + NB + fmt(kg) + NB + 'կգ';
+    const loadNo = (x) => String(x.no) + (x.no === 1 ? ' — բեռնել առաջինը' : '');
+    const loadStore = (x) => (x.name || x.code || '—') + (x.name && x.code ? ' (' + x.code + ')' : '')
+        + ' · կետ № ' + x.stop + (x.split ? ' · մեծ պատվերի մաս' : '');
+    function loadingHtml(tr) {
+        const list = Array.isArray(tr.loading) ? tr.loading : [];
+        if (!list.length) return '';
+        let h = '<h2 class="ld">Բեռնման հերթականություն</h2><p class="ld-hint">' + esc(LOAD_HINT) + '</p>'
+            + '<table><thead><tr><th>Բեռն. №</th><th>Կոդ</th><th>Ապրանք</th><th>Քանակ</th><th>Փաթեթ</th><th>✓</th></tr></thead>';
+        list.forEach(x => {
+            h += '<tbody class="ld-g"><tr class="ld-h"><td class="n">' + esc(x.no) + '</td><td colspan="5"><b>' + esc(loadStore(x)) + '</b> · '
+                + esc(kgText(x.kg)) + (x.no === 1 ? ' · <b>բեռնել առաջինը</b>' : '') + '</td></tr>';
+            (x.rows || []).forEach(r => {
+                h += '<tr><td></td><td class="c">' + esc(r.code) + '</td><td>' + esc(wbName(r)) + '</td><td class="q">' + esc(wbQty(r)) + '</td>'
+                    + '<td class="p">' + esc(wbPacks(r)) + '</td><td class="ok"></td></tr>';
+            });
+            if (!(x.rows || []).length) h += '<tr><td></td><td colspan="5">Ապրանքներ չկան։</td></tr>';
+            h += '</tbody>';
+        });
+        return h + '</table>';
+    }
     function waybillHtml(t, d, wb) {
         const dayText = (WD_NAME[d.weekday] || '') + ', ' + dateRu(d.day);
         const made = new Date();
@@ -65,6 +89,8 @@ window.RtWaybill = (function () {
             + '.notes{margin:10px 0 0;padding-left:18px;font-size:13px}.sign{display:flex;gap:40px;margin-top:28px;font-size:15px}'
             + '.sign div{flex:1;display:flex;flex-direction:column;justify-content:flex-end}.sign span{display:block;border-bottom:1px solid #000;height:26px}.made{margin-top:14px;font-size:12px;color:#444}'
             + '.blank{display:inline-block;width:260px;border-bottom:1px solid #000;height:15px;vertical-align:bottom}'
+            + 'h2.ld{font-size:19px;margin:20px 0 2px}.ld-hint{font-size:13px;margin:0}tbody.ld-g{break-inside:avoid;page-break-inside:avoid}'
+            + 'tr.ld-h td{background:#f2f2f2}tr.ld-h td.n{font-size:20px;font-weight:700}'
             + '@media screen{body{background:#fff}}'
             + '</style></head><body>';
         wb.trips.forEach(tr => {
@@ -83,6 +109,7 @@ window.RtWaybill = (function () {
             if (!tr.rows.length) html += '<tr><td colspan="7">Ապրանքներ չկան՝ պատվերներում տողեր չեն գտնվել։</td></tr>';
             html += '</tbody><tfoot><tr><td colspan="5">Ընդամենը՝ ' + esc(pl(tr.rows.length, 'ապրանք')) + '</td><td class="kg">' + esc(fmt(tr.kg))
                 + '</td><td></td></tr></tfoot></table><ul class="notes">' + wbNotes(tr).map(x => '<li>' + esc(x) + '</li>').join('') + '</ul>'
+                + loadingHtml(tr)
                 + '<div class="sign"><div>Բաց թողեց (պահեստապետ)<span></span></div><div>Ընդունեց (վարորդ)'
                 + (wb.driver ? '՝ ' + esc(wb.driver) : '') + '<span></span></div>'
                 + (wb.helper ? '<div>Ընդունեց (առաքիչ)՝ ' + esc(wb.helper) + '<span></span></div>' : '') + '</div>'
@@ -90,6 +117,6 @@ window.RtWaybill = (function () {
         });
         return html + '</body></html>';
     }
-    // name и notes — ещё и Excel «Развоза» (те же строки, что на листе)
-    return { html: waybillHtml, name: wbName, notes: wbNotes };
+    // name, notes и подписи блока погрузки — ещё и Excel «Развоза» (те же строки, что на листе)
+    return { html: waybillHtml, name: wbName, notes: wbNotes, loadNo, loadStore, loadHint: LOAD_HINT };
 })();

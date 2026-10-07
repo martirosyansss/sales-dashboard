@@ -29,7 +29,7 @@ def test_one_renderer_for_both_pages():
     assert 'const wbNotes = (tr) => window.RtWaybill.notes(tr);' in dispatch               # при вызове, не при загрузке
     assert '/api/routes/warehouse/waybill?' in warehouse and '/api/routes/dispatch' not in warehouse
     tpl = (ROOT / 'templates' / 'base_v2.html').read_text(encoding='utf-8')
-    assert "filename='js/base.js') }}?v=2\"" in tpl                                    # новый base.js — мимо кэша
+    assert "filename='js/base.js') }}?v=3\"" in tpl                                    # новый base.js — мимо кэша
     page = (ROOT / 'templates' / 'routes_warehouse.html').read_text(encoding='utf-8')
     assert "routes_warehouse.js') }}?v=7" in page and "routes_warehouse.css') }}?v=5" in page
 
@@ -40,10 +40,13 @@ require(process.argv[1]);
 const W = window.RtWaybill;
 const row = { code: '0101', name: 'Կաթ <1լ>', unit: 'հատ', qty: 30, pack: 12, packs: 2, loose: 6, kg: 31.5, unknown: false };
 const wb = { rev: 7, driver: 'Արամ', helper: null, trips: [
-    { id: 4, no: 1, loading_start: '08:10', depart: '08:40', stops: 3, kg: 31.5, orders: 2, invoiced: 2, rows: [row] },
+    { id: 4, no: 1, loading_start: '08:10', depart: '08:40', stops: 3, kg: 31.5, orders: 2, invoiced: 2, rows: [row],
+      loading: [{ no: 1, stop: 2, code: 'C2', name: 'Խանութ <2>', split: true, kg: 31.5, rows: [row] },
+                { no: 2, stop: 1, code: 'C1', name: 'Խանութ 1', split: false, kg: 0, rows: [] }] },
     { id: 9, no: 2, loading_start: '12:00', depart: '12:20', stops: 1, kg: 0, orders: 1, invoiced: 0, rows: [] }] };
 process.stdout.write(JSON.stringify({ html: W.html({ car_code: 'CAR1', name: 'HOWO' }, { day: '2026-10-06', weekday: 2 }, wb),
-    unknown: W.name({ unknown: true, product_id: 77 }), notes: W.notes(wb.trips[1]) }));
+    unknown: W.name({ unknown: true, product_id: 77 }), notes: W.notes(wb.trips[1]),
+    load: [W.loadNo(wb.trips[0].loading[0]), W.loadStore(wb.trips[0].loading[0]), W.loadNo(wb.trips[0].loading[1])] }));
 '''
 
 
@@ -60,3 +63,9 @@ def test_renderer_output():
     assert 'Ապրանքներ չկան' in html
     assert got['unknown'] == 'ERP-ում անհայտ ապրանք (ID 77)'
     assert got['notes'] == ['Քանակները՝ պատվերներից․ ապրանքագրեր դեռ չկան։']
+    # №87 п. 4: блок порядка погрузки — только у рейса, где он есть; магазины по номеру погрузки, имя — через esc
+    assert html.count('<h2 class="ld">Բեռնման հերթականություն</h2>') == 1
+    assert html.index('Խանութ &lt;2&gt; (C2) · կետ № 2 · մեծ պատվերի մաս') < html.index('Խանութ 1 (C1) · կետ № 1')
+    assert '<b>բեռնել առաջինը</b>' in html and '<2>' not in html
+    assert html.index('Բեռնման հերթականություն') < html.index('Բաց թողեց')                # до подписей листа
+    assert got['load'] == ['1 — բեռնել առաջինը', 'Խանութ <2> (C2) · կետ № 2 · մեծ պատվերի մաս', '2']

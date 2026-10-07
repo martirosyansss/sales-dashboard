@@ -182,6 +182,27 @@ def test_truck_waybill_split_sums_to_documents_across_trucks():
     assert total == docs
 
 
+def test_truck_waybill_loading_order_is_reverse_visit_and_sums_to_trip():
+    """№87 п. 4 (LIFO): блок «Բեռնման հերթականություն» — магазины рейса в обратном порядке объезда (последняя точка —
+    no 1, грузится первой), у каждого — его доля товаров (тяжёлый 101 — своя треть); Σ по магазинам = итоги рейса."""
+    plan = _plan()
+    for s, code, name in zip(plan['trucks'][0]['trips'][0]['stops'], ('C101', 'C102'), ('Խանութ <1>', 'Խանութ 2')):
+        s['code'], s['name'] = code, name
+    t1, t2 = wb.truck_waybill(plan, 'A', _lines())['trips']
+    assert [(x['no'], x['stop'], x['code'], x['name'], x['split']) for x in t1['loading']] == \
+        [(1, 2, 'C102', 'Խանութ 2', False), (2, 1, 'C101', 'Խանութ <1>', True)]
+    assert _qty(t1['loading'][0]) == {11: 7, 12: 3, 99: 2} and _qty(t1['loading'][1]) == {10: 18, 11: 24}
+    assert t1['loading'][0]['kg'] == round(7 * 1.65 + 3 * 0.2) and t1['loading'][1]['kg'] == round(18 * 6.03 + 24 * 1.65)
+    for t in (t1, t2):
+        total: dict = {}
+        for x in t['loading']:
+            for pid, q in _qty(x).items():
+                total[pid] = total.get(pid, 0) + q
+        assert total == _qty(t)
+    assert [(x['no'], x['stop'], x['code'], x['name']) for x in t2['loading']] == [(1, 1, '', '')]   # без кода — пусто
+    assert t1['basis'] == [[101, 3, ['o1', 'o2']], [102, 1, ['o3']]]                     # порядок плана не меняется
+
+
 def test_truck_waybill_missing_truck_and_empty_lines():
     assert wb.truck_waybill(_plan(), 'ZZZ', _lines()) is None
     got = wb.truck_waybill(_plan(), 'B', wb.Lines({}, frozenset(), {}))
@@ -307,6 +328,9 @@ def test_api_waybill_matches_page_plan(client, day):
     for t, tr in zip(got['trips'], truck['trips']):            # то же, что сверяет страница (wbBasis)
         assert t['basis'] == [[s['customer_id'], s['share'], sorted(o['isn'] for o in s['orders'])] for s in tr['stops']]
         assert (t['depart'], t['loading_start'], t['return']) == (tr['depart'], tr['loading_start'], tr['return'])
+        # №87 п. 4: порядок погрузки — точки рейса страницы задом наперёд, с кодом и названием магазина
+        assert [(x['stop'], x['code'], x['name']) for x in t['loading']] == \
+            [(len(tr['stops']) - i, s['code'], s['name']) for i, s in enumerate(reversed(tr['stops']))]
     assert asked == [sorted(o['isn'] for tr in truck['trips'] for s in tr['stops'] for o in s['orders'])]
     assert _get(client, date='2026-10-01', truck=truck['car_code']).status_code == 200    # без rev — без сверки
 

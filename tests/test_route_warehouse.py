@@ -286,6 +286,8 @@ def test_warehouse_waybill_is_dispatch_waybill_of_approved_plan(client, monkeypa
     truck = next(t for t in d['plan']['trucks'] if t['car_code'] == code)
     assert (got['rev'], got['day'], [x['id'] for x in got['trips']]) == (d['rev'], DAY, [x['id'] for x in truck['trips']])
     assert got['trips'][0]['rows'] and got['trips'][0]['rows'][0]['code'] == '0101'
+    # №87 п. 4: порядок погрузки и складу — последняя точка рейса первой
+    assert [x['stop'] for x in got['trips'][0]['loading']] == list(range(len(truck['trips'][0]['stops']), 0, -1))
     asked.clear()
     orders, erp = [], state.dispatch_loader
     state.dispatch_loader = lambda *a: orders.append(a) or erp(*a)   # заказы ERP
