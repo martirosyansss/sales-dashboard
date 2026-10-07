@@ -2,13 +2,14 @@
 """«Աշխատավարձ» в настоящем app_v2 (гейт ролей, вход, CSRF): зарплаты видит только администратор; «Гараж», «Склад»,
 пользователь территории и аноним не получают ни страницы, ни API, ни ссылки на неё."""
 import sys
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from route_optimizer import crew_pay as cp  # noqa: E402
+from route_optimizer import views  # noqa: E402
 from test_garage_public import LAN, _session_as, app_v2, client  # noqa: E402,F401
 from test_route_optimizer import _no_road_map  # noqa: E402,F401
 
@@ -30,6 +31,8 @@ def calls(app_v2, monkeypatch):
     monkeypatch.setattr(state, 'crew_pay_loader', lambda since, until: seen.append((since, until)) or cp.CrewData(
         (cp.Invoice(11, date(2026, 9, 1), 1, 1, 1000.0, 100.0),), {1: ('A001/4', 'Մ'), 11: ('B001/1', 'Կորյուն')}))
     monkeypatch.setattr(state, 'crew_pay_cache', {})
+    # «сегодня» страницы — по Еревану и фиксировано: сентябрь 2026 остаётся среди последних 12 месяцев
+    monkeypatch.setattr(views, '_yerevan_now', lambda: datetime(2026, 10, 7, 10, 0, tzinfo=timezone(timedelta(hours=4))))
     return seen
 
 
@@ -65,9 +68,10 @@ def test_admin_sees_page_tab_and_data(client, users, calls):
     page = client.get('/routes/pay', base_url=LAN)
     assert page.status_code == 200
     html = page.get_data(as_text=True)
-    assert '<a href="/routes/pay" aria-current="page">Աշխատավարձ</a>' in html and 'js/routes_pay.js?v=4' in html and 'css/routes_pay.css?v=2' in html
+    assert '<a href="/routes/pay" aria-current="page">Աշխատավարձ</a>' in html and 'js/routes_pay.js?v=6' in html and 'css/routes_pay.css?v=2' in html
     assert '<a href="/routes/pay">Աշխատավարձ</a>' in client.get('/routes/garage', base_url=LAN).get_data(as_text=True)
     body = client.get('/api/routes/pay?month=2026-09', base_url=LAN).get_json()
     assert body['success'] and [r['name'] for r in body['rows']] == ['Կորյուն']
+    assert client.get('/api/routes/pay', base_url=LAN).get_json()['month'] == '2026-10'          # часы подменены
     assert client.post('/api/routes/pay/params', json=cp.Params().json(), base_url=LAN).status_code == 403   # без CSRF
     assert client.post('/api/routes/pay/params', json=cp.Params().json(), headers=h, base_url=LAN).status_code == 200
