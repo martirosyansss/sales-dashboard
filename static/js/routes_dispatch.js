@@ -2280,14 +2280,15 @@
         $('dpBoard').querySelectorAll('.dp-blabel').forEach(b => b.setAttribute('aria-pressed', String(!!f && f.truck === b.dataset.truck && f.trip == null)));
         $('dpBoard').querySelectorAll('.dp-bar').forEach(b => b.setAttribute('aria-pressed', String(!!f && f.trip != null && String(f.trip) === b.dataset.trip)));
         $('dpTruckCards').querySelectorAll('.dp-tcard').forEach(c => c.classList.toggle('is-focus', !!f && f.truck === c.dataset.truck));
-        if ($('rtDispatch').classList.contains('is-ws')) {
-            const was = $('dpWs').classList.contains('has-side');
+        const ws = $('rtDispatch').classList.contains('is-ws'), barH = $('dpWsTripBar').offsetHeight;
+        const was = $('dpWs').classList.contains('has-side');
+        if (ws) {
             $('dpWsSide').hidden = !f;
             $('dpWs').classList.toggle('has-side', !!f);
-            // карточка машины внизу: низ выше, карта ниже — Leaflet пересчитывает размер сразу, до вписывания точек
-            if (was !== !!f && state.map) state.map.invalidateSize({ pan: false });
         }
-        renderSideBar('redraw');
+        renderSideBar('redraw');   // №89: после показа карточки (рейс — по её прокрутке), до пересчёта размера карты
+        // карточка машины и полоса рейса внизу: карта ниже — Leaflet пересчитывает размер сразу, до вписывания точек
+        if (ws && (was !== !!f || barH !== $('dpWsTripBar').offsetHeight) && state.map) state.map.invalidateSize({ pan: false });
     }
 
     // Нажали машину или рейс на шкале: он же на карте, карточка машины раскрыта и видна рядом с картой
