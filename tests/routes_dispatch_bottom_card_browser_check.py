@@ -10,8 +10,8 @@ A рабочий экран, рейсы собраны: карточки маш�
 B нажали машину на шкале: карточка — в нижней полосе справа от шкалы, не пересекает карту; карта стала ниже, но видна;
 C нажали точку на карте: строка магазина в карточке подсвечена, у точки — карточка магазина (название, машина, заказы)
   с «Հանել երթից»;
-D «Հանել երթից» → одна правка trip_stops remove [cid] этого рейса, карточка магазина закрыта, подсказка «հանվեց»,
-  магазин — в «Դեռ երթերում չեն»;
+D «Հանել երթից» → карточка магазина закрыта, окно «Ինչու՞» (причина обязательна, ничего не отправлено); «Միայն այսօր»
+  → одна правка trip_stops remove [cid] этого рейса, подсказка «հանվեց», магазин — в «Դեռ երթերում չեն»;
 E «×» карточки машины → она закрыта, карта снова до шкалы;
 F все машины (ничего не выбрано): точка → карточка машины внизу и карточка магазина;
 P прошедший день: у карточки магазина нет «Հանել երթից».
@@ -133,6 +133,9 @@ def main() -> int:
             # D — «Հանել երթից»
             n = len(posts)
             card.locator('.dp-stopcard-x').click()
+            check(page.locator('#dpWhyDlg').is_visible() and not edits(n), 'D asks why first (dialog «Ինչու՞»), nothing sent')
+            page.locator('#dpWhyOpts input[value="today"]').check()
+            page.click('#dpWhySave')
             page.wait_for_selector('#dpToast.is-on .dp-toast-act', timeout=15000)
             e = edits(n)
             check(len(e) == 1 and e[0].get('action') == 'trip_stops' and e[0].get('remove') == [cid] and str(e[0].get('trip')) == tr_id,
@@ -140,8 +143,9 @@ def main() -> int:
             page.wait_for_timeout(400)                        # закрытие — после анимации Leaflet
             check(page.locator('.leaflet-popup .dp-stopcard').count() == 0, 'D store card closed')
             check('հանվեց' in page.locator('#dpToast').inner_text(), 'D toast says removed, with «Չեղարկել»')
-            check(page.evaluate("document.activeElement && document.activeElement.classList.contains('dp-toast-act')"),
-                  'D focus moves to «Չեղարկել» (the card button is gone)')
+            check(page.evaluate("!!document.activeElement && ['dp-toast-act', 'dp-stop-x', 'dp-addbtn']"
+                                ".some(c => document.activeElement.classList.contains(c))"),
+                  'D focus stays usable (the card button is gone)')
             d = data()
             check(cid in [s['customer_id'] for s in d['plan']['unassigned']] and trip_of(d, cid) is None, 'D store is now not in trips')
             page.screenshot(path=str(SHOTS / 'd-removed.png'))

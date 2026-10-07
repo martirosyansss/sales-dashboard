@@ -1287,6 +1287,29 @@ body.dp-ws-on .rt-secbar .rt-tabs a { padding-top: 3px; padding-bottom: 3px; }
 .dp-add-sum { margin: 10px 0 0; font-size: .875rem; color: var(--rt-fg-dim); }
 .dp-add-sum.is-over { color: var(--rt-danger); font-weight: 600; }
 .dp-add-dlg .rt-ferr { margin-top: 8px; }
+/* «Ինչու՞» у «×»: причина обязательна, «միշտ» — правило на все дни; в окне «Խանութ» — недоступные с причиной */
+.dp-why-opts { margin: 4px 0 0; padding: 0; border: 0; display: grid; gap: 8px; }
+.dp-why-opt { margin: 0; padding: 10px 12px; border: 1px solid var(--rt-line); border-radius: 12px; background: var(--rt-inset); }
+.dp-why-lab { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 10px; align-items: start; margin: 0; cursor: pointer; }
+.dp-why-opt:hover { border-color: var(--rt-acc-dim); }
+.dp-why-opt.is-on { border-color: var(--rt-acc); background: var(--rt-acc-glow); }
+.dp-why-opt.is-off { opacity: .55; }
+.dp-why-opt.is-off .dp-why-lab { cursor: default; }
+.dp-why-lab > input { width: 18px; height: 18px; margin: 2px 0 0; accent-color: var(--rt-acc); }
+.dp-why-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.dp-why-body b { font-size: .9375rem; font-weight: 700; }
+.dp-why-body .rt-badge { margin-left: 6px; font-size: .6875rem; padding: 0 7px; vertical-align: 1px; }
+.dp-why-text { font-size: .8125rem; color: var(--rt-fg-dim); line-height: 1.45; }
+.dp-why-trucks { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 8px 0 0 32px; }
+.dp-why-trucks label { display: inline-flex; align-items: center; gap: 6px; font-size: .875rem; cursor: pointer; }
+.dp-why-trucks input { width: 16px; height: 16px; accent-color: var(--rt-acc); }
+.dp-why-trucks label:has(input:disabled) { color: var(--rt-fg-mute); cursor: default; }
+.dp-add-row.is-off { cursor: default; }
+.dp-add-row.is-off:hover { background: transparent; }
+.dp-add-row.is-off > i { margin-top: 3px; color: var(--rt-fg-mute); text-align: center; }
+.dp-add-row.is-off b, .dp-add-row.is-off .dp-add-kg { color: var(--rt-fg-dim); }
+.dp-add-why { font-size: .8125rem; color: var(--rt-warn); line-height: 1.45; overflow-wrap: anywhere; }
+.dp-add-why a { color: var(--rt-acc); }
 /* владелец 07.10: нажали точку на карте — карточка магазина у точки: заказы и «Հանել երթից» */
 .dp-stoppop .leaflet-popup-content { min-width: 240px; }
 .dp-stopcard .rt-pop-t { padding-right: 18px; }

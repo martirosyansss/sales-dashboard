@@ -99,6 +99,7 @@
         roadCache: new Map(), roadGen: 0,   // линии рейсов по дорогам: ключ — точки линии; номер отрисовки
         pickMap: null, pickMarker: null, pickCid: null, dragging: false, undo: null,
         addFor: null,                       // окно «Ավելացնել խանութ»: {trip, kg, capacity, list, picked}
+        why: null,                          // окно «Ինչու՞» у «×»: {stop, tripId, idx, truck}
         loadSeq: 0,                         // номер последнего запроса дня: ответы на прежние запросы не применяются
         editing: new Set(),                 // рейсы, открытые кнопкой «Փոփոխել»
         tab: 'day',                         // №81: вкладка на телефоне — day | trips | map
@@ -528,7 +529,7 @@
     const interacting = () => {
         const a = document.activeElement;
         return state.pickCid !== null || state.dragging || !!state.mapDrag || (!!state.stopCard && state.stopCard.isOpen() && wsOn()) || $('dpGeoDlg').open || $('dpUnloadDlg').open || $('dpDriverDlg').open
-            || $('dpSameDayDlg').open || $('dpAbsentDlg').open || $('dpSendFirstDlg').open || $('dpAddDlg').open
+            || $('dpSameDayDlg').open || $('dpAbsentDlg').open || $('dpSendFirstDlg').open || $('dpAddDlg').open || $('dpWhyDlg').open
             || (!!a && $('dpBody').contains(a) && /^(SELECT|INPUT|TEXTAREA)$/.test(a.tagName));
     };
     async function poll() {
@@ -2438,6 +2439,12 @@
         sel.addEventListener('change', () => {
             const v = sel.value;
             if (!v) return;
+            if (v === 'u:' && canQuickEdit(stop, tripId)) {   // убрать из рейса — только с причиной (окно «Ինչու՞»)
+                sel.value = '';
+                const li = sel.closest('.dp-stop');
+                openWhy(stop, tripId, li ? [...li.parentElement.querySelectorAll('.dp-stop')].indexOf(li) : 0);
+                return;
+            }
             const body = { action: 'move', customer_id: stop.customer_id, from_trip: tripId, to_trip: null, truck: null };
             if (v.startsWith('t:')) body.to_trip = Number(v.slice(2));
             else if (v.startsWith('n:')) body.truck = v.slice(2);
@@ -2458,15 +2465,130 @@
         b.title = 'Հանել երթից';
         b.setAttribute('aria-label', 'Հանել երթից՝ ' + (stop.name || stop.code));
         b.draggable = false;
-        b.addEventListener('click', async (e) => {
+        b.addEventListener('click', (e) => {
             e.stopPropagation();
             const li = b.closest('.dp-stop');
-            const idx = li ? [...li.parentElement.querySelectorAll('.dp-stop')].indexOf(li) : 0;
-            if (await tripStops({ trip: tripId, remove: [stop.customer_id] }, '«' + (stop.name || stop.code) + '» հանվեց երթից՝ այն «Դեռ երթերում չեն» ցուցակում է')) {
-                focusAfterQuick(tripId, idx);
-            }
+            openWhy(stop, tripId, li ? [...li.parentElement.querySelectorAll('.dp-stop')].indexOf(li) : 0);
         });
         return b;
+    }
+
+    // «Ինչու՞» (владелец 07.10: «обязательно с объяснением… чтобы фильтры всегда работали»): причина обязательна;
+    // «միշտ» — правило на все дни: машине нельзя (deny_truck), только эти машины (only_trucks), машины не везут (never) —
+    // правка stop_rule; «միայն այսօր» — trip_stops (с «Չեղարկել»), «այսօր չենք տանում» — exclude заказов магазина
+    const WHY = [
+        { key: 'today', title: 'Միայն այսօր', text: 'Խանութը կմնա «Դեռ երթերում չեն» ցուցակում՝ կդնեք այլ երթ։ Կանոն չի պահվում։' },
+        { key: 'not_today', title: 'Այսօր չենք տանում', text: 'Խանութը փակ է, այսօր չի ընդունում և այլն․ նրա պատվերներն այսօր չեն գնում։' },
+        { key: 'deny_truck', always: true, title: 'Այս մեքենան չի կարող տանել այս խանութը', text: '' },
+        { key: 'only_trucks', always: true, title: 'Այս խանութը տանել միայն ընտրված մեքենաներով', text: 'Մյուս մեքենաներին այն այլևս չի նշանակվի։' },
+        { key: 'never', always: true, title: 'Երբեք չտանել մեր մեքենաներով',
+            text: 'Տանում է ֆուրան, ինքն է վերցնում և այլն․ խանութն այլևս չի երևա «Առաքում»-ում։ Վերադարձնել՝ «Կարգավորումներ»-ում։' },
+    ];
+    function openWhy(stop, tripId, idx) {
+        if (state.busy || !needPlan()) return;
+        const t = state.data.plan.trucks.find(x => x.trips.some(tr => tr.id === tripId));
+        if (!t) return;
+        const rule = stop.vehicle_access;
+        // единственная разрешённая машина — «эта машина не может» оставила бы магазин совсем без машин (сервер откажет)
+        const lastAllowed = !!rule && rule.mode === 'allow' && rule.trucks.length === 1 && rule.trucks[0] === t.car_code;
+        state.why = { stop, tripId, idx, truck: t.car_code };
+        $('dpWhyTitle').textContent = 'Ինչու՞ եք հանում «' + (stop.name || stop.code) + '»-ը երթից';
+        $('dpWhyLead').textContent = 'Նշեք պատճառը։ «Միշտ» նշվածները պահվում են որպես կանոն և գործում են բոլոր հաջորդ օրերին և երթերը '
+            + 'կազմելիս։' + (rule ? ' Հիմա՝ ' + vehicleText(rule) + '։' : '');
+        const box = $('dpWhyOpts');
+        box.querySelectorAll('.dp-why-opt').forEach(x => x.remove());
+        WHY.forEach(o => {
+            const row = document.createElement('div');
+            row.className = 'dp-why-opt';
+            const lab = document.createElement('label');
+            lab.className = 'dp-why-lab';
+            const rb = document.createElement('input');
+            rb.type = 'radio';
+            rb.name = 'dpWhy';
+            rb.value = o.key;
+            const body = document.createElement('span');
+            body.className = 'dp-why-body';
+            const b = document.createElement('b');
+            b.textContent = o.title;
+            if (o.always) b.insertAdjacentHTML('beforeend', ' <span class="rt-badge b-warn">միշտ</span>');
+            const p = document.createElement('span');
+            p.className = 'dp-why-text';
+            p.textContent = o.key === 'deny_truck'
+                ? (lastAllowed ? 'Չի կարելի՝ սա այս խանութի միակ թույլատրված մեքենան է։ Ընտրեք «միայն ընտրված մեքենաներով»։'
+                    : '«' + truckLabel(t) + '»-ը այլևս չի նշանակվի այս խանութին։')
+                : o.text;
+            body.append(b, p);
+            rb.disabled = o.key === 'deny_truck' && lastAllowed;
+            row.classList.toggle('is-off', rb.disabled);
+            rb.addEventListener('change', whyState);
+            lab.append(rb, body);
+            row.appendChild(lab);
+            if (o.key === 'only_trucks') row.appendChild(whyTrucks(t.car_code, rule));
+            box.appendChild(row);
+        });
+        $('dpWhyErr').textContent = '';
+        whyState();
+        $('dpWhyDlg').showModal();
+        box.querySelector('input[type="radio"]').focus();
+    }
+    function whyTrucks(current, rule) {
+        const list = document.createElement('div');
+        list.className = 'dp-why-trucks';
+        list.setAttribute('role', 'group');
+        list.setAttribute('aria-label', 'Մեքենաներ, որոնք տանում են այս խանութը');
+        const allowed = rule && rule.mode === 'allow' ? new Set(rule.trucks) : new Set();
+        state.data.trucks.forEach(x => {
+            const lab = document.createElement('label');
+            const cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.value = x.car_code;
+            cb.disabled = x.car_code === current;    // из рейса этой машины магазин и убираем
+            cb.checked = !cb.disabled && allowed.has(x.car_code);   // нынешний список «только эти» не теряется молча
+            cb.addEventListener('change', () => {
+                const rb = $('dpWhyOpts').querySelector('input[value="only_trucks"]');
+                if (cb.checked && !rb.checked) rb.checked = true;
+                whyState();
+            });
+            cb.setAttribute('aria-label', truckLabel(x));
+            lab.append(cb, document.createTextNode(' ' + truckLabel(x) + (x.car_code === current ? ' (այս երթի մեքենան)' : '')));
+            list.appendChild(lab);
+        });
+        return list;
+    }
+    const whyPicked = () => { const r = $('dpWhyOpts').querySelector('input[name="dpWhy"]:checked'); return r ? r.value : null; };
+    const whyTrucksPicked = () => [...$('dpWhyOpts').querySelectorAll('.dp-why-trucks input:checked')].map(x => x.value);
+    function whyState() {
+        const k = whyPicked();
+        $('dpWhySave').disabled = state.busy || !k || (k === 'only_trucks' && !whyTrucksPicked().length);
+        $('dpWhyOpts').querySelectorAll('.dp-why-opt').forEach(r => r.classList.toggle('is-on', !!r.querySelector('input[name="dpWhy"]:checked')));
+    }
+    async function saveWhy() {
+        const w = state.why, k = whyPicked();
+        if (!w || !k || state.busy) return;
+        const name = '«' + (w.stop.name || w.stop.code) + '»';
+        if (k === 'not_today') { $('dpWhyDlg').close(); excludeStop(w.stop); return; }
+        $('dpWhySave').disabled = $('dpWhyCancel').disabled = true;
+        let ok;
+        if (k === 'today') ok = await tripStops({ trip: w.tripId, remove: [w.stop.customer_id], reason: 'today' }, name + ' հանվեց երթից՝ այն «Դեռ երթերում չեն» ցուցակում է');
+        else {
+            const trucks = whyTrucksPicked();
+            const body = { action: 'stop_rule', trip: w.tripId, customer_id: w.stop.customer_id, rule: k };
+            if (k === 'only_trucks') body.trucks = trucks;
+            const what = k === 'never' ? 'այլևս չենք տանում մեր մեքենաներով'
+                : k === 'deny_truck' ? '«' + truckLabel(truckBy(w.truck)) + '»-ը այն այլևս չի տանի'
+                    : 'տանում են միայն՝ ' + trucks.map(c => truckLabel(truckBy(c))).join(', ');
+            const data = await edit(body, null);
+            ok = !!data;
+            const kept = ok && Array.isArray(data.rule_kept_days) ? data.rule_kept_days : [];
+            if (ok) toast(name + ' հանվեց երթից։ Կանոնը պահպանվեց՝ ' + what + ' — կգործի ամեն օր։'
+                + (kept.length ? ' Բայց ' + kept.map(d => dayHuman(d, false)).join(', ') + '՝ այն արդեն բեռնված մեքենայում է, հանեք ձեռքով։' : ''));
+        }
+        $('dpWhyCancel').disabled = false;
+        if (ok) { $('dpWhyDlg').close(); focusAfterQuick(w.tripId, w.idx); return; }
+        if (!$('dpWhyDlg').open) return;
+        if (!$('dpActionReload').classList.contains('d-none')) { $('dpWhyDlg').close(); $('dpActionError').focus(); return; }
+        $('dpWhyErr').textContent = $('dpActionError').classList.contains('d-none') ? '' : $('dpActionErrorText').textContent;
+        whyState();
     }
     async function tripStops(body, text) {
         const data = await edit({ action: 'trip_stops', ...body }, null);
@@ -2491,11 +2613,11 @@
         const pts = tr.stops.filter(s => num(s.lat) !== null && num(s.lon) !== null);
         const near = (s) => (num(s.lat) === null || num(s.lon) === null || !pts.length) ? Infinity
             : Math.min(...pts.map(p => (p.lat - s.lat) ** 2 + ((p.lon - s.lon) * 0.766) ** 2));   // cos 40° — км по долготе
-        const list = [], skipped = { vehicle: 0, split: 0 };
+        const list = [], blocked = [];
         const take = (s, from) => {
-            if (!vehicleAllowed(s, t.car_code)) { skipped.vehicle++; return; }
-            if (s.share > 1) { skipped.split++; return; }
-            list.push({ stop: s, from, d: near(s) });
+            const why = addBlockReason(s, t.car_code);
+            if (why) blocked.push({ stop: s, from, why, d: near(s) });
+            else list.push({ stop: s, from, d: near(s) });
         };
         state.data.plan.unassigned.forEach(s => take(s, null));
         state.data.plan.trucks.forEach(x => x.trips.forEach((o, k) => {
@@ -2504,20 +2626,34 @@
                 o.loading_minutes && o.loading_start ? 'բեռնում ' + o.loading_start : null].filter(Boolean);
             if (o.id !== tr.id) o.stops.forEach(s => take(s, truckLabel(x) + ' · երթ ' + (k + 1) + (marks.length ? ' (' + marks.join(', ') + ')' : '')));
         }));
-        list.sort((a, b) => (a.from !== null) - (b.from !== null) || (a.d === b.d ? 0 : a.d < b.d ? -1 : 1));
-        return { list, skipped };
+        // без точки на карте в рейс не встанет ни один магазин — их тоже видно, с причиной
+        (state.data.stops_no_coords || []).forEach(s => blocked.push({ stop: s, from: null, d: Infinity,
+            why: { text: 'Քարտեզում տեղ չունի՝ նախ նշեք կետը («Առանց կետի»)' } }));
+        const order = (a, b) => (a.from !== null) - (b.from !== null) || (a.d === b.d ? 0 : a.d < b.d ? -1 : 1);
+        list.sort(order);
+        blocked.sort(order);
+        return { list, blocked };
+    }
+    // Почему магазин нельзя добавить в рейс этой машины — текст для оператора и ссылка, где правило поменять
+    function addBlockReason(s, code) {
+        const rule = s.vehicle_access;
+        if (!vehicleAllowed(s, code)) {
+            const link = { href: '/routes/settings?customer=' + s.customer_id + '#rsCustomerSettings', label: 'Փոխել կանոնը' };
+            if (rule.mode === 'allow' && !rule.trucks.length) return { text: 'Ոչ մի մեքենա թույլատրված չէ այս խանութի համար', link };
+            if (rule.mode === 'allow') return { text: 'Այս խանութը տանում են միայն՝ ' + rule.trucks.map(c => truckLabel(truckBy(c))).join(', '), link };
+            return { text: '«' + truckLabel(truckBy(code)) + '»-ին արգելված է այս խանութը (' + vehicleText(rule) + ')', link };
+        }
+        if (s.share > 1) return { text: 'Ծանր պատվեր՝ բաժանված է ' + s.share + ' երթի․ տեղափոխեք «Փոփոխել» կոճակով' };
+        return null;
     }
     function openAddStops(t, tr, i) {
         if (state.busy || !needPlan()) return;
-        const { list, skipped } = addCandidates(t, tr);
-        state.addFor = { trip: tr.id, kg: num(tr.kg) || 0, capacity: num(truckBy(t.car_code).capacity_kg), list, picked: new Set() };
+        const { list, blocked } = addCandidates(t, tr);
+        state.addFor = { trip: tr.id, kg: num(tr.kg) || 0, capacity: num(truckBy(t.car_code).capacity_kg), list, blocked, picked: new Set() };
         $('dpAddTitle').textContent = 'Ավելացնել խանութներ՝ ' + truckLabel(t) + ', երթ ' + (i + 1);
-        const notes = [];
-        if (skipped.vehicle) notes.push(pl(skipped.vehicle, 'խանութ') + ' այս մեքենան չի կարող սպասարկել');
-        if (skipped.split) notes.push(pl(skipped.split, 'խանութ') + ' բաժանված է մի քանի երթի՝ տեղափոխեք «Փոփոխել» կոճակով');
         $('dpAddLead').textContent = (list.length
             ? 'Նշեք խանութները՝ վերևում «Դեռ երթերում չեն», հետո՝ այլ երթերից, ըստ մոտիկության։ Երթի հերթականությունը կվերահաշվարկվի։'
-            : 'Ավելացնելու խանութ չկա։') + (notes.length ? ' (' + notes.join(', ') + ')' : '');
+            : 'Ավելացնելու խանութ չկա։') + (blocked.length ? ' Ներքևում՝ ինչու որոշները չի կարելի ավելացնել։' : '');
         $('dpAddFind').value = '';
         $('dpAddErr').textContent = '';
         renderAddList();
@@ -2566,7 +2702,47 @@
             row.append(cb, main, kg);
             box.appendChild(row);
         });
-        if (!shown && a.list.length) {
+        const off = a.blocked.filter(c => hit(c.stop));
+        if (off.length) {
+            const h = document.createElement('p');
+            h.className = 'dp-add-h';
+            h.textContent = 'Չի կարելի ավելացնել այս երթին';
+            box.appendChild(h);
+        }
+        off.forEach(c => {
+            shown++;
+            const s = c.stop;
+            const row = document.createElement('div');
+            row.className = 'dp-add-row is-off';
+            const ico = document.createElement('i');
+            ico.className = 'fas fa-ban';
+            ico.setAttribute('aria-hidden', 'true');
+            const main = document.createElement('span');
+            main.className = 'dp-add-main';
+            const b = document.createElement('b');
+            b.textContent = s.name || s.code;
+            const sub = document.createElement('span');
+            sub.className = 'dp-add-sub';
+            sub.textContent = [s.code, s.address, c.from].filter(Boolean).join(' · ');
+            const why = document.createElement('span');
+            why.className = 'dp-add-why';
+            why.textContent = c.why.text;
+            if (c.why.link) {
+                const ln = document.createElement('a');
+                ln.href = c.why.link.href;
+                ln.target = '_blank';
+                ln.rel = 'noopener';
+                ln.textContent = c.why.link.label;
+                why.append(' · ', ln);
+            }
+            main.append(b, sub, why);
+            const kg = document.createElement('span');
+            kg.className = 'dp-add-kg';
+            kg.textContent = kgText(s.kg);
+            row.append(ico, main, kg);
+            box.appendChild(row);
+        });
+        if (!shown && (a.list.length || a.blocked.length)) {
             const p = document.createElement('p');
             p.className = 'dp-add-empty';
             p.textContent = 'Չգտնվեց՝ «' + $('dpAddFind').value.trim() + '»';
@@ -3804,14 +3980,11 @@
             b.innerHTML = '<i class="fas fa-xmark" aria-hidden="true"></i><span>Հանել երթից</span>';
             b.setAttribute('aria-label', 'Հանել երթից՝ ' + (s.name || s.code));
             b.disabled = state.busy;
-            b.addEventListener('click', async () => {
+            b.addEventListener('click', () => {
                 if (state.busy) return;
                 closeStopCard();
-                // кнопки больше нет — с клавиатуры дальше «Չեղարկել» в подсказке
-                if (await tripStops({ trip: tr.id, remove: [s.customer_id] }, '«' + (s.name || s.code) + '» հանվեց երթից՝ այն «Դեռ երթերում չեն» ցուցակում է')) {
-                    const undo = document.querySelector('#dpToast .dp-toast-act');
-                    if (undo) undo.focus();
-                }
+                // убрать из рейса — только с причиной (владелец 07.10), как «×» в карточке машины
+                openWhy(s, tr.id, Math.max(0, tr.stops.findIndex(x => x.customer_id === s.customer_id)));
             });
             box.appendChild(b);
         } else if (!state.data.is_past && s.share > 1) {
@@ -5024,6 +5197,10 @@
         $('dpAddCancel').addEventListener('click', () => $('dpAddDlg').close());
         $('dpAddDlg').addEventListener('close', () => { state.addFor = null; });
         $('dpAddDlg').addEventListener('cancel', (e) => { if (state.busy) e.preventDefault(); });
+        $('dpWhySave').addEventListener('click', saveWhy);
+        $('dpWhyCancel').addEventListener('click', () => $('dpWhyDlg').close());
+        $('dpWhyDlg').addEventListener('close', () => { state.why = null; });
+        $('dpWhyDlg').addEventListener('cancel', (e) => { if (state.busy) e.preventDefault(); });
         $('dpUnloadDlg').addEventListener('close', () => { state.unloadStop = null; state.unloadInfo = null; });
         $('dpUnloadDlg').addEventListener('cancel', (e) => { if (state.busy) e.preventDefault(); });
         $('dpUnloadMin').addEventListener('input', () => { $('dpUnloadErr').textContent = ''; markUnload(false); });
