@@ -1163,6 +1163,7 @@ body.dp-ws-on .rt-secbar .rt-tabs a { padding-top: 3px; padding-bottom: 3px; }
 .dp-ws-close {
     position: sticky; top: 0; margin: 0 0 6px auto; width: 32px; height: 32px; border-radius: 50%; border: 1px solid var(--rt-line);
     background: var(--rt-panel-2); color: var(--rt-fg-dim); display: grid; place-items: center; cursor: pointer; z-index: 2;
+    box-shadow: 0 0 0 6px var(--rt-bg);   /* при прокрутке текст под ним не просвечивает по краю */
 }
 .dp-ws-close:hover { color: var(--rt-fg); }
 #rtDispatch .dp-ws-side .dp-trucklist { position: static; max-height: none; overflow: visible; padding: 0; gap: 10px; }
@@ -1292,6 +1293,8 @@ body.dp-ws-on .rt-secbar .rt-tabs a { padding-top: 3px; padding-bottom: 3px; }
 .dp-stopcard-orders { list-style: none; margin: 8px 0 0; padding: 6px 0 0; border-top: 1px solid var(--rt-line-soft); font-size: .8125rem; }
 .dp-stopcard-orders li { display: flex; justify-content: space-between; gap: 12px; padding: 1px 0; color: var(--rt-fg-dim); }
 .dp-stopcard-orders b { color: var(--rt-fg); font-weight: 600; white-space: nowrap; }
-#rtDispatch .dp-stopcard-x { width: 100%; margin-top: 10px; justify-content: center; color: var(--rt-danger); border-color: var(--rt-danger-line); }
-#rtDispatch .dp-stopcard-x:hover:not(:disabled) { background: var(--rt-danger-bg); color: var(--rt-danger); }
+/* низкая карта — карточка прокручивается (maxHeight), кнопка прижата к её низу и видна всегда */
+#rtDispatch .dp-stopcard-x { position: sticky; bottom: 0; width: 100%; margin-top: 10px; justify-content: center; color: var(--rt-danger);
+    border-color: var(--rt-danger-line); background: var(--rt-panel-2); box-shadow: 0 6px 0 var(--rt-panel-2), 0 -6px 0 var(--rt-panel-2); }
+#rtDispatch .dp-stopcard-x:hover:not(:disabled) { background: linear-gradient(var(--rt-danger-bg), var(--rt-danger-bg)), var(--rt-panel-2); color: var(--rt-danger); }
 .dp-stopcard-note { margin-top: 8px; font-size: .8125rem; color: var(--rt-fg-mute); }

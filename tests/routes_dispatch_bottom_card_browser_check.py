@@ -140,6 +140,8 @@ def main() -> int:
             page.wait_for_timeout(400)                        # закрытие — после анимации Leaflet
             check(page.locator('.leaflet-popup .dp-stopcard').count() == 0, 'D store card closed')
             check('հանվեց' in page.locator('#dpToast').inner_text(), 'D toast says removed, with «Չեղարկել»')
+            check(page.evaluate("document.activeElement && document.activeElement.classList.contains('dp-toast-act')"),
+                  'D focus moves to «Չեղարկել» (the card button is gone)')
             d = data()
             check(cid in [s['customer_id'] for s in d['plan']['unassigned']] and trip_of(d, cid) is None, 'D store is now not in trips')
             page.screenshot(path=str(SHOTS / 'd-removed.png'))
@@ -163,9 +165,32 @@ def main() -> int:
             page.wait_for_timeout(200)
             check(page.locator('.leaflet-popup .dp-stopcard').count() == 0, 'F Esc closes the store card')
 
+            # S — низкий экран ноутбука: карта ниже, но кнопка карточки видна целиком внутри карты; Esc на кнопке закрывает
+            page.set_viewport_size({'width': 1366, 'height': 768})
+            page.wait_for_timeout(500)
+            page.locator('.dp-ws-map .dp-npin, .dp-ws-map .dp-dpin').first.click(force=True)
+            page.wait_for_selector('.leaflet-popup .dp-stopcard-x', timeout=5000)
+            page.wait_for_timeout(500)
+            btn, mp = rect('.leaflet-popup .dp-stopcard-x'), rect('#dpWsMap')
+            vis = page.evaluate("(() => { const b = document.querySelector('.leaflet-popup .dp-stopcard-x'), r = b.getBoundingClientRect();"
+                                " const e = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return !!e && b.contains(e); })()")
+            check(btn[1] >= mp[1] and btn[3] <= mp[3] + 1 and vis, f'S 1366×768: «Հանել երթից» fully visible in the map {btn} / {mp}')
+            page.screenshot(path=str(SHOTS / 's-laptop.png'))
+            page.locator('.leaflet-popup .dp-stopcard-x').focus()
+            page.keyboard.press('Escape')
+            page.wait_for_timeout(400)
+            check(page.locator('.leaflet-popup .dp-stopcard').count() == 0, 'S Esc on the card button closes the card')
+            # другой день — карточка закрыта и не держит автообновление
+            page.locator('.dp-ws-map .dp-npin, .dp-ws-map .dp-dpin').first.click(force=True)
+            page.wait_for_selector('.leaflet-popup .dp-stopcard', timeout=5000)
+            page.click('#dpDayNext')
+            page.wait_for_timeout(1500)
+            check(page.locator('.leaflet-popup .dp-stopcard').count() == 0, 'S next day: the store card is closed')
+            page.set_viewport_size({'width': 1600, 'height': 950})
+
             # P — прошедший день: без «Հանել երթից»
             views._clock = lambda: datetime(2026, 10, 2, 18, 0)
-            page.reload()
+            page.goto(f'{BASE}/routes/dispatch?date={DAY}')
             page.wait_for_selector('#rtDispatch.is-ws #dpBoard .dp-bar', timeout=30000)
             page.wait_for_timeout(800)
             page.locator('.dp-ws-map .dp-dpin').first.click(force=True)

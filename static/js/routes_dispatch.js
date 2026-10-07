@@ -283,6 +283,7 @@
     }
 
     function setData(data) {
+        closeStopCard();   // карточка магазина — о прежних данных (и прежнем дне)
         if (!state.data || !data || state.data.day !== data.day) state.progress = null;   // ход дня — своего дня
         setTimeout(loadProgress, 0);
         const trips = new Set();
@@ -526,7 +527,7 @@
     // тогда обновляются только подсказки, а страница — при следующей проверке.
     const interacting = () => {
         const a = document.activeElement;
-        return state.pickCid !== null || state.dragging || !!state.mapDrag || (!!state.stopCard && state.stopCard.isOpen()) || $('dpGeoDlg').open || $('dpUnloadDlg').open || $('dpDriverDlg').open
+        return state.pickCid !== null || state.dragging || !!state.mapDrag || (!!state.stopCard && state.stopCard.isOpen() && wsOn()) || $('dpGeoDlg').open || $('dpUnloadDlg').open || $('dpDriverDlg').open
             || $('dpSameDayDlg').open || $('dpAbsentDlg').open || $('dpSendFirstDlg').open || $('dpAddDlg').open
             || (!!a && $('dpBody').contains(a) && /^(SELECT|INPUT|TEXTAREA)$/.test(a.tagName));
     };
@@ -3751,6 +3752,10 @@
     // Карточка магазина у точки: что везём (заказы, кг, сумма), когда приедем, чья машина — и «Հանել երթից» (как «×» в
     // списке). Открыта на карте отдельно от точек: перерисовка после выбора машины её не закрывает; новая отрисовка
     // карты (правка, пересборка) — закрывает (данные в ней могли устареть)
+    function closeStopCard() {
+        if (state.stopCard && state.map) state.map.closePopup(state.stopCard);
+        state.stopCard = null;
+    }
     function openStopCard(t, tr, s) {
         if (!state.map || s.lat === null) return;
         const ti = t.trips.indexOf(tr), si = tr.stops.indexOf(s);
@@ -3778,7 +3783,8 @@
         row('Գումար', money(s.revenue / (s.share || 1)));
         const who = [s.code, s.agent_name || s.agent_code].filter(Boolean).join(' · ');
         if (who) row('Կոդ, մենեջեր', who);
-        const orders = s.orders || [];
+        // магазин разделён между рейсами — вес и сумма выше этого рейса, а заказы целиком: список не путает цифры
+        const orders = s.share > 1 ? [] : s.orders || [];
         if (orders.length) {
             const ul = document.createElement('ul');
             ul.className = 'dp-stopcard-orders';
@@ -3798,17 +3804,27 @@
             b.innerHTML = '<i class="fas fa-xmark" aria-hidden="true"></i><span>Հանել երթից</span>';
             b.setAttribute('aria-label', 'Հանել երթից՝ ' + (s.name || s.code));
             b.disabled = state.busy;
-            b.addEventListener('click', () => {
+            b.addEventListener('click', async () => {
                 if (state.busy) return;
-                state.map.closePopup();
-                tripStops({ trip: tr.id, remove: [s.customer_id] }, '«' + (s.name || s.code) + '» հանվեց երթից՝ այն «Դեռ երթերում չեն» ցուցակում է');
+                closeStopCard();
+                // кнопки больше нет — с клавиатуры дальше «Չեղարկել» в подсказке
+                if (await tripStops({ trip: tr.id, remove: [s.customer_id] }, '«' + (s.name || s.code) + '» հանվեց երթից՝ այն «Դեռ երթերում չեն» ցուցակում է')) {
+                    const undo = document.querySelector('#dpToast .dp-toast-act');
+                    if (undo) undo.focus();
+                }
             });
             box.appendChild(b);
         } else if (!state.data.is_past && s.share > 1) {
             line('dp-stopcard-note', 'Ծանր պատվեր՝ բաժանված է երթերի միջև. տեղափոխել կարելի է ցուցակից («Փոփոխել»)');
         }
-        state.stopCard = L.popup({ className: 'dp-stoppop', maxWidth: 320, minWidth: 240, autoPanPadding: [16, 16], offset: [0, -8] })
+        // Esc с фокусом на кнопке карточки (клавиатура Leaflet слушает только саму карту)
+        box.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.stopPropagation(); closeStopCard(); } });
+        // низкий экран (карта ниже из-за карточки машины) — карточка прокручивается, «Հանել երթից» не обрезана
+        state.stopCard = L.popup({ className: 'dp-stoppop', maxWidth: 320, minWidth: 240, maxHeight: Math.max(140, state.map.getSize().y - 100),
+                                   autoPanPadding: [16, 16], offset: [0, -8] })
             .setLatLng([s.lat, s.lon]).setContent(box).openOn(state.map);
+        const mk = state.mapMarks && state.mapMarks.get(tr.id + ':' + s.customer_id);
+        if (mk) mk.closeTooltip();   // подпись точки не поверх карточки
     }
     function flashStop(tripId, cid) {
         const row = $('dpTruckCards').querySelector('.dp-trip[data-trip="' + tripId + '"] .dp-stop[data-cid="' + cid + '"]');
@@ -3943,7 +3959,7 @@
         const d = state.data, plan = d.plan;
         if (state.mapDrag) state.mapDrag.cancel();
         if (state.hoverRing) state.hoverRing.remove();
-        if (state.stopCard) { state.map.closePopup(state.stopCard); state.stopCard = null; }
+        closeStopCard();
         state.layers.clearLayers();
         state.map.invalidateSize();
         const bounds = [];
