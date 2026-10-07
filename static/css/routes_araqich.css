@@ -1,0 +1,66 @@
+/* «Առաքիչների KPI» /routes/araqich — поверх routes.css (тема, плитки .rt-kpi, таблица .rt-numtable); свои классы .kp-* */
+#kpPage { max-width: 1280px; margin: 0 auto; }
+
+.kp-month-label { font-size: .9375rem; color: var(--rt-fg-dim); margin: 0; }
+.kp-month { min-width: 230px; }
+.kp-sub { font-size: .9375rem; color: var(--rt-fg-dim); }
+
+/* таблица прокручивается внутри карточки — страница не шире экрана */
+.kp-scroll { max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch;
+    border: 1px solid var(--rt-line); border-radius: var(--rt-radius-sm); }
+.kp-table { min-width: 1080px; }
+.rt-numtable.kp-table thead th.kp-name { text-align: left; }
+.kp-table thead th { padding: 0; }
+.kp-table thead th.kp-spark-h { padding: 8px 12px; text-align: center; }
+.kp-sort { all: unset; box-sizing: border-box; display: flex; width: 100%; justify-content: flex-end; align-items: center;
+    gap: 6px; padding: 8px 12px; cursor: pointer; color: inherit; font: inherit; }
+.kp-name .kp-sort { justify-content: flex-start; }
+.kp-sort:hover, .kp-sort.is-on { color: var(--rt-fg); }
+.kp-sort:focus-visible { outline: 2px solid var(--rt-acc); outline-offset: -2px; border-radius: 4px; }
+.kp-sort i { font-size: .75rem; color: var(--rt-acc); }
+
+.kp-table tbody tr { cursor: pointer; }
+.kp-table tbody tr:hover td { background: var(--rt-panel-2); }
+.kp-table tbody tr.is-open td { background: var(--rt-acc-glow); }
+.kp-table tbody tr:focus-visible { outline: 2px solid var(--rt-acc); outline-offset: -2px; }
+.kp-table td.kp-name { white-space: nowrap; }
+/* имя не уезжает при прокрутке таблицы вбок (телефон) */
+.kp-table .kp-name { position: sticky; left: 0; z-index: 1; background: var(--rt-panel); }
+.kp-table thead th.kp-name { background: var(--rt-panel-2); z-index: 2; }
+.kp-table tbody tr:hover td.kp-name { background: var(--rt-panel-2); }
+/* полупрозрачная подсветка поверх непрозрачного фона — цифры не просвечивают через закреплённое имя */
+.kp-table tbody tr.is-open td.kp-name { background: linear-gradient(var(--rt-acc-glow), var(--rt-acc-glow)), var(--rt-panel); }
+.kp-person { font-weight: 600; }
+.kp-table .rt-badge { margin-left: 8px; vertical-align: 1px; }
+.kp-code { display: block; font-family: var(--rt-mono); font-size: .8125rem; color: var(--rt-fg-mute); margin-top: 2px; }
+.kp-dim { color: var(--rt-fg-mute); font-size: .875rem; }
+.kp-arr { display: inline-block; margin-left: 6px; font-size: .75rem; font-weight: 600; }
+.kp-arr.is-good { color: var(--rt-ok); }
+.kp-arr.is-bad { color: var(--rt-danger); }
+
+.kp-spark-cell { text-align: center; }
+.kp-spark { display: inline-block; vertical-align: middle; }
+.kp-spark-line { fill: none; stroke: var(--rt-acc); stroke-width: 1.6; stroke-linejoin: round; stroke-linecap: round; }
+.kp-spark-dot { fill: var(--rt-acc); opacity: .6; }
+.kp-spark-now { fill: var(--rt-acc); }
+
+.kp-legend { margin: 10px 0 0; line-height: 1.9; }
+.kp-legend .rt-badge { margin: 0 2px; }
+.kp-close { margin-left: auto; }
+
+/* столбики: дни месяца и полгода */
+.kp-h3 { font-size: .9375rem; font-weight: 600; color: var(--rt-fg-dim); margin: 4px 0 8px; }
+.kp-days, .kp-trend { overflow-x: auto; -webkit-overflow-scrolling: touch; padding-bottom: 6px; margin-bottom: 14px; }
+.kp-bars { display: block; }
+.kp-bar { fill: var(--rt-acc); }
+.kp-bar.is-below { fill: var(--rt-warn); }
+.kp-bar-v { fill: var(--rt-fg); font: 600 11px var(--rt-mono); text-anchor: middle; }
+.kp-bar-l { fill: var(--rt-fg-mute); font: 500 11px var(--rt-font); text-anchor: middle; }
+.kp-norm { stroke: var(--rt-fg-dim); stroke-width: 1; stroke-dasharray: 4 4; }
+
+.kp-how p { margin: 0 0 8px; font-size: .9375rem; line-height: 1.55; color: var(--rt-fg-dim); max-width: 92ch; }
+.kp-how b { color: var(--rt-fg); }
+
+@media (max-width: 575px) {
+    .kp-month { flex: 1 1 auto; min-width: 0; }
+}

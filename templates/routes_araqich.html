@@ -1,0 +1,115 @@
+{% extends "base_v2.html" %}
+
+{% block title %}Առաքիչների KPI — Sales Dashboard{% endblock %}
+
+{% block extra_css %}
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400..700&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+Armenian:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=24">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_araqich.css') }}?v=2">
+{% endblock %}
+
+{% block content %}
+<!-- Вкладки раздела — одинаковая полоса на всех страницах «Маршрутов» (одно место, один вид) -->
+<div class="rt-page rt-secbar" lang="hy">
+    <nav class="rt-tabs" aria-label="Երթուղիների բաժիններ">
+        <a href="/routes">Ակնարկ</a>
+        <a href="/routes/optimize">Օպտիմալացում</a>
+        <a href="/routes/dispatch">Առաքում</a>
+        <a href="/routes/learning">Ուսուցում</a>
+        <a href="/routes/settings">Կարգավորումներ</a>
+        <a href="/routes/garage">Ավտոտնակ</a>
+        <a href="/routes/pay">Աշխատավարձ</a>
+        <a href="/routes/araqich" aria-current="page">Առաքիչների KPI</a>
+    </nav>
+</div>
+<!-- «Առաքիչների KPI» (route_optimizer/crew_kpi.py): показатели առաքիչ за месяц по ERP; только администратору -->
+<div class="rt-page" id="kpPage" lang="hy">
+
+    <header class="rt-head">
+        <div class="rt-head-row">
+            <h1 class="rt-title">Առաքիչների KPI</h1>
+            <div class="rt-head-tools">
+                <label for="kpMonth" class="kp-month-label">Ամիս</label>
+                <select id="kpMonth" class="rt-select kp-month"></select>
+            </div>
+        </div>
+        <p class="rt-head-lead">Ով քանի խանութ և տոննա է առաքում, որքան է կատարում նորմը և որքան արժե մեկ տոննայի առաքումը՝ ըստ ERP-ի
+            անցկացված ապրանքագրերի (նույն տվյալները, ինչ «Աշխատավարձ»-ում)։ Սեղմեք տողի վրա՝ օր առ օր տեսնելու համար։</p>
+    </header>
+
+    <div id="kpStatus" class="rt-sr-only" role="status" aria-live="polite"></div>
+    <div id="kpAlert" class="rt-alert" role="alert" hidden>
+        <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
+        <span id="kpAlertText" class="rt-alert-text"></span>
+    </div>
+
+    <div id="kpWarn" class="rt-alert is-warn" role="status" hidden>
+        <i class="fas fa-circle-exclamation" aria-hidden="true"></i>
+        <span id="kpWarnText" class="rt-alert-text"></span>
+    </div>
+
+    <div id="kpLoading" class="rt-loading"><div class="rt-spinner"></div>Կարդում եմ ERP-ից՝ 6 ամիս…</div>
+
+    <!-- Команда: 4 главные цифры месяца против прошлого (заполняет routes_araqich.js) -->
+    <div class="rt-kpis is-4" id="kpTeam" role="group" aria-label="Թիմի հիմնական ցուցանիշները" hidden></div>
+
+    <section class="rt-card" aria-labelledby="kpTableTitle" id="kpTableCard" hidden>
+        <div class="rt-card-head">
+            <h2 class="rt-card-title" id="kpTableTitle"><i class="fas fa-ranking-star" aria-hidden="true"></i>Առաքիչներ</h2>
+            <span id="kpSub" class="kp-sub"></span>
+        </div>
+        <p id="kpEmpty" class="rt-empty" hidden>Այս ամսում առաքիչների ապրանքագրեր չկան։</p>
+        <div id="kpTableWrap" class="kp-scroll">
+            <table class="rt-numtable kp-table">
+                <caption class="rt-sr-only">Առաքիչների ցուցանիշները ամսվա համար</caption>
+                <thead id="kpHead"></thead>
+                <tbody id="kpRows"></tbody>
+            </table>
+        </div>
+        <p class="rt-field-hint kp-legend">
+            <span class="rt-badge b-ok">ուժեղ</span> — կետ/օր-ը թիմի մեդիանից <span id="kpGood">10</span>%-ով և ավելի բարձր է,
+            <span class="rt-badge b-danger">հետ է մնում</span> — <span id="kpBad">20</span>%-ով և ավելի ցածր։
+            <span class="rt-badge b-none">քիչ օր</span> — ամսում <span id="kpMinDays">3</span> օրից պակաս, չի գնահատվում։
+            Սլաքը՝ նախորդ ամսվա համեմատ։</p>
+    </section>
+
+    <!-- День за днём выбранного человека и его полгода -->
+    <section class="rt-card" id="kpPerson" aria-labelledby="kpPersonTitle" hidden tabindex="-1">
+        <div class="rt-card-head">
+            <h2 class="rt-card-title" id="kpPersonTitle"></h2>
+            <button type="button" id="kpPersonClose" class="rt-btn rt-btn-ghost rt-btn-sm kp-close">
+                <i class="fas fa-xmark" aria-hidden="true"></i>Փակել</button>
+        </div>
+        <h3 class="kp-h3">Կետեր ըստ օրերի</h3>
+        <div id="kpDays" class="kp-days" role="img"></div>
+        <h3 class="kp-h3">Կետ/օր վերջին 6 ամսում</h3>
+        <div id="kpTrend" class="kp-trend" role="img"></div>
+    </section>
+
+    <!-- Как считается: определения показателей -->
+    <details class="rt-fold" id="kpHow">
+        <summary><span class="rt-fold-t"><i class="fas fa-calculator" aria-hidden="true"></i>Ինչպե՞ս է հաշվվում</span></summary>
+        <div class="rt-fold-body kp-how">
+            <p><b>Օրեր</b> — օրեր, երբ առաքիչն ունի անցկացված ապրանքագիր։ <b>Ներկայություն</b> — այդ օրերը ընկերության
+                աշխատանքային օրերի մեջ (ընթացիկ ամսում՝ մինչև այսօր)։</p>
+            <p><b>Կետ/օր</b> — խանութներ մեկ աշխատանքային օրում (նույն օրը նույն խանութին մի քանի ապրանքագիր՝ 1 կետ)։</p>
+            <p><b>Տոննա/օր</b> և <b>Կգ/կետ</b> — առաքված քաշը օրում և միջինը մեկ խանութում։ <b>Վաճառք/օր</b> — նրա
+                ապրանքագրերի գումարը օրում։</p>
+            <p><b>Նորմ</b> — կետերը՝ «Աշխատավարձ»-ի նորմի (<span id="kpNorm">12</span> կետ օրում) նկատմամբ, միայն նրա
+                աշխատած օրերով։</p>
+            <p><b>֏/տոննա</b> — «Աշխատավարձ»-ի բանաձևով հաշվված վարձը մեկ տոննայի համար (ընթացիկ ամսում՝ մինչև այսօր
+                հաշվեգրվածը)։ Որքան ցածր, այնքան էժան է առաքումը։</p>
+            <p><b>Մեդիանի նկատմամբ</b> — կետ/օր-ը թիմի մեդիանի նկատմամբ․ մեդիանը հաշվվում է միայն նրանցով, ովքեր ամսում
+                աշխատել են առնվազն <span id="kpMinDays2">3</span> օր։</p>
+            <p class="rt-fold-foot">Գծերը և առաքիչները, որոնք «Աշխատավարձ»-ի պարամետրերում չեն հաշվվում, այստեղ նույնպես չեն
+                հաշվվում։ ERP-ում ոչինչ չի փոխվում։</p>
+        </div>
+    </details>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/routes_araqich.js') }}?v=2"></script>
+{% endblock %}
