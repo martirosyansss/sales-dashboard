@@ -150,6 +150,30 @@ def test_namesakes_on_same_days_are_separate_rows_with_warning():
     assert res.overlapping_codes == (('B003/24', 'B004/19'),)
 
 
+def test_three_namesakes_one_overlap_stay_three_rows():
+    """A и B работали в один день, C — в другие: группа не сливается целиком, три строки и одна группа в предупреждении."""
+    agents = {**AGENTS, 21: ('B1', 'Գրիգորյան Արմեն'), 22: ('B2', 'Գրիգորյան Արմեն'), 23: ('B3', 'գրիգորյան արմեն')}
+    invoices = [inv(21, 1, 1, kg=10), inv(22, 1, 2, kg=10), inv(23, 2, 3, kg=10)]
+    res = cp.compute(cp.CrewData(tuple(invoices), agents), cp.Params())
+    assert sorted(r.agent_ids for r in res.rows) == [(21,), (22,), (23,)]
+    assert res.overlapping_codes == (('B1', 'B2', 'B3'),)
+
+
+def test_csv_lists_what_to_check(pay):
+    AGENTS.update({21: ('B1', 'Գրիգորյան Արմեն'), 22: ('=B2', 'Գրիգորյան Արմեն'), 23: ('B3', 'Օգնական')})
+    pay.source['invoices'] = [inv(21, 1, 1, kg=10), inv(22, 1, 2, kg=10), inv(23, 2, 3, kg=10),
+                              inv(HELPER, 2, 4, kg=10)]
+    try:
+        lines = pay.get('/api/routes/pay.csv?month=2026-09').get_data().decode('utf-8')[1:].split('\r\n')
+    finally:
+        for k in (21, 22, 23):
+            del AGENTS[k]
+    checks = [x for x in lines if x.startswith('Ստուգել;')]
+    assert len(checks) == 2 and '=B2, B1' in checks[0] and checks[0].count(';') == 1
+    assert checks[1].endswith('չհաշվվողների մեջ՝ B3')
+    assert lines.index(checks[-1]) < next(i for i, x in enumerate(lines) if x.startswith('Կոդ;'))
+
+
 def test_excluded_person_with_another_counted_code_is_warned():
     agents = {**AGENTS, 21: ('B003/24', 'Օգնական')}                       # HELPER B008/10 исключён, его второй код — нет
     res = cp.compute(cp.CrewData((inv(HELPER, 1, 1), inv(21, 2, 2), inv(KORYUN, 3, 3)), agents), cp.Params())

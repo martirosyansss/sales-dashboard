@@ -4842,6 +4842,13 @@ def api_pay_csv() -> Any:
     for key, label in PAY_PARAM_LABELS:
         value = getattr(params, key)
         w.writerow([label, _csv_cell(', '.join(value)) if isinstance(value, tuple) else n(value)])
+    # то же, что предупреждения на странице: тёзки с общими днями и исключённые с учтённым кодом того же имени
+    for codes in result.overlapping_codes:
+        w.writerow(['Ստուգել', _csv_cell('Նույն անունով կոդեր, որոնցից մի քանիսը աշխատել են նույն օրերին՝ '
+                                         + ', '.join(codes) + ' — հաշվված են առանձին')])
+    if result.excluded_kin:
+        w.writerow(['Ստուգել', _csv_cell('Հաշվվում են, բայց նույն անունով կոդ կա չհաշվվողների մեջ՝ '
+                                         + ', '.join(result.excluded_kin))])
     w.writerow([])
     w.writerow(['Կոդ', 'Առաքիչ', 'Օրեր', 'Աշխատանքային օրեր', 'Կետեր', 'Տոննա', 'Ֆիքս', 'Գործավարձ', 'Նվազագույն',
                 'Վճարել', 'Նվազագույնը կիրառված է', f'Հին սխեմա ({n(params.old_pct)}%)', 'Տարբերություն'])

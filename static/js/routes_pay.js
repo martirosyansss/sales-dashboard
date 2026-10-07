@@ -102,8 +102,8 @@
         $('cpOldHead').textContent = 'Հին սխեմա (' + fmt(d.params.old_pct, d.params.old_pct % 1 ? 1 : 0) + '%)';
         const warn = [
             d.unknown_codes.length ? 'ERP-ում չկան այս կոդերը՝ ' + d.unknown_codes.join(', ') + '։ Ստուգեք պարամետրերը։' : '',
-            ...d.overlapping_codes.map(c => 'Նույն անունով մի քանի կոդ նույն օրերին՝ ' + c.join(', ')
-                + ' — ստուգեք։ Հաշվված են առանձին, որպես տարբեր մարդիկ։'),
+            ...d.overlapping_codes.map(c => 'Նույն անունով կոդեր, որոնցից մի քանիսը աշխատել են նույն օրերին՝ '
+                + c.join(', ') + ' — ստուգեք։ Հաշվված են առանձին։'),
             d.excluded_kin.length ? 'Այս կոդերը հաշվվում են, բայց նույն անունով կոդ կա չհաշվվողների մեջ՝ '
                 + d.excluded_kin.join(', ') + ' — նշեք մարդու բոլոր կոդերը։' : '',
         ].filter(Boolean);
