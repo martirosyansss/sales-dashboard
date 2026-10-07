@@ -2,7 +2,8 @@
 """Страницы и API раздела «Маршруты» (§10).
 
 Доступ обеспечивает глобальный before_request дашборда: аноним — 401/редирект на вход,
-роль user — 403 (раздела нет в allowlist), garage — только журнал гаража (/routes/garage и его API), admin — полный доступ.
+роль user — 403 (раздела нет в allowlist), garage — журнал гаража (/routes/garage и его API), карта машин и «Վարորդներ»
+(без денег), admin — полный доступ.
 Клиенту не отдаём текст исключений: ERP → 503, прочее → 500, подробности — в лог с [Routes].
 """
 from __future__ import annotations
@@ -31,6 +32,7 @@ from . import crew_kpi as ck
 from . import crew_pay as cp
 from . import dispatch as dp
 from . import evaluate, garage, learning, live, optimize
+from . import scorecard as sc
 from . import fleet as fl
 from . import waybill as wb
 from . import terrain as dem
@@ -210,6 +212,23 @@ class RoutesState:
     # упал (views._month_ready; под actuals_lock)
     garage_warm: dict[tuple[date, date], threading.Thread] = field(default_factory=dict)
     garage_warm_failed: set[tuple[date, date]] = field(default_factory=set)
+    # «Վարորդներ»: кто закрыл точки, деньги и тара по людям за день (courier.scorecard); None — страница пуста
+    crew_facts: sc.CrewFacts | None = None
+    # сводка дня «Վարորդներ»: день → (отпечаток данных дня, сводка) — views._scorecard_days
+    scorecard_cache: dict[str, tuple[Any, dict[str, Any]]] = field(default_factory=dict)
+    scorecard_lock: threading.Lock = field(default_factory=threading.Lock)   # только словарь кэша: расчёт не под ним
+    # «Վարորդներ» по машино-дням (под scorecard_lock): (машина, день) → (отпечаток, (превышений, минут стоянок вне
+    # магазинов)) — _scorecard_cars; интервал заправок → (отпечаток, день → км трека машины) и (машина, день) →
+    # (отпечаток, (вид, (литры, норма) | None)) — _scorecard_fuel
+    scorecard_track: dict[tuple[str, str], tuple[Any, Any]] = field(default_factory=dict)
+    fuel_span_cache: dict[tuple[Any, ...], tuple[Any, dict[date, float]]] = field(default_factory=dict)
+    fuel_day_cache: dict[tuple[str, str], tuple[Any, Any]] = field(default_factory=dict)
+    # неделя для APK (week_score): понедельник → (момент расчёта, scorecard.period недели); идущий расчёт — понедельник
+    # → фоновый поток (не больше одного); замок — только словари, расчёт не под ним
+    score_week_cache: dict[str, tuple[float, dict[str, Any]]] = field(default_factory=dict)
+    score_week_running: dict[str, threading.Thread] = field(default_factory=dict)
+    score_week_failed: dict[str, float] = field(default_factory=dict)   # неделя → момент сбоя расчёта (monotonic)
+    score_week_lock: threading.Lock = field(default_factory=threading.Lock)
     # рельеф трека машино-дня (№85): (машина, день) → (отпечаток трека и высот, (подъём м, км) или None) — _track_climbs
     track_climbs: dict[tuple[str, str], tuple[Any, Any]] = field(default_factory=dict)
 
@@ -3323,11 +3342,18 @@ def learning_page() -> str:
     return render_template('routes_learning.html', yandex_tiles_key=_yandex_tiles_key())
 
 
-def _learning_days(state: RoutesState, bundle: Bundle, since: date, until: date
+_DayRead = Callable[[str, str, Any, Mapping[str, Any], list[ac.PlanStop], ac.DayActual], None]
+
+
+def _learning_days(state: RoutesState, bundle: Bundle, since: date, until: date, on_read: _DayRead | None = None,
+                   versions: dict[tuple[str, str], Any] | None = None
                    ) -> list[tuple[str, date, list[ac.PlanStop], ac.DayActual, dict[str, Any] | None, int, int]]:
     """Машино-дни с треком за since…until: (машина, день, точки плана, факт, черновик развоза, рейсов и точек машины
     по плану). Место точки в объезде — по черновику «Развоза» дня, без него — порядок /day терминала. Факт дня — из
-    кэша, пока не изменились трек, доставки, снимок /day (FleetFacts.version), склад, план машины и окна приёма."""
+    кэша, пока не изменились трек, доставки, снимок /day (FleetFacts.version), склад, план машины и окна приёма.
+    on_read(машина, день, отпечаток кэша, данные FleetFacts.day, точки, факт) — после чтения машино-дня мимо кэша:
+    вызывающий берёт из того же чтения своё (трек «Վարորդներ» — _scorecard_cars), не читая день снова. versions —
+    заполняется (машина, день) → отпечаток, с которым посчитан факт каждой возвращённой строки."""
     if state.fleet_facts is None:
         return []
     windows = {cid: w.span() for cid, w in bundle.windows.items()}
@@ -3353,6 +3379,10 @@ def _learning_days(state: RoutesState, bundle: Bundle, since: date, until: date
                 state.actuals_cache[(car, ds)] = (version, stops, actual)
                 while len(state.actuals_cache) > ACTUALS_CACHE_MAX:
                     state.actuals_cache.pop(next(iter(state.actuals_cache)))
+            if on_read is not None:
+                on_read(car, ds, version, data, stops, actual)
+        if versions is not None:
+            versions[(car, ds)] = version
         out.append((car, date.fromisoformat(ds), stops, actual, drafts[ds], plan_trips, len(ranks)))
     return out
 
@@ -3827,16 +3857,18 @@ def api_learning() -> Any:
     since = (rng[0] - timedelta(days=60)).isoformat()
     intervals = learning.fuel_intervals([r for r in refuels if (r.get('eff_date') or r.get('date') or '') >= since])
     rows = []
+    errors: list[float] = []   # точность планового ETA за период (№87 п. 7)
     erp_capacity = _peek_car_capacity(state)
     for car, day, stops, actual, draft, plan_trips, plan_stops in days:
         prediction = (((draft or {}).get('prediction') or {}).get('trucks') or {}).get(car)
         rows.append(learning.day_report(car, day, actual, stops, prediction, plan_trips, plan_stops,
                                         bundle.truck_capacity(car, erp_capacity),
                                         learning.daily_l100(intervals, car, day)))
+        errors += _eta_errors(car, day, stops, actual, draft)
     rows.sort(key=lambda r: (r['day'], r['car_code']), reverse=True)
     return jsonify({'success': True, 'from': rng[0].isoformat(), 'to': rng[1].isoformat(),
                     'connected': state.fleet_facts is not None, 'depot': bundle.depot is not None,
-                    'days': rows, **_status_body(state),
+                    'days': rows, 'eta': sc.eta_accuracy(errors), **_status_body(state),
                     'rules': {'holdout_days': learning.HOLDOUT_DAYS, 'train_days': learning.TRAIN_DAYS,
                               'min_gain_pct': round(learning.MIN_GAIN * 100), 'unload_min': learning.UNLOAD_MIN,
                               'loading_min': learning.LOADING_MIN, 'travel_min_test': learning.TRAVEL_MIN_TEST,
@@ -4360,6 +4392,422 @@ def api_dispatch_progress() -> Any:
                     **_day_progress(state, day)})
 
 
+# --- «Վարորդներ»: показатели водителей за период (как driver analytics Omnitracs / Routific; №83, №87 п. 3 и 7) ---
+# Правила — route_optimizer.scorecard. Факт людей — «Առաքիչ» (crew_facts), GPS-факт машин — кэш обучения
+# (_learning_days → actuals_cache) и трек (скорость, стоянки — правила карты машин live), план — отправленный водителям
+# черновик «Развоза», литры — заправки и норма «Նորմ և փաստ». ERP не читается. В памяти, пока не изменился отпечаток:
+# сводка дня (события — в т.ч. трек, снимки /day, «сдал фактически», правка плана, склад, окна приёма, пороги тревог),
+# скорость и стоянки машино-дня (отпечаток факта обучения), км треков интервала заправок и литры машино-дня — прошлые
+# дни не пересчитываются и не перечитываются. Доступ: администратор и «Гараж» (№87: гаражу — без денег, сервер их не
+# отдаёт); APK — своя неделя водителя (week_score, courier GET /api/courier/v1/score).
+
+SCORECARD_DEFAULT_DAYS = 30
+SCORECARD_CACHE_DAYS = 400   # сводок дней в памяти; больше — вытесняется самая давняя по записи
+SCORECARD_CACHE_CAR_DAYS = 3000   # машино-дней (трек, литры) и интервалов заправок в памяти — как ACTUALS_CACHE_MAX
+SCORECARD_ROLES = ('admin', 'garage')   # кто видит «Վարորդներ»; деньги (Կանխիկ) — только admin
+SCORE_WEEK_TTL_S = 300.0     # неделя для APK (week_score): готовый расчёт отдаётся терминалам столько секунд
+SCORE_WEEK_WAIT_S = 2.0      # запрос, начавший расчёт недели, ждёт его не дольше; остальные — не ждут вовсе
+SCORE_WEEK_KEEP = 16         # недель в памяти: прежний расчёт отдаётся, пока считается новый
+SCORE_WEEK_RETRY_S = 30.0    # расчёт недели упал — снова не раньше (до того — прежний расчёт или 503 score)
+SCORECARD_FORBIDDEN = 'Մուտքն արգելված է'
+
+
+def _scorecard_role() -> str | None:
+    """Роль запроса, если ей открыты «Վարորդներ» (вторая линия после гейта app_v2), иначе None."""
+    role = g.get('user_role')
+    return role if role in SCORECARD_ROLES else None
+
+
+def _bounded(cache: dict[Any, Any], key: Any, value: Any, limit: int) -> None:
+    """Записать в кэш (вызывать под его замком): новая запись — в конец, сверх limit вытесняются самые давние."""
+    cache.pop(key, None)
+    cache[key] = value
+    while len(cache) > limit:
+        cache.pop(next(iter(cache)))
+
+
+@bp.get('/routes/drivers')
+def drivers_page() -> Any:
+    if _scorecard_role() is None:
+        return jsonify({'success': False, 'error': SCORECARD_FORBIDDEN}), 403
+    return render_template('routes_drivers.html')
+
+
+def _scorecard_range() -> tuple[tuple[date, date] | None, Any]:
+    """((с, по), None) или (None, ответ 400): ?from=&to= (по умолчанию — SCORECARD_DEFAULT_DAYS дней по сегодня
+    включительно), не длиннее scorecard.MAX_DAYS дней."""
+    raw_from, raw_to = request.args.get('from'), request.args.get('to')
+    until = _parse_day(raw_to) if raw_to is not None else _yerevan_now().date()
+    if raw_from is not None:
+        since = _parse_day(raw_from)
+    else:
+        since = until - timedelta(days=SCORECARD_DEFAULT_DAYS - 1) if until is not None else None
+    if since is None or until is None:
+        return None, _bad_request({'date': 'Ամսաթվերը՝ ՏՏՏՏ-ԱԱ-ՕՕ'})
+    if since > until:
+        return None, _bad_request({'date': 'Սկզբի ամսաթիվը չի կարող լինել վերջից ուշ'})
+    if (until - since).days + 1 > sc.MAX_DAYS:
+        return None, _bad_request({'date': f'Ժամանակահատվածը՝ առավելագույնը {sc.MAX_DAYS} օր'})
+    return (since, until), None
+
+
+def _plan_etas(draft: Mapping[str, Any] | None, car: str, day: date
+               ) -> tuple[dict[int, datetime], list[dict[int, datetime]]]:
+    """Плановое ETA клиентов машины за день — прогноз сборки отправленного водителям плана: (клиент → ETA первого
+    появления (live.plan_trips), по рейсам плана — клиент → ETA в этом рейсе). По рейсам — только если в прогнозе
+    столько же рейсов, сколько в плане (логист не менял рейсы после сборки), иначе []."""
+    trips = [list(t.get('stops') or ()) for t in (draft or {}).get('trips') or ()
+             if isinstance(t, dict) and t.get('truck') == car]
+    pred = (((draft or {}).get('prediction') or {}).get('trucks') or {}).get(car)
+    pred = pred if isinstance(pred, dict) else None
+    first = {c: e for t in live.plan_trips(trips, pred, day) for c, e in t.etas.items()}
+    ptrips = [t for t in (pred or {}).get('trips') or () if isinstance(t, Mapping)]
+    if len(ptrips) != len(trips):
+        return first, []
+    midnight = datetime(day.year, day.month, day.day, tzinfo=ac.YEREVAN)
+    per_trip = []
+    for t in ptrips:
+        etas: dict[int, datetime] = {}
+        for c in t.get('stops') or ():
+            if isinstance(c, list) and len(c) == 2 and isinstance(c[0], int) and not isinstance(c[0], bool) \
+                    and c[0] not in etas and (m := learning._hhmm(c[1])) is not None:
+                etas[c[0]] = midnight + timedelta(minutes=m)
+        per_trip.append(etas)
+    return first, per_trip
+
+
+def _stop_etas(draft: Mapping[str, Any] | None, car: str, day: date, stops: Sequence[ac.PlanStop],
+               actual: ac.DayActual) -> dict[str, datetime]:
+    """Плановое ETA обслуженных точек машино-дня: ETA клиента в рейсе плана с номером фактического рейса визита
+    (тяжёлый заказ, разбитый на рейсы, — у каждой точки своё ETA); клиента в этом рейсе плана нет (лишний заезд на
+    склад сдвинул номера) или по рейсам сравнивать нельзя — ETA его первого появления в плане."""
+    first, per_trip = _plan_etas(draft, car, day)
+    by_key = {s.key: s for s in stops}
+    out: dict[str, datetime] = {}
+    for key, vi in actual.served:
+        s = by_key.get(key)
+        if s is None or s.customer_id is None:
+            continue
+        k = actual.visits[vi].trip
+        eta = per_trip[k].get(s.customer_id) if k < len(per_trip) else None
+        eta = eta if eta is not None else first.get(s.customer_id)
+        if eta is not None:
+            out[key] = eta
+    return out
+
+
+def _eta_errors(car: str, day: date, stops: Sequence[ac.PlanStop], actual: ac.DayActual,
+                draft: Mapping[str, Any] | None) -> list[float]:
+    """Ошибки планового ETA обслуженных точек машино-дня, минуты (scorecard.eta_error): прибытие по GPS − ETA."""
+    marks = ac.stop_marks(actual, stops, day)
+    return [sc.eta_error(marks[k], eta) for k, eta in _stop_etas(draft, car, day, stops, actual).items() if k in marks]
+
+
+def _offroute_end(actual: ac.DayActual) -> datetime | None:
+    """Конец рабочего дня для стоянок вне магазинов: возвращение последнего рейса; не вернулся (или трек кончился в
+    пути) — уход от последнего магазина; визитов нет — None (до конца трека)."""
+    last = actual.trips[-1] if actual.trips else None
+    if last is not None and last.ret is not None:
+        return last.ret
+    return max((v.leave for v in actual.visits), default=None)
+
+
+def _track_metrics(track: Sequence[Sequence[Any]], actual: ac.DayActual, day: date, depot: Point | None,
+                   rules: live.Rules) -> tuple[int | None, float | None]:
+    """(превышений скорости, минут стоянок вне магазинов сверх порога) машино-дня по чистому треку с порогами карты
+    машин: live.speed_alerts; live.stop_alerts от первого выезда до _offroute_end, обед — сверх обеда. Трека нет —
+    (None, None)."""
+    pts = ac.clean_track(learning.track_fixes(track))
+    if not pts:
+        return None, None
+    speed = len(live.speed_alerts(pts, rules, False))   # type: ignore[arg-type]
+    deps = live.departures(pts, actual, depot)
+    stays = live.stop_alerts(actual, day, rules, deps[0] if deps else None, _offroute_end(actual), None, False)
+    return speed, math.fsum(max(0.0, a['minutes'] - (rules.lunch_min if a['lunch'] else 0.0)) for a in stays)
+
+
+def _scorecard_cars(state: RoutesState, bundle: Bundle, day: date, rules: live.Rules) -> dict[str, sc.CarDay]:
+    """GPS-факт машин дня: км и отметки визитов (actuals.stop_marks: прибытие, окно) — из кэша обучения
+    (_learning_days); плановые ETA (_plan_etas, по точке — _stop_etas); скорость и стоянки (_track_metrics) — из
+    кэша scorecard_track, пока не сменились отпечаток факта обучения, склад и пороги: трек холодного дня читается один
+    раз (тем же чтением, что и факт обучения, — on_read); порядок объезда — actuals.visit_metrics."""
+    out: dict[str, sc.CarDay] = {}
+    facts = state.fleet_facts
+    if facts is None:
+        return out
+    ds = day.isoformat()
+    rkey = (bundle.depot, rules.speed_kmh, rules.speed_sec, rules.stop_min, rules.lunch_min, rules.lunch_window)
+
+    def remember(car: str, d: str, version: Any, data: Mapping[str, Any], stops: list[ac.PlanStop],
+                 actual: ac.DayActual) -> None:
+        got = _track_metrics(data['track'], actual, day, bundle.depot, rules)
+        with state.scorecard_lock:
+            _bounded(state.scorecard_track, (car, d), ((version, rkey), got), SCORECARD_CACHE_CAR_DAYS)
+
+    versions: dict[tuple[str, str], Any] = {}
+    for car, _, stops, actual, draft, _, _ in _learning_days(state, bundle, day, day, remember, versions):
+        version = versions[(car, ds)]   # отпечаток этой строки факта (не перечитанный кэш: его мог сменить поток)
+        with state.scorecard_lock:
+            hit = state.scorecard_track.get((car, ds))
+        if hit is not None and hit[0] == (version, rkey):
+            speed, offroute = hit[1]
+        else:   # факт обучения был в кэше, а скорости и стоянок нет (пороги сменились, вытеснено) — одно чтение
+            speed, offroute = _track_metrics(facts.day(car, ds)['track'], actual, day, bundle.depot, rules)
+            with state.scorecard_lock:
+                _bounded(state.scorecard_track, (car, ds), ((version, rkey), (speed, offroute)),
+                         SCORECARD_CACHE_CAR_DAYS)
+        vm = ac.visit_metrics(actual, stops, day)
+        first, _ = _plan_etas(draft, car, day)
+        out[car] = sc.CarDay(actual.km_gps, ac.stop_marks(actual, stops, day), first, speed, offroute,
+                             (vm.order_changes, vm.ordered) if vm.ordered else None,
+                             _stop_etas(draft, car, day, stops, actual))
+    return out
+
+
+def _scorecard_days(state: RoutesState, bundle: Bundle, since: date, until: date) -> list[tuple[date, dict[str, Any]]]:
+    """Сводки дней since…until (scorecard.day_summary), у которых есть данные «Առաքիչ»: из кэша, пока отпечаток дня
+    тот же, иначе расчёт. Отпечатки — двумя запросами на весь период (crew_facts.versions, store.dispatch_revs)."""
+    assert state.crew_facts is not None
+    lo, hi = since.isoformat(), until.isoformat()
+    versions = state.crew_facts.versions(lo, hi)
+    revs = state.store.dispatch_revs(lo, hi)
+    rules = live.Rules.from_settings(bundle.settings)
+    base = (bundle.depot, tuple(sorted((cid, w.span()) for cid, w in bundle.windows.items())), sc.LATE_SLACK_MIN,
+            state.fleet_facts is not None,
+            (rules.speed_kmh, rules.speed_sec, rules.stop_min, rules.lunch_min, rules.lunch_window))
+    out = []
+    for ds in sorted(versions):
+        key = (versions[ds], revs.get(ds), base)
+        with state.scorecard_lock:
+            hit = state.scorecard_cache.get(ds)
+        if hit is not None and hit[0] == key:
+            summary = hit[1]
+        else:
+            day = date.fromisoformat(ds)
+            summary = sc.day_summary(state.crew_facts.day(ds), _scorecard_cars(state, bundle, day, rules))
+            with state.scorecard_lock:
+                _bounded(state.scorecard_cache, ds, (key, summary), SCORECARD_CACHE_DAYS)
+        out.append((date.fromisoformat(ds), summary))
+    return out
+
+
+def _scorecard_fuel(state: RoutesState, bundle: Bundle, since: date, until: date
+                    ) -> tuple[dict[tuple[str, str], tuple[float, float]], dict[str, int]]:
+    """Литры к норме машино-дней since…until (№87 п. 3): (день, машина) → (литры, норма). Литры — расход интервала
+    заправок «полный бак → полный бак», в который попадает день (как learning.daily_l100), × км GPS дня; норма — как
+    в «Նորմ և փաստ»: км GPS × норма машины (_fuel_norms) + литры подъёма трека (№85, _terrain_norm); высот трека нет —
+    без подъёма. Правило покрытия гаража (GARAGE_TERRAIN_MIN_COVER): треки машины покрывают не меньше этой доли км
+    интервала — иначе расход интервала описывает в основном пробег без трека, значения нет. Счётчики: terrain / flat
+    — дни с нормой по рельефу и без, uncovered — мало трека в интервале, no_norm — у машины нет нормы.
+
+    Кэш (scorecard_lock): км треков машины по дням интервала — пока у его дней те же отпечатки «Առաքիչ» (события, в т.ч.
+    трек и снимки /day — crew_facts.versions), правки плана и склад (fuel_span_cache); результат машино-дня — пока те
+    же интервал с его отпечатком, норма, тоннаж и тайлы высот (fuel_day_cache). Тёплый вызов: заправки, отпечатки
+    дней и правки плана — по одному запросу на весь диапазон, норма машин; ни трека, ни факта обучения."""
+    counts = {'terrain': 0, 'flat': 0, 'uncovered': 0, 'no_norm': 0}
+    facts, crew = state.fleet_facts, state.crew_facts
+    if facts is None or crew is None:
+        return {}, counts
+    lookback = (since - timedelta(days=GARAGE_REFUEL_LOOKBACK_DAYS)).isoformat()
+    refuels = [r for r in facts.refuels(lookback) if (r.get('eff_date') or r.get('date') or '') >= lookback]
+
+    def local(t: datetime) -> date:
+        return t.astimezone(ac.YEREVAN).date()
+    spans = [(iv, local(iv.start), local(iv.end)) for iv in learning.fuel_intervals(refuels) if iv.km > 0]
+    spans = [x for x in spans if x[1] <= until and x[2] >= since]
+    if not spans:
+        return {}, counts
+    lo, hi = min(x[1] for x in spans), max(x[2] for x in spans)
+    versions = crew.versions(lo.isoformat(), hi.isoformat())
+    revs = state.store.dispatch_revs(lo.isoformat(), hi.isoformat())
+
+    def span_key(j: int) -> tuple[Any, ...]:
+        iv = spans[j][0]
+        return iv.car_code, iv.start, iv.end, iv.liters, iv.km
+
+    def span_fp(j: int) -> tuple[Any, ...]:
+        a, b = spans[j][1], spans[j][2]
+        days = [(a + timedelta(days=i)).isoformat() for i in range((b - a).days + 1)]
+        return bundle.depot, tuple((d, versions.get(d), revs.get(d)) for d in days)
+
+    km: dict[tuple[str, date], float] = {}
+    fps = {j: span_fp(j) for j in range(len(spans))}
+    todo = []
+    for j in range(len(spans)):
+        with state.scorecard_lock:
+            hit = state.fuel_span_cache.get(span_key(j))
+        if hit is not None and hit[0] == fps[j]:
+            km.update({(spans[j][0].car_code, d): v for d, v in hit[1].items()})
+        else:
+            todo.append(j)
+    if todo:
+        got = {(car, d): actual.km_gps for car, d, _, actual, _, _, _ in
+               _learning_days(state, bundle, min(spans[j][1] for j in todo), max(spans[j][2] for j in todo))}
+        for j in todo:
+            iv, a, b = spans[j]
+            mine = {d: v for (c, d), v in got.items() if c == iv.car_code and a <= d <= b}
+            km.update({(iv.car_code, d): v for d, v in mine.items()})
+            with state.scorecard_lock:
+                _bounded(state.fuel_span_cache, span_key(j), (fps[j], mine), SCORECARD_CACHE_CAR_DAYS)
+    tracked = {j: math.fsum(v for (c, d), v in km.items() if c == iv.car_code and a <= d <= b)
+               for j, (iv, a, b) in enumerate(spans)}
+    norms = _fuel_norms(state, bundle, (until + timedelta(days=1)).isoformat())
+    erp_capacity = _peek_car_capacity(state)
+    try:
+        dem_key = (dem.elev_params(), dem.dem_signature()) if dem.terrain_supported() else None
+    except Exception:   # тайлы высот недоступны — как в _track_climbs: без рельефа, не ошибка
+        dem_key = None
+    out: dict[tuple[str, str], tuple[float, float]] = {}
+    pending: list[tuple[str, date, int, Any, float, float]] = []   # (машина, день, интервал, отпечаток, км, норма)
+    for (car, d), k in sorted(km.items()):
+        if not since <= d <= until or k <= 0:
+            continue
+        # день заправки посреди дня — граница двух интервалов: берётся первый (как learning.daily_l100); км такого дня
+        # входят в покрытие обоих интервалов (дневной трек на части до и после заправки не делится)
+        j = next((i for i, x in enumerate(spans) if x[0].car_code == car and x[1] <= d <= x[2]), None)
+        if j is None:
+            continue
+        iv = spans[j][0]
+        l100 = (norms.get(car) or {}).get('l100')
+        capacity = bundle.truck_capacity(car, erp_capacity)
+        fp = (span_key(j), fps[j], tracked[j], k, l100, capacity, dem_key)
+        with state.scorecard_lock:
+            hit = state.fuel_day_cache.get((car, d.isoformat()))
+        if hit is not None and hit[0] == fp:
+            kind, value = hit[1]
+        elif tracked[j] < GARAGE_TERRAIN_MIN_COVER * iv.km or l100 is None:
+            kind, value = ('uncovered' if tracked[j] < GARAGE_TERRAIN_MIN_COVER * iv.km else 'no_norm'), None
+            with state.scorecard_lock:
+                _bounded(state.fuel_day_cache, (car, d.isoformat()), (fp, (kind, value)), SCORECARD_CACHE_CAR_DAYS)
+        else:
+            pending.append((car, d, j, fp, k, l100))
+            continue
+        counts[kind] += 1
+        if value is not None:
+            out[(d.isoformat(), car)] = value
+    if pending:   # рельеф — только для машино-дней без готового результата (_track_climbs читает трек мимо своего кэша)
+        climbs = _track_climbs(state, min(p[1] for p in pending), max(p[1] for p in pending))
+        for car, d, j, fp, k, l100 in pending:
+            hill = _terrain_norm(bundle.truck_capacity(car, erp_capacity), k, l100, climbs.get((car, d.isoformat())))
+            kind = 'terrain' if hill is not None else 'flat'
+            value = (k * spans[j][0].l100 / 100.0, hill[1] if hill is not None else k * l100 / 100.0)
+            with state.scorecard_lock:
+                _bounded(state.fuel_day_cache, (car, d.isoformat()), (fp, (kind, value)), SCORECARD_CACHE_CAR_DAYS)
+            counts[kind] += 1
+            out[(d.isoformat(), car)] = value
+    return out, counts
+
+
+def _scorecard(state: RoutesState, since: date, until: date) -> dict[str, Any]:
+    """Показатели людей за since…until (scorecard.period) с литрами к норме; coverage.fuel — счётчики
+    _scorecard_fuel."""
+    assert state.crew_facts is not None
+    bundle = state.store.load()
+    fuel, fuel_cov = _scorecard_fuel(state, bundle, since, until)
+    body = sc.period(_scorecard_days(state, bundle, since, until), state.crew_facts.names(), fuel)
+    body['coverage']['fuel'] = fuel_cov
+    return body
+
+
+@bp.get('/api/routes/drivers/scorecard')
+@_api
+def api_drivers_scorecard() -> Any:
+    """Показатели людей за ?from=&to= (scorecard.period): строка на водителя (и отдельно на առաքիչ) с баллом, местом и
+    разбивкой по дням и опоздавшими магазинами; eta — точность планового ETA парка (п. 7); coverage — сколько точек
+    оценено и почему остальные нет. Деньги (cash) — только администратору: «Гаражу» сервер их не отдаёт."""
+    role = _scorecard_role()
+    if role is None:
+        logger.warning('[Routes] Վարորդներ: отказ роли %r (%s)', g.get('user_role'), request.path)
+        return jsonify({'success': False, 'error': SCORECARD_FORBIDDEN}), 403
+    rng, error = _scorecard_range()
+    if error is not None:
+        return error
+    state = _state()
+    if state.crew_facts is None:
+        return _bad_request({'_': '«Առաքիչ» բաժինը միացված չէ — տվյալներ չկան'})
+    since, until = rng   # type: ignore[misc]
+    body = _scorecard(state, since, until)
+    cash = role == 'admin'
+    if not cash:
+        for r in body['drivers']:
+            r.pop('cash', None)
+            for d in r['detail']:
+                d.pop('cash', None)
+    return jsonify({'success': True, 'from': since.isoformat(), 'to': until.isoformat(),
+                    'today': _yerevan_now().date().isoformat(), 'days': (until - since).days + 1,
+                    'gps': state.fleet_facts is not None, 'cash': cash, 'rules': sc.rules(), **body})
+
+
+def _week_job(app: Any, state: RoutesState, key: str, monday: date) -> None:
+    """Фоновый расчёт недели для APK (week_score): результат — в score_week_cache; сбой — в журнал и момент сбоя в
+    score_week_failed (заново — не раньше SCORE_WEEK_RETRY_S). Контекст приложения — для факта «Առաքիչ»
+    (courier.scorecard берёт базу из него)."""
+    try:
+        with app.app_context():
+            body = _scorecard(state, monday, monday + timedelta(days=6))
+        with state.score_week_lock:
+            _bounded(state.score_week_cache, key, (time.monotonic(), body), SCORE_WEEK_KEEP)
+            state.score_week_failed.pop(key, None)
+    except Exception:
+        logger.exception('[Routes] Վարորդներ: неделя %s для APK не посчитана', key)
+        with state.score_week_lock:
+            state.score_week_failed[key] = time.monotonic()
+    finally:
+        with state.score_week_lock:
+            state.score_week_running.pop(key, None)
+
+
+def week_score(state: RoutesState | None, driver_id: int, monday: date) -> tuple[str, dict[str, Any] | None]:
+    """Своя неделя водителя для APK (courier GET /api/courier/v1/score, контракт §10): ('ok', ответ) — показатели за
+    пн–вс, балл и место среди водителей с ≥ scorecard.MIN_DAYS днями, без имён и id других; ('busy', None) — неделя
+    считается, прежнего расчёта нет (APK повторит позже); ('off', None) — «Վարորդներ» не подключены (нет раздела
+    «Маршруты» или «Առաքիչ»). Неделя считается одна на все терминалы, в одном фоновом потоке и одна за раз (другие
+    недели ждут своей очереди): запрос, начавший расчёт, ждёт его не дольше SCORE_WEEK_WAIT_S, остальные не ждут —
+    получают прежний расчёт этой недели, если он есть. Готовый расчёт отдаётся SCORE_WEEK_TTL_S секунд, потом
+    пересчитывается (до готовности — прежний). Потоки сервера, нужные терминалам, расчёт не держит."""
+    if state is None or getattr(state, 'crew_facts', None) is None:
+        return 'off', None
+    key = monday.isoformat()
+    sunday = monday + timedelta(days=6)
+    with state.score_week_lock:
+        hit = state.score_week_cache.get(key)
+        fresh = hit is not None and time.monotonic() - hit[0] <= SCORE_WEEK_TTL_S
+        job = None
+        failed = state.score_week_failed.get(key)
+        backoff = failed is not None and time.monotonic() - failed < SCORE_WEEK_RETRY_S
+        if not fresh and not state.score_week_running and not backoff:
+            job = threading.Thread(target=_week_job, args=(current_app._get_current_object(), state, key, monday),
+                                   name='routes-score-week', daemon=True)
+            state.score_week_running[key] = job
+            try:
+                job.start()
+            except Exception:   # поток не стартовал (нет ресурсов): отметка «считается» не должна остаться навсегда
+                logger.exception('[Routes] Վարորդներ: расчёт недели %s для APK не запущен', key)
+                state.score_week_running.pop(key, None)
+                state.score_week_failed[key] = time.monotonic()
+                job = None
+    if job is not None:
+        job.join(SCORE_WEEK_WAIT_S)
+        with state.score_week_lock:
+            hit = state.score_week_cache.get(key)
+    if hit is None:
+        return 'busy', None
+    body = hit[1]
+    row = next((r for r in body['drivers'] if r['role'] == 'driver' and r['id'] == driver_id), None)
+    me: dict[str, Any] = {'days': 0, 'stops': 0, 'on_time_pct': None, 'on_time_n': 0, 'on_time_of': 0,
+                          'avg_late_min': None, 'order_pct': None, 'speed_events': None, 'speed_per_100km': None,
+                          'offroute_stop_min': None, 'liters_vs_norm_pct': None, 'score': None, 'parts': {}}
+    if row is not None:
+        me.update(days=row['days'], stops=row['stops'], on_time_pct=row['on_time_pct'], on_time_n=row['on_time'],
+                  on_time_of=row['rated'], avg_late_min=row['late_mean_min'], order_pct=row['order_pct'],
+                  speed_events=row['speed_events'], speed_per_100km=row['speed_per_100km'],
+                  offroute_stop_min=row['offroute_min'], liters_vs_norm_pct=row['liters_vs_norm_pct'],
+                  score=row['score'], parts={k: dict(v) for k, v in row['parts'].items()})
+    return 'ok', {'week_from': key, 'week_to': sunday.isoformat(), 'me': me,
+                  'rank': row['rank'] if row is not None else None, 'of': body['ranked'],
+                  'enough_data': bool(row is not None and row['enough_data']), 'min_days': sc.MIN_DAYS}
+
+
 # --- Журнал гаража «Ավտոտնակ» (№53, docs/plans/garage-journal-plan.md) ---
 # Страница начальника гаража (роль «Гараж» видит только её; доступ — app_v2._auth_and_scope_gate) и администратора.
 # Ошибки записи — по-армянски (store.check_garage_entry, GarageError). Ремонт ֏/км — garage.price на сегодня.
@@ -4667,6 +5115,17 @@ def _month_ready(state: RoutesState, bundle: Bundle, since: date, until: date) -
     return 'ready'
 
 
+def _terrain_norm(capacity_kg: float | None, km: float | None, l100: float | None,
+                  climb: tuple[float, float] | None) -> tuple[float, float] | None:
+    """Норма машино-дня по треку с рельефом (№85): (литры подъёма, норма дня в литрах) — км GPS × норма + литры подъёма
+    трека сверх среднего (ū трека — постоянная масса: собственная + полгруза, груз по участкам трека не известен); не
+    ниже нуля. Рельефа, нормы, тоннажа или км нет — None. Общая для «Նորմ և փաստ» и «Վարորդներ»."""
+    if climb is None or l100 is None or not capacity_kg or km is None:
+        return None
+    extra = terrain_liters(curb_tonnes(capacity_kg) + capacity_kg / 2000.0, *climb, u_bar=TERRAIN_U_BAR_TRACK)
+    return extra, max(0.0, km * l100 / 100.0 + extra)
+
+
 def _fuel_norms(state: RoutesState, bundle: Bundle, before: str) -> dict[str, dict[str, Any]]:
     """Машина → норма тревоги «Ավտոտնակ» и выученный расход. Норма — ручная из настроек: пустой и полный заданы — их
     середина (manual_profile; ими считает рейс running_costs.route_cost), иначе «Расход, л/100 км» (manual). Выученный
@@ -4756,14 +5215,13 @@ def api_garage_norm() -> Any:
     has_dem = dem.terrain_supported() and dem.dem_signature() is not None
 
     def hills(code: str, r: Mapping[str, Any], l100: float | None) -> tuple[dict[str, Any], float | None]:
-        """Норма дня по треку с рельефом (№85): км GPS × норма + литры подъёма трека сверх среднего (ū трека — постоянная
-        масса: собственная + полгруза, груз по участкам трека не известен); не ниже нуля. (поля строки, норма дня в литрах
-        без округления); рельефа или нормы нет — ({}, None): строка прежняя."""
-        climb, cap = climbs.get((code, r['day'])), bundle.truck_capacity(code, erp_capacity)
-        if climb is None or l100 is None or not cap or r['fact']['km'] is None:
+        """Норма дня по треку с рельефом (_terrain_norm): (поля строки, норма дня в литрах без округления); рельефа или
+        нормы нет — ({}, None): строка прежняя."""
+        climb = climbs.get((code, r['day']))
+        got = _terrain_norm(bundle.truck_capacity(code, erp_capacity), r['fact']['km'], l100, climb)
+        if got is None or climb is None:
             return {}, None
-        extra = terrain_liters(curb_tonnes(cap) + cap / 2000.0, *climb, u_bar=TERRAIN_U_BAR_TRACK)
-        norm_l = max(0.0, r['fact']['km'] * l100 / 100.0 + extra)
+        extra, norm_l = got
         return {'climb_m': round(climb[0]), 'terrain_l': round(extra, 1), 'norm_l': round(norm_l, 1)}, norm_l
     out = []
     for code in sorted(set(known) | set(reports) | set(ends) | set(odd) | set(refuel_days)):

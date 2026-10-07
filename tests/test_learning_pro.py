@@ -584,7 +584,7 @@ def test_learning_page_texts_armenian():
     assert "kind === 'buffer'" in js and "kind === 'truck_unload' || kind === 'truck_travel'" in js
     html = (ROOT / 'templates' / 'routes_learning.html').read_text(encoding='utf-8')
     assert 'Ժամանակի պաշար երթի վերջում' in html and 'Մեքենայի գործակիցները' in html
-    assert "routes_learning.js') }}?v=17" in html
+    assert "routes_learning.js') }}?v=18" in html
     assert lr.KIND_TITLES['buffer'] == 'Ժամանակի պաշար երթի վերջում'
     assert all(lr.DEFAULT_AUTO[k] for k in ('buffer', 'truck_unload', 'truck_travel'))
     djs = (ROOT / 'static' / 'js' / 'routes_dispatch.js').read_text(encoding='utf-8')

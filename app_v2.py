@@ -184,7 +184,8 @@ db = DatabaseConnection()
 #               ПРИНУДИТЕЛЬНОЕ на стороне сервера (см. _enforce_restricted): чужие
 #               территории недоступны даже прямым запросом к API.
 #   - 'garage' — начальник гаража (ответ владельца №53): только журнал ремонтов и пробега
-#               «Ավտոտնակ» /routes/garage и его API (см. _enforce_garage); территорий нет.
+#               «Ավտոտնակ» /routes/garage и его API, карта машин (№76) и «Վարորդներ» без денег (№87)
+#               (см. _enforce_garage); территорий нет.
 #   - 'warehouse' — склад (ответ владельца №78, 11–12): только отметки погрузки «Պահեստ» /routes/warehouse и её API
 #               (см. _enforce_warehouse); территорий нет; входит из интернета, как «Гараж».
 USERS_FILE = 'users.json'
@@ -418,18 +419,21 @@ def _restricted_path_allowed(path: str, method: str) -> bool:
     return False
 
 
-# ---- Роль 'garage': только журнал гаража и карта машин (default-deny) ---------------------------
-# Страница журнала (GET) и её API (GET и POST); карта «Մեքենաները առցանց» (№76) и её API — только GET; статика и выход
-# пропускаются раньше. Всё прочее — 403 JSON или переход на страницу гаража. Границы пути — по сегменту:
-# '/api/routes/garage-x' и '/api/routes/live-x' не совпадают.
+# ---- Роль 'garage': только журнал гаража, карта машин и «Վարորդներ» (default-deny) -------------------
+# Страница журнала (GET) и её API (GET и POST); карта «Մեքենաները առցանց» (№76) и её API — только GET; «Վարորդներ»
+# (№87) — страница и ровно один путь API, только GET (деньги гаражу не отдаёт сам API —
+# route_optimizer.views.api_drivers_scorecard); статика и выход пропускаются раньше. Всё прочее — 403 JSON или переход
+# на страницу гаража. Границы пути — по сегменту: '/api/routes/garage-x' и '/api/routes/live-x' не совпадают.
 _GARAGE_PAGE = '/routes/garage'
 _GARAGE_API = '/api/routes/garage'
 _LIVE_PAGE = '/routes/live'
 _LIVE_API = '/api/routes/live'
+_DRIVERS_PAGE = '/routes/drivers'
+_DRIVERS_API = '/api/routes/drivers/scorecard'   # точный путь: новый API «Վարորդներ» гаражу сам не откроется
 
 
 def _garage_path_allowed(path: str, method: str) -> bool:
-    if method in ('GET', 'HEAD') and path in (_GARAGE_PAGE, _LIVE_PAGE):
+    if method in ('GET', 'HEAD') and path in (_GARAGE_PAGE, _LIVE_PAGE, _DRIVERS_PAGE, _DRIVERS_API):
         return True
     if method in ('GET', 'HEAD') and (path == _LIVE_API or path.startswith(_LIVE_API + '/')):
         return True
@@ -482,9 +486,10 @@ _PUBLIC_STATIC = frozenset((
     '/static/css/routes_live.css', '/static/js/routes_live.js',                               # routes_live.html (№76)
     '/static/img/yandex_maps_logo_ru.svg',   # логотип Яндекса на карте машин (подложка Яндекса, обязателен по условиям)
     '/static/css/routes_warehouse.css', '/static/js/routes_warehouse.js',                     # routes_warehouse.html (№78)
+    '/static/css/routes_drivers.css', '/static/js/routes_drivers.js',                         # routes_drivers.html (№87)
 ))
 # API журнала и карты машин (№76) снаружи — только простые сегменты (путь уже раскодирован сервером): без '..',
-# '//', '%', '\', регистра.
+# '//', '%', '\', регистра. «Վարորդներ» (№87) — только точный путь _DRIVERS_API.
 _PUBLIC_GARAGE_API_RE = re.compile(r'/api/routes/(?:garage|live)(?:/[a-z0-9_-]+)*')
 _PUBLIC_WAREHOUSE_API_RE = re.compile(r'/api/routes/warehouse(?:/[a-z0-9_-]+)*')   # склад (№78) — так же
 
@@ -496,7 +501,7 @@ def _public_path_allowed(path: str, method: str) -> bool:
         return method in ('GET', 'HEAD', 'POST')
     if path == '/logout':
         return method == 'POST'
-    if path in (_GARAGE_PAGE, _LIVE_PAGE) or _PUBLIC_GARAGE_API_RE.fullmatch(path):
+    if path in (_GARAGE_PAGE, _LIVE_PAGE, _DRIVERS_PAGE, _DRIVERS_API) or _PUBLIC_GARAGE_API_RE.fullmatch(path):
         return _garage_path_allowed(path, method)
     if path == _WAREHOUSE_PAGE or _PUBLIC_WAREHOUSE_API_RE.fullmatch(path):
         return _warehouse_path_allowed(path, method)
@@ -13340,6 +13345,8 @@ route_optimizer.attach_driver_geo(app, courier.driver_geo(app))
 route_optimizer.attach_fleet_facts(app, courier.fleet_facts(app))
 # машины на карте сейчас «Մեքենաները առցանց» (№76, live-map-plan.md)
 route_optimizer.attach_live_facts(app, courier.live_facts(app))
+# показатели водителей «Վարորդներ»: кто закрыл точки, деньги и тара по людям
+route_optimizer.attach_crew_facts(app, courier.crew_facts(app))
 
 from courier.web_security import init_web_security
 init_web_security(app, courier.API_PREFIX)

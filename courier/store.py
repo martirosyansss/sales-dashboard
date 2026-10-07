@@ -731,6 +731,10 @@ class Store:
             'ORDER BY active DESC, name, id').fetchall())
         return [_driver(r, keys) for r in rows]
 
+    def driver_names(self) -> dict[int, str]:
+        """Все люди (водители и առաքիչ, в т.ч. выключенные) → имя; без проверки PIN (только чтение)."""
+        return {int(r[0]): r[1] for r in self._read(lambda c: c.execute('SELECT id, name FROM drivers').fetchall())}
+
     def driver(self, driver_id: int) -> Driver | None:
         keys = self._pin_keys()
         r = self._read(lambda c: c.execute(
@@ -1328,6 +1332,21 @@ class Store:
             snap = c.execute('SELECT MAX(id) FROM day_snapshots WHERE date = ?', (day,)).fetchone()
             seen = c.execute('SELECT MAX(last_seen_at), COUNT(*), COUNT(revoked_at) FROM terminals').fetchone()
             return (*ev, snap[0], *seen)
+        return self._read(query)
+
+    def crew_versions(self, since: str, until: str) -> dict[str, tuple[Any, ...]]:
+        """Отпечатки дней since…until для кэша «Վարորդներ» (Маршруты): день → (событий, последнее получение;
+        последний снимок /day; отметок «сдал фактически», их сумма и последняя правка). Дни без событий, снимков и
+        отметок — нет в ответе. Не изменился — факт дня тот же (связь терминалов, в отличие от day_fingerprint, не входит)."""
+        def query(c: sqlite3.Connection) -> dict[str, tuple[Any, ...]]:
+            ev = {r[0]: r[1:] for r in c.execute('SELECT date, COUNT(*), MAX(received_at) FROM events '
+                                                 'WHERE date >= ? AND date <= ? GROUP BY date', (since, until))}
+            snap = {r[0]: r[1] for r in c.execute('SELECT date, MAX(id) FROM day_snapshots WHERE date >= ? AND date <= ? '
+                                                  'GROUP BY date', (since, until))}
+            hand = {r[0]: r[1:] for r in c.execute('SELECT date, COUNT(*), SUM(handed), MAX(updated_at) FROM cash_handover '
+                                                   'WHERE date >= ? AND date <= ? GROUP BY date', (since, until))}
+            return {d: (*ev.get(d, (0, None)), snap.get(d), *hand.get(d, (0, None, None)))
+                    for d in sorted({*ev, *snap, *hand})}
         return self._read(query)
 
     # --- трек и заправки машин (контракт v1.3 §7): офис и обучение «Развоза» ---

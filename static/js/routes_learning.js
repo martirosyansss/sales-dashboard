@@ -231,6 +231,17 @@
             + kpi('Ժամանակին՝ ընդունման ժամին', win ? fmt(100 * onTime / win) + '%' : '—', win ? fmt(win) + ' կետից, որոնք ունեն ընդունման ժամ' : 'ընդունման ժամով կետեր չկային')
             + kpi('Կետ ժամում', hours ? fmt(stops / hours, 1) : '—', 'առաջին երթի մեկնումից մինչև վերջինի վերադարձը');
     }
+    // точность планового ETA за период (№87 п. 7, scorecard.eta_accuracy): доля в ±ok_min, медиана и P80, раньше / позже
+    function renderEta(e) {
+        const box = $('lrEta');
+        box.hidden = !e || !e.n;
+        if (box.hidden) { box.innerHTML = ''; return; }
+        const ok = fmt(e.ok_min);
+        box.innerHTML = kpi('Պլանի ժամ (ETA)՝ ±' + ok + ' րոպեում', fmt(e.within_pct, 1) + '%', fmt(e.within_n) + '/' + fmt(e.n) + ' կետ՝ պլանի ժամով և GPS-ով')
+            + kpi('ETA-ի շեղման մեդիան', fmt(e.median_abs_min, 1) + ' ր', 'կետերի կեսը՝ ավելի քիչ')
+            + kpi('ETA-ի շեղում P80', fmt(e.p80_abs_min, 1) + ' ր', '10 կետից 8-ը՝ ավելի քիչ')
+            + kpi('ETA-ից շուտ / ուշ', fmt(e.early_pct, 1) + '% / ' + fmt(e.late_pct, 1) + '%', '±' + ok + ' րոպեից դուրս՝ ' + fmt(e.early_n) + ' շուտ, ' + fmt(e.late_n) + ' ուշ');
+    }
     function render(d) {
         showError(!d.connected ? '«Առաքիչ» բաժինը (վարորդների տերմինալները) միացված չէ — փաստ չկա։'
             : !d.depot ? 'Պահեստը նշված չէ — նշեք այն կարգավորումներում, այլապես երթերը հնարավոր չէ գտնել։' : '');
@@ -250,6 +261,7 @@
         });
         renderStatus(d);
         renderKpis(d.days);
+        renderEta(d.eta);
         $('lrDayRows').innerHTML = d.days.length ? d.days.map(dayRow).join('')
             : '<tr><td colspan="14" class="rt-empty">Այս օրերի համար մեքենաների հետագիծ չկա։ Այն կհայտնվի, երբ վարորդները սկսեն աշխատել տերմինալի նոր տարբերակով (երթուղու գրանցում)։</td></tr>';
         if (d.job && d.job.status === 'running') schedulePoll();

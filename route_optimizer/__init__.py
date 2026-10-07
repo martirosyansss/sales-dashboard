@@ -19,13 +19,13 @@ from typing import Any
 
 from flask import Flask
 
-from . import erp, learning, live, live_alerts, waybill
+from . import erp, learning, live, live_alerts, scorecard, waybill
 from .actuals import YEREVAN
 from .roads import RoadProvider, osm_path
 from .snapshot import ResultCache, SnapshotCache, load_snapshot
 from .store import Store
 from .valhalla_engine import ValhallaProvider
-from .views import EXTENSION_KEY, DriverGeo, RoutesState, _live_cards, bp, run_learning_job
+from .views import EXTENSION_KEY, DriverGeo, RoutesState, _live_cards, bp, run_learning_job, week_score
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +89,12 @@ def attach_live_facts(app: Flask, source: live.LiveFacts) -> None:
     """Факт терминалов за день (раздел «Առաքիչ», №76) — для «Մեքենաները առցանց». Вызывает app_v2 после init_app обоих
     разделов. Не вызван — карта пуста (API отвечает 400)."""
     app.extensions[EXTENSION_KEY].live_facts = source
+
+
+def attach_crew_facts(app: Flask, source: scorecard.CrewFacts) -> None:
+    """Кто закрыл точки, деньги и тара по людям за день (раздел «Առաքիչ») — для «Վարորդներ». Вызывает app_v2 после
+    init_app обоих разделов. Не вызван — страница пуста (API отвечает 400)."""
+    app.extensions[EXTENSION_KEY].crew_facts = source
 
 
 CATCHUP_DELAY_S = 120   # догнать пропущенный ночной прогон — через 2 мин после запуска (сервер успеет подняться)
