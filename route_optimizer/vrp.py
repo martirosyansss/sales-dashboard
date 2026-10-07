@@ -27,7 +27,11 @@
     «Развоза» (fleet._days) решение всё равно проверяет;
   - большая машина в Ереване (№68) — тоже профилем машины: надбавка к разгрузке заказа в зоне Еревана
     (Vehicle.yerevan_min) — на рёбрах из него, плата за такой заказ (Vehicle.yerevan_penalty_m, метры её пути) — на рёбрах
-    в него. Заказов в зоне нет — профили те же, что без неё.
+    в него. Заказов в зоне нет — профили те же, что без неё;
+  - рельеф (№85) — тоже профилем машины: направленная добавка к метрам ребра = литры подъёма участка сверх среднего
+    (climb — м, уже за вычетом среднего подъёма; × Vehicle.terrain_l_per_m — литров на метр подъёма по средней массе
+    машины) в метрах её пути: round(литры × 10⁶ / unit_cost); ребро — не меньше 0 м (спуск не дешевле стоянки). Это только
+    цель поиска: литры рейсов решения считает точная running_costs.route_cost. Без climb — профили и рёбра прежние.
 Минуты и километры — вверх до целых секунд и метров с запасом (время — вверх, окна — внутрь): решение,
 допустимое для PyVRP, допустимо и для расчёта «Развоза» в float. Промежуток может начинаться раньше начала дня (№78: вне
 сезона загрузка первого рейса — до него, fleet._solver): время PyVRP сдвинуто на это опережение, без него — прежнее.
@@ -98,6 +102,7 @@ class Vehicle:
     pace: tuple[float, float] = (1.0, 1.0)   # темп машины (№66): множитель разгрузки, множитель пути
     yerevan_min: float = 0.0               # №68: надбавка к разгрузке заказа в зоне Еревана, мин (большая машина)
     yerevan_penalty_m: int = 0             # №68: плата за заказ в зоне Еревана — метров её пути (большая машина)
+    terrain_l_per_m: float = 0.0           # №85: литров на метр подъёма сверх среднего (средняя масса машины)
 
 
 def unit_cost(v: Vehicle) -> int:
@@ -120,23 +125,25 @@ def solve(pieces: Sequence[Piece], km: Sequence[Sequence[float]], minutes: Seque
           vehicles: Sequence[Vehicle], shifts: Sequence[Shift], start: Sequence[tuple[int, list[list[int]]]],
           load_cap: float | None, iterations: int = ITERATIONS, seed: int = SEED,
           load_fixed_min: float = 0.0, load_tonne_min: float = 0.0, trip_reserve_min: float = 0.0,
-          reserve_slope: float = 0.0) -> list[tuple[int, list[list[int]]]] | None:
+          reserve_slope: float = 0.0,
+          climb: Sequence[Sequence[float]] | None = None) -> list[tuple[int, list[list[int]]]] | None:
     """Рейсы промежутков: [(номер промежутка в shifts, рейсы — номера pieces по порядку объезда)] или None —
     PyVRP нет, решение недопустимо или обязательный заказ не поставлен. start — план сборки в том же виде
     (стартовое решение). trip_reserve_min, reserve_slope — запас на рейс (№66): минут на рейс и доля к минутам езды и
-    разгрузки (касательная к c·√D, fleet._solver)."""
+    разгрузки (касательная к c·√D, fleet._solver). climb — подъём участков сверх среднего, м, по узлам матриц (рельеф,
+    №85; None — без рельефа)."""
     if pyvrp is None or not pieces or not shifts:
         return None
     try:
         return _solve(pieces, km, minutes, vehicles, shifts, start, load_cap, iterations, seed,
-                      load_fixed_min, load_tonne_min, trip_reserve_min, reserve_slope)
+                      load_fixed_min, load_tonne_min, trip_reserve_min, reserve_slope, climb)
     except Exception:   # noqa: BLE001 — сбой решателя не должен ломать «Развоз»: свой расчёт
         logger.exception('[Routes] PyVRP: сбой, рейсы — своим расчётом')
         return None
 
 
 def _solve(pieces, km, minutes, vehicles, shifts, start, load_cap, iterations, seed, load_fixed_min=0., load_tonne_min=0.,
-           trip_reserve_min=0., reserve_slope=0.):
+           trip_reserve_min=0., reserve_slope=0., climb=None):
     by_code = {v.code: v for v in vehicles}
     model = Model()
     loc0 = model.add_location(0.0, 0.0)
@@ -172,13 +179,17 @@ def _solve(pieces, km, minutes, vehicles, shifts, start, load_cap, iterations, s
                               (p.allowed_trucks is not None and v.code not in p.allowed_trucks)
                               for p in pieces)) for v in vehicles}
     open_mask = (False,) * (len(pieces) + 1)
-    # …одинаковым темпом (№66; у всех (1, 1) — профили те же, что без темпа) и надбавкой и платой в Ереване (№68)
-    keys = {v.code: (masks[v.code], tuple(v.pace), v.yerevan_min, v.yerevan_penalty_m) for v in vehicles}
+    # …одинаковым темпом (№66; у всех (1, 1) — профили те же, что без темпа), надбавкой и платой в Ереване (№68) и
+    # метрами пути на метр подъёма (№85; без рельефа — 0 у всех)
+    hill = {v.code: (v.terrain_l_per_m * 1e6 / unit_cost(v) if climb is not None and v.terrain_l_per_m else 0.0)
+            for v in vehicles}
+    keys = {v.code: (masks[v.code], tuple(v.pace), v.yerevan_min, v.yerevan_penalty_m, hill[v.code]) for v in vehicles}
     profiles = {key: model.add_profile(name=f'access-{i}')
-                for i, key in enumerate(dict.fromkeys([(open_mask, (1.0, 1.0), 0.0, 0), *keys.values()]))}
+                for i, key in enumerate(dict.fromkeys([(open_mask, (1.0, 1.0), 0.0, 0, 0.0), *keys.values()]))}
     yerevan = [False, *(p.yerevan for p in pieces)]
     for a, la in enumerate(every):
         ka, ma = km[nodes[a]], minutes[nodes[a]]
+        ua = climb[nodes[a]] if climb is not None else None
         for b, lb in enumerate(every):
             if a == b:
                 continue
@@ -190,13 +201,15 @@ def _solve(pieces, km, minutes, vehicles, shifts, start, load_cap, iterations, s
             loading = (load_fixed_min if a == 0 else 0.) + (load_tonne_min * pieces[b-1].kg/1000 if b else 0.)
             dur = _sec_up(ma[nodes[b]] + loading)
             back = trip_reserve_min if a and not b else 0.0      # рейс кончается ребром «заказ → склад»
-            for (mask, (mu, mt), ym, pm), profile in profiles.items():
+            for (mask, (mu, mt), ym, pm, hm), profile in profiles.items():
                 edge = dur
                 city = ym if yerevan[a] else 0.0       # надбавка в Ереване — после разгрузки заказа a (№68)
                 if back or reserve_slope or (mu, mt) != (1.0, 1.0) or city:
                     extra = ((mu - 1.0) * pieces[a - 1].unload if a else 0.0) + city
                     edge = _sec_up(max(0.0, (ma[nodes[b]] * mt + extra) * (1.0 + reserve_slope) + loading) + back)
                 far = dist + pm if pm and yerevan[b] else dist
+                if hm and dist != FORBIDDEN_M:   # рельеф (№85): подъём сверх среднего — в метрах пути машины
+                    far = max(0, far + int(round(hm * ua[nodes[b]])))
                 model.add_edge(la, lb, distance=FORBIDDEN_M if mask[a] or mask[b] else far, duration=edge,
                                profile=profile)
     for s in shifts:

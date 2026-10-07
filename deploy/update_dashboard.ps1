@@ -68,6 +68,8 @@ try {
     # at once when both caches are current (no ERP access then; the center boundary comes from a temporary copy of the
     # routes DB); otherwise it reads an ERP snapshot (read-only) and the route settings from a temporary copy of the
     # routes DB: the DB itself is never changed here (the old server keeps using it until the restart). At most 240 s.
+    # With terrain on (No. 85, 'roads dem' was run once) it also checks the climb caches and rebuilds the elevation cache
+    # from the downloaded tiles after a map change; climbs are written in chunks, the server finishes the rest itself.
     $warmRoads = {
         param([string]$Log, [int]$KeepS)
         try {
