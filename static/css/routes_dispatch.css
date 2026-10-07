@@ -1021,6 +1021,12 @@ details.dp-costnote p { margin: 6px 0 0; }
 body.dp-ws-on .rt-secbar { margin-bottom: 0; }
 body.dp-ws-on .rt-secbar .rt-tabs { padding: 3px; }
 body.dp-ws-on .rt-secbar .rt-tabs a { padding-top: 5px; padding-bottom: 5px; }
+/* №86: шапка ниже — меньше отступов над рабочим экраном (карта выше) */
+body.dp-ws-on main.py-4 { padding-top: 8px !important; }
+body.dp-ws-on .rt-secbar .rt-tabs { padding: 2px; }
+body.dp-ws-on .rt-secbar .rt-tabs a { padding-top: 3px; padding-bottom: 3px; }
+#rtDispatch.is-ws .dp-mast { margin-bottom: 8px; }
+#rtDispatch.is-ws .dp-dayboard { margin-top: 0; }
 /* печать и Excel — в шапке рабочего экрана, в подсказке не повторяются */
 #rtDispatch.is-ws .dp-todo-btns [data-ico="fa-print"], #rtDispatch.is-ws .dp-todo-btns [data-ico="fa-file-excel"] { display: none; }
 
@@ -1043,13 +1049,16 @@ body.dp-ws-on .rt-secbar .rt-tabs a { padding-top: 5px; padding-bottom: 5px; }
 #rtDispatch.is-ws .dp-todo-lines p + p { display: none; }
 #rtDispatch.is-ws .dp-todo-btns { margin: 0; flex-wrap: nowrap; }
 #rtDispatch.is-ws .dp-todo-btns .rt-btn { height: 34px; }
-#rtDispatch.is-ws .dp-inbox { margin: 0 0 8px; flex-wrap: nowrap; overflow-x: auto; }
+/* №86: счётчики не обрезаются — переносятся строкой ниже (справа), а не уходят за край */
+#rtDispatch.is-ws .dp-inbox { margin: 0 0 8px; flex-wrap: wrap; justify-content: flex-end; gap: 6px; overflow: visible; }
 /* подсказка и счётчики — одной строкой над рабочим экраном */
 #rtDispatch.is-ws #dpBody { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 10px; align-items: start; }
 #rtDispatch.is-ws #dpBody > * { grid-column: 1 / -1; }
 #rtDispatch.is-ws #dpBody > #dpTodo { grid-column: 1; min-width: 0; }
-#rtDispatch.is-ws #dpBody > #dpInbox { grid-column: 2; grid-row: 1; max-width: 52vw; }
-#rtDispatch.is-ws #dpBody > #dpInbox .dp-inchip { height: 44px; white-space: nowrap; flex: none; }
+#rtDispatch.is-ws #dpBody > #dpInbox { grid-column: 2; grid-row: 1; max-width: 64vw; }
+#rtDispatch.is-ws #dpBody > #dpInbox .dp-inchip { height: 40px; padding: 0 12px; gap: 7px; font-size: .8125rem; white-space: nowrap; flex: none; }
+/* №86: плашка новых заказов дня — счётчиком «Նոր պատվերներ» в строке выше (renderInbox) */
+#rtDispatch.is-ws #dpSameDay { display: none !important; }
 #rtDispatch.is-ws .dp-nodriver, #rtDispatch.is-ws .dp-sameday { margin-bottom: 8px; }
 #rtDispatch.is-ws .dp-sameday { padding: 8px 14px; }
 #rtDispatch.is-ws .dp-sameday .dp-todo-ico { display: none; }
@@ -1187,3 +1196,13 @@ body.dp-ws-on .rt-secbar .rt-tabs a { padding-top: 5px; padding-bottom: 5px; }
 #rtDispatch.is-ws .dp-blx-pg { position: absolute; right: 0; top: 1px; font-size: .75rem; }
 .dp-blx-pg.is-late { color: var(--rt-danger); }
 .dp-blx-pg[hidden] { display: none; }
+/* №86: карта ↔ карточка — точка всех машин (перетаскивается), строка магазина, найденная на карте, подсветка */
+.dp-dpin span { display: block; width: 14px; height: 14px; margin: 1px; border-radius: 50%; border: 2px solid #0c0f14; box-shadow: 0 1px 3px rgba(0, 0, 0, .45); }
+.dp-dpin.leaflet-marker-draggable, .dp-npin.leaflet-marker-draggable { cursor: grab; }
+.dp-dpin.leaflet-drag-target, .dp-npin.leaflet-drag-target { cursor: grabbing; }
+#rtDispatch.is-mapdrag .dp-ws-map .leaflet-container { cursor: grabbing; }
+#rtDispatch.is-mapdrag .leaflet-tooltip:not(.dp-dragtip) { display: none; }
+.dp-tip-hint { color: #8b95a5; }
+@keyframes dp-flash { 0%, 60% { background: color-mix(in srgb, var(--rt-acc) 26%, transparent); box-shadow: 0 0 0 2px var(--rt-acc) inset; } 100% { background: transparent; box-shadow: none; } }
+#rtDispatch .dp-stop.is-flash { animation: dp-flash 1.8s ease-out; border-radius: 10px; }
+@media (prefers-reduced-motion: reduce) { #rtDispatch .dp-stop.is-flash { animation: none; box-shadow: 0 0 0 2px var(--rt-acc) inset; } }
