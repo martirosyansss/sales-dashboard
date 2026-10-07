@@ -224,11 +224,12 @@
             L.polyline(t.track, { color: '#38bdf8', weight: 4, opacity: 0.85 }).addTo(state.layer);
         }
         // магазин с несколькими накладными — прогноз у каждой его ожидающей точки (строка прогноза — по клиенту)
-        const lateOf = new Map((t.late || []).filter(x => x.stop_id).map(x => [x.customer_id, x]));
+        const lateKey = (x) => x.customer_id ?? 's:' + x.stop_id;   // точка без клиента — своя
+        const lateOf = new Map((t.late || []).filter(x => x.stop_id).map(x => [lateKey(x), x]));
         for (const s of t.stops || []) {
             if (num(s.lat) === null || num(s.lon) === null) continue;
             const [label, color] = STORE[s.status] || STORE.pending;
-            const lt = s.status === 'pending' ? lateOf.get(s.customer_id) : null;   // №87: прогноз «не успеет» — красная обводка и строка в подсказке
+            const lt = s.status === 'pending' ? lateOf.get(lateKey(s)) : null;   // №87: прогноз «не успеет» — красная обводка и строка в подсказке
             const text = (s.name || s.stop_id) + ' — ' + label + (s.planned_eta ? ' · պլան՝ ' + hm(s.planned_eta) : '')
                 + (s.arrive ? ' · ժամանում՝ ' + hm(s.arrive) : '') + (lt ? ' · ' + lateText(lt) + ' (≈ ' + hm(lt.eta) + ')' : '');
             L.circleMarker([s.lat, s.lon], { radius: 7, color: lt ? '#ff6b79' : '#0e1116', weight: lt ? 3 : 2, fillColor: color, fillOpacity: 1 })
@@ -319,12 +320,13 @@
         $('lvGrid').replaceChildren(...rows);
 
         $('lvStopsBox').hidden = !t.stops;
-        const lateOf = new Map((t.late || []).filter(x => x.stop_id).map(x => [x.customer_id, x]));   // магазин с прогнозом
+        const lateKey = (x) => x.customer_id ?? 's:' + x.stop_id;   // магазин с прогнозом; точка без клиента — своя
+        const lateOf = new Map((t.late || []).filter(x => x.stop_id).map(x => [lateKey(x), x]));
         $('lvStops').replaceChildren(...(t.stops || []).map(s => {
             const [lab, color] = STORE[s.status] || STORE.pending;
             const dot = h('span', { class: 'lv-dot' });
             dot.style.background = color;
-            const lt = s.status === 'pending' ? lateOf.get(s.customer_id) : null;
+            const lt = s.status === 'pending' ? lateOf.get(lateKey(s)) : null;
             return h('li', { title: lab, class: lt ? 'is-late' : null }, dot, h('span', { text: (s.name || s.stop_id) + ' · ' + (lt ? lateText(lt) : lab) }),
                 h('span', { class: 'when', text: (s.arrive ? hm(s.arrive) : (s.eta ? '≈ ' + hm(s.eta) : '')) + (s.planned_eta ? ' (պլան՝ ' + hm(s.planned_eta) + ')' : '') }));
         }));

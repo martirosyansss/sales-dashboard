@@ -214,6 +214,33 @@ def test_eta_waits_for_window_opening_before_unloading():
     assert end == now + timedelta(minutes=60 + 10 + 6)               # C: прибытие +28, ждёт до +60
 
 
+
+def test_truck_at_store_before_window_opens_unloads_from_window_start():
+    """Ревью N2: машина уже у магазина, окно ещё не открылось — разгрузка с начала окна (а не «сейчас»), следующие
+    магазины — после неё; окно уже открыто — как раньше (остаток стоянки)."""
+    tr = Track().park(DEPOT, 10).drive(A).park(A, 3)
+    now = tr.t
+    stops = [stop('S:A', 1, A, 500.0, seq=1), stop('S:B', 2, B, 300.0, seq=2)]
+    plan = [live.PlanTrip((1, 2), {})]
+    m = ac.day_minutes(DAY, now)
+
+    def eta_b(windows):
+        card_ = _card(tr, stops, plan, detail=True, windows=windows)
+        assert card_['next']['here'] is True and card_['next']['stop_id'] == 'S:A'
+        return datetime.fromisoformat(next(x for x in card_['stops'] if x['stop_id'] == 'S:B')['eta'])
+    opened = eta_b({})
+    assert eta_b({1: (m + 30, m + 120)}) == now.replace(microsecond=0) + timedelta(minutes=30 + 10 + 6)
+    assert eta_b({1: (m - 30, m + 120)}) == opened                   # окно открыто — без ожидания
+
+
+def test_detail_planned_eta_and_board_delay_from_own_trip():
+    """Ревью N3: плановое ETA точки в подробной карточке (и «опоздание» хода дня) — из её рейса, как у «не успеет»."""
+    tr, stops, plan = _day()
+    plan = [plan[0], live.PlanTrip((3, 2), {3: tr.t, 2: tr.t + timedelta(minutes=50)})]
+    b = next(x for x in _card(tr, stops, plan, detail=True)['stops'] if x['stop_id'] == 'S:B')
+    assert b['planned_eta'] == (tr.t - timedelta(minutes=40)).isoformat(timespec='seconds')
+
+
 # ============================== API: карта и «Развоз» ==============================
 
 def _refresh(state):

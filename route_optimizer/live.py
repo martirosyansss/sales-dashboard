@@ -659,7 +659,12 @@ def eta_plan(day: date, now: datetime, pos: Point, queue: Sequence[tuple[int, Se
         s, stayed = here
         p = (s['lat'], s['lon'])
         arrive[s['stop_id']] = (now, True)
-        t = now + timedelta(minutes=max(0.0, road.stay(p, float(s.get('weight_kg') or 0.0), rules) - stayed))
+        stay = road.stay(p, float(s.get('weight_kg') or 0.0), rules)
+        opens = (windows or {}).get(s.get('customer_id'), (-math.inf, math.inf))[0]
+        if math.isfinite(opens) and midnight + timedelta(minutes=opens) > now:   # ждёт окна: разгрузка — с его начала
+            t = midnight + timedelta(minutes=opens + stay)
+        else:
+            t = now + timedelta(minutes=max(0.0, stay - stayed))
         rest(True)
         pos, live_pos, at_depot = p, False, False
     for k, stops in queue:
@@ -812,6 +817,8 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
     return_source = None
     etas: dict[str, tuple[datetime, bool]] = {}
     late: list[dict[str, Any]] = []
+    own = {s['stop_id']: e for s in stops if trips[s['stop_id']] < len(plan)
+           and (e := plan[trips[s['stop_id']]].etas.get(s.get('customer_id'))) is not None}   # плановое ETA её рейса
     if live and last is not None and not finished and (nxt is not None or (gone and not at_depot and depot is not None)):
         queue = _queue(stops, trips, plan, current, nxt, bool(gone))
         here = None
@@ -823,8 +830,6 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
                        not lunch_taken(actual, day, rules), at_depot, here, windows)
         etas = dict(eta.arrive)
         if now - last.at <= LATE_FIX_MAX:   # давнее положение — прогноз «не успеет» не строится (нет GPS — нет тревоги)
-            own = {s['stop_id']: e for s in stops if trips[s['stop_id']] < len(plan)
-                   and (e := plan[trips[s['stop_id']]].etas.get(s.get('customer_id'))) is not None}   # план её рейса
             late = late_forecast(day, stops, etas, own, windows or {}, eta.end, rules,
                                  nxt['stop_id'] if here is not None else None)   # type: ignore[index]
         if eta.back is not None and gone and not at_depot:
@@ -900,7 +905,6 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
     }
     if detail:
         line = ac.simplify([f.point for f in pts], TRACK_LINE_POINTS)
-        planned_etas = {c: e for t in plan for c, e in t.etas.items()}
         marks = {k: v for k, v in visited.items()}
         out.update({
             'track': [[round(p[0], 6), round(p[1], 6)] for p in line],
@@ -908,7 +912,7 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
                        'lat': s.get('lat'), 'lon': s.get('lon'),
                        'status': s.get('status'), 'seq': s.get('seq'), 'trip': trips[s['stop_id']] + 1,
                        'weight_kg': round(float(s.get('weight_kg') or 0.0), 1),
-                       'planned_eta': _iso(planned_etas.get(s.get('customer_id'))),   # type: ignore[arg-type]
+                       'planned_eta': _iso(own.get(s['stop_id'])),
                        'eta': _iso(etas[s['stop_id']][0]) if s['stop_id'] in etas else None,
                        'eta_source': ('road' if etas[s['stop_id']][1] else 'model') if s['stop_id'] in etas else None,
                        'arrive': _iso(marks.get(s['stop_id'])), 'delivered_at': s.get('delivered_at')}
