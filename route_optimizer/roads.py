@@ -81,6 +81,7 @@ MIN_EDGE_KM = 1e-9         # нулевые рёбра (узлы с одной �
 PATH_SIMPLIFY_KM = 0.005   # линия на карте: отклонение от дороги не больше 5 м
 PATH_LIMIT_FACTOR = 3.0    # поиск пути для карты — в пределах 3 × по прямой + 2 км (не нашёлся — без предела)
 PATH_LIMIT_SLACK_KM = 2.0
+TRACK_NODE_KM = 0.1        # точка GPS-трека берёт высоту узла графа не дальше 100 м (рельеф трека, №85)
 GRAPH_FORMAT = 2
 DIST_FORMAT = 3            # 3 — направленная матрица (было: среднее туда и обратно)
 RULES_VERSION = 2          # правила way_direction: поменялись — граф и кэш расстояний пересобираются
@@ -799,6 +800,34 @@ class RoadDistances:
             return None
         v = c.up.item(ia, ib)
         return v if math.isfinite(v) else None
+
+    def track_climbs(self, tracks: Sequence[Sequence[Point]]) -> list[tuple[float, float] | None]:
+        """(эффективный подъём, м; км) GPS-треков (№85, «Նորմ և փաստ»): высота точки — у ближайшего узла графа (не дальше
+        TRACK_NODE_KM; дальше — точка без высоты пропускается), подъём — terrain.edge_climb между соседними точками с
+        высотой (длина — по треку между ними), км — по прямой между всеми точками. Граф загружается один раз на все треки.
+        Рельефа нет, дороги сломаны, трек короче двух точек — None."""
+        got = self.elevation() if self.elevation is not None and not self.failed else None
+        if got is None or not any(len(t) >= 2 for t in tracks):
+            return [None] * len(tracks)
+        try:
+            net = self._load_network()
+        except Exception:
+            logger.exception('[Routes] Граф для рельефа треков не загружен — без рельефа')
+            return [None] * len(tracks)
+        out: list[tuple[float, float] | None] = []
+        for pts in tracks:
+            if len(pts) < 2:
+                out.append(None)
+                continue
+            nodes, off = net.snap(list(pts))
+            h = np.where((nodes >= 0) & (off <= TRACK_NODE_KM), got[1][np.maximum(nodes, 0)], np.nan)
+            lat = np.array([p[0] for p in pts], dtype=np.float64)
+            lon = np.array([p[1] for p in pts], dtype=np.float64)
+            at = np.concatenate([[0.0], np.cumsum(_haversine_np(lat[:-1], lon[:-1], lat[1:], lon[1:]))])
+            ok = np.isfinite(h)
+            hv, av = h[ok], at[ok]
+            out.append((float(math.fsum(terrain.edge_climb(hv[:-1], hv[1:], np.diff(av)))), float(at[-1])))
+        return out
 
     def _read_climbs(self, key: str, identity: str) -> None:
         """Кэш подъёмов из файла, если он посчитан на том же графе и тех же высотах; иначе пустой с этим ключом."""

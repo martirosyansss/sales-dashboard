@@ -30,7 +30,7 @@ from route_optimizer import terrain  # noqa: E402
 from route_optimizer import vrp  # noqa: E402
 from route_optimizer.running_costs import TERRAIN_K, curb_tonnes, mean_climb, route_cost  # noqa: E402
 from test_route_center_bypass import GRAPH, _at, _map  # noqa: E402
-from test_route_optimizer import DP_DAY, DP_NORMS, TN, _dp_stops, _info  # noqa: E402
+from test_route_optimizer import DP_DAY, DP_NORMS, TN, _dp_stops, _info, client  # noqa: E402,F401
 
 RISE = 50.0   # м на шаг сетки к северу (0,4 км: 12,5% — круче CLIMB_C)
 Z = np.array([RISE * round((lat - _at(0, 0)[0]) / (_at(1, 0)[0] - _at(0, 0)[0])) for lat in GRAPH.lat])
@@ -269,6 +269,20 @@ def test_dem_sampling_across_tile_seam_and_noise(tmp_path):
     assert terrain.tiles_for([40.5, 40.7, 41.2], [44.1, 45.9, 44.0]) == ['N40E044', 'N40E045', 'N41E044']
 
 
+def test_track_climbs_by_graph_node_heights():
+    """Трек по сетке на север — +300 м; обратно — экономия не больше CLIMB_C · длина; точка дальше 100 м от узла — без
+    высоты (участки к ней ровные); без высот — None."""
+    r = _hilly()
+    up = [_at(i / 4, 0) for i in range(25)]           # точки между узлами (дальше 100 м) — без высоты, пропускаются
+    nodes = [_at(i, 0) for i in range(6, -1, -1)]
+    (climb, km), (down, km2), (off, _), short = r.track_climbs(
+        [up, nodes, [_at(0, 0), _at(0, 0.5), (40.0, 40.0)], up[:1]])
+    assert climb == pytest.approx(300.0) and km == pytest.approx(6 * 0.4, rel=1e-3)
+    assert down == pytest.approx(-terrain.CLIMB_C * 1000.0 * km2) and short is None
+    assert off == pytest.approx(0.0)
+    assert rd.RoadDistances.for_graph(GRAPH).track_climbs([up]) == [None]
+
+
 # ============================== PyVRP и «Развоз» ==============================
 
 @pytest.mark.skipif(not vrp.available(), reason='нет PyVRP')
@@ -326,3 +340,42 @@ def test_plan_view_shows_climb_and_terrain_liters(monkeypatch):
     assert hilly['terrain_l'] == pytest.approx(hilly['liters'] - plain['liters'], abs=0.11)
     assert hilly['terrain_l'] > 0 and hilly['km'] == plain['km']
 
+
+# ============================== «Նորմ և փաստ» ==============================
+
+class _HillRoads:
+    """Дороги с высотами для «Նորմ և փաստ»: каждый трек — подъём 120 м на 30 км."""
+    terrain = True
+    calls = 0
+
+    def elevation(self):
+        return 'hills', None
+
+    def track_climbs(self, tracks):
+        _HillRoads.calls += 1
+        return [(120.0, 30.0) for _ in tracks]
+
+
+def test_garage_norm_day_with_track_terrain(client, monkeypatch):
+    """Норма дня по треку: км GPS × норма + литры подъёма трека (масса — собственная + полгруза); норма месяца с рельефом —
+    рядом с ручной (флаги — по ручной). Высот нет — строки и норма прежние (без ключей рельефа)."""
+    from test_garage_norm import _norm_client, _truck
+    from route_optimizer import views
+    state = _norm_client(client, monkeypatch)
+    flat = _truck(client.get('/api/routes/garage/norm?month=2026-09').get_json(), 'CAR1')
+    assert 'terrain_l100' not in flat['norm'] and not any('terrain_l' in d for d in flat['days'])
+    monkeypatch.setattr(rc, 'TERRAIN_U_BAR', 2.0)
+    state.roads = type('P', (), {'get': lambda self: _HillRoads()})()
+    hill = _truck(client.get('/api/routes/garage/norm?month=2026-09').get_json(), 'CAR1')
+    cap = state.store.load().truck_capacity('CAR1', views._peek_car_capacity(state))
+    extra = TERRAIN_K * (curb_tonnes(cap) + cap / 2000.0) * (120.0 - 2.0 * 30.0)
+    day = hill['days'][0]
+    assert day['climb_m'] == 120 and day['terrain_l'] == round(extra, 1)
+    assert day['norm_l'] == round(day['fact_km'] * 30.0 / 100.0 + extra, 1)
+    km = math.fsum(d['fact_km'] for d in hill['days'])
+    assert hill['norm']['terrain_l100'] == pytest.approx(
+        100.0 * math.fsum(d['norm_l'] for d in hill['days']) / km, abs=0.06)
+    assert hill['norm']['l100'] == 30.0 and hill['fuel']['over'] == flat['fuel']['over']
+    calls = _HillRoads.calls
+    client.get('/api/routes/garage/norm?month=2026-09')
+    assert _HillRoads.calls == calls                     # кэш: треки не пересчитываются
