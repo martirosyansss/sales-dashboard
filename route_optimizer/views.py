@@ -170,9 +170,12 @@ class RoutesState:
     cost_days: dict[date, tuple[Any, list[cts.TripCost], float, bool]] = field(default_factory=dict)
     cost_lock: threading.Lock = field(default_factory=threading.Lock)   # только словари кэша: расчёт не под ним
     # расчёт периода — в фоне (_cost_result): (с, по) → поток (не больше одного на сервер) и последний итог потока —
-    # (time.monotonic(), _CostResult или исключение расчёта); холодный первый расчёт (дороги без кэша) — минуты
+    # (time.monotonic() начала и конца расчёта, _CostResult или исключение); холодный первый расчёт (дороги без кэша) —
+    # минуты. cost_changed — time.monotonic() последнего сохранения настроек, наценки или ставок (_cost_changed): итог,
+    # начатый раньше, не отдаётся
     cost_warm: dict[tuple[date, date], threading.Thread] = field(default_factory=dict)
-    cost_results: dict[tuple[date, date], tuple[float, Any]] = field(default_factory=dict)
+    cost_results: dict[tuple[date, date], tuple[float, float, Any]] = field(default_factory=dict)
+    cost_changed: float = 0.0
     driver_list_cache: tuple[float, list[str]] | None = None
     driver_list_lock: threading.Lock = field(default_factory=threading.Lock)   # перечитывает один запрос
     # (машина ERP, имя, день) — кто возил машины за [since, until) (№84, waybill.load_car_crew_days): экипаж машин без
@@ -617,6 +620,7 @@ def api_settings_post() -> Any:
         return jsonify({'success': False, 'errors': errors}), 400
     user = session.get('username')
     state.store.save(changes, user)
+    _cost_changed(state)
     logger.info('[Routes] Настройки сохранены пользователем %s', user)
     return jsonify({'success': True})
 
@@ -5091,6 +5095,7 @@ def api_pay_params() -> Any:
         return _bad_request(errors)
     state = _state()
     state.store.save_crew_pay_params(params, session.get('username'))
+    _cost_changed(state)   # ставки за точку и тонну — и в «Առաքման արժեք»
     logger.info('[Routes] Աշխատավարձ: параметры сохранены пользователем %s: %s', session.get('username'), params.json())
     return jsonify(_pay_params_body(state))
 
@@ -5103,6 +5108,7 @@ COST_DAYS_KEPT = 200       # дней расчёта в кэше (больше �
 COST_RETRY_SECONDS = 60    # день, посчитанный без рельефа (подъёмы точек ещё в фоне, _cost_leg), — пересчитать не раньше
 COST_DAY_TTL_SECONDS = 3600   # страховка: день пересчитывается не реже раза в час, даже если ключ входа тот же
 COST_WAIT_S = 10.0         # запрос ждёт фоновый расчёт периода не дольше; дальше — {pending: true}, страница спросит снова
+COST_FRESH_S = 30.0        # готовый итог периода моложе — отдаётся без нового расчёта (CSV и повтор сразу за страницей)
 COST_PENDING = 'Հաշվարկը դեռ ընթանում է (առաջին անգամ՝ մինչև մի քանի րոպե)։ Կրկնեք մի փոքր ուշ։'
 COST_NO_CTX = 'Սկզբում նշեք պահեստը և մեքենաների տոննաժն ու ծախսը կարգավորումներում'
 
@@ -5271,27 +5277,34 @@ def _cost_compute(state: RoutesState, since: date, until: date) -> _CostResult:
 def _cost_warm(state: RoutesState, since: date, until: date) -> None:
     """Фоновый расчёт периода: итог или исключение (ERP, нет склада, база) — в cost_results; запрос, дождавшийся потока,
     отдаёт итог или поднимает то же исключение (_api: 503 / 400 / 500), как при расчёте в самом запросе."""
+    started = time.monotonic()
     try:
         got: Any = _cost_compute(state, since, until)
-    except Exception as e:   # noqa: BLE001 — передаём запросу как есть
-        got = e
+    except Exception as e:   # noqa: BLE001 — передаём запросу как есть; без трассировки: кадры потока не держим в памяти
+        got = e.with_traceback(None)
     with state.cost_lock:
         state.cost_results.pop((since, until), None)
-        state.cost_results[(since, until)] = (time.monotonic(), got)
+        state.cost_results[(since, until)] = (started, time.monotonic(), got)
         while len(state.cost_results) > COST_SALES_KEPT:
             state.cost_results.pop(next(iter(state.cost_results)))
         state.cost_warm.pop((since, until), None)
 
 
 def _cost_result(state: RoutesState, since: date, until: date) -> _CostResult | None:
-    """Отчёт периода — расчётом в фоне (как «Նորմ և փաստ», _month_ready): каждый запрос запускает свежий расчёт (кэш
-    дней делает его быстрым) и ждёт его не дольше COST_WAIT_S; не дождался — None (pending). Поток один на сервер: идёт
-    расчёт другого периода — этот ждёт очереди (None). Холодный первый расчёт после перезапуска или смены карты
-    (расстояния точек периода — с нуля) не держит запрос и воркер минутами."""
+    """Отчёт периода — расчётом в фоне (как «Նորմ և փաստ», _month_ready): готовый итог моложе COST_FRESH_S, начатый после
+    последнего сохранения настроек (cost_changed), отдаётся сразу; иначе запрос запускает свежий расчёт (кэш дней делает
+    его быстрым) и ждёт его не дольше COST_WAIT_S; не дождался — None (pending). Поток один на сервер: идёт расчёт другого
+    периода — этот ждёт очереди (None). Итог расчёта, начатого до сохранения настроек, — тоже None: следующий опрос
+    запустит новый. Холодный первый расчёт после перезапуска или смены карты (расстояния точек периода — с нуля) не держит
+    запрос и воркер минутами."""
     key = (since, until)
     with state.cost_lock:
         job = state.cost_warm.get(key)
         if job is None:
+            hit = state.cost_results.get(key)
+            if hit is not None and hit[0] >= state.cost_changed and time.monotonic() - hit[1] < COST_FRESH_S \
+                    and not isinstance(hit[2], BaseException):
+                return hit[2]
             if state.cost_warm:
                 return None
             job = threading.Thread(target=_cost_warm, args=(state, since, until), name='routes-cost-to-serve',
@@ -5303,11 +5316,19 @@ def _cost_result(state: RoutesState, since: date, until: date) -> _CostResult | 
         return None
     with state.cost_lock:
         hit = state.cost_results.get(key)
-    if hit is None:   # итог уже вытеснен другими периодами — пусть страница спросит снова
+        changed = state.cost_changed
+    if hit is None or hit[0] < changed:   # вытеснен другими периодами или начат до сохранения настроек — спросить снова
         return None
-    if isinstance(hit[1], BaseException):
-        raise hit[1]
-    return hit[1]
+    if isinstance(hit[2], BaseException):   # копия: трассировка запроса не прилипает к хранимому исключению
+        raise copy.copy(hit[2]) from None
+    return hit[2]
+
+
+def _cost_changed(state: RoutesState) -> None:
+    """Сохранены настройки, наценка или ставки: готовые итоги периодов устарели, идущий расчёт — тоже (_cost_result)."""
+    with state.cost_lock:
+        state.cost_changed = time.monotonic()
+        state.cost_results.clear()
 
 
 def _cost_request() -> tuple[_CostResult | None, Any]:
@@ -5423,5 +5444,6 @@ def api_cost_margin() -> Any:
         return _bad_request({'value': err})
     state = _state()
     state.store.save_cost_margin(value, session.get('username'))
+    _cost_changed(state)
     logger.info('[Routes] Առաքման արժեք: наценка %s сохранена пользователем %s', value, session.get('username'))
     return jsonify(_cost_margin_body(state))

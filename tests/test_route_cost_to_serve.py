@@ -382,6 +382,7 @@ def test_api_report_uses_sent_plan_then_draft(cost):
 
 
 def test_day_cache_by_plan_revision(cost, monkeypatch):
+    monkeypatch.setattr(views, 'COST_FRESH_S', 0.0)      # каждый запрос — новый расчёт периода: проверяем кэш ДНЯ
     seen = []
     real = cts.trip_costs
     monkeypatch.setattr(views.cts, 'trip_costs', lambda trips, *a: seen.append(trips[0].day) or real(trips, *a))
@@ -484,10 +485,62 @@ def test_cold_period_is_computed_in_background_and_polled(cost, monkeypatch):
     assert not cost.state.cost_warm
 
 
+def _count_computes(monkeypatch):
+    runs = []
+    real = views._cost_compute
+    monkeypatch.setattr(views, '_cost_compute', lambda state, since, until: runs.append(since) or real(state, since, until))
+    return runs
+
+
+def test_fresh_result_is_served_without_new_computation(cost, monkeypatch):
+    """Готовый итог моложе COST_FRESH_S — без нового расчёта (CSV сразу за страницей); старше — новый расчёт."""
+    runs = _count_computes(monkeypatch)
+    body = cost.get('/api/routes/cost?days=30').get_json()
+    assert cost.get('/api/routes/cost?days=30').get_json() == body
+    assert cost.get('/api/routes/cost.csv?days=30').status_code == 200 and len(runs) == 1
+    cost.get('/api/routes/cost?days=90')
+    assert len(runs) == 2                                                               # другой период — свой расчёт
+    with cost.state.cost_lock:
+        key = (date(2026, 9, 7), date(2026, 10, 6))
+        started, done, res = cost.state.cost_results[key]
+        cost.state.cost_results[key] = (started, done - views.COST_FRESH_S - 1, res)
+    cost.get('/api/routes/cost?days=30')
+    assert len(runs) == 3
+
+
+def test_saved_margin_never_serves_stale_result(cost, monkeypatch):
+    """Наценку сохранили, пока считался период: итог того расчёта не отдаётся (начат раньше) — следующий опрос считает
+    заново и красные — по новой наценке. Готовый итог после сохранения тоже не отдаётся."""
+    import threading
+    import time
+    runs = _count_computes(monkeypatch)
+    assert cost.get('/api/routes/cost?days=30').get_json()['margin'] is None
+    cost.post('/api/routes/cost/margin', json={'value': 0.5})
+    body = cost.get('/api/routes/cost?days=30').get_json()                            # моложе 30 с, но до сохранения
+    assert body['margin'] == 0.5 and body['totals']['red'] > 0 and len(runs) == 2
+    gate = threading.Event()
+    real = cost.state.cost_sales_loader
+    cost.state.cost_sales_loader = lambda since, until: gate.wait(10) and real(since, until)
+    monkeypatch.setattr(views, 'COST_WAIT_S', 0.05)
+    cost.state.cost_sales_cache.clear()
+    cost.post('/api/routes/cost/margin', json={'value': None})
+    assert cost.get('/api/routes/cost?days=30').get_json()['pending'] is True         # считается (наценка None)
+    cost.post('/api/routes/cost/margin', json={'value': 100})                         # сохранили во время расчёта
+    gate.set()
+    for _ in range(200):
+        r = cost.get('/api/routes/cost?days=30')
+        if r.status_code == 200:
+            break
+        time.sleep(0.05)
+    assert r.get_json()['margin'] == 100 and len(runs) == 4                          # тот расчёт выброшен, новый — с 100
+
+
 def test_erp_down_is_an_error_not_zeros(cost):
     cost.source['error'] = ErpError('нет связи')
     r = cost.get('/api/routes/cost?days=30')
-    assert r.status_code == 503 and r.get_json()['success'] is False
+    assert r.status_code == 503 and r.get_json()['success'] is False and not r.get_json().get('pending')
+    [(_, _, err)] = cost.state.cost_results.values()
+    assert isinstance(err, ErpError) and err.__traceback__ is None                     # кадры потока не держим
     assert cost.get('/api/routes/cost.csv?days=30').status_code == 503
 
 
