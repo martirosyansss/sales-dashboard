@@ -98,7 +98,10 @@
     function render() {
         const d = state.data;
         renderMonths(d.months, d.month);
-        $('cpSub').textContent = monthHy(d.month) + (d.current ? ' (մինչև այսօր)' : '') + ' · աշխատանքային օրեր՝ ' + d.workdays;
+        // D — օրեր, երբ առաքում է եղել (ընթացիկ ամսում՝ մինչև այսօր); D_month — ֆիքսի և նորմի հայտարարը (անցած ամսում = D)
+        const dm = d.workdays_month ?? d.workdays;
+        const daysText = d.current ? d.workdays + ' անցած / ' + dm + ' ամսում' : String(d.workdays);
+        $('cpSub').textContent = monthHy(d.month) + (d.current ? ' (մինչև այսօր)' : '') + ' · աշխատանքային օրեր՝ ' + daysText;
         $('cpOldHead').textContent = 'Հին սխեմա (' + fmt(d.params.old_pct, d.params.old_pct % 1 ? 1 : 0) + '%)';
         const warn = [
             d.unknown_codes.length ? 'ERP-ում չկան այս կոդերը՝ ' + d.unknown_codes.join(', ') + '։ Ստուգեք պարամետրերը։' : '',
@@ -109,7 +112,7 @@
         ].filter(Boolean);
         $('cpWarn').hidden = !warn.length;
         $('cpWarnText').textContent = warn.join(' ');
-        renderFormula(d.params, d.workdays);
+        renderFormula(d.params, dm, d.current ? daysText : '');
         renderTable(d);
     }
 
@@ -128,7 +131,7 @@
         $('cpMonth').value = current || months[0];
     }
 
-    function renderFormula(p, D) {
+    function renderFormula(p, D, currentDays) {
         const n = (text) => h('span', { class: 'num', text });
         const dText = D ? String(D) : '—';
         $('cpFormula').replaceChildren(
@@ -144,6 +147,9 @@
                 + 'որին այդ օրը ապրանք է հասցվել (մեկ օրում մեկ խանութին մի քանի ապրանքագիր = 1 կետ)։ Տոննա՝ ապրանքի քաշն ըստ '
                 + 'ERP-ի։ Վերադարձները դեռ չեն հանվում, իսկ միայն զրոյական կամ մինուսային ապրանքագրերը '
                 + 'կետ և աշխատանքային օր չեն համարվում։' }),
+            ...(currentDays ? [h('p', { class: 'note' }, 'Ընթացիկ ամիս՝ աշխատանքային օրեր ', n(currentDays), '։ Ֆիքսը և '
+                + 'նորմը հաշվվում են ամբողջ ամսվա ', n(dText), ' աշխատանքային օրից (կարգավորումների օրացույցով՝ աշխատանքային '
+                + 'օրեր և ոչ աշխատանքային ամսաթվեր), այնպես որ ցույց է տրված մինչև այսօր հաշվեգրվածը։')] : []),
         );
     }
 
@@ -158,7 +164,7 @@
                     r.agent_ids.length > 1 ? h('span', { class: 'rt-badge b-none', text: r.agent_ids.length + ' կոդ' }) : null),
                 h('td', { class: 'txt' }, h('button', { type: 'button', class: 'rt-linkbtn', text: r.name || r.code,
                     'aria-label': (r.name || r.code) + '՝ օր առ օր' })),
-                num(r.days + '/' + d.workdays),
+                num(r.days + '/' + (d.workdays_month ?? d.workdays)),
                 num(fmt(r.points)),
                 num(fmt(r.tonnes, 1)),
                 num(fmt(r.fix)),

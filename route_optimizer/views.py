@@ -4826,11 +4826,21 @@ class _PayMonth:
     result: cp.Result
 
 
+def _month_workdays(first: date, settings: Mapping[str, Any]) -> int:
+    """Рабочих дней месяца first по календарю «Маршрутов»: дни недели settings['workdays'] без нерабочих дат (№64) —
+    тот же dp.is_workday, что у «Развоза»."""
+    workdays, off = settings['workdays'], dp.holidays_of(settings)
+    return sum(dp.is_workday(first + timedelta(days=i), workdays, off)
+               for i in range((_add_months(first, 1) - first).days))
+
+
 def _pay_month_result(state: RoutesState, first: date, today: date) -> _PayMonth:
-    """Расчёт месяца first: текущий — по сегодня включительно (накладные «из будущего» не берём)."""
+    """Расчёт месяца first: текущий — по сегодня включительно (накладные «из будущего» не берём), фикс и норма — от
+    рабочих дней всего месяца по календарю (начислено по сегодня); прошлый — от D, как раньше."""
     until = min(_add_months(first, 1), today + timedelta(days=1))
     params, at, by = state.store.crew_pay_params()
-    return _PayMonth(first, params, at, by, cp.compute(_pay_data(state, first, until), params))
+    planned = _month_workdays(first, state.store.load().settings) if first == today.replace(day=1) else None
+    return _PayMonth(first, params, at, by, cp.compute(_pay_data(state, first, until), params, planned))
 
 
 def _pay_row_json(r: cp.Row) -> dict[str, Any]:
@@ -4863,7 +4873,8 @@ def api_pay() -> Any:
     return jsonify({'success': True, 'month': m.first.strftime('%Y-%m'), 'current': m.first == this,
                     'months': [_add_months(this, -i).strftime('%Y-%m') for i in range(PAY_MONTHS)],
                     'params': m.params.json(), 'params_updated_at': m.params_at, 'params_updated_by': m.params_by,
-                    'workdays': result.workdays, 'unknown_codes': list(result.unknown_codes),
+                    'workdays': result.workdays, 'workdays_month': result.workdays_month,
+                    'unknown_codes': list(result.unknown_codes),
                     'overlapping_codes': [list(c) for c in result.overlapping_codes],
                     'excluded_kin': list(result.excluded_kin),
                     'rows': [_pay_row_json(r) for r in result.rows],
@@ -4909,6 +4920,8 @@ def api_pay_csv() -> Any:
     for key, label in PAY_PARAM_LABELS:
         value = getattr(params, key)
         w.writerow([label, _csv_cell(', '.join(value)) if isinstance(value, tuple) else n(value)])
+    # D_month — знаменатель фикса и нормы: у текущего месяца — рабочие дни всего месяца, в таблице «Աշխատանքային օրեր» — D
+    w.writerow(['Աշխատանքային օրեր ամսում', result.workdays_month])
     # то же, что предупреждения на странице: тёзки с общими днями и исключённые с учтённым кодом того же имени
     for codes in result.overlapping_codes:
         w.writerow(['Ստուգել', _csv_cell('Նույն անունով կոդեր, որոնցից մի քանիսը աշխատել են նույն օրերին՝ '

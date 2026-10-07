@@ -13,7 +13,7 @@ from route_optimizer import crew_pay as cp  # noqa: E402
 from route_optimizer import store as st  # noqa: E402
 from route_optimizer import views  # noqa: E402
 from route_optimizer.erp import ErpError, check_sql, SQL_CREW_PAY  # noqa: E402
-from test_route_optimizer import _no_road_map, client  # noqa: E402,F401
+from test_route_optimizer import REF, _no_road_map, client  # noqa: E402,F401
 
 NOW = datetime(2026, 10, 7, 10, 0)
 LINE, LINE19, LINE19B = 1, 2, 3                   # менеджеры (линии)
@@ -213,6 +213,96 @@ def test_default_excluded_people_match_research():
     assert [r.agent_ids for r in res.rows] == [(KORYUN,)]
 
 
+def test_default_rates_owner_0710():
+    p = cp.Params()
+    assert (p.fix, p.rate_point, p.rate_tonne, p.minimum, p.norm_per_day, p.old_fix, p.old_pct) == \
+        (100_000, 250, 1_750, 250_000, 12, 100_000, 2.0)
+
+
+# Текущий месяц, 07.10: накладные по сегодня, а фикс и норма — от рабочих дней ВСЕГО месяца (D_month)
+def oct_inv(van, day, customer, kg=0.0, total=1.0):
+    return cp.Invoice(van, date(2026, 10, day), customer, LINE, total, kg)
+
+
+def avakimyan_week():
+    """Экран 07.10: 6 из 6 дней, 75 точек, 9,7 т (по 12–13 точек в день)."""
+    out, c = [], 0
+    for day, n in zip((1, 2, 3, 5, 6, 7), (13, 12, 13, 12, 13, 12)):
+        for _ in range(n):
+            c += 1
+            out.append(oct_inv(KORYUN, day, c, kg=9_700 / 75))
+    return out
+
+
+def test_current_month_prorated_by_whole_month_not_elapsed_days():
+    p = cp.Params()
+    week = data(*avakimyan_week())
+    before = row(cp.compute(week, p), KORYUN)                         # без D_month — как было: полный месяц за неделю
+    assert (before.days, before.points, round(before.tonnes, 3)) == (6, 75, 9.7)
+    assert before.fix == 100_000 and before.minimum == 250_000 and before.pay == 250_000
+    res = cp.compute(week, p, 26)
+    r = row(res, KORYUN)
+    assert (res.workdays, res.workdays_month) == (6, 26)
+    assert r.fix == cp.money(100_000 * 6 / 26) == 23_077
+    assert r.piece == cp.money(250 * 75 + 1750 * 9.7) == 35_725
+    assert r.minimum == cp.money(250_000 * 75 / (12 * 26)) == 60_096
+    assert r.pay == 60_096 and r.min_applied
+    assert r.old == 23_077 + cp.money(0.02 * 75)
+
+
+def test_month_workdays_never_below_elapsed_days():
+    """Календарь говорит «3 рабочих дня», а накладные были в 6 дней (работали в выходной) — D_month = D."""
+    week, p = data(*avakimyan_week()), cp.Params()
+    for planned in (3, 6, 0, None):
+        res = cp.compute(week, p, planned)
+        assert res.workdays_month == 6 and res.rows == cp.compute(week, p).rows, planned
+    assert cp.compute(data(), p, 27).workdays_month == 27 and cp.compute(data(), p).workdays_month == 0
+
+
+def save_calendar(pay, **settings):
+    store = pay.application.extensions['route_optimizer'].store
+    changes, errors = st.validate_payload({'settings': settings}, store.load(), REF)
+    assert not errors, errors
+    store.save(changes, 'qa')
+
+
+def test_api_current_month_uses_calendar_of_routes_settings(pay):
+    pay.source['invoices'] = avakimyan_week()
+    body = pay.get('/api/routes/pay').get_json()
+    assert body['current'] and (body['workdays'], body['workdays_month']) == (6, 27)      # пн–сб: 31 − 4 воскресенья
+    k = body['rows'][0]
+    assert k['fix'] == cp.money(100_000 * 6 / 27) and k['minimum'] == cp.money(250_000 * 75 / (12 * 27))
+    # праздник в будний день и праздник в воскресенье (не вычитается дважды) — 26
+    save_calendar(pay, holidays=['2026-10-12', '2026-10-04'])
+    assert pay.get('/api/routes/pay').get_json()['workdays_month'] == 26
+    # пятидневка: ещё 5 суббот (3, 10, 17, 24, 31) — 21
+    save_calendar(pay, workdays=[1, 2, 3, 4, 5])
+    body = pay.get('/api/routes/pay').get_json()
+    assert body['workdays_month'] == 21 and body['rows'][0]['fix'] == cp.money(100_000 * 6 / 21)
+    lines = pay.get('/api/routes/pay.csv').get_data().decode('utf-8')[1:].split('\r\n')
+    assert 'Աշխատանքային օրեր ամսում;21' in lines
+    assert any(x.startswith('B001/1;Իսկանդարյան Կորյուն;6;6;75;') for x in lines)      # в таблице — D (6)
+    assert len(pay.calls) == 1                                                            # календарь — без нового чтения ERP
+
+
+def test_past_month_unchanged_and_saved_params_win(pay):
+    """Регрессия: сентябрь со ставками 175 / 1 200 (сохранённая строка crew_pay сильнее новых значений по умолчанию) —
+    те же числа, что до D_month, даже если календарь настроек сентябрю не соответствует."""
+    old_rates = {**cp.Params().json(), 'rate_point': 175, 'rate_tonne': 1200}
+    assert pay.post('/api/routes/pay/params', json=old_rates).status_code == 200
+    save_calendar(pay, workdays=[1, 2, 3, 4, 5], holidays=['2026-09-01', '2026-09-21'])
+    body = pay.get('/api/routes/pay?month=2026-09').get_json()
+    assert body['params']['rate_point'] == 175 and body['params']['rate_tonne'] == 1200
+    assert (body['workdays'], body['workdays_month']) == (2, 2)
+    k, a = body['rows']
+    assert (k['days'], k['points'], k['tonnes'], k['fix'], k['piece']) == (2, 2, 1.5, 100_000, 2_150)
+    assert k['minimum'] == 20_833 and k['pay'] == 102_150 and k['old'] == 103_000 and k['diff'] == -850
+    assert (a['days'], a['fix'], a['piece'], a['minimum'], a['pay'], a['old']) == (1, 50_000, 475, 10_417, 50_475, 50_400)
+    lines = pay.get('/api/routes/pay.csv?month=2026-09').get_data().decode('utf-8')[1:].split('\r\n')
+    assert 'B001/1;Իսկանդարյան Կորյուն;2;2;2;1,500;100000;2150;20833;102150;;103000;-850' in lines
+    assert 'Աշխատանքային օրեր ամսում;2' in lines
+
+
 def test_huge_numbers_are_field_errors():
     for bad in (10 ** 400, -10 ** 400, float('inf'), float('-inf')):
         params, errors = cp.check_params({**cp.Params().json(), 'fix': bad, 'old_pct': bad})
@@ -279,12 +369,13 @@ def pay(client, monkeypatch):
 def test_api_month(pay):
     body = pay.get('/api/routes/pay?month=2026-09').get_json()
     assert body['success'] and body['month'] == '2026-09' and not body['current'] and body['workdays'] == 2
+    assert body['workdays_month'] == 2                                              # закрытый месяц: D_month = D
     assert pay.calls == [(date(2026, 9, 1), date(2026, 10, 1))]
     assert body['months'][0] == '2026-10' and body['months'][-1] == '2025-11' and len(body['months']) == 12
     assert [r['code'] for r in body['rows']] == ['B001/1', 'B002/1']
     k = body['rows'][0]
-    assert (k['days'], k['points'], k['tonnes'], k['fix'], k['piece']) == (2, 2, 1.5, 100_000, 2_150)
-    assert k['minimum'] == 20_833 and k['pay'] == 102_150 and k['old'] == 103_000 and k['diff'] == -850
+    assert (k['days'], k['points'], k['tonnes'], k['fix'], k['piece']) == (2, 2, 1.5, 100_000, 250 * 2 + 1750 * 1.5)
+    assert k['minimum'] == 20_833 and k['pay'] == 103_125 and k['old'] == 103_000 and k['diff'] == 125
     assert [d['date'] for d in k['by_day']] == ['2026-09-01', '2026-09-02']
     assert body['totals']['pay'] == sum(r['pay'] for r in body['rows']) and body['params'] == cp.Params().json()
     pay.get('/api/routes/pay?month=2026-09')
@@ -295,6 +386,7 @@ def test_api_current_month_until_today_and_bad_months(pay):
     pay.source['invoices'] = []
     body = pay.get('/api/routes/pay').get_json()
     assert body['month'] == '2026-10' and body['current'] and body['workdays'] == 0 and body['rows'] == []
+    assert body['workdays_month'] == 27                                     # октябрь 2026 без воскресений (пн–сб)
     assert pay.calls == [(date(2026, 10, 1), date(2026, 10, 8))]
     for bad in ('2025-10', '2026-11', '2026-13', 'x', '2026-9'):
         r = pay.get(f'/api/routes/pay?month={bad}')
@@ -350,7 +442,8 @@ def test_csv(pay):
     table = lines[head + 1:]
     assert len(table) == 5
     assert "'=HYPERLINK" in text and "\n'=B8;Ծածկագիր;" in text                    # формула Excel не исполнится
-    assert 'B001/1;Իսկանդարյան Կորյուն;2;2;2;1,500;100000;2150;20833;102150;;103000;-850' in table
+    assert 'B001/1;Իսկանդարյան Կորյուն;2;2;2;1,500;100000;3125;20833;103125;;103000;125' in table
+    assert 'Աշխատանքային օրեր ամսում;2' in lines[:head]
     assert table[-1].startswith(';Ընդամենը;;2;')
 
 
