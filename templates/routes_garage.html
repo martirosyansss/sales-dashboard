@@ -39,8 +39,12 @@
     <header class="rt-head">
         <div class="rt-head-row">
             <h1 class="rt-title">Ավտոտնակ</h1>
-            <!-- машины на карте сейчас (№76) — начальнику гаража и администратору -->
-            <a class="rt-btn rt-btn-ghost rt-btn-sm" href="/routes/live"><i class="fas fa-satellite-dish" aria-hidden="true"></i>Մեքենաները առցանց</a>
+            <div class="rt-head-tools">
+                <!-- машины на карте сейчас (№76) — начальнику гаража и администратору -->
+                <a class="rt-btn rt-btn-ghost rt-btn-sm" href="/routes/live"><i class="fas fa-satellite-dish" aria-hidden="true"></i>Մեքենաները առցանց</a>
+                <!-- показатели водителей (№87) — гаражу без денег; у администратора — вкладка «Վարորդներ» выше -->
+                {% if is_garage %}<a class="rt-btn rt-btn-ghost rt-btn-sm" href="/routes/drivers"><i class="fas fa-id-card" aria-hidden="true"></i>Վարորդներ</a>{% endif %}
+            </div>
         </div>
         <details class="gj-help" open>
             <summary><i class="fas fa-circle-question" aria-hidden="true"></i>Ինչպե՞ս օգտվել այս էջից</summary>

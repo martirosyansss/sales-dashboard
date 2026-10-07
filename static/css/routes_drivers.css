@@ -1,4 +1,4 @@
-/* «Վարորդներ» /routes/drivers — показатели водителей за период. Тема и токены — routes.css (.rt-page); свои классы .dr-*. */
+/* «Վարորդներ» /routes/drivers — показатели водителей за период (№83, №87). Тема и токены — routes.css (.rt-page); свои классы .dr-*. */
 
 #drPage { max-width: 1640px; margin: 0 auto; padding-bottom: 48px; }
 .dr-title-ico { color: var(--rt-acc); font-size: .8em; margin-right: 12px; }
@@ -18,9 +18,15 @@
 .dr-kpi-val { font-size: 1.75rem; font-weight: 700; letter-spacing: -.02em; line-height: 1.2; margin-top: 2px; }
 .dr-kpi-val small { font-size: .9375rem; font-weight: 600; color: var(--rt-fg-dim); margin-left: 6px; letter-spacing: 0; }
 
+/* Точность ETA парка (№87 п. 7): подпись и тот же ряд плиток */
+.dr-eta { margin-bottom: 12px; }
+.dr-eta-title { font-size: .9375rem; font-weight: 600; color: var(--rt-fg-dim); margin: 0 0 8px; }
+.dr-eta .dr-kpis { margin-bottom: 0; }
+.dr-eta .dr-kpi-val { font-size: 1.5rem; }
+
 /* Таблица водителей */
 .dr-scroll { overflow-x: auto; border: 1px solid var(--rt-line); border-radius: var(--rt-radius-sm); }
-.dr-table { width: 100%; min-width: 980px; border-collapse: separate; border-spacing: 0; }
+.dr-table { width: 100%; min-width: 1360px; border-collapse: separate; border-spacing: 0; }
 .dr-table thead th {
     position: sticky; top: 0; z-index: 1; background: var(--rt-panel-2); border-bottom: 1px solid var(--rt-line);
     padding: 0; font-size: .8125rem; font-weight: 600; color: var(--rt-fg-dim); text-align: left; vertical-align: bottom;
@@ -54,6 +60,21 @@ th[aria-sort="descending"] .dr-sort::after { content: "\2193"; opacity: 1; }
 #drPage .is-bad { color: var(--rt-danger); }
 #drPage .is-mute { color: var(--rt-fg-mute); }
 
+/* Балл и место; «քիչ տվյալ» — без балла */
+.dr-table td.dr-score .dr-score-val { font-size: 1.125rem; font-weight: 700; }
+.dr-table td.dr-score .dr-few { font-family: inherit; font-size: .8125rem; }
+
+/* Разбивка балла в раскрытой строке: показатель, значение, полоска подоценки, подоценка × доля */
+.dr-parts { padding: 4px 0 12px; max-width: 760px; }
+.dr-parts-head { margin: 0 0 8px; font-size: .875rem; font-weight: 600; color: var(--rt-fg); }
+.dr-parts ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.dr-parts li { display: grid; grid-template-columns: minmax(150px, 1.4fr) minmax(80px, .8fr) minmax(90px, 1.2fr) minmax(100px, .9fr);
+    align-items: center; gap: 4px 12px; font-size: .8125rem; color: var(--rt-fg-dim); }
+.dr-parts .v, .dr-parts .s { font-family: var(--rt-mono); white-space: nowrap; }
+.dr-parts .s { text-align: right; }
+.dr-parts .bar { display: block; height: 6px; border-radius: 3px; background: var(--rt-line); overflow: hidden; }
+.dr-parts .bar i { display: block; height: 100%; border-radius: 3px; background: currentColor; }
+
 /* Разбивка по дням под строкой водителя */
 .dr-table tbody .dr-detail > td { padding: 0 12px 16px 34px; background: var(--rt-panel-2); }
 .dr-days { width: 100%; border-collapse: collapse; background: var(--rt-inset); border: 1px solid var(--rt-line); border-radius: var(--rt-radius-sm); overflow: hidden; }
@@ -79,9 +100,13 @@ th[aria-sort="descending"] .dr-sort::after { content: "\2193"; opacity: 1; }
     .dr-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 575px) {
+    .dr-parts li { grid-template-columns: minmax(0, 1fr) auto; }
+    .dr-parts .bar { grid-column: 1 / -1; }
     .dr-period { padding: 12px 14px; }
     .dr-field .rt-input { width: 148px; }
     .dr-kpi-val { font-size: 1.375rem; }
+    .dr-kpi-val small { display: block; margin-left: 0; }
+    .dr-eta .dr-kpi-val { font-size: 1.25rem; }
     .dr-table tbody .dr-detail > td { padding-left: 12px; }
 }
 @media (prefers-reduced-motion: reduce) {

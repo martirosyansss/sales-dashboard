@@ -661,7 +661,7 @@ def test_nightly_learns_lunch_and_dispatch_applies_it(client, monkeypatch):
 def test_learning_page_shows_lunch():
     js = (ROOT / 'static' / 'js' / 'routes_learning.js').read_text(encoding='utf-8')
     assert "if (kind === 'lunch') return 'ճաշ՝ '" in js and "kind === 'lunch' && m" in js
-    assert "routes_learning.js') }}?v=17" in (ROOT / 'templates' / 'routes_learning.html').read_text(encoding='utf-8')
+    assert "routes_learning.js') }}?v=18" in (ROOT / 'templates' / 'routes_learning.html').read_text(encoding='utf-8')
 
 
 class CabLunchFacts(FakeFacts):

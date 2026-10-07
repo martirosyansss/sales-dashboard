@@ -19,6 +19,7 @@ from typing import Any, Callable
 from flask import Blueprint, Response, current_app, g, jsonify, request, send_file
 from werkzeug.exceptions import HTTPException
 
+from route_optimizer import week_score
 from route_optimizer.erp import ErpError
 
 from . import clock, events as ev
@@ -41,6 +42,7 @@ DAY_WINDOW = 1                         # /day терминала: сегодня
 LOGIN_BUSY_RETRY = 2                   # секунд: вход на этом терминале уже проверяется
 PLAN_TTL = 60                          # секунд: экипаж плана «Развоза» дня в ответах терминалу (_planned)
 PLAN_FAIL_TTL = 5                      # «Маршруты» недоступны — повторить не раньше
+SCORE_WEEKS_BACK = 13                  # /score: неделя не раньше 13 до текущей (≈ период «Վարորդներ», 92 дня)
 
 # Вход по PIN на терминале — по одному: параллельные попытки того же терминала сразу получают 429 (резерв
 # попытки в базе — Store.pin_attempt — ограничивает перебор и между процессами).
@@ -57,6 +59,8 @@ MSG = {
     'server': 'Սերվերի սխալ',
     'erp': 'ERP-ն հասանելի չէ, փորձեք մի փոքր ուշ',
     'same_person': 'Սա վարորդի PIN-ն է։ Առաքիչը պետք է մուտքագրի իր PIN-ը։',
+    'score': 'Գնահատականը ժամանակավորապես հասանելի չէ',
+    'score_week': 'week՝ շաբաթվա երկուշաբթին ՏՏՏՏ-ԱԱ-ՕՕ ձևաչափով, ոչ ուշ, քան այս շաբաթը, և ոչ ավելի վաղ, քան 13 շաբաթ առաջ',
 }
 
 
@@ -418,6 +422,25 @@ def status() -> Any:
                     'rejected_events': [{'id': r['id'], 'message': r['message']}
                                         for r in st.store.rejected_for(s.driver_id, day)],
                     'crew': _crew(g.courier_terminal, s, _session_helper(s))})
+
+
+@bp.get('/score')
+@_api
+def score() -> Any:
+    """Своя оценка водителя сессии за неделю ?week=YYYY-MM-DD (понедельник; без week — текущая неделя по Еревану),
+    контракт §10: показатели, балл и место среди водителей с ≥ 3 днями — без имён и id других (route_optimizer
+    week_score). Только водитель сессии: чужую неделю не спросить. «Маршруты» или «Առաքիչ» не подключены — 503."""
+    today = clock.today()
+    current = today - timedelta(days=today.weekday())
+    raw = request.args.get('week')
+    week = current if raw is None else clock.parse_day(raw)
+    if (week is None or week.weekday() != 0 or week > current
+            or week < current - timedelta(weeks=SCORE_WEEKS_BACK)):
+        return error(400, 'bad_request', MSG['score_week'])
+    body = week_score(current_app.extensions.get('route_optimizer'), g.courier_session.driver_id, week)
+    if body is None:
+        return error(503, 'server', MSG['score'])
+    return jsonify(body)
 
 
 @bp.get('/app-version')

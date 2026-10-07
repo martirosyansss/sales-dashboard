@@ -25,7 +25,7 @@ from .roads import RoadProvider, osm_path
 from .snapshot import ResultCache, SnapshotCache, load_snapshot
 from .store import Store
 from .valhalla_engine import ValhallaProvider
-from .views import EXTENSION_KEY, DriverGeo, RoutesState, _live_cards, bp, run_learning_job
+from .views import EXTENSION_KEY, DriverGeo, RoutesState, _live_cards, bp, run_learning_job, week_score
 
 logger = logging.getLogger(__name__)
 
