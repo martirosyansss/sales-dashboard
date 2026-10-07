@@ -526,7 +526,7 @@
     // тогда обновляются только подсказки, а страница — при следующей проверке.
     const interacting = () => {
         const a = document.activeElement;
-        return state.pickCid !== null || state.dragging || !!state.mapDrag || $('dpGeoDlg').open || $('dpUnloadDlg').open || $('dpDriverDlg').open
+        return state.pickCid !== null || state.dragging || !!state.mapDrag || (!!state.stopCard && state.stopCard.isOpen()) || $('dpGeoDlg').open || $('dpUnloadDlg').open || $('dpDriverDlg').open
             || $('dpSameDayDlg').open || $('dpAbsentDlg').open || $('dpSendFirstDlg').open || $('dpAddDlg').open
             || (!!a && $('dpBody').contains(a) && /^(SELECT|INPUT|TEXTAREA)$/.test(a.tagName));
     };
@@ -2278,7 +2278,13 @@
         $('dpBoard').querySelectorAll('.dp-blabel').forEach(b => b.setAttribute('aria-pressed', String(!!f && f.truck === b.dataset.truck && f.trip == null)));
         $('dpBoard').querySelectorAll('.dp-bar').forEach(b => b.setAttribute('aria-pressed', String(!!f && f.trip != null && String(f.trip) === b.dataset.trip)));
         $('dpTruckCards').querySelectorAll('.dp-tcard').forEach(c => c.classList.toggle('is-focus', !!f && f.truck === c.dataset.truck));
-        if ($('rtDispatch').classList.contains('is-ws')) { $('dpWsSide').hidden = !f; $('dpWs').classList.toggle('has-side', !!f); }
+        if ($('rtDispatch').classList.contains('is-ws')) {
+            const was = $('dpWs').classList.contains('has-side');
+            $('dpWsSide').hidden = !f;
+            $('dpWs').classList.toggle('has-side', !!f);
+            // карточка машины внизу: низ выше, карта ниже — Leaflet пересчитывает размер сразу, до вписывания точек
+            if (was !== !!f && state.map) state.map.invalidateSize({ pan: false });
+        }
     }
 
     // Нажали машину или рейс на шкале: он же на карте, карточка машины раскрыта и видна рядом с картой
@@ -3731,14 +3737,78 @@
         return fold;
     }
 
-    // №86: нажали магазин на карте (рабочий экран) — карточка его машины справа, строка магазина подсвечена. Та же машина
-    // (или тот же рейс) уже выбрана — карта не перерисовывается и не меняет масштаб, только строка
+    // №86: нажали магазин на карте (рабочий экран) — карточка его машины внизу, строка магазина подсвечена, а у точки —
+    // карточка магазина (владелец 07.10) с «Հանել երթից». Та же машина (или тот же рейс) уже выбрана — карта не
+    // перерисовывается и не меняет масштаб, только строка
     const MAP_HINT = '<br><small class="dp-tip-hint">Սեղմեք՝ քարտը, քաշեք՝ այլ երթի վրա</small>';
     function pickFromMap(t, tr, s) {
         if (state.mapDragged) return;   // конец перетаскивания — не нажатие
         const f = state.mapFocus;
         if (!(f && f.truck === t.car_code && (f.trip == null || f.trip === tr.id) && state.open.has(t.car_code))) focusFromBoard(t, tr);
         flashStop(tr.id, s.customer_id);
+        openStopCard(t, tr, s);
+    }
+    // Карточка магазина у точки: что везём (заказы, кг, сумма), когда приедем, чья машина — и «Հանել երթից» (как «×» в
+    // списке). Открыта на карте отдельно от точек: перерисовка после выбора машины её не закрывает; новая отрисовка
+    // карты (правка, пересборка) — закрывает (данные в ней могли устареть)
+    function openStopCard(t, tr, s) {
+        if (!state.map || s.lat === null) return;
+        const ti = t.trips.indexOf(tr), si = tr.stops.indexOf(s);
+        const box = document.createElement('div');
+        box.className = 'rt-pop dp-stopcard';
+        const line = (cls, text) => {
+            const el = document.createElement('div');
+            el.className = cls;
+            el.textContent = text;
+            box.appendChild(el);
+            return el;
+        };
+        line('rt-pop-t', s.name || s.code);
+        line('rt-pop-s', s.address || 'ERP-ում հասցե չկա');
+        const row = (k, v) => {
+            const el = document.createElement('div');
+            el.className = 'rt-pop-row';
+            el.append(document.createTextNode(k), Object.assign(document.createElement('b'), { textContent: v }));
+            box.appendChild(el);
+        };
+        row('Մեքենա', truckLabel(t) + ' · երթ ' + (ti + 1) + ' · №' + (si + 1));
+        if (s.eta) row('Ժամանում', '≈ ' + s.eta);
+        if (windowText(s.window)) row('Ընդունում է', windowText(s.window));
+        row('Քաշ', kgText(s.kg) + (s.share > 1 ? ' (1/' + s.share + ')' : ''));
+        row('Գումար', money(s.revenue / (s.share || 1)));
+        const who = [s.code, s.agent_name || s.agent_code].filter(Boolean).join(' · ');
+        if (who) row('Կոդ, մենեջեր', who);
+        const orders = s.orders || [];
+        if (orders.length) {
+            const ul = document.createElement('ul');
+            ul.className = 'dp-stopcard-orders';
+            ul.setAttribute('aria-label', 'Պատվերներ');
+            orders.forEach(o => {
+                const li = document.createElement('li');
+                li.append(Object.assign(document.createElement('span'), { textContent: 'Պատվեր ' + (o.doc_num || o.isn) }),
+                    Object.assign(document.createElement('b'), { textContent: kgText(o.kg) + ' · ' + money(o.revenue) }));
+                ul.appendChild(li);
+            });
+            box.appendChild(ul);
+        }
+        if (canQuickEdit(s, tr.id)) {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'rt-btn rt-btn-ghost rt-btn-sm dp-stopcard-x';
+            b.innerHTML = '<i class="fas fa-xmark" aria-hidden="true"></i><span>Հանել երթից</span>';
+            b.setAttribute('aria-label', 'Հանել երթից՝ ' + (s.name || s.code));
+            b.disabled = state.busy;
+            b.addEventListener('click', () => {
+                if (state.busy) return;
+                state.map.closePopup();
+                tripStops({ trip: tr.id, remove: [s.customer_id] }, '«' + (s.name || s.code) + '» հանվեց երթից՝ այն «Դեռ երթերում չեն» ցուցակում է');
+            });
+            box.appendChild(b);
+        } else if (!state.data.is_past && s.share > 1) {
+            line('dp-stopcard-note', 'Ծանր պատվեր՝ բաժանված է երթերի միջև. տեղափոխել կարելի է ցուցակից («Փոփոխել»)');
+        }
+        state.stopCard = L.popup({ className: 'dp-stoppop', maxWidth: 320, minWidth: 240, autoPanPadding: [16, 16], offset: [0, -8] })
+            .setLatLng([s.lat, s.lon]).setContent(box).openOn(state.map);
     }
     function flashStop(tripId, cid) {
         const row = $('dpTruckCards').querySelector('.dp-trip[data-trip="' + tripId + '"] .dp-stop[data-cid="' + cid + '"]');
@@ -3873,6 +3943,7 @@
         const d = state.data, plan = d.plan;
         if (state.mapDrag) state.mapDrag.cancel();
         if (state.hoverRing) state.hoverRing.remove();
+        if (state.stopCard) { state.map.closePopup(state.stopCard); state.stopCard = null; }
         state.layers.clearLayers();
         state.map.invalidateSize();
         const bounds = [];

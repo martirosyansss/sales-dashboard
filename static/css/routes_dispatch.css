@@ -1122,6 +1122,8 @@ body.dp-ws-on .rt-secbar .rt-tabs a { padding-top: 3px; padding-bottom: 3px; }
 }
 /* шкала свёрнута («Ծալել») — карта на всю высоту рабочего экрана */
 .dp-ws:has(.dp-board.is-folded) { grid-template-rows: minmax(0, 1fr) auto; }
+/* выбрана машина — её карточка внизу справа от шкалы (не поверх карты): низ выше, чтобы список магазинов читался */
+.dp-ws.has-side, .dp-ws.has-side:has(.dp-board.is-folded) { grid-template-rows: minmax(0, 1fr) minmax(240px, 44%); }
 .dp-ws-main { position: relative; min-height: 0; }
 .dp-ws-map { position: absolute; inset: 0; }
 #rtDispatch .dp-ws-map .dp-mapbox { position: absolute; inset: 0; border: 0; border-radius: 0; box-shadow: none; }
@@ -1133,7 +1135,7 @@ body.dp-ws-on .rt-secbar .rt-tabs a { padding-top: 3px; padding-bottom: 3px; }
     position: absolute; z-index: 500; left: 112px; bottom: 10px; max-width: min(640px, 50%); max-height: 42px; padding: 5px 6px; gap: 4px; flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; border: 1px solid var(--rt-line);
     border-radius: 12px; background: rgba(23, 28, 36, .92); backdrop-filter: blur(6px);
 }
-/* на карте меньше надписей: что выбрано — в карточке машины справа, рейс — на шкале; кнопки внизу — цвет и номер машины */
+/* на карте меньше надписей: что выбрано — в карточке машины внизу, рейс — на шкале; кнопки внизу — цвет и номер машины */
 #rtDispatch .dp-ws-map .dp-mapfocus { display: none !important; }
 #rtDispatch .dp-ws-map .dp-mapfilter .rt-lg { height: 26px; padding: 0 9px; font-size: .75rem; }
 #rtDispatch .dp-ws-map .dp-mapfilter .rt-lg.is-trip, #rtDispatch .dp-ws-map .dp-mapfilter .rt-lg:has(.n-short) .n { display: none; }
@@ -1153,14 +1155,13 @@ body.dp-ws-on .rt-secbar .rt-tabs a { padding-top: 3px; padding-bottom: 3px; }
 #rtDispatch .dp-ws-kpi .dp-stat:first-child { border-left: 0; }
 #rtDispatch .dp-ws-kpi .dp-stat b { font-size: .875rem; font-family: var(--rt-mono); white-space: nowrap; }
 #rtDispatch .dp-ws-kpi .dp-stat span { font-size: .625rem; line-height: 1.2; }
-/* выбранная машина — справа поверх карты */
-.dp-ws-side {
-    position: absolute; z-index: 650; top: 10px; right: 10px; bottom: 10px; width: min(400px, 36%); overflow: auto; overscroll-behavior: contain;
-    padding: 44px 10px 10px; border: 1px solid var(--rt-line); border-radius: 16px; background: rgba(23, 28, 36, .97);
-    box-shadow: 0 18px 50px rgba(0, 0, 0, .55);
-}
+/* выбранная машина — внизу, справа от шкалы дня (владелец 07.10: поверх карты закрывала точки) */
+.dp-ws-low { min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr); border-top: 1px solid var(--rt-line); }
+.dp-ws.has-side .dp-ws-low { grid-template-columns: minmax(0, 1fr) minmax(360px, 36%); }
+.dp-ws-side { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 8px 10px 10px; border-left: 1px solid var(--rt-line); background: var(--rt-bg); }
+/* крестик — в своей строке сверху и не уезжает при прокрутке списка */
 .dp-ws-close {
-    position: absolute; top: 8px; right: 8px; width: 32px; height: 32px; border-radius: 50%; border: 1px solid var(--rt-line);
+    position: sticky; top: 0; margin: 0 0 6px auto; width: 32px; height: 32px; border-radius: 50%; border: 1px solid var(--rt-line);
     background: var(--rt-panel-2); color: var(--rt-fg-dim); display: grid; place-items: center; cursor: pointer; z-index: 2;
 }
 .dp-ws-close:hover { color: var(--rt-fg); }
@@ -1178,12 +1179,14 @@ body.dp-ws-on .rt-secbar .rt-tabs a { padding-top: 3px; padding-bottom: 3px; }
 #rtDispatch .dp-ws-side .dp-thead { grid-template-columns: minmax(0, 1fr) auto auto; }
 
 /* снизу: машины и шкала дня (таблица слева — подписи шкалы) */
-.dp-ws-bottom { min-height: 0; overflow: auto; border-top: 1px solid var(--rt-line); }
+.dp-ws-bottom { min-height: 0; overflow: auto; }
 #rtDispatch .dp-ws-bottom .dp-board { border: 0; border-radius: 0; padding: 8px 14px 6px; background: transparent; }
 /* шкала ниже — прокручивается; заголовок со «Ծալել» остаётся сверху */
 #rtDispatch .dp-ws-bottom .dp-board-head { margin: -8px -14px 2px; padding: 8px 14px 4px; position: sticky; top: 0; z-index: 4; background: var(--rt-panel); }
 #rtDispatch .dp-ws-bottom .dp-board-legend { display: none; }
 #rtDispatch .dp-ws-bottom .dp-board-grid { grid-template-columns: minmax(260px, 300px) minmax(0, 1fr) minmax(70px, auto); }
+/* рядом карточка машины — подписи машин уже, шкале остаётся место */
+#rtDispatch .dp-ws.has-side .dp-ws-bottom .dp-board-grid { grid-template-columns: minmax(210px, 240px) minmax(0, 1fr) minmax(64px, auto); }
 #rtDispatch.is-ws .dp-blabel { height: 46px; }
 #rtDispatch.is-ws .dp-blabel-x { display: flex; align-items: center; gap: 8px; font-family: var(--rt-mono); font-size: .75rem; color: var(--rt-fg-dim); }
 #rtDispatch.is-ws .dp-blabel.has-bad .dp-blx-t { color: var(--rt-warn); }
@@ -1224,9 +1227,7 @@ body.dp-ws-on .rt-secbar .rt-tabs a { padding-top: 3px; padding-bottom: 3px; }
 .dp-view-ws { display: none; }
 @media (min-width: 1101px) { #rtDispatch:not(.is-ws) .dp-view-ws { display: inline-flex; } }
 #rtDispatch.is-ws .dp-view-ws { display: none !important; }
-/* подписи Яндекса и Leaflet справа внизу (их нельзя перекрывать) — левее открытой карточки машины */
-.dp-ws.has-side .leaflet-bottom.leaflet-right { margin-right: calc(min(400px, 36%) + 20px); }
-/* выбрана машина — её цифры в карточке справа, итоги дня над картой убраны (вернутся, когда карточку закрыть) */
+/* выбрана машина — её цифры в карточке внизу, итоги дня над картой убраны (вернутся, когда карточку закрыть) */
 .dp-ws.has-side .dp-ws-kpi { display: none; }
 /* №82: ход дня на шкале — кружок магазина по факту «Առաքիչ» (цвет + знак: не только цветом) */
 #rtDispatch .dp-bar i.dp-tick.pg-done { background: var(--rt-ok); }
@@ -1285,3 +1286,12 @@ body.dp-ws-on .rt-secbar .rt-tabs a { padding-top: 3px; padding-bottom: 3px; }
 .dp-add-sum { margin: 10px 0 0; font-size: .875rem; color: var(--rt-fg-dim); }
 .dp-add-sum.is-over { color: var(--rt-danger); font-weight: 600; }
 .dp-add-dlg .rt-ferr { margin-top: 8px; }
+/* владелец 07.10: нажали точку на карте — карточка магазина у точки: заказы и «Հանել երթից» */
+.dp-stoppop .leaflet-popup-content { min-width: 240px; }
+.dp-stopcard .rt-pop-t { padding-right: 18px; }
+.dp-stopcard-orders { list-style: none; margin: 8px 0 0; padding: 6px 0 0; border-top: 1px solid var(--rt-line-soft); font-size: .8125rem; }
+.dp-stopcard-orders li { display: flex; justify-content: space-between; gap: 12px; padding: 1px 0; color: var(--rt-fg-dim); }
+.dp-stopcard-orders b { color: var(--rt-fg); font-weight: 600; white-space: nowrap; }
+#rtDispatch .dp-stopcard-x { width: 100%; margin-top: 10px; justify-content: center; color: var(--rt-danger); border-color: var(--rt-danger-line); }
+#rtDispatch .dp-stopcard-x:hover:not(:disabled) { background: var(--rt-danger-bg); color: var(--rt-danger); }
+.dp-stopcard-note { margin-top: 8px; font-size: .8125rem; color: var(--rt-fg-mute); }
