@@ -16,6 +16,10 @@ CT115, и сообщений ПК не нужно.
   нужна): ключ тревоги — машина, вид и момент её начала; запись после каждой успешной отправки (перезапуск не
   повторяет), недельные хвосты сами уходят. Тревога, которой не было видно в этот момент и которая кончилась больше
   RECENT_MIN назад, не рассылается задним числом (после простоя сервера и при первом запуске);
+- «не успеет» (late, №87) — прогноз, а не событие: одно сообщение на магазин (и на возврат машины на склад) в день; снова —
+  только если прогноз ухудшился не меньше чем на repeat_min минут против отправленного. Новые строки одной машины за проход —
+  одним сообщением. В тихие часы не шлётся и не отмечается: прогноз, который ещё в силе после них, уйдёт тогда. Окно повтора
+  вида у машины к нему не применяется (иначе второй опаздывающий магазин той же машины пропал бы);
 - сбой отправки (сеть, Telegram) — в журнал без токена, повтор со всё большей паузой (до BACKOFF_MAX_S); поток не падает.
   Тайм-аут ответа не значит «не доставлено»: сообщение, дошедшее без ответа, при повторе придёт второй раз (редкий дубль
   принят — потерять тревогу хуже). CLIENT_ERRORS_MAX ошибок 4xx подряд (токен отозван, бота убрали из группы) — рассылка
@@ -56,7 +60,8 @@ END_KINDS = ('no_contact', 'gps')   # окончание сообщается т
 MAP_URL = 'https://yandex.ru/maps/?pt={lon},{lat}&z=16&l=map'
 
 TITLE = {'speed': 'Արագության գերազանցում', 'stop': 'Երկար կանգառ ոչ խանութում', 'no_contact': 'Կապ չկա',
-         'gps': 'GPS-ն անջատված է', 'center': 'Փոքր կենտրոնում (մուտքը թույլատրված չէ)'}
+         'gps': 'GPS-ն անջատված է', 'center': 'Փոքր կենտրոնում (մուտքը թույլատրված չէ)',
+         'late': 'Չի հասցնում ժամանակին (կանխատեսում)'}
 TITLE_END = {'no_contact': 'Կապը վերականգնվեց', 'gps': 'GPS-ը կրկին միացված է'}
 
 
@@ -149,6 +154,7 @@ class Message:
     car: str
     kind: str
     text: str
+    late: tuple[tuple[str, int], ...] = ()   # «не успеет»: (ключ строки на день, опоздание, мин) — все строки сообщения
 
 
 def in_quiet(rules: Rules, now: datetime) -> bool:
@@ -209,13 +215,54 @@ def build_text(card: Mapping[str, Any], a: Mapping[str, Any], phase: str, rules:
     return '\n'.join(lines)
 
 
+def late_line(a: Mapping[str, Any]) -> str:
+    """Строка «не успеет» (№87): магазин — на сколько позже окна / плана, прогноз прибытия и предел; машина — возврат."""
+    if a.get('late_kind') == 'return':
+        return (f'Չի հասցնում վերադառնալ պահեստ՝ +{a.get("over_min")} րոպե (վերադարձ ≈ {_hm(a.get("eta"))}, '
+                f'աշխատանքային օրը՝ մինչև {_hm(a.get("limit"))})։')
+    what = ('պատուհանից', 'պատուհանը՝ մինչև') if a.get('late_kind') == 'window' else ('պլանից', 'պլանով՝')
+    return (f'{a.get("name") or a.get("stop_id")} — կուշանա {what[0]} {a.get("over_min")} րոպեով '
+            f'(ժամանում ≈ {_hm(a.get("eta"))}, {what[1]} {_hm(a.get("limit"))})։')
+
+
+def _plan_late(car: str, card: Mapping[str, Any], rules: Rules, now: datetime, state: AlertState,
+               out: list[Message]) -> None:
+    """«Не успеет» одной машины (правило — в описании модуля): новые строки и ухудшившиеся на repeat_min — одним
+    сообщением."""
+    day = now.astimezone(ac.YEREVAN).date().isoformat()
+    rows: list[tuple[str, int, Mapping[str, Any]]] = []
+    for a in card.get('alerts_log') or ():
+        if a.get('kind') != 'late' or not a.get('active') or not isinstance(a.get('over_min'), int):
+            continue
+        key = f'{car}|late|{day}|{a.get("target")}'
+        sent = (state.sent.get(key) or {}).get('over')
+        if not isinstance(sent, int) or a['over_min'] >= sent + rules.repeat_min:
+            rows.append((key, a['over_min'], a))
+    if not rows:
+        return
+    plate = [x for x in (card.get('car_code'), card.get('name')) if x]
+    lines = [TITLE['late'], 'Մեքենա՝ ' + ' · '.join(plate)]
+    driver = card.get('driver') or next(iter(card.get('drivers') or ()), None)
+    if driver:
+        lines.append('Վարորդ՝ ' + str(driver))
+    lines += [late_line(a) for _, _, a in rows]
+    pos = card.get('position') or {}
+    if pos.get('lat') is not None and pos.get('lon') is not None:
+        lines.append('Որտեղ է հիմա՝ ' + MAP_URL.format(lat=pos['lat'], lon=pos['lon']))
+    lines.append('Ժամ՝ ' + now.astimezone(ac.YEREVAN).strftime('%H:%M'))
+    out.append(Message(f'{car}|late|{day}', 'start', car, 'late', '\n'.join(lines),
+                       tuple((key, over) for key, over, _ in rows)))
+
+
 def _plan_car(car: str, card: Mapping[str, Any], rules: Rules, now: datetime, state: AlertState, quiet: bool,
               repeat: timedelta, out: list[Message]) -> bool:
     """Решения по тревогам одной машины (plan_messages); True — состояние менялось."""
     changed = False
+    if 'late' in rules.alert_kinds and not quiet:
+        _plan_late(car, card, rules, now, state, out)
     for a in card.get('alerts_log') or ():
         kind = a.get('kind')
-        if kind not in rules.alert_kinds or not a.get('from'):
+        if kind not in rules.alert_kinds or kind == 'late' or not a.get('from'):
             continue
         key = f'{car}|{kind}|{a["from"]}'
         rec = state.sent.get(key)
@@ -311,10 +358,13 @@ class LiveAlerter:
                                type(e).__name__, e, pause)
                 break
             self.failures = self.client_errors = 0
-            rec = self.state.sent.setdefault(m.key, {'at': now.isoformat(), 'start': None, 'end': None})
-            rec['end' if m.phase == 'end' else 'start'] = now.isoformat()
-            if m.phase == 'start':
-                self.state.last[f'{m.car}|{m.kind}'] = now.isoformat()
+            for key, over in m.late:   # «не успеет»: каждая строка — отправлена с этим опозданием
+                self.state.sent[key] = {'at': now.isoformat(), 'start': now.isoformat(), 'end': None, 'over': over}
+            if not m.late:
+                rec = self.state.sent.setdefault(m.key, {'at': now.isoformat(), 'start': None, 'end': None})
+                rec['end' if m.phase == 'end' else 'start'] = now.isoformat()
+                if m.phase == 'start':
+                    self.state.last[f'{m.car}|{m.kind}'] = now.isoformat()
             self.state.save(now)
             changed = False
             sent += 1

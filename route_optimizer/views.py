@@ -3852,6 +3852,7 @@ class _LiveContext:
     names: dict[str, str]
     crew: dict[str, dict[str, str]]       # машина → {'driver': имя, 'helper': имя} по «Վարորդ» / «Առաքիչ» (№62)
     planned: tuple[str, ...]               # машины плана дня
+    windows: dict[int, tuple[float, float]] = field(default_factory=dict)   # окна приёма клиентов (№87, late_forecast)
 
 
 def _live_road_build(state: RoutesState, bundle: Bundle, snap: Any, calib: Any, day: date, base: live.Road,
@@ -3946,8 +3947,13 @@ def _live_context(state: RoutesState, day: date,
     stored = state.store.load_dispatch(day.isoformat())
     plans: dict[str, list[live.PlanTrip]] = {}
     planned: list[str] = []
+    rules = live.Rules.from_settings(s)
     if stored is not None:
-        draft = dp.Draft.from_json(stored[0]).for_drivers()   # №81: машины едут по отправленному плану
+        full = dp.Draft.from_json(stored[0])
+        draft = full.for_drivers()   # №81: машины едут по отправленному плану
+        if full.overtime_ok:   # №32: логист принял переработку — «не успеет вернуться» только позже её предела (как «Развоз»)
+            h, m = map(int, s['truck_overtime_end'].split(':'))
+            rules = replace(rules, work_end=float(h * 60 + m))
         by_truck: dict[str, list[list[int]]] = {}
         first: dict[str, dp.DraftTrip] = {}
         for t in draft.trips:
@@ -3968,7 +3974,8 @@ def _live_context(state: RoutesState, day: date,
     ds = day.isoformat()
     drivers, helpers = state.store.truck_drivers(ds)[0], state.store.truck_drivers(ds, 'helper')[0]
     crew = {car: {'driver': drivers.get(car), 'helper': helpers.get(car)} for car in set(drivers) | set(helpers)}
-    return _LiveContext(live.Rules.from_settings(s), road, bundle.depot, plans, trucks, names, crew, tuple(planned))
+    return _LiveContext(rules, road, bundle.depot, plans, trucks, names, crew, tuple(planned),
+                        {cid: w.span() for cid, w in bundle.windows.items()})
 
 
 def _live_card(ctx: _LiveContext, day: date, now: datetime, car: str, facts: Mapping[str, Any] | None,
@@ -3977,7 +3984,7 @@ def _live_card(ctx: _LiveContext, day: date, now: datetime, car: str, facts: Map
     return {'car_code': car, 'name': ctx.names.get(car), 'driver': crew.get('driver'), 'helper': crew.get('helper'),
             'planned': car in ctx.planned,
             **live.car_view(day, now, facts or {}, ctx.plans.get(car, []), ctx.trucks.get(car, live.TruckSpec()),
-                            ctx.depot, ctx.rules, ctx.road, detail)}
+                            ctx.depot, ctx.rules, ctx.road, detail, ctx.windows)}
 
 
 def _live_cards(state: RoutesState, day: date) -> tuple[_LiveContext, datetime, dict[str, Any],
@@ -4077,9 +4084,9 @@ def api_live_truck() -> Any:
 
 # --- Ход дня на шкале «Развоза» (ответ владельца №82: как мониторинг Яндекса / Routific live) ---
 # Кружок магазина на шкале — по факту терминала «Առաքիչ»: доставлен, частично, отказ, машина на месте, опаздывает
-# (ETA онлайн-карты позже плана на PROGRESS_LATE_MIN). Только сегодня; данные — тот же расчёт, что у онлайн-карты (№76).
+# («не успеет», №87: live.late_forecast — окно приёма или план + late_nowin_min). Только сегодня; данные — тот же расчёт,
+# что у онлайн-карты (№76).
 
-PROGRESS_LATE_MIN = 15
 PROGRESS_STATE = {'full': 'done', 'covered': 'done', 'partial': 'partial', 'refused': 'refused', 'in_progress': 'here'}
 
 
@@ -4093,15 +4100,17 @@ def _iso_hm(iso: Any) -> str | None:
         return None
 
 
-def _day_progress(state: RoutesState, day: date) -> dict[str, dict[str, dict[str, Any]]]:
-    """Машина → клиент (str) → {'s': done | partial | refused | here | late | pending, 'at': «HH:MM» (доставлен — когда,
-    иначе ETA) | None, 'delay': минуты ETA позже плана | None}. Машины без точек терминала — нет."""
+def _day_progress(state: RoutesState, day: date) -> dict[str, dict[str, Any]]:
+    """{'trucks': машина → клиент (str) → {'s': done | partial | refused | here | late | pending, 'at': «HH:MM»
+    (доставлен — когда, иначе ETA) | None, 'delay': минуты ETA позже плана | None; у late ещё 'late_kind': window | plan и
+    'late_min': на сколько позже конца окна / плана}, 'returns': машина → {'eta', 'limit': «HH:MM», 'late_min'} — не
+    успевает вернуться на склад до конца рабочего дня (№87)}. Машины без точек терминала — нет."""
     ctx, now, fleet, cards = _live_cards(state, day)
     with state.live_lock:
         hit = _PROGRESS_CACHE.get(day)
     if hit is not None and hit[0] is cards:    # тот же расчёт флота (_live_cards) — тот же ход дня
         return hit[1]
-    out: dict[str, dict[str, dict[str, Any]]] = {}
+    out: dict[str, dict[str, Any]] = {'trucks': {}, 'returns': {}}
     _budget.until = _monotonic() + LIVE_BUDGET_S   # как у онлайн-карты: дальше участки «от машины» — запасная модель
     try:
         _progress_fill(ctx, day, now, fleet, out)
@@ -4114,11 +4123,11 @@ def _day_progress(state: RoutesState, day: date) -> dict[str, dict[str, dict[str
     return out
 
 
-_PROGRESS_CACHE: dict[date, tuple[Any, dict[str, dict[str, dict[str, Any]]]]] = {}
+_PROGRESS_CACHE: dict[date, tuple[Any, dict[str, dict[str, Any]]]] = {}
 
 
 def _progress_fill(ctx: _LiveContext, day: date, now: datetime, fleet: Mapping[str, Any],
-                   out: dict[str, dict[str, dict[str, Any]]]) -> None:
+                   out: dict[str, dict[str, Any]]) -> None:
     for car, facts in sorted(fleet.items()):
         stops = [s for s in (facts or {}).get('stops') or () if isinstance(s.get('customer_id'), int)]
         if not stops:
@@ -4126,6 +4135,7 @@ def _progress_fill(ctx: _LiveContext, day: date, now: datetime, fleet: Mapping[s
         card = _live_card(ctx, day, now, car, facts, True)   # ETA каждого магазина — в подробной карточке
         detail = {s['stop_id']: s for s in card.get('stops') or ()}
         here = (card.get('next') or {}).get('stop_id') if (card.get('next') or {}).get('here') else None
+        late = {x['customer_id']: x for x in card.get('late') or () if x['late_kind'] != 'return'}
         mine: dict[str, dict[str, Any]] = {}
         for s in stops:
             d = detail.get(s['stop_id'], {})
@@ -4135,14 +4145,19 @@ def _progress_fill(ctx: _LiveContext, day: date, now: datetime, fleet: Mapping[s
             delay = None
             if st in ('pending', 'here') and d.get('eta') and d.get('planned_eta'):
                 delay = round((datetime.fromisoformat(d['eta']) - datetime.fromisoformat(d['planned_eta'])).total_seconds() / 60)
-                if st == 'pending' and delay >= PROGRESS_LATE_MIN:
-                    st = 'late'
+            if st == 'pending' and s['customer_id'] in late:
+                st = 'late'
             at = _iso_hm(d.get('delivered_at') or s.get('delivered_at')) if st in ('done', 'partial', 'refused') else _iso_hm(d.get('eta'))
             prev = mine.get(str(s['customer_id']))
             # магазин с несколькими накладными — худшее состояние (не доставлено важнее доставленного)
             if prev is None or _PROGRESS_RANK[st] > _PROGRESS_RANK[prev['s']]:
-                mine[str(s['customer_id'])] = {'s': st, 'at': at, 'delay': delay}
-        out[car] = mine
+                x = late.get(s['customer_id']) if st == 'late' else None
+                mine[str(s['customer_id'])] = {'s': st, 'at': at, 'delay': delay,
+                                               **({'late_kind': x['late_kind'], 'late_min': x['over_min']} if x else {})}
+        out['trucks'][car] = mine
+        back = next((x for x in card.get('late') or () if x['late_kind'] == 'return'), None)
+        if back is not None:
+            out['returns'][car] = {'eta': _iso_hm(back['eta']), 'limit': _iso_hm(back['limit']), 'late_min': back['over_min']}
 
 
 # худшее у магазина с несколькими накладными; «машина на месте» важнее «опаздывает» (она уже у него)
@@ -4152,8 +4167,8 @@ _PROGRESS_RANK = {'done': 0, 'partial': 1, 'refused': 2, 'pending': 3, 'late': 4
 @bp.get('/api/routes/dispatch/progress')
 @_api
 def api_dispatch_progress() -> Any:
-    """Ход дня для шкалы «Развоза» ?date= (только сегодня по Еревану): {'live': bool, 'trucks': _day_progress}.
-    Раздела «Առաքիչ» нет или день не сегодня — live false, машин нет (страница не красит кружки)."""
+    """Ход дня для шкалы «Развоза» ?date= (только сегодня по Еревану): {'live': bool, 'trucks', 'returns' —
+    _day_progress}. Раздела «Առաքիչ» нет или день не сегодня — live false, машин нет (страница не красит кружки)."""
     day, error = _live_day()
     if error is not None:
         return error
@@ -4161,7 +4176,7 @@ def api_dispatch_progress() -> Any:
     if state.live_facts is None or day != _yerevan_now().date():
         return jsonify({'success': True, 'live': False, 'trucks': {}})
     return jsonify({'success': True, 'live': True, 'now': _yerevan_now().strftime('%H:%M'),
-                    'trucks': _day_progress(state, day)})
+                    **_day_progress(state, day)})
 
 
 # --- Журнал гаража «Ավտոտնակ» (№53, docs/plans/garage-journal-plan.md) ---

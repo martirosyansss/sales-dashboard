@@ -545,10 +545,13 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     'live_no_contact_min': 5,
     # тревоги карты в Telegram-группу (этап 2): какие слать, тихие часы (с — до, по Еревану; одинаковые — без тихих
     # часов), не чаще раза в столько минут на тревогу того же вида у машины
-    'live_alert_kinds': ['speed', 'stop', 'no_contact', 'gps', 'center'],
+    'live_alert_kinds': ['speed', 'stop', 'no_contact', 'gps', 'center', 'late'],
     'live_quiet_from': '20:00',
     'live_quiet_to': '08:00',
     'live_repeat_min': 30,
+    # «Не успеет» (ответ владельца №87, п.2): магазин без окна приёма «опаздывает», когда прогноз прибытия позже планового
+    # ETA не меньше чем на столько минут (с окном — позже конца окна)
+    'late_nowin_min': 30,
     'yerevan_zone': [[40.2173, 44.3948], [40.2129, 44.4031], [40.2021, 44.4052], [40.1964, 44.4102], [40.1936, 44.4029],
                     [40.1912, 44.4067], [40.19, 44.4042], [40.1853, 44.4078], [40.1748, 44.4063], [40.17, 44.4111],
                     [40.1671, 44.4196], [40.1694, 44.4271], [40.1675, 44.4303], [40.1599, 44.429], [40.1578, 44.4373],
@@ -630,6 +633,7 @@ _NUMERIC: dict[str, tuple[float, float, bool]] = {
     'live_stop_min': (1, 240, False),
     'live_no_contact_min': (1, 120, False),
     'live_repeat_min': (1, 1440, False),
+    'late_nowin_min': (5, 240, False),     # и целое (validate_settings)
 }
 
 TRUCK_CAPACITY_KG = (100, 30000)
@@ -652,7 +656,8 @@ WINDOW_KINDS = ('before', 'after', 'between', 'at')
 WINDOW_TOL_MAX = 120
 DEFAULT_WINDOW_TOL = 15     # «в 11:00 ± 15 мин» — допуск по умолчанию (№37)
 UNLOAD_MIN_RANGE = (1, 120)  # время у магазина (№50), целые минуты
-LIVE_ALERT_KINDS = ('speed', 'stop', 'no_contact', 'gps', 'center')   # виды тревог карты (live.py) — переключатели настроек
+# виды тревог карты (live.py) — переключатели настроек; late — прогноз «не успеет» (№87)
+LIVE_ALERT_KINDS = ('speed', 'stop', 'no_contact', 'gps', 'center', 'late')
 GARAGE_KINDS = ('repair', 'accident', 'fixed', 'odometer')   # журнал гаража (№53), как garage.KINDS
 GARAGE_TEXT_MAX = 300
 GARAGE_AMOUNT_MAX = 100_000_000
@@ -1391,6 +1396,10 @@ def validate_settings(values: Mapping[str, Any],
             errors[key] = err
         else:
             out[key] = v
+    # порог «не успеет» без окна (№87) — целые минуты, как у поля страницы
+    if 'late_nowin_min' in out and not float(out['late_nowin_min']).is_integer():
+        errors['late_nowin_min'] = 'ամբողջ թիվ րոպեներով'
+        del out['late_nowin_min']
     if 'size_small_max_kg' in out and 'size_medium_max_kg' in out \
             and out['size_small_max_kg'] >= out['size_medium_max_kg']:
         errors['size_medium_max_kg'] = 'միջին խանութների շեմը պետք է մեծ լինի փոքր խանութների շեմից'

@@ -1,7 +1,8 @@
 /* «Մեքենաները առցանց» /routes/live — машины на карте сейчас (ответ владельца №76, docs/plans/live-map-plan.md).
    API: GET /api/routes/live?date= (все машины, карточки без трека) и GET /api/routes/live/truck?car=&date= (выбранная:
    путь за день, магазины со статусами, журнал тревог). Расчёты — на сервере (route_optimizer/live.py); здесь только показ.
-   Опрос — раз в 15 с и только пока вкладка видна. Всё, что пришло с сервера, выводится только через textContent. */
+   Опрос — раз в 15 с и только пока вкладка видна. Всё, что пришло с сервера, выводится только через textContent.
+   «Не успеет» (№87, t.late — live.late_forecast): в списке — красная строка, в карточке — среди тревог и у магазинов. */
 (function () {
     'use strict';
 
@@ -20,6 +21,14 @@
         speed: ['fa-gauge-high', 'Արագության գերազանցում'], stop: ['fa-square-parking', 'Երկար կանգառ ոչ խանութում'],
         no_contact: ['fa-tower-broadcast', 'Կապ չկա'], gps: ['fa-location-crosshairs', 'GPS-ն անջատված է'],
         center: ['fa-ban', 'Փոքր կենտրոնում (մուտքը թույլատրված չէ)'],
+        late: ['fa-hourglass-half', 'Չի հասցնում ժամանակին'],
+    };
+    // №87: «не успеет» — на сколько позже окна приёма или плана; машина — возврат на склад после конца рабочего дня
+    const lateText = (x) => (x.late_kind === 'return' ? 'Չի հասցնում վերադառնալ պահեստ՝ +' + x.over_min + ' րոպե'
+        : (x.late_kind === 'window' ? 'Կուշանա պատուհանից ' : 'Կուշանա պլանից ') + x.over_min + ' րոպեով');
+    const lateSummary = (late) => {
+        const stores = (late || []).filter(x => x.late_kind !== 'return').length, back = (late || []).some(x => x.late_kind === 'return');
+        return [stores ? stores + ' խանութ ուշանում է' : null, back ? 'չի հասցնում վերադառնալ' : null].filter(Boolean).join(' · ');
     };
     const STORE = { full: ['առաքված', '#45d98f'], covered: ['առաքված', '#45d98f'], partial: ['մասնակի', '#ffb547'],
         refused: ['մերժված', '#ff6b79'], in_progress: ['ընթացքի մեջ', '#38bdf8'], pending: ['դեռ ոչ', '#8693a5'] };
@@ -125,6 +134,7 @@
                 const d = delayText(t.next.delay_min);
                 if (d) meta.push(h('span', { class: d[1] === 'is-ok' ? '' : (d[1] === 'is-bad' ? 'is-bad' : 'is-warn'), text: d[0] }));
             }
+            if (lateSummary(t.late)) meta.push(h('span', { class: 'is-bad', text: lateSummary(t.late) }));
             const item = h('li', { class: 'lv-item', role: 'option', tabindex: '0', 'aria-selected': String(t.car_code === state.selected),
                 'data-car': t.car_code },
                 h('span', { class: 'lv-dot ' + cls, title: label }),
@@ -213,12 +223,14 @@
         if (t.track && t.track.length > 1) {
             L.polyline(t.track, { color: '#38bdf8', weight: 4, opacity: 0.85 }).addTo(state.layer);
         }
+        const lateOf = new Map((t.late || []).filter(x => x.stop_id).map(x => [x.stop_id, x]));
         for (const s of t.stops || []) {
             if (num(s.lat) === null || num(s.lon) === null) continue;
             const [label, color] = STORE[s.status] || STORE.pending;
+            const lt = lateOf.get(s.stop_id);   // №87: прогноз «не успеет» — красная обводка и строка в подсказке
             const text = (s.name || s.stop_id) + ' — ' + label + (s.planned_eta ? ' · պլան՝ ' + hm(s.planned_eta) : '')
-                + (s.arrive ? ' · ժամանում՝ ' + hm(s.arrive) : '');
-            L.circleMarker([s.lat, s.lon], { radius: 7, color: '#0e1116', weight: 2, fillColor: color, fillOpacity: 1 })
+                + (s.arrive ? ' · ժամանում՝ ' + hm(s.arrive) : '') + (lt ? ' · ' + lateText(lt) + ' (≈ ' + hm(lt.eta) + ')' : '');
+            L.circleMarker([s.lat, s.lon], { radius: 7, color: lt ? '#ff6b79' : '#0e1116', weight: lt ? 3 : 2, fillColor: color, fillOpacity: 1 })
                 .bindTooltip(tip(text)).addTo(state.layer);
         }
         for (const a of t.alerts_log || []) {
@@ -244,6 +256,8 @@
         else if (a.kind === 'stop') more = ', ' + a.minutes + ' րոպե' + (a.lunch ? ' (ճաշի ժամին)' : '');
         else if (a.kind === 'no_contact') more = ', ' + a.minutes + ' րոպե';
         else if (a.kind === 'gps') more = a.gps === 'no_permission' ? ' (թույլտվություն չկա)' : '';
+        // прогноз «не успеет»: что и насколько; время — прогноз прибытия (возврата), не начало события
+        if (a.kind === 'late') return [lateText(a) + (a.name ? ' — ' + a.name : ''), '≈ ' + hm(a.eta) + ' (մինչև ' + hm(a.limit) + ')'];
         return [title + more, when];
     }
 
@@ -290,7 +304,11 @@
                 (t.next.here ? 'տեղում է' : 'ժամանում ≈ ' + hm(t.next.eta) + srcText(t.next.eta_source)) + (t.next.planned_eta ? ' · պլան՝ ' + hm(t.next.planned_eta) : '')
                 + (d ? ' · ' + d[0] : ''), d && d[1] !== 'is-ok' ? d[1] : null, true));
         }
-        rows.push(field('Վերադարձ պահեստ', t.return_eta ? '≈ ' + hm(t.return_eta) : '—', t.return_eta ? srcText(t.return_source).trim().slice(1, -1) : null));
+        const back = (t.late || []).find(x => x.late_kind === 'return');
+        rows.push(field('Վերադարձ պահեստ', t.return_eta ? '≈ ' + hm(t.return_eta) : '—',
+            [t.return_eta ? srcText(t.return_source).trim().slice(1, -1) : null,
+                back ? 'բոլոր երթերից հետո ≈ ' + hm(back.eta) + '՝ ' + lateText(back).toLowerCase() : null].filter(Boolean).join(' · ') || null,
+            back ? 'is-bad' : null));
         rows.push(field('Վերջին կապը', t.last_contact ? hms(t.last_contact) : '—', t.contact_age_s !== null ? ago(t.contact_age_s) : null,
             ageClass(t.contact_age_s)));
         const dv = t.device;
@@ -300,11 +318,13 @@
         $('lvGrid').replaceChildren(...rows);
 
         $('lvStopsBox').hidden = !t.stops;
+        const lateOf = new Map((t.late || []).filter(x => x.stop_id).map(x => [x.stop_id, x]));   // накладная с прогнозом
         $('lvStops').replaceChildren(...(t.stops || []).map(s => {
             const [lab, color] = STORE[s.status] || STORE.pending;
             const dot = h('span', { class: 'lv-dot' });
             dot.style.background = color;
-            return h('li', { title: lab }, dot, h('span', { text: (s.name || s.stop_id) + ' · ' + lab }),
+            const lt = s.status === 'pending' ? lateOf.get(s.stop_id) : null;
+            return h('li', { title: lab, class: lt ? 'is-late' : null }, dot, h('span', { text: (s.name || s.stop_id) + ' · ' + (lt ? lateText(lt) : lab) }),
                 h('span', { class: 'when', text: (s.arrive ? hm(s.arrive) : (s.eta ? '≈ ' + hm(s.eta) : '')) + (s.planned_eta ? ' (պլան՝ ' + hm(s.planned_eta) + ')' : '') }));
         }));
         const log = t.alerts_log || [];

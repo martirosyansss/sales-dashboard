@@ -162,6 +162,9 @@
 }
 .lv-stops li .when, .lv-log li .when { color: var(--rt-fg-mute); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .lv-log li.is-active { border: 1px solid var(--rt-danger-line); }
+/* №87: магазин, к которому машина не успевает (прогноз) */
+.lv-stops li.is-late { border: 1px solid var(--rt-danger-line); }
+.lv-stops li.is-late > span:nth-child(2) { color: var(--rt-danger); }
 .lv-log li i { color: var(--lv-alert); }
 .lv-note { margin: 12px 0 0; font-size: .8125rem; color: var(--rt-fg-mute); line-height: 1.5; }
 
