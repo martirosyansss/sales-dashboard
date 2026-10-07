@@ -4934,6 +4934,7 @@ PAY_CALENDAR_WARNING = ('Աշխատանքային օրացույցը (կարգա
 PAY_KM_NO_DEPOT = ('Պահեստի կոորդինատները նշված չեն (Կարգավորումներ) — կմ-ն հաշվված չէ, գործավարձը հաշվված է առանց '
                    'կմ-ի։')
 PAY_KM_NO_ROADS = 'Կմ-ն մոտավոր է (ճանապարհների քարտեզ չկա)՝ ուղիղ գծով × 1,3։'
+PAY_KM_FAILED = 'Կմ-ն չհաշվվեց, գործավարձը հաշվված է առանց կմ-ի՝ '
 
 
 def _pay_tours(state: RoutesState, data: cp.CrewData, params: cp.Params, bundle: Bundle | None,
@@ -4988,7 +4989,16 @@ def _pay_month_result(state: RoutesState, first: date, today: date) -> _PayMonth
         else:
             warning = PAY_CALENDAR_WARNING
     data, memo = _pay_data(state, first, until)
-    tours, km_warning = _pay_tours(state, data, params, bundle, memo) if params.rate_km > 0 else (None, None)
+    tours, km_warning = None, None
+    if params.rate_km > 0:
+        try:   # снимок, координаты, дороги: сбой км не ломает зарплату — без км и с предупреждением
+            tours, km_warning = _pay_tours(state, data, params, bundle, memo)
+        except ErpError:
+            logger.exception('[Routes] Աշխատավարձ: снимок ERP для координат не прочитан — без км')
+            km_warning = PAY_KM_FAILED + 'խանութների կոորդինատները ERP-ից չհաջողվեց կարդալ։ Կրկնեք մի փոքր ուշ։'
+        except Exception:
+            logger.exception('[Routes] Աշխատավարձ: км не посчитаны — без км')
+            km_warning = PAY_KM_FAILED + 'ներքին սխալ (մանրամասները՝ սերվերի մատյանում)։'
     return _PayMonth(first, params, at, by, cp.compute(data, params, rest, tours), warning, km_warning)
 
 

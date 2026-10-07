@@ -71,8 +71,9 @@ _BOUNDS: dict[str, tuple[float, float]] = {
     'fix': (0, 5_000_000), 'rate_point': (0, 100_000), 'rate_tonne': (0, 1_000_000), 'rate_km': (0, 10_000),
     'minimum': (0, 5_000_000), 'norm_per_day': (1, 200), 'old_fix': (0, 5_000_000), 'old_pct': (0, 100),
 }
-# Поля, добавленные позже: в записи, сохранённой прежней версией, их нет — значение по умолчанию (а не «битая запись»)
-_ADDED_LATER = ('rate_km',)
+# Поля, добавленные позже, → значение, при котором формула прежней версии не меняется. Записи, сохранённой прежней
+# версией, их нет: владелец подбирал те ставки без км — rate_km = 0, а не 15 по умолчанию (15 — только без записи)
+_LEGACY = {'rate_km': 0.0}
 _CODE_RE = re.compile(r'[A-Za-z0-9/._-]{1,20}')
 MAX_CODES = 50
 
@@ -94,13 +95,13 @@ def _codes(raw: Any) -> tuple[tuple[str, ...] | None, str | None]:
 
 def check_params(raw: Any) -> tuple[Params | None, dict[str, str]]:
     """Параметры из формы или базы → (Params, {}) или (None, {поле: ошибка по-армянски}). Все поля обязательны, кроме
-    _ADDED_LATER: их нет — значение по умолчанию (запись прежней версии читается)."""
+    _LEGACY: их нет (запись или форма прежней версии) — значение прежней формулы."""
     if not isinstance(raw, Mapping):
         return None, {'_': 'Պարամետրերը սխալ են'}
     values: dict[str, Any] = {}
     errors: dict[str, str] = {}
     for name, (lo, hi) in _BOUNDS.items():
-        v = raw.get(name, getattr(Params, name) if name in _ADDED_LATER else None)
+        v = raw.get(name, _LEGACY.get(name))
         try:   # огромное целое из JSON во float не влезает (OverflowError) — это ошибка поля, а не 500
             x = float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else math.nan
         except OverflowError:

@@ -385,21 +385,22 @@ def save_old_params_row(store, **values):
 
 def test_past_month_unchanged_and_saved_params_win(pay):
     """Регрессия: сентябрь со ставками 175 / 1 200 из строки, сохранённой версией до км (без rate_km): строка читается
-    (rate_km — по умолчанию 15) и сильнее новых значений по умолчанию; D — как до D_month, даже если календарь настроек
-    сентябрю не соответствует."""
+    с rate_km = 0 — формула владельца та же, что до км (он подбирал ставки без км), и сильнее новых значений по
+    умолчанию; дороги не трогаются; D — как до D_month, даже если календарь настроек сентябрю не соответствует."""
     save_old_params_row(pay.state.store, rate_point=175, rate_tonne=1200)
     save_calendar(pay, workdays=[1, 2, 3, 4, 5], holidays=['2026-09-01', '2026-09-21'])
     body = pay.get('/api/routes/pay?month=2026-09').get_json()
-    assert body['params']['rate_point'] == 175 and body['params']['rate_tonne'] == 1200 and body['params']['rate_km'] == 15
-    assert body['params_updated_by'] == 'boss'
+    assert body['params']['rate_point'] == 175 and body['params']['rate_tonne'] == 1200 and body['params']['rate_km'] == 0
+    assert body['params_updated_by'] == 'boss' and body['km_counted'] is False and body['km_warnings'] == []
+    assert pay.state.roads.roads.ensured == []
     assert (body['workdays'], body['workdays_month']) == (2, 2)
     k, a = body['rows']
-    assert (k['days'], k['points'], k['tonnes'], k['fix'], k['piece']) == (2, 2, 1.5, 100_000, 2_150 + 15 * 6)
-    assert k['minimum'] == 20_833 and k['pay'] == 102_240 and k['old'] == 103_000 and k['diff'] == -760
-    assert (a['days'], a['fix'], a['piece'], a['minimum'], a['pay'], a['old']) == (1, 50_000, 565, 10_417, 50_565, 50_400)
+    assert (k['days'], k['points'], k['tonnes'], k['fix'], k['piece']) == (2, 2, 1.5, 100_000, 2_150)
+    assert k['minimum'] == 20_833 and k['pay'] == 102_150 and k['old'] == 103_000 and k['diff'] == -850
+    assert (a['days'], a['fix'], a['piece'], a['minimum'], a['pay'], a['old']) == (1, 50_000, 475, 10_417, 50_475, 50_400)
     lines = pay.get('/api/routes/pay.csv?month=2026-09').get_data().decode('utf-8')[1:].split('\r\n')
-    assert 'B001/1;Իսկանդարյան Կորյուն;2;2;2;1,500;6,0;100000;2240;20833;102240;;103000;-760' in lines
-    assert 'Աշխատանքային օրեր ամսում;2' in lines
+    assert 'B001/1;Իսկանդարյան Կորյուն;2;2;2;1,500;0,0;100000;2150;20833;102150;;103000;-850' in lines
+    assert 'Մեկ կմ-ի համար, ֏;0' in lines and 'Աշխատանքային օրեր ամսում;2' in lines
 
 
 def test_huge_numbers_are_field_errors():
@@ -421,11 +422,16 @@ def test_store_params_roundtrip_without_schema_change(tmp_path):
 
 
 def test_store_params_row_without_rate_km_loads(tmp_path):
-    """Строка, сохранённая версией до км: rate_km нет — значение по умолчанию, остальное — как сохранено; а не «битая»."""
+    """Строки нет — значения по умолчанию (15 ֏/км). Строка версии до км (rate_km нет): rate_km = 0 — формула, которую
+    владелец подобрал без км, не меняется; остальное — как сохранено; запись не «битая»."""
     store = st.Store(str(tmp_path / 'routes.db'))
+    assert store.crew_pay_params()[0].rate_km == 15
     save_old_params_row(store, rate_point=250, rate_tonne=1750)
     params, at, by = store.crew_pay_params()
-    assert (params.rate_point, params.rate_tonne, params.rate_km) == (250, 1750, 15) and by == 'boss'
+    assert (params.rate_point, params.rate_tonne, params.rate_km) == (250, 1750, 0) and by == 'boss'
+    store.save_crew_pay_params(params, 'boss')                                     # пересохранена — rate_km уже в записи
+    assert json.loads(store._read(lambda c: c.execute("SELECT value FROM settings WHERE key = 'crew_pay'").fetchone())[0]
+                      )['rate_km'] == 0
     assert cp.check_params({**cp.Params().json(), 'rate_km': None})[1] == {'rate_km': 'Լրացրեք թիվը'}   # есть, но пусто
     assert set(cp.check_params({**cp.Params().json(), 'rate_km': 10_001})[1]) == {'rate_km'}
     assert cp.check_params({**cp.Params().json(), 'rate_km': 0})[0].rate_km == 0
@@ -776,3 +782,23 @@ def test_api_no_depot_no_km_with_warning(pay):
     body = pay.get('/api/routes/pay?month=2026-09').get_json()
     assert body['km_counted'] is False and body['km_warnings'] == [views.PAY_KM_NO_DEPOT]
     assert body['rows'][0]['piece'] == 210 * 2 + 1500 * 1.5 and pay.state.roads.roads.ensured == []
+
+
+@pytest.mark.parametrize('failure', ['snapshot', 'roads'])
+def test_api_km_failure_keeps_pay_without_km(pay, failure):
+    """Сбой снимка ERP (координаты) или дорог — зарплата без км с предупреждением «Կմ-ն չհաշվվեց», страница и CSV работают."""
+    if failure == 'snapshot':
+        pay.state.snapshots = SnapshotCache(lambda: (_ for _ in ()).throw(ErpError('нет связи')))
+    else:
+        def broken(points):
+            raise RuntimeError('граф')
+        pay.state.roads.roads.ensure = broken
+    r = pay.get('/api/routes/pay?month=2026-09')
+    body = r.get_json()
+    assert r.status_code == 200 and body['km_counted'] is False and body['rows'][0]['km'] == 0
+    assert body['rows'][0]['piece'] == 210 * 2 + 1500 * 1.5
+    assert len(body['km_warnings']) == 1 and body['km_warnings'][0].startswith(views.PAY_KM_FAILED)
+    assert ('ERP' in body['km_warnings'][0]) == (failure == 'snapshot')
+    csv = pay.get('/api/routes/pay.csv?month=2026-09')
+    assert csv.status_code == 200
+    assert 'Ստուգել;' + body['km_warnings'][0] in csv.get_data().decode('utf-8')[1:].split('\r\n')
