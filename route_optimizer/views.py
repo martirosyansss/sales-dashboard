@@ -4327,6 +4327,9 @@ def _warm_days(state: RoutesState, bundle: Bundle, since: date, until: date) -> 
 
 
 GARAGE_TRACK_STEP_KM = 0.05   # рельеф трека (№85): точки не ближе 50 м друг к другу — дрожание на стоянке не подъём
+# флаг расхода месяца — от нормы с рельефом, только если км треков с рельефом ≥ этой доли км интервалов заправок машины за
+# месяц (решение по №85): иначе норма с рельефом описывает малую часть пробега — флаг от прежней нормы (low_coverage)
+GARAGE_TERRAIN_MIN_COVER = 0.5
 
 
 def _track_climbs(state: RoutesState, since: date, until: date) -> dict[tuple[str, str], tuple[float, float]]:
@@ -4506,12 +4509,16 @@ def api_garage_norm() -> Any:
         by_day = {r['day']: hills(code, r, norm['l100']) for r in rows}
         hilly = [(r['fact']['km'], by_day[r['day']][1]) for r in rows if by_day[r['day']][1] is not None]
         hill_km = math.fsum(k for k, _ in hilly)
-        # норма месяца по трекам с рельефом (№85): по ней — красный флаг (решение владельца); рельефа нет — прежняя норма,
-        # и ответ говорит почему (basis, terrain_missing: no_dem — нет тайлов высот, no_track — нет дней с треком и нормой)
+        # норма месяца по трекам с рельефом (№85): по ней — красный флаг (решение владельца), если треки покрывают не меньше
+        # GARAGE_TERRAIN_MIN_COVER км интервалов заправок; иначе — прежняя норма, и ответ говорит почему (basis,
+        # terrain_missing: no_dem — нет тайлов высот, no_track — нет дней с треком и нормой, low_coverage — треков мало;
+        # норма с рельефом тогда — только рядом)
         terrain_l100 = 100.0 * math.fsum(x for _, x in hilly) / hill_km if hill_km > 0 else None
-        flag_l100 = terrain_l100 if terrain_l100 is not None else norm['l100']
-        basis = ({'basis': 'terrain', 'terrain_l100': _r1(terrain_l100), 'terrain_days': len(hilly)}
-                 if terrain_l100 is not None else
+        covered = terrain_l100 is not None and (fuel.km <= 0 or hill_km >= GARAGE_TERRAIN_MIN_COVER * fuel.km)
+        flag_l100 = terrain_l100 if covered else norm['l100']
+        hill_note = {'terrain_l100': _r1(terrain_l100), 'terrain_days': len(hilly), 'terrain_km': round(hill_km, 1)}
+        basis = ({'basis': 'terrain', **hill_note} if covered else
+                 {'basis': 'flat', 'terrain_missing': 'low_coverage', **hill_note} if terrain_l100 is not None else
                  {'basis': 'flat', 'terrain_missing': 'no_dem' if not has_dem else 'no_track'})
         out.append({**t, 'norm': {'l100': _r1(norm['l100']), 'source': norm['source'], 'learned': _r1(norm['learned']),
                                   **basis},

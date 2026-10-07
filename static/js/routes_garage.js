@@ -651,7 +651,8 @@
             + 'լրիվ բաքից լրիվ բաք․ լիտրերը ÷ կմ ըստ օդոմետրի (միջակայքը, որն անցնում է ամսվա սահմանով, մտնում է այն ամիսը, երբ '
             + 'ավարտվել է)։ Կմ-ը համեմատվում է միայն այն օրերին, երբ կա և «Առաքում» էջի պլանը, և GPS հետագիծը։ Կարմիրով է նշված '
             + 'այն, ինչ նորմից կամ պլանից ավելի է ' + pct + '%-ից ավելի։ Եթե կա GPS հետագիծ, ծախսը համեմատվում է ռելիեֆով նորմի հետ՝ '
-            + 'հետագծի վերելքները հաշվի առած (լեռնային օրը՝ ավելի, հարթը՝ պակաս)։' + (d.month === d.current_month ? ' Այսօրը դեռ չի մտնում։' : '');
+            + 'հետագծի վերելքները հաշվի առած (լեռնային օրը՝ ավելի, հարթը՝ պակաս)։ Եթե GPS հետագիծը ծածկում է լիցքավորումների կմ-ի '
+            + 'կեսից պակասը, ծախսը համեմատվում է սովորական նորմի հետ։' + (d.month === d.current_month ? ' Այսօրը դեռ չի մտնում։' : '');
         $('gjNormEmpty').hidden = d.has_data;
         $('gjNormEmptyText').textContent = d.too_old
             ? 'Ցույց են տրվում միայն վերջին 12 ամիսները։'
@@ -678,7 +679,8 @@
                     ? [h('b', { class: 'gj-price', text: fmt(t.norm.l100, 1) }),
                         h('small', { class: 'gj-sub' + (t.norm.source === 'learned' ? ' gj-weak' : ''), text: NORM_SRC[t.norm.source] || '' }),
                         t.norm.source !== 'learned' && t.norm.learned !== null ? h('small', { class: 'gj-sub', text: 'սովորած՝ ' + fmt(t.norm.learned, 1) }) : null,
-                        t.norm.basis === 'terrain' ? h('small', { class: 'gj-sub', text: 'Նորմ՝ ռելիեֆով՝ ' + fmt(t.norm.terrain_l100, 1) }) : null]
+                        num(t.norm.terrain_l100) !== null ? h('small', { class: 'gj-sub', text: 'Նորմ՝ ռելիեֆով՝ ' + fmt(t.norm.terrain_l100, 1)
+                            + (t.norm.terrain_missing === 'low_coverage' ? ' · քիչ GPS, համեմատվում է սովորական նորմի հետ' : '') }) : null]
                     : [h('span', { text: '—' }), h('small', { class: 'gj-sub', text: 'նշված չէ' })]),
                 h('td', { class: 'gj-num w-half', 'data-label': 'Փաստ, լ/100 կմ' }, ...fuelCell(t)),
                 h('td', { class: 'gj-num', 'data-label': 'Կմ՝ պլան → փաստ' }, ...kmCell(t)),

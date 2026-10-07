@@ -768,7 +768,8 @@ class RoadDistances:
 
     def ensure_climb(self, points: Iterable[Point | None], wait: bool | None = None) -> bool:
         """Подъёмы между точками (и со всеми точками кэша подъёмов): км — ensure, подъём — Dijkstra от новых узлов вперёд и по
-        обратному графу (RoadNetwork.climbs). Все узлы уже в кэше — сразу, без блокировок. Иначе wait (None — у сервера
+        обратному графу (RoadNetwork.climbs). Все узлы уже в кэше — сразу, без блокировок (кэш с диска после перезапуска —
+        тоже сразу, если фоновый расчёт не идёт). Иначе wait (None — у сервера
         нет, background) — досчитать сейчас; без ожидания — узлы в очередь фонового потока, ответ сразу. True — подъёмы
         всех точек есть (точки без привязки не в счёт); False — рельефа нет или подъёмы ещё считаются (climb → None)."""
         got = self.elevation() if self.elevation is not None and not self._climb_failed else None
@@ -784,6 +785,13 @@ class RoadDistances:
         rows = {t.points[k][0] for k in {point_key(p) for p in points} if k in t.points}
         nodes = {int(t.nodes[r]) for r in rows if r >= 0}
         c = self._climbs
+        if (c.key != key or c.graph != identity) and self._climb_lock.acquire(blocking=False):
+            try:   # кэш подъёмов с диска (после перезапуска) — сразу, доли секунды; идёт фоновый расчёт — не ждём его
+                if self._climbs.key != key or self._climbs.graph != identity:
+                    self._read_climbs(key, identity)
+            finally:
+                self._climb_lock.release()
+            c = self._climbs
         if c.key == key and c.graph == identity and nodes <= c.index.keys():
             return True
         if wait if wait is not None else not self.background:

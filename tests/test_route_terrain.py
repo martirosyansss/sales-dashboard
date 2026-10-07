@@ -269,8 +269,9 @@ def test_cold_climbs_never_block_the_request(tmp_path, monkeypatch):
     assert time.perf_counter() - started < 2.0 and r.climb(south, north) is None
     norms = replace(DP_NORMS, roads=r)
     assert fl.trip_running_cost([north], [100.0], south, norms, PLAIN).terrain_liters is None
+    started = time.perf_counter()
     r.ensure([mid])                                                   # км новой точки — не ждут подъёмов
-    assert r.km(south, mid) is not None
+    assert time.perf_counter() - started < 2.0 and r.km(south, mid) is not None
     gate.set()
     worker.join(10)
     assert r.ensure_climb([south, north]) is True and r.climb(south, north) == pytest.approx(300.0)
@@ -281,6 +282,30 @@ def test_cold_climbs_never_block_the_request(tmp_path, monkeypatch):
         t.join(2)
         assert got == [True]
     assert fl.trip_running_cost([north], [100.0], south, norms, PLAIN).terrain_liters is not None
+    # вторая очередь после первой — поток запускается снова и её считает
+    assert r._climb_thread is None
+    east = _at(6, 6)
+    assert r.ensure_climb([south, east]) is False
+    r._climb_thread.join(10)
+    assert r._climb_thread is None and r.ensure_climb([south, east]) is True
+    assert r.climb(south, east) == pytest.approx(300.0)
+
+
+def test_partly_ready_trip_has_no_terrain_until_all_legs(tmp_path, monkeypatch):
+    """Подъёмы части участков рейса есть, одной точки ещё считаются — рейс без рельефа (не частичная поправка)."""
+    pbf, version = _disk_map(tmp_path)
+    r = rd.RoadDistances.for_map(pbf, version)
+    south, north, mid = _at(0, 0), _at(6, 0), _at(3, 3)
+    r.ensure_climb([south, north], wait=True)
+    gate = threading.Event()
+    real = rd.RoadNetwork.climbs
+    monkeypatch.setattr(rd.RoadNetwork, 'climbs', lambda self, *a, **k: gate.wait(10) and real(self, *a, **k))
+    norms = replace(DP_NORMS, roads=r)
+    assert fl.trip_running_cost([north], [100.0], south, norms, PLAIN).terrain_liters is not None
+    assert fl.trip_running_cost([north, mid], [100.0, 50.0], south, norms, PLAIN).terrain_liters is None
+    gate.set()
+    r._climb_thread.join(10)
+    assert fl.trip_running_cost([north, mid], [100.0, 50.0], south, norms, PLAIN).terrain_liters is not None
 
 
 def test_warm_if_stale_sees_climb_cache_and_refreshes_elevation(tmp_path, monkeypatch):
@@ -339,6 +364,58 @@ def test_dem_sampling_across_tile_seam_and_noise(tmp_path):
     hole = 41 + 1 - 10 / 120, 44 + 10 / 120
     assert terrain.sample([hole[0]], [hole[1]], str(tmp_path), sigma_m=3000.0)[0] == pytest.approx(1500.0, abs=0.5)
     assert terrain.tiles_for([40.5, 40.7, 41.2], [44.1, 45.9, 44.0]) == ['N40E044', 'N40E045', 'N41E044']
+
+
+def test_download_tiles_truncated_gzip_is_retried_and_cleaned(tmp_path, monkeypatch):
+    """Обрыв скачивания (битый gzip — EOFError): вторая попытка, .part удаляется, тайла нет; 404 — без повтора."""
+    import io
+    import urllib.error
+    import urllib.request
+    good = gzip.compress(np.zeros((11, 11), dtype='>i2').tobytes())
+    calls = []
+
+    def opener(url, timeout=None):
+        calls.append(url)
+        if 'N41' in url:
+            raise urllib.error.HTTPError(url, 404, 'not found', {}, None)
+        return io.BytesIO(good[:len(good) // 2])
+    monkeypatch.setattr(urllib.request, 'urlopen', opener)
+    assert terrain.download_tiles(['N40E044', 'N41E044'], str(tmp_path)) == []
+    assert len([c for c in calls if 'N40' in c]) == terrain.DOWNLOAD_TRIES and len([c for c in calls if 'N41' in c]) == 1
+    assert os.listdir(tmp_path) == []
+    monkeypatch.setattr(urllib.request, 'urlopen', lambda url, timeout=None: io.BytesIO(good))
+    assert terrain.download_tiles(['N40E044'], str(tmp_path)) == ['N40E044']
+    assert os.listdir(tmp_path) == ['N40E044.hgt.gz']
+
+
+def test_main_warm_and_dem_warm_climbs(tmp_path, monkeypatch):
+    """main: warm --if-stale — сначала пересборка кэша высот (_refresh_elevation), затем прогрев, и он греет подъёмы точек
+    плана; dem — высоты, затем тот же прогрев."""
+    import types
+    from route_optimizer import evaluate, snapshot, store
+    pbf, version = _disk_map(tmp_path)
+    monkeypatch.setenv('ROUTES_OSM_PATH', pbf)
+    monkeypatch.setenv('ROUTES_ROAD_ENGINE', 'osm')   # _warm ставит его сам; после теста — прежний
+    order = []
+    real_refresh = rd._refresh_elevation
+    monkeypatch.setattr(rd, '_refresh_elevation', lambda path: order.append('refresh') or real_refresh(path))
+    points = [_at(0, 0), _at(6, 0), _at(6, 6)]
+    monkeypatch.setitem(sys.modules, 'app_v2', types.SimpleNamespace(db=types.SimpleNamespace(connection_string='x')))
+    monkeypatch.setattr(snapshot, 'load_snapshot', lambda cs: order.append('erp') or object())
+    monkeypatch.setattr(evaluate, 'plan_points', lambda snap, bundle, extra: list(points))
+    monkeypatch.setattr(rd, '_load_bundle_readonly', lambda path: types.SimpleNamespace(settings={'center_zone': []}))
+    assert rd.main(['warm', '--if-stale']) == 0
+    assert order == ['refresh', 'erp']
+    r = rd.RoadDistances.for_map(pbf, version)                          # как после перезапуска сервера
+    assert r.ensure_climb(points, wait=False) is True                   # прогрето: кэш с диска сразу, фон не нужен
+    assert r._climb_thread is None
+    assert r.climb(points[0], points[1]) == pytest.approx(300.0)
+    assert rd.main(['warm', '--if-stale']) == 0 and order == ['refresh', 'erp', 'refresh']   # годится — без ERP
+    os.remove(rd._cache_path(pbf, 'climb'))
+    order.clear()
+    monkeypatch.setattr(rd, '_dem', lambda path, force=False, download=True: order.append('dem') or 0)
+    assert rd.main(['dem']) == 0 and order == ['dem', 'erp']
+    assert os.path.exists(rd._cache_path(pbf, 'climb'))
 
 
 def test_track_climbs_from_dem_at_track_points(tmp_path):
@@ -485,15 +562,37 @@ def test_dispatch_build_same_plan_and_flat_variant_costs(monkeypatch):
     monkeypatch.setattr(terrain, 'IN_PLAN', True)
     assert dp._trip_amd(hilly, t.stops, routable, shares, t.truck) != flat
 
+
+def test_dispatch_build_paths_do_not_report_terrain(monkeypatch):
+    """Сборка, пересборка вокруг закреплённых и «Везти после конца дня» зовут route_day с report=False: литры рейсов с
+    рельефом считает только plan_view."""
+    seen = []
+    real = fl.route_day
+
+    def spy(*args, **kwargs):
+        seen.append(kwargs.get('report', True))
+        return real(*args, **kwargs)
+    monkeypatch.setattr(fl, 'route_day', spy)
+    depot = _at(6, 3)
+    stops, _ = _dp_stops([(1, _at(0, 0), 300.0), (2, _at(3, 0), 900.0), (3, _at(1, 5), 500.0)])
+    ctx = dp.DayContext(DP_DAY, depot, {t.car_code: t for t in (PLAIN, LOADED)}, replace(DP_NORMS, roads=_hilly()),
+                        TN, 9 * 60, overtime_minutes=TN.work_minutes + 120)
+    draft = dp.build(ctx, stops, None, ['L', 'P'], '2026-10-01T08:00:00')
+    draft.trips[0].pinned = True
+    draft = dp.build(ctx, stops, draft, ['L', 'P'], '2026-10-01T08:00:00')
+    dp.overtime(ctx, stops, draft)
+    assert seen and not any(seen)
+
 # ============================== «Նորմ և փաստ» ==============================
 
 def test_garage_norm_flags_against_terrain_norm(client, monkeypatch):
     """Норма дня по треку: км GPS × норма + литры подъёма трека (масса — собственная + полгруза, ū трека); норма месяца с
     рельефом — по ней красный флаг (решение владельца); тайлов нет — прежняя норма и почему (basis, terrain_missing); сбой
     рельефа — страница без него, не ошибка; треки не пересчитываются из кэша."""
-    from test_garage_norm import _norm_client, _truck
+    from test_garage_norm import _norm_client, _rf, _truck
     from route_optimizer import views
-    state = _norm_client(client, monkeypatch)
+    # интервал заправок 100 км (31,125 л): треки сентября покрывают больше половины — флаг от нормы с рельефом
+    state = _norm_client(client, monkeypatch, [_rf(1, '2026-09-10', 10000, 50), _rf(2, '2026-09-20', 10100, 31.125)])
     monkeypatch.setattr(terrain, 'dem_signature', lambda folder=None: None)
     flat = _truck(client.get('/api/routes/garage/norm?month=2026-09').get_json(), 'CAR1')
     assert flat['norm']['basis'] == 'flat' and flat['norm']['terrain_missing'] == 'no_dem'
@@ -516,6 +615,7 @@ def test_garage_norm_flags_against_terrain_norm(client, monkeypatch):
     norm_l = [d['fact_km'] * 30.0 / 100.0 + extra for d in hill['days']]
     terrain_l100 = 100.0 * math.fsum(norm_l) / math.fsum(d['fact_km'] for d in hill['days'])
     assert hill['norm']['basis'] == 'terrain' and hill['norm']['terrain_days'] == len(hill['days'])
+    assert hill['norm']['terrain_km'] >= views.GARAGE_TERRAIN_MIN_COVER * hill['fuel']['km']
     assert hill['norm']['terrain_l100'] == round(terrain_l100, 1) and terrain_l100 < 30.0
     assert hill['fuel']['delta_pct'] == round((31.125 - terrain_l100) / terrain_l100 * 100, 1)
     assert hill['fuel']['over'] == (round((31.125 - terrain_l100) / terrain_l100 * 100, 6) > 10)
@@ -528,5 +628,21 @@ def test_garage_norm_flags_against_terrain_norm(client, monkeypatch):
     monkeypatch.setattr(terrain, 'track_climbs', lambda *a, **k: 1 / 0)
     broken = client.get('/api/routes/garage/norm?month=2026-09')
     assert broken.status_code == 200
+    assert not broken.get_json()['failed'] and not broken.get_json()['pending']
     body = _truck(broken.get_json(), 'CAR1')
     assert body['norm']['basis'] == 'flat' and body['norm']['terrain_missing'] == 'no_track'
+
+
+def test_garage_terrain_norm_needs_track_coverage(client, monkeypatch):
+    """Треки с рельефом покрывают меньше половины км интервалов заправок месяца — флаг от прежней нормы (basis flat,
+    low_coverage), норма с рельефом — только рядом."""
+    from test_garage_norm import REFUELS, _norm_client, _truck
+    state = _norm_client(client, monkeypatch, REFUELS)                 # интервалы сентября — 800 км
+    monkeypatch.setattr(terrain, 'dem_signature', lambda folder=None: 'tiles')
+    monkeypatch.setattr(terrain, 'track_climbs', lambda tracks, folder=None, sigma_m=0: [(-120.0, 30.0) for _ in tracks])
+    state.track_climbs.clear()
+    car = _truck(client.get('/api/routes/garage/norm?month=2026-09').get_json(), 'CAR1')
+    assert car['fuel']['km'] == 800.0 and car['norm']['terrain_km'] < 0.5 * 800.0
+    assert car['norm']['basis'] == 'flat' and car['norm']['terrain_missing'] == 'low_coverage'
+    assert car['norm']['terrain_l100'] is not None and car['norm']['terrain_l100'] < 30.0
+    assert car['fuel']['delta_pct'] == round((31.125 - 30) / 30 * 100, 1)   # от ручной нормы
