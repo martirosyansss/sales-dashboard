@@ -18,8 +18,9 @@ CT115, и сообщений ПК не нужно.
   RECENT_MIN назад, не рассылается задним числом (после простоя сервера и при первом запуске);
 - «не успеет» (late, №87) — прогноз, а не событие: одно сообщение на магазин (и на возврат машины на склад) в день; снова —
   если прогноз ухудшился не меньше чем на max(repeat_min, LATE_STEP_MIN) минут против отправленного или если строка
-  перестала «опаздывать» (запись снимается) и опаздывает опять. Новые строки одной машины за проход —
-  одним сообщением. В тихие часы не шлётся и не отмечается: прогноз, который ещё в силе после них, уйдёт тогда. Окно повтора
+  не «опаздывала» (или не было свежего GPS) подряд LATE_CLEAR_MIN минут — тогда запись снимается — и опаздывает опять;
+  вернулась раньше — тот же случай (прогноз у порога не шлёт сообщение на каждом пересчёте). Новые строки одной машины
+  за проход — одним сообщением. В тихие часы не шлётся и не отмечается: прогноз, который ещё в силе после них, уйдёт тогда. Окно повтора
   вида у машины к нему не применяется (иначе второй опаздывающий магазин той же машины пропал бы);
 - сбой отправки (сеть, Telegram) — в журнал без токена, повтор со всё большей паузой (до BACKOFF_MAX_S); поток не падает.
   Тайм-аут ответа не значит «не доставлено»: сообщение, дошедшее без ответа, при повторе придёт второй раз (редкий дубль
@@ -60,6 +61,7 @@ CLIENT_ERRORS_MAX = 5             # ошибок 4xx подряд (кроме 42
 END_KINDS = ('no_contact', 'gps')   # окончание сообщается только у них
 MAP_URL = 'https://yandex.ru/maps/?pt={lon},{lat}&z=16&l=map'
 LATE_STEP_MIN = 15.0              # «не успеет»: повтор — при ухудшении прогноза на столько (и не меньше repeat_min)
+LATE_CLEAR_MIN = 15.0             # …и после стольких минут подряд без опоздания — запись снимается (новый случай)
 
 TITLE = {'speed': 'Արագության գերազանցում', 'stop': 'Երկար կանգառ ոչ խանութում', 'no_contact': 'Կապ չկա',
          'gps': 'GPS-ն անջատված է', 'center': 'Փոքր կենտրոնում (մուտքը թույլատրված չէ)',
@@ -234,6 +236,7 @@ def _plan_late(car: str, card: Mapping[str, Any], rules: Rules, now: datetime, s
     day = now.astimezone(ac.YEREVAN).date().isoformat()
     prefix = f'{car}|late|{day}|'
     step = max(rules.repeat_min, LATE_STEP_MIN)
+    changed = False
     rows: list[tuple[str, int, Mapping[str, Any]]] = []
     active: set[str] = set()
     for a in card.get('alerts_log') or ():
@@ -241,14 +244,22 @@ def _plan_late(car: str, card: Mapping[str, Any], rules: Rules, now: datetime, s
             continue
         key = prefix + str(a.get('target'))
         active.add(key)
+        if state.sent.get(key, {}).pop('calm_since', None) is not None:   # снова опаздывает — тот же случай
+            changed = True
         sent = (state.sent.get(key) or {}).get('over')
         if not isinstance(sent, int) or a['over_min'] >= sent + step:
             rows.append((key, a['over_min'], a))
-    gone = [k for k in state.sent if k.startswith(prefix) and k not in active]
-    for k in gone:   # прогноз улучшился — снова «опаздывает» будет новым сообщением
-        del state.sent[k]
+    for k in [k for k in state.sent if k.startswith(prefix) and k not in active]:
+        rec = state.sent[k]
+        calm = _moment(rec.get('calm_since'))
+        if calm is None:   # перестала опаздывать (или нет свежего GPS) — отсчёт LATE_CLEAR_MIN
+            rec['calm_since'] = now.isoformat()
+            changed = True
+        elif now - calm >= timedelta(minutes=LATE_CLEAR_MIN):   # спокойно долго — снова «опаздывает» будет новым случаем
+            del state.sent[k]
+            changed = True
     if not rows:
-        return bool(gone)
+        return changed
     plate = [x for x in (card.get('car_code'), card.get('name')) if x]
     lines = [TITLE['late'], 'Մեքենա՝ ' + ' · '.join(plate)]
     driver = card.get('driver') or next(iter(card.get('drivers') or ()), None)
@@ -261,7 +272,7 @@ def _plan_late(car: str, card: Mapping[str, Any], rules: Rules, now: datetime, s
     lines.append('Ժամ՝ ' + now.astimezone(ac.YEREVAN).strftime('%H:%M'))
     out.append(Message(f'{car}|late|{day}', 'start', car, 'late', '\n'.join(lines),
                        tuple((key, over) for key, over, _ in rows)))
-    return bool(gone)
+    return changed
 
 
 def _plan_car(car: str, card: Mapping[str, Any], rules: Rules, now: datetime, state: AlertState, quiet: bool,

@@ -306,17 +306,44 @@ def test_late_message_groups_stores_of_a_car_once_per_day(tmp_path):
     box['cards'] = {'CAR1': card({**a, 'over_min': 42}, b, r)}
     assert alerter.tick() == 1 and 'Խանութ 7 — կուշանա պատուհանից 42 րոպեով' in sender.sent[1]
     assert 'Խանութ 8' not in sender.sent[1] and 'պահեստ' not in sender.sent[1]
-    # прогноз улучшился (строки нет) — запись снята; снова «опаздывает» — снова сообщение (ревью L3)
+    # прогноз улучшился (строки нет) и сразу вернулся — тот же случай, без сообщения (ревью: удержание LATE_CLEAR_MIN)
     box['cards'] = {'CAR1': card(b, r)}
+    assert alerter.tick() == 0 and alerter.state.sent['CAR1|late|2026-10-06|c7'].get('calm_since')
+    box['cards'] = {'CAR1': card({**a, 'over_min': 42}, b, r)}
+    assert alerter.tick() == 0 and 'calm_since' not in alerter.state.sent['CAR1|late|2026-10-06|c7']
+    # спокойно 16 минут подряд — запись снята; снова «опаздывает» — снова сообщение (ревью L3)
+    box['cards'] = {'CAR1': card(b, r)}
+    alerter.tick()
+    box['now'] = NOW + timedelta(minutes=16)
     assert alerter.tick() == 0 and not [k for k in alerter.state.sent if k.endswith('|c7')]
     box['cards'] = {'CAR1': card({**a, 'over_min': 42}, b, r)}
     assert alerter.tick() == 1 and 'Խանութ 7' in sender.sent[2] and 'Խանութ 8' not in sender.sent[2]
     # перезапуск — «уже отправлено» в файле
-    again, sender2, _ = make(tmp_path, {'CAR1': card({**a, 'over_min': 42}, b, r)})
+    again, sender2, _ = make(tmp_path, {'CAR1': card({**a, 'over_min': 42}, b, r)}, now=box['now'])
     assert again.tick() == 0 and sender2.sent == []
     # другой день — снова
     box['now'] = NOW + timedelta(days=1)
     assert alerter.tick() == 1
+
+
+def test_late_flapping_at_threshold_is_one_message(tmp_path):
+    """Прогноз у порога: «опаздывает» / нет каждые 10 с в течение 10 минут — одно сообщение; потом спокойно 16 минут
+    подряд — новый случай, снова «опаздывает» — новое сообщение. Нет свежего GPS (строки нет) — так же, как «не опаздывает»."""
+    a = late_alert('c7', 30, name='Խանութ 7')
+    alerter, sender, box = make(tmp_path, {'CAR1': card(a)})
+    for i in range(60):                                              # 10 минут, пересчёт раз в 10 с
+        box['now'] = NOW + timedelta(seconds=10 * i)
+        box['cards'] = {'CAR1': card(a) if i % 2 == 0 else card()}
+        alerter.tick()
+    assert len(sender.sent) == 1
+    box['cards'] = {'CAR1': card()}
+    start = box['now'] + timedelta(seconds=10)
+    for i in range(0, 16 * 60 + 1, 10):                              # 16 минут без опоздания
+        box['now'] = start + timedelta(seconds=i)
+        alerter.tick()
+    box['cards'] = {'CAR1': card(a)}
+    box['now'] += timedelta(seconds=10)
+    assert alerter.tick() == 1 and len(sender.sent) == 2
 
 
 def test_late_repeat_step_at_least_15_minutes(tmp_path):
