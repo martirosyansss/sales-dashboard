@@ -20,7 +20,7 @@ from test_route_optimizer import (DP_DEPOT, _dispatch_setup, _dp_ctx, _dp_stops,
                                   client)
 
 D1, D2 = date(2026, 9, 1), date(2026, 9, 2)
-P = cp.Params(rate_point=250, rate_tonne=1750)   # ставки тестов — явно: умолчания «Աշխատավարձ» меняются
+P = cp.Params(rate_point=250, rate_tonne=1750, rate_km=0)   # ставки тестов — явно; км — в своих тестах (crew_km)
 DEPOT = (0.0, 0.0)
 
 
@@ -376,7 +376,7 @@ def test_api_report_uses_sent_plan_then_draft(cost):
     assert rows[999]['unrouted'] and rows[999]['fuel'] == 0 and rows[999]['crew'] == cp.money(250 + 17.5)
     assert rows[104]['sales'] == 1_250_000                                           # и накладная, которую вёз менеджер
     assert body['margin'] is None and t['red'] == 0 and not any(r['red'] for r in body['rows'])
-    assert body['rates'] == {'rate_point': 250, 'rate_tonne': 1750} and body['fuel_price'] > 0
+    assert body['rates'] == {'rate_point': 250, 'rate_tonne': 1750, 'rate_km': 0} and body['fuel_price'] > 0
     trip = rows[104]['trips'][0]
     assert trip['trip_fuel'] >= trip['fuel'] and trip['trip_stops'] == 2
     assert t['pct'] == pytest.approx(t['cost'] / t['sales'] * 100, abs=0.01)
@@ -558,6 +558,73 @@ def test_no_depot_explains_instead_of_500(client, monkeypatch):
     state.cost_sales_loader = lambda since, until: seen.append(since) or cts.SalesData((), {}, {})
     r = client.get('/api/routes/cost?days=30')
     assert r.status_code == 400 and r.get_json()['error'] == views.COST_NO_CTX and seen == []   # ERP не читали
+
+
+KM_DEPOT = (40.19462, 44.6004)
+KM_AT = {1: (40.18, 44.50), 2: (40.19, 44.52), 3: (40.20, 44.55), 4: (40.20, 44.55), 5: None, 6: (40.25, 44.40)}
+
+
+def no_roads(a, b):
+    return None                                   # карты нет — по прямой × KM_DETOUR, как в «Աշխատավարձ»
+
+
+def test_crew_km_is_crew_pay_tour_split_exactly_by_added_km():
+    """Плата за км — тур дня экспедитора ровно как crew_pay.tour_km; деньги тура делятся по км, которые добавляет точка:
+    Σ = money(15 × км тура) ровно; два магазина в одном доме (3 и 4) — поровну; без координаты (5) — 0; дальняя точка (6) —
+    больше всех; второй экспедитор — свой тур; помощник-исключение (13) — без тура; rate_km = 0 — ничего."""
+    data = cts.SalesData((sale(D1, 1, 100, 10), sale(D1, 2, 100, 10), sale(D1, 3, 100, 10), sale(D1, 4, 100, 10),
+                          sale(D1, 5, 100, 10), sale(D1, 6, 100, 10), sale(D1, 1, 100, 10, van=12),
+                          sale(D2, 2, 100, 10, van=13)), AGENTS, {})
+    got = cts.crew_km(data, P.excluded_lines, P.excluded_people, 15, KM_DEPOT, KM_AT, no_roads)
+    tour11 = cp.tour_km(KM_DEPOT, [KM_AT[c] for c in (1, 2, 3, 6)], no_roads)[0]
+    tour12 = cp.tour_km(KM_DEPOT, [KM_AT[1]], no_roads)[0]
+    assert sum(got.values()) == cp.money(15 * tour11) + cp.money(15 * tour12)
+    assert got[(D1, 1)] - cp.money(15 * tour12) > 0                                       # 1 — в обоих турах
+    assert abs(got[(D1, 3)] - got[(D1, 4)]) <= 1 and (D1, 5) not in got and (D2, 2) not in got
+    assert got[(D1, 6)] == max(v for (d, c), v in got.items() if c != 1)
+    assert cts.crew_km(data, P.excluded_lines, P.excluded_people, 0, KM_DEPOT, KM_AT, no_roads) == {}
+    assert set(cts.crew_km(data, (), (), 15, KM_DEPOT, KM_AT, no_roads, days={D2})) == {(D2, 2)}   # только дни с планом
+    memo = {}
+    assert cts.crew_km(data, (), (), 15, KM_DEPOT, KM_AT, no_roads, memo) == \
+        cts.crew_km(data, (), (), 15, KM_DEPOT, KM_AT, no_roads, memo) and memo           # туры из памяти — то же
+    # Σ по магазинам — км-часть зарплаты crew_pay.compute с теми же турами (в пределах округления дня и месяца)
+    inv = [cp.Invoice(x.van_id, x.day, x.customer_id, x.line_id, x.total, x.kg) for x in data.sales]
+    crew = cp.CrewData(tuple(inv), {k: (v.strip(), f'n{k}') for k, v in AGENTS.items()})
+    pk = cp.Params(rate_point=0, rate_tonne=0, rate_km=15)
+    tours, _ = cp.plan_tours(KM_DEPOT, {c: pt for c, pt in KM_AT.items() if pt}, cp.day_stores(crew, pk), no_roads)
+    res = cp.compute(crew, pk, None, tours)
+    assert abs(sum(r.piece for r in res.rows) - sum(got.values())) <= len(res.rows)
+
+
+def test_crew_km_goes_into_store_crew_and_trip_sum_stays_exact():
+    """Доля км — в crew(d, c) магазина: в рейсах дня делится вместе с точками и тоннами, Σ по рейсам = crew(d, c)."""
+    pk = cp.Params(rate_point=250, rate_tonne=1750, rate_km=15)
+    data = cts.SalesData((sale(D1, 1, 100, 400), sale(D1, 2, 100, 200), sale(D1, 6, 100, 100)), AGENTS, {})
+    km = cts.crew_km(data, (), (), pk.rate_km, KM_DEPOT, KM_AT, no_roads)
+    delivered = cts.deliveries(data, (), (), km)
+    assert delivered[(D1, 6)].km_amd == km[(D1, 6)] > 0
+    assert delivered[(D1, 6)].crew_amd(pk) == cp.money(250 + 1750 * 0.1) + km[(D1, 6)]
+    trips = [cts.Trip(D1, 1, 'T', (1, 6)), cts.Trip(D1, 2, 'T', (6, 2))]
+    res = cts.trip_costs(trips, delivered, {c: KM_AT[c] for c in (1, 2, 6)}, line_cost(), pk)
+    assert sum(sh.crew for t in res for sh in t.stops if sh.customer_id == 6) == delivered[(D1, 6)].crew_amd(pk)
+    assert sum(t.crew for t in res) == sum(delivered[(D1, c)].crew_amd(pk) for c in (1, 2, 6))
+
+
+def test_api_crew_km_rate_from_crew_pay_params(cost):
+    """Ставка за км — из сохранённых «Աշխատավարձ»: доставка растёт ровно на Σ money(15 × км тура дня экспедитора) (все
+    магазины туров — в рейсах), ставка — в ответе и CSV; сохранение ставок сбрасывает готовый итог."""
+    before = cost.get('/api/routes/cost?days=30').get_json()
+    assert before['rates']['rate_km'] == 0
+    r = cost.post('/api/routes/pay/params', json=cp.Params(rate_point=250, rate_tonne=1750, rate_km=15).json())
+    assert r.status_code == 200, r.get_json()
+    after = cost.get('/api/routes/cost?days=30').get_json()
+    at = {101: (40.18, 44.50), 102: (40.19, 44.52), 104: (40.20, 44.55)}            # make_snapshot; у 999 точки нет
+    tours = [[101, 102, 104], [101, 104]]                                              # экспедитор 11: 01.10 и 30.09
+    want = sum(cp.money(15 * cp.tour_km(DP_DEPOT, [at[c] for c in t], no_roads)[0]) for t in tours)
+    assert after['rates']['rate_km'] == 15 and want > 0
+    assert after['totals']['crew'] - before['totals']['crew'] == want
+    assert after['totals']['fuel'] == before['totals']['fuel']
+    assert 'Մեկ կմ-ի համար, ֏;15' in cost.get('/api/routes/cost.csv?days=30').get_data(as_text=True)
 
 
 def test_csv(cost):

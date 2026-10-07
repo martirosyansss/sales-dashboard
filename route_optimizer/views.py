@@ -174,6 +174,8 @@ class RoutesState:
     cost_sales_cache: dict[tuple[date, date], tuple[float, cts.SalesData]] = field(default_factory=dict)
     cost_days: dict[date, tuple[Any, list[cts.TripCost], float, bool]] = field(default_factory=dict)
     cost_lock: threading.Lock = field(default_factory=threading.Lock)   # только словари кэша: расчёт не под ним
+    # туры экипажа для платы за км (cts.crew_km): (склад, версия дорог) → точки тура → (км, порядок); хранится один ключ
+    cost_tours: dict[Any, cts.TourMemo] = field(default_factory=dict)
     # расчёт периода — в фоне (_cost_result): (с, по) → поток (не больше одного на сервер) и последний итог потока —
     # (time.monotonic() начала и конца расчёта, _CostResult или исключение); холодный первый расчёт (дороги без кэша) —
     # минуты. cost_changed — time.monotonic() последнего сохранения настроек, наценки или ставок (_cost_changed): итог,
@@ -6009,6 +6011,31 @@ def _cost_leg(ctx: dp.DayContext, points: Sequence[Point]) -> tuple[cts.CostFn, 
     return leg, terrain, terrain and not climbs
 
 
+def _cost_crew_km(state: RoutesState, snap: Snapshot, bundle: Bundle, data: cts.SalesData, params: cp.Params,
+                  days: Collection[date]) -> dict[tuple[date, int], int]:
+    """Доли платы экипажа за км (cts.crew_km) — тем же расчётом км, что «Աշխատավարձ» (_pay_tours): склад настроек,
+    координаты магазинов (evaluate.visit_coord: ручная → водителей → ERP → GPS), общие дороги раздела state.roads без
+    объезда центра и профиля грузовика; карты нет или она сломана — по прямой × 1,3. rate_km = 0 — дороги не трогаются.
+    Туры — только дней days (с планом): дни без плана отчёт не показывает."""
+    if params.rate_km <= 0 or bundle.depot is None:
+        return {}
+    customers = sorted({s.customer_id for s in data.sales if s.crew and s.day in days})
+    coords = {c: evaluate.visit_coord(snap, c, 0, bundle.geo_overrides, bundle.driver_points).point for c in customers}
+    roads = state.roads.get() if state.roads is not None else None
+    if roads is not None:
+        roads.ensure([bundle.depot, *(p for p in coords.values() if p is not None)])
+    ok = roads is not None and not roads.failed
+    road_km: Callable[[Point, Point], float | None] = roads.km if roads is not None and ok else (lambda a, b: None)
+    key = (bundle.depot, roads_version(roads) if ok else 'off')
+    with state.cost_lock:
+        memo = state.cost_tours.get(key)
+        if memo is None:
+            state.cost_tours.clear()   # другой склад или карта — прежние туры не нужны
+            memo = state.cost_tours[key] = {}
+    return cts.crew_km(data, params.excluded_lines, params.excluded_people, params.rate_km, bundle.depot, coords, road_km,
+                       memo, days)
+
+
 def _cost_compute(state: RoutesState, since: date, until: date) -> _CostResult:
     """Отчёт за [since, until]: рейсы планов, накладные ERP (одним запросом), модель расхода «Развоза» (_dispatch_ctx: км
     дорог, рельеф, нормы машин, выученный расход) с ценами сегодня — дизель настроек, износ гаража на сегодня, ставки
@@ -6027,11 +6054,12 @@ def _cost_compute(state: RoutesState, since: date, until: date) -> _CostResult:
     if ctx is None:
         raise dp.DispatchError(COST_NO_CTX)
     data = _cost_sales(state, since, until + timedelta(days=1))   # ERP — только когда считать есть чем
-    delivered = cts.deliveries(data, params.excluded_lines, params.excluded_people)
+    delivered = cts.deliveries(data, params.excluded_lines, params.excluded_people,
+                               _cost_crew_km(state, snap, bundle, data, params, set(days)))
     leg, terrain, pending = _cost_leg(ctx, [p for p in coords.values() if p is not None])
     # общее для всех дней: машины с нормами, цена дизеля, ставки экипажа, дороги (версия карты, объезд центра и его
     # граница, извилистость, откуда км), рельеф, склад
-    fixed = (sorted(ctx.trucks.items()), ctx.tn.fuel_price, params.rate_point, params.rate_tonne,
+    fixed = (sorted(ctx.trucks.items()), ctx.tn.fuel_price, params.rate_point, params.rate_tonne, params.rate_km,
              roads_version(ctx.norms.roads), ctx.center_zone, ctx.norms.detour, ctx.model.get('bypass'), ctx.model.get('km'),
              terrain, pending, ctx.depot)
     out: list[cts.TripCost] = []
@@ -6154,7 +6182,8 @@ def api_cost() -> Any:
                     'days': (res.until - res.since).days + 1, 'presets': list(cts.PRESET_DAYS), 'max_days': cts.MAX_DAYS,
                     'margin': res.margin, 'margin_updated_at': res.margin_at, 'margin_updated_by': res.margin_by,
                     'margin_store_error': res.margin_broken,
-                    'rates': {'rate_point': res.params.rate_point, 'rate_tonne': res.params.rate_tonne},
+                    'rates': {'rate_point': res.params.rate_point, 'rate_tonne': res.params.rate_tonne,
+                              'rate_km': res.params.rate_km},
                     'fuel_price': res.fuel_price, 'fuel_price_estimated': res.fuel_price_estimated,
                     'sources': dict(res.sources),
                     'totals': {'cost': rep.fuel + rep.crew, 'fuel': rep.fuel, 'crew': rep.crew, 'sales': round(rep.sales),
@@ -6187,6 +6216,7 @@ def api_cost_csv() -> Any:
     w.writerow(['Դիզել, ֏/լ', n(res.fuel_price, 0)])
     w.writerow(['Մեկ կետի համար, ֏', n(res.params.rate_point, 0)])
     w.writerow(['Մեկ տոննայի համար, ֏', n(res.params.rate_tonne, 0)])
+    w.writerow(['Մեկ կմ-ի համար, ֏', n(res.params.rate_km, 0)])
     w.writerow(['Ընդամենը առաքում, ֏', rep.fuel + rep.crew])
     w.writerow(['Վաճառքից, %', n(rep.pct)])
     w.writerow([])

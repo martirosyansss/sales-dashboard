@@ -149,6 +149,7 @@
             : 'որտեղ առաքումը ավելին է, քան ' + fmt(d.margin, d.margin % 1 ? 1 : 0) + '% վաճառքից';
         $('ctRatePoint').textContent = fmt(d.rates.rate_point);
         $('ctRateTonne').textContent = fmt(d.rates.rate_tonne);
+        $('ctRateKm').textContent = fmt(d.rates.rate_km);
         $('ctFuel').textContent = fmt(d.fuel_price) + (d.fuel_price_estimated ? ' (գինը նշված չէ, պայմանական)' : '');
         const warn = [
             s.draft ? s.draft + ' օր հաշվված է պահպանված պլանով՝ պլանները վարորդներին ուղարկելուց առաջ։' : '',

@@ -31,12 +31,22 @@
                доме, что соседний) — не ноль, а малый пол: магазин рейса не бывает бесплатным, деления на ноль нет
     fuelᵢ    = наибольшие остатки (T, w)            — Σ fuelᵢ = T ровно
     detourᵢ  = max(0, км − км₋ᵢ)                    — крюк ради магазина (для страницы)
-Экипаж — ставки «Աշխատավարձ» (crew_pay.Params: за точку и за тонну), прямо магазину за день, по правилам crew_pay.compute:
+Экипаж — ставки «Աշխատավարձ» (crew_pay.Params: за точку, тонну и км), магазину за день, по правилам crew_pay.compute:
     ячейка  = (экспедитор, день, магазин) — накладные, которые вёз экспедитор (fVANAGENTID ≠ 0 и ≠ менеджер), без линий
               excluded_lines и экспедиторов excluded_people (все fID кода — код в SALESAGENTS может повторяться);
               учтена, если кг > KEEP_KG или сумма > KEEP_SUM
-    crew(d, c) = max(0, money(RATE_POINT · точек + RATE_TONNE · Σ кг учтённых ячеек / 1000)), точек — экспедиторов с
-              учтённой ячейкой (двое вёзли одному магазину в день — две точки, как в их зарплате);
+    crew(d, c) = max(0, money(RATE_POINT · точек + RATE_TONNE · Σ кг учтённых ячеек / 1000)) + km(d, c), точек —
+              экспедиторов с учтённой ячейкой (двое вёзли одному магазину в день — две точки, как в их зарплате);
+    km(d, c) — плата за км (crew_km): зарплата платит RATE_KM × км плановых туров — за день человека (экспедитора) один
+              замкнутый тур склад → его магазины дня (учтённые ячейки, с координатой) → склад, порядок tsp.solve_tour,
+              км по дорогам раздела (без них — по прямой × crew_pay.KM_DETOUR): ровно crew_pay.tour_km. Не км рейсов плана:
+              платят за тур человека, а не за рейсы машины. Тур дня делится по точкам так же, как дизель рейса:
+                  K      = money(RATE_KM × км тура)
+                  wⱼ     = max(км − км₋ⱼ, SAVING_FLOOR · км / n)   — км, которые точка j добавляет к туру (порядок тот же)
+                  точкаⱼ = наибольшие остатки (K, w), Σ = K ровно; магазины одной точки (один дом) — поровну
+              магазин без координаты — 0 км (как в зарплате). Σ km(d, c) по магазинам = Σ K туров — равно км-части зарплаты
+              в пределах округления (зарплата округляет месяц человека, здесь — тур дня); доля магазина, которого нет в
+              рейсах плана этого дня, в отчёт не попадает (как и его точки и тонны);
     в k рейсах дня — поровну наибольшими остатками: Σ по рейсам = crew(d, c).
     Фикс и минимум месяца не распределяются: они не зависят от магазинов (сноска на странице).
 Магазин за период:
@@ -56,8 +66,9 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any, Callable, Collection, Mapping, Sequence
 
-from .crew_pay import KEEP_KG, KEEP_SUM, Params, money
-from .geo import Point
+from . import tsp
+from .crew_pay import KEEP_KG, KEEP_SUM, KM_DETOUR, Params, money
+from .geo import Point, haversine_km
 
 PRESET_DAYS = (30, 90)     # кнопки периода
 MAX_DAYS = 92              # период «с — по» не длиннее (≈ квартал)
@@ -94,37 +105,106 @@ class Delivery:
     kg: float               # груз: кг накладных экспедиторов магазину за день (без линий excluded_lines), не меньше 0
     points: int = 0         # точек crew_pay: экспедиторов с учтённой ячейкой (без excluded_people)
     crew_kg: float = 0.0    # кг учтённых ячеек — тонны зарплаты
+    km_amd: int = 0         # доля магазина в плате за км туров дня (crew_km), целые ֏
 
     def crew_amd(self, p: Params) -> int:
-        """Сдельная часть экипажа за магазин в этот день, целые ֏ (минус — возвраты — не доплачиваем: 0)."""
-        return max(0, money(p.rate_point * self.points + p.rate_tonne * self.crew_kg / 1000.0)) if self.points else 0
+        """Экипаж за магазин в этот день, целые ֏: точки и тонны (минус — возвраты — не доплачиваем: 0) + доля км."""
+        piece = max(0, money(p.rate_point * self.points + p.rate_tonne * self.crew_kg / 1000.0)) if self.points else 0
+        return piece + self.km_amd
 
 
-def deliveries(data: SalesData, excluded_lines: Collection[str],
-               excluded_people: Collection[str] = ()) -> dict[tuple[date, int], Delivery]:
-    """(день, клиент) → груз и точки экипажа по правилам crew_pay.compute (шапка модуля). Коды — без учёта регистра и
-    пробелов по краям, каждый — все свои fID."""
+def _codes(data: SalesData, codes: Collection[str]) -> set[int]:
+    """fID кодов SALESAGENTS (без учёта регистра и пробелов по краям; код может повторяться — все его fID)."""
     by_code: dict[str, set[int]] = defaultdict(set)
     for aid, code in data.agents.items():
         by_code[code.strip().upper()].add(aid)
-    lines = {aid for c in excluded_lines for aid in by_code.get(c.strip().upper(), ())}
-    people = {aid for c in excluded_people for aid in by_code.get(c.strip().upper(), ())}
+    return {aid for c in codes for aid in by_code.get(c.strip().upper(), ())}
+
+
+def _crew_cells(data: SalesData, excluded_lines: Collection[str], excluded_people: Collection[str]
+                ) -> tuple[dict[tuple[date, int], list[float]], dict[tuple[date, int], dict[int, tuple[float, float]]]]:
+    """(груз: (день, клиент) → кг накладных экспедиторов без линий excluded_lines; учтённые ячейки crew_pay: (день,
+    клиент) → экспедитор → (кг, сумма), без excluded_people, с порогами KEEP)."""
+    lines, people = _codes(data, excluded_lines), _codes(data, excluded_people)
     cargo: dict[tuple[date, int], list[float]] = defaultdict(list)
-    cells: dict[tuple[date, int], dict[int, list[list[float]]]] = defaultdict(lambda: defaultdict(lambda: [[], []]))
+    raw: dict[tuple[date, int], dict[int, list[list[float]]]] = defaultdict(lambda: defaultdict(lambda: [[], []]))
     for s in data.sales:
         if not s.crew or s.line_id in lines:
             continue
         cargo[(s.day, s.customer_id)].append(s.kg)
         if s.van_id not in people:
-            cell = cells[(s.day, s.customer_id)][s.van_id]
+            cell = raw[(s.day, s.customer_id)][s.van_id]
             cell[0].append(s.kg)
             cell[1].append(s.total)
+    kept: dict[tuple[date, int], dict[int, tuple[float, float]]] = {}
+    for key, per in raw.items():
+        sums = {van: (math.fsum(w), math.fsum(t)) for van, (w, t) in per.items()}
+        sums = {van: v for van, v in sums.items() if v[0] > KEEP_KG or v[1] > KEEP_SUM}
+        if sums:
+            kept[key] = sums
+    return cargo, kept
+
+
+def deliveries(data: SalesData, excluded_lines: Collection[str], excluded_people: Collection[str] = (),
+               km: Mapping[tuple[date, int], int] | None = None) -> dict[tuple[date, int], Delivery]:
+    """(день, клиент) → груз, точки экипажа по правилам crew_pay.compute и доля платы за км (km — crew_km) — шапка модуля."""
+    cargo, kept = _crew_cells(data, excluded_lines, excluded_people)
     out = {}
     for key, kgs in cargo.items():
-        kept = [(math.fsum(w), math.fsum(t)) for w, t in cells.get(key, {}).values()]
-        kept = [w for w, t in kept if w > KEEP_KG or t > KEEP_SUM]
-        out[key] = Delivery(max(0.0, math.fsum(kgs)), len(kept), math.fsum(kept))
+        cells = kept.get(key, {})
+        out[key] = Delivery(max(0.0, math.fsum(kgs)), len(cells), math.fsum(w for w, _ in cells.values()),
+                            (km or {}).get(key, 0))
     return out
+
+
+# одинаковые точки тура → (км, порядок объезда): туры повторяются из запроса в запрос (CSV, другой период)
+TourMemo = dict[tuple[Point, ...], tuple[float, tuple[int, ...]]]
+
+
+def crew_km(data: SalesData, excluded_lines: Collection[str], excluded_people: Collection[str], rate_km: float,
+            depot: Point, coords: Mapping[int, Point | None], road_km: Callable[[Point, Point], float | None],
+            memo: TourMemo | None = None, days: Collection[date] | None = None) -> dict[tuple[date, int], int]:
+    """(день, клиент) → доля платы за км туров экспедиторов этого дня, целые ֏ (формулы — в шапке модуля). Тур — как
+    crew_pay.tour_km: точки дня человека без повторов, отсортированы, tsp.solve_tour, км по road_km, без него — по прямой ×
+    KM_DETOUR. rate_km ≤ 0 — пусто (км не платят). days — только эти дни (дни с планом: другие отчёт не показывает)."""
+    if rate_km <= 0:
+        return {}
+
+    def dist(a: Point, b: Point) -> float:
+        v = road_km(a, b)
+        return v if v is not None else haversine_km(a, b) * KM_DETOUR
+
+    tours: dict[tuple[int, date], set[int]] = defaultdict(set)
+    for (day, c), per in _crew_cells(data, excluded_lines, excluded_people)[1].items():
+        if days is not None and day not in days:
+            continue
+        for van in per:
+            tours[(van, day)].add(c)
+    out: dict[tuple[date, int], int] = defaultdict(int)
+    for (_, day), stores in sorted(tours.items()):
+        at: dict[Point, list[int]] = defaultdict(list)
+        for c in sorted(stores):
+            if coords.get(c) is not None:
+                at[coords[c]].append(c)   # type: ignore[index]
+        pts = tuple(sorted(at))
+        if not pts:
+            continue
+        hit = memo.get(pts) if memo is not None else None
+        if hit is None:
+            order = tsp.solve_tour(depot, list(pts), dist)
+            path = [depot, *(pts[i] for i in order), depot]
+            hit = (math.fsum(dist(a, b) for a, b in zip(path, path[1:])), tuple(order))
+            if memo is not None:
+                memo[pts] = hit
+        km, order = hit
+        path = [depot, *(pts[i] for i in order), depot]
+        floor = SAVING_FLOOR * km / len(order)
+        weights = [max(dist(path[j], path[j + 1]) + dist(path[j + 1], path[j + 2]) - dist(path[j], path[j + 2]), floor)
+                   for j in range(len(order))]
+        for j, amd in zip(order, largest_remainder(money(rate_km * km), weights)):
+            for c, part in zip(at[pts[j]], largest_remainder(amd, [1.0] * len(at[pts[j]]))):
+                out[(day, c)] += part
+    return dict(out)
 
 
 def sales_by_customer(data: SalesData, days: Collection[date] | None = None) -> dict[int, float]:

@@ -84,7 +84,7 @@ def test_admin_sees_page_tab_and_data(client, users, calls):
     assert page.status_code == 200
     html = page.get_data(as_text=True)
     assert '<a href="/routes/cost" aria-current="page">Առաքման արժեք</a>' in html
-    assert 'js/routes_cost.js?v=1' in html and 'css/routes_cost.css?v=1' in html
+    assert 'js/routes_cost.js?v=2' in html and 'css/routes_cost.css?v=1' in html
     assert '<a href="/routes/cost">Առաքման արժեք</a>' in client.get('/routes/garage', base_url=LAN).get_data(as_text=True)
     body = client.get('/api/routes/cost?days=30', base_url=LAN).get_json()
     assert body['success'] and [r['name'] for r in body['rows']] == ['Մեծ խանութ'] and body['sources']['draft'] == 1
