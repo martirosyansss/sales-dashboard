@@ -3334,13 +3334,11 @@
         return head;
     }
 
-    // №89: на рабочем экране шапка рейса выбранной машины — одной полосой внизу панели, у нижнего края при любой прокрутке
-    // (sticky у последнего блока панели: держится за всю панель, а не за свой рейс, поэтому видна и когда сверху шапка
-    // машины). Показывает рейс вверху видимой части панели; выбранный на шкале — пока он виден. В списке над точками —
-    // только «Երթ N · время» (кнопки и загрузку скрывает CSS).
+    // №89: на рабочем экране шапка рейса выбранной машины — строкой на всю ширину внизу рабочего экрана, под шкалой и
+    // карточкой машины. Показывает рейс вверху видимой части карточки; выбранный на шкале — пока он виден. В списке над
+    // точками — только «Երթ N · время» (кнопки и загрузку скрывает CSS).
     function sideTripId(trips, prev) {
-        const box = $('dpWsSide').getBoundingClientRect(), bar = $('dpWsTripBar');
-        const top = box.top + 48, bottom = box.bottom - (bar && !bar.hidden ? bar.offsetHeight : 0);   // 48 — под крестиком
+        const box = $('dpWsSide').getBoundingClientRect(), top = box.top + 48, bottom = box.bottom;   // 48 — под крестиком
         // рейс, выбранный на шкале, держим, пока его видно: короткий последний рейс до верха панели не докрутится
         const held = prev !== null && prev === state.sideSel ? trips.find(el => el.dataset.trip === prev) : null;
         if (held) { const r = held.getBoundingClientRect(); if (r.bottom > top && r.top < bottom) return prev; }
@@ -3349,22 +3347,12 @@
         return id;
     }
     function renderSideBar(mode) {
-        const side = $('dpWsSide'), f = state.mapFocus;
+        const f = state.mapFocus, bar = $('dpWsTripBar');
         const t = $('rtDispatch').classList.contains('is-ws') && f && state.data && state.data.plan
             ? state.data.plan.trucks.find(x => x.car_code === f.truck) : null;
         const card = t ? [...$('dpTruckCards').querySelectorAll('.dp-tcard')].find(c => c.dataset.truck === t.car_code) : null;
         const trips = card ? [...card.querySelectorAll('.dp-trip[data-trip]')] : [];
-        let bar = $('dpWsTripBar');
-        if (!trips.length) { if (bar) { bar.hidden = true; bar.textContent = ''; bar.dataset.trip = ''; } return; }
-        if (!bar) {
-            bar = document.createElement('div');
-            bar.id = 'dpWsTripBar';
-            bar.className = 'dp-ws-tripbar';
-            bar.setAttribute('role', 'group');
-        }
-        // в DOM — сразу после крестика (Tab: сначала действия рейса, потом точки), на экране — последним (CSS order)
-        const close = $('dpWsClose');
-        if (close.nextElementSibling !== bar) close.after(bar);
+        if (!trips.length) { bar.hidden = true; bar.textContent = ''; bar.dataset.trip = ''; return; }
         const prev = bar.hidden ? null : bar.dataset.trip, has = prev !== null && trips.some(el => el.dataset.trip === prev);
         const sel = f.trip != null && trips.some(el => el.dataset.trip === String(f.trip)) ? String(f.trip) : null;
         let id;
@@ -3388,7 +3376,6 @@
         const head = tripHead(t, tr, i, state.editing.has(tr.id));
         head.querySelector('.dp-trip-t').setAttribute('aria-hidden', 'true');   // рейс назван в aria-label полосы; заголовок — в списке
         bar.appendChild(head);
-        side.style.scrollPaddingBottom = (bar.offsetHeight + 8) + 'px';   // Tab по «×» — не под полосой
         const back = had && bar.querySelector('.' + had);
         if (back) back.focus({ preventScroll: true });
     }

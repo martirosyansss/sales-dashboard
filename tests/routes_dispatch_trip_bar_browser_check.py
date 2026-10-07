@@ -1,16 +1,16 @@
 # -*- coding: utf-8 -*-
-"""Рабочий экран «Развоз»: шапка рейса выбранной машины — одной полосой внизу панели машины, у нижнего края при любой
-прокрутке; точки прокручиваются над ней (владелец №89, 07.10). Настоящий браузер.
+"""Рабочий экран «Развоз»: шапка рейса выбранной машины — строкой на всю ширину в самом низу рабочего экрана, под шкалой
+дня и карточкой машины (владелец №89, 07.10). Настоящий браузер.
 
 Запуск из корня проекта:  python tests/routes_dispatch_trip_bar_browser_check.py
 Имя без префикса test_: pytest его не собирает (нужны Playwright с Chromium). Приложение и синтетический день —
 как в tests/routes_dispatch_browser_check.py; порт 8775 на 127.0.0.1.
 
-A выбрали машину (не рейс): панель вверху, а полоса «Երթ 1» уже целиком у нижнего края — время, загрузка, км, кнопки
-  одним рядом; в списке над точками рейса — только «Երթ N · время», без кнопок; полоса не выше 45 % панели;
-B строка магазина над полосой видна, полоса её не закрывает; Tab по «×» — кнопка не под полосой;
+A выбрали машину: полоса «Երթ 1» — на всю ширину рабочего экрана в самом низу, под шкалой и карточкой; одной строкой:
+  время, загрузка, км, кнопки; в DOM — перед шкалой и карточкой; в карточке над точками — только «Երթ N · время»;
+B строки магазинов в карточке видны целиком; K Enter на «Քարտեզում» — фокус остаётся на кнопке;
 C «Փոփոխել» в полосе: рейс в правке, полоса та же и внизу, фокус на «Պատրաստ է»; «Պատրաստ է» возвращает как было;
-D ноутбук 1366×768: полоса целиком внизу и строка магазина над ней;
+D ноутбук 1366×768: полоса в самом низу одной строкой, строка магазина помещается в карточке;
 M день с двумя рейсами машины: прокрутили ко второму — в полосе «Երթ 2»; обратно — «Երթ 1»; рейс 2 на шкале — «Երթ 2»;
 E обычный вид (не рабочий экран): полосы нет, шапка рейса с кнопками — над точками, как раньше.
 Ошибки страницы и консоли — провал (кроме внешних ресурсов, как в основной проверке).
@@ -97,52 +97,36 @@ def main() -> int:
             page.wait_for_timeout(500)
             side_loc.evaluate('e => { e.scrollTop = 0; }')
             page.wait_for_timeout(200)
-            side, bar = rect('#dpWsSide'), rect(BAR)
-            check(abs(bar[3] - side[3]) <= 2 and bar[1] >= side[1], f'A trip bar fully at the bottom of the panel at scroll 0 {bar} / {side}')
-            check(page.evaluate("document.getElementById('dpWsClose').nextElementSibling.id") == 'dpWsTripBar',
-                  'A in the DOM the bar follows «×» (Tab reaches trip actions before the stores)')
-            low = page.evaluate("[...document.getElementById('dpWsSide').children].filter(e => e.id !== 'dpWsTripBar' && e.getClientRects().length)"
-                                ".map(e => e.getBoundingClientRect().bottom + document.getElementById('dpWsSide').scrollTop)")
-            side_loc.evaluate('e => { e.scrollTop = e.scrollHeight; }')
-            page.wait_for_timeout(200)
-            last_bottom = page.evaluate("Math.max(...[...document.getElementById('dpWsSide').children].filter(e => e.id !== 'dpWsTripBar' && e.getClientRects().length)"
-                                        ".map(e => e.getBoundingClientRect().bottom))")
-            check(rect(BAR)[1] >= last_bottom - 1 and low, f'A on screen the bar is below all other blocks of the panel ({last_bottom:.0f})')
-            side_loc.evaluate('e => { e.scrollTop = 0; }')
-            page.wait_for_timeout(200)
+            ws, low, bar, side = rect('#dpWs'), rect('.dp-ws-low'), rect(BAR), rect('#dpWsSide')
+            # ширина и низ — по рамке рабочего экрана (у #dpWs рамка 1px)
+            check(abs(bar[0] - ws[0]) <= 2 and abs(bar[2] - ws[2]) <= 2 and abs(bar[3] - ws[3]) <= 2,
+                  f'A trip bar spans the whole width at the very bottom of the work screen {bar} / {ws}')
+            check(bar[1] >= low[3] - 1 and bar[1] >= side[3] - 1, f'A bar is below the day board and the truck card {bar} / {low}')
+            check(page.evaluate("document.getElementById('dpWsTripBar').nextElementSibling.classList.contains('dp-ws-low')"),
+                  'A in the DOM the bar comes before the board and the card (Tab reaches trip actions first)')
             txt = page.locator(BAR).inner_text()
             check('Երթ 1' in txt and 'Քարտեզում' in txt and 'Փոփոխել' in txt and 'կմ' in txt and ('կգ' in txt or 'տ' in txt),
                   'A bar: trip title, «Քարտեզում», «Փոփոխել», km and weight')
             tops = page.locator(BAR + ' .dp-trip-acts .rt-btn').evaluate_all('bs => bs.map(b => Math.round(b.getBoundingClientRect().top))')
-            check(len(tops) >= 2 and len(set(tops)) == 1, f'A bar buttons in one row {tops}')
             row = page.locator(BAR).evaluate("b => [b.querySelector('.dp-trip-t'), b.querySelector('.dp-loadm')]"
                                              ".flatMap(e => { const r = e.getBoundingClientRect(); return [r.top, r.bottom]; })")
-            check(row[0] < row[3] and row[2] < row[1], f'A title, time and load share one line {row}')
-            check(bar[3] - bar[1] <= 0.45 * (side[3] - side[1]), f'A bar height {bar[3] - bar[1]:.0f} ≤ 45% of panel {side[3] - side[1]:.0f}')
+            check(len(tops) >= 2 and len(set(tops)) == 1 and row[0] < row[3] and row[2] < row[1], f'A title, load and buttons on one line {tops} {row}')
+            check(bar[3] - bar[1] <= 64, f'A bar is one line high: {bar[3] - bar[1]:.0f} px')
             head = page.locator(CARD + ' .dp-trip-head').first
             check(head.locator('.dp-trip-t').is_visible() and head.locator('.dp-time').is_visible()
                   and not head.locator('.dp-trip-acts').is_visible() and not head.locator('.dp-trip-line').is_visible(),
-                  'A in the list above the stores only «Երթ N · time», buttons and load are in the bar')
+                  'A in the card above the stores only «Երթ N · time», buttons and load are in the bar')
             page.screenshot(path=str(SHOTS / 'a-bar.png'))
 
-            # B — строка магазина над полосой; Tab по «×»
+            # B — строки магазинов в карточке видны целиком (полоса больше не над ними)
             stop1 = page.locator(f'{CARD} .dp-stop').first
             stop1.evaluate(TO_TOP, 48)
             page.wait_for_timeout(200)
-            side, bar, s1 = rect('#dpWsSide'), rect(BAR), stop1.evaluate(RECT)
-            check(abs(bar[3] - side[3]) <= 2 and s1[3] <= bar[1] + 1 and s1[1] >= side[1] - 1, f'B store row visible above the bar {s1} / {bar}')
+            side, s1 = rect('#dpWsSide'), stop1.evaluate(RECT)
+            check(s1[1] >= side[1] - 1 and s1[3] <= side[3] + 1, f'B store row fully inside the card {s1} / {side}')
             side_loc.evaluate('e => { e.scrollTop = 0; }')
-            xs = page.locator(f'{CARD} .dp-stop-x')
-            if xs.count():
-                xs.last.focus()
-                page.wait_for_timeout(200)
-                xr, bar = xs.last.evaluate(RECT), rect(BAR)
-                check(xr[3] <= bar[1] + 1, f'B focused «×» is not hidden under the bar {xr} / {bar}')
 
-            # K — клавиатура: Tab после «×» панели — в полосу; Enter на «Քարտեզում» — фокус остаётся на ней
-            page.focus('#dpWsClose')
-            page.keyboard.press('Tab')
-            check(page.evaluate("!!document.activeElement.closest('#dpWsTripBar')"), 'K Tab after «×» lands in the trip bar')
+            # K — клавиатура: Enter на «Քարտեզում» — фокус остаётся на ней
             page.focus(BAR + ' .dp-mapbtn')
             page.keyboard.press('Enter')
             page.wait_for_timeout(600)
@@ -154,11 +138,11 @@ def main() -> int:
             page.locator(BAR + ' .dp-editbtn').click()
             page.wait_for_selector(f'{CARD} .dp-trip.is-editing', timeout=5000)
             page.wait_for_timeout(300)
-            side, bar = rect('#dpWsSide'), rect(BAR)
-            check(bar_trip() == tid and abs(bar[3] - side[3]) <= 2, f'C editing: same trip in the bar, at the bottom {bar} / {side}')
+            ws, bar = rect('#dpWs'), rect(BAR)
+            check(bar_trip() == tid and abs(bar[3] - ws[3]) <= 2, f'C editing: same trip in the bar, at the bottom {bar} / {ws}')
             check(page.evaluate("!!document.activeElement && !!document.activeElement.closest('#dpWsTripBar .dp-editbtn')")
                   and 'Պատրաստ է' in page.locator(BAR + ' .dp-editbtn').inner_text(), 'C focus stays on the bar button, now «Պատրաստ է»')
-            check(page.locator(f'{CARD} .dp-trip.is-editing .dp-trip-tools').is_visible(), 'C trip tools (truck, pin) shown in the list')
+            check(page.locator(f'{CARD} .dp-trip.is-editing .dp-trip-tools').is_visible(), 'C trip tools (truck, pin) shown in the card')
             page.screenshot(path=str(SHOTS / 'c-edit.png'))
             page.locator(BAR + ' .dp-editbtn').click()
             page.wait_for_timeout(300)
@@ -167,14 +151,14 @@ def main() -> int:
             # D — ноутбук
             page.set_viewport_size({'width': 1366, 'height': 768})
             page.wait_for_timeout(500)
-            side_loc.evaluate('e => { e.scrollTop = 0; }')
-            page.wait_for_timeout(200)
-            side, bar = rect('#dpWsSide'), rect(BAR)
-            check(abs(bar[3] - side[3]) <= 2 and bar[1] >= side[1], f'D 1366×768: bar fully at the bottom at scroll 0 {bar} / {side}')
+            ws, bar, side = rect('#dpWs'), rect(BAR), rect('#dpWsSide')
+            check(abs(bar[3] - ws[3]) <= 2 and bar[3] <= 768 and bar[1] >= side[3] - 1, f'D 1366×768: bar at the very bottom, below the card {bar} / {ws}')
             stop1.evaluate(TO_TOP, 8)
             page.wait_for_timeout(200)
-            side, bar, s1 = rect('#dpWsSide'), rect(BAR), stop1.evaluate(RECT)
-            check(s1[3] <= bar[1] + 1 and s1[1] >= side[1] - 1, f'D 1366×768: a store row fits above the bar {s1} / {bar} / {side}')
+            side, s1 = rect('#dpWsSide'), stop1.evaluate(RECT)
+            check(s1[1] >= side[1] - 1 and s1[3] <= side[3] + 1, f'D 1366×768: a store row fits in the card {s1} / {side}')
+            tops = page.locator(BAR + ' .dp-trip-acts .rt-btn').evaluate_all('bs => bs.map(b => Math.round(b.getBoundingClientRect().top))')
+            check(len(set(tops)) == 1 and bar[3] - bar[1] <= 64, f'D 1366×768: bar still one line ({bar[3] - bar[1]:.0f} px) {tops}')
             page.screenshot(path=str(SHOTS / 'd-laptop.png'))
             page.set_viewport_size({'width': 1600, 'height': 950})
 
@@ -204,8 +188,8 @@ def main() -> int:
                 check(bar_trip() == ids[0], 'M back to the top → «Երթ 1» again')
                 page.locator(f'#dpBoard .dp-bar[data-trip="{ids[1]}"]').first.click()
                 page.wait_for_timeout(900)
-                side, bar = rect('#dpWsSide'), rect(BAR)
-                check(bar_trip() == ids[1] and abs(bar[3] - side[3]) <= 2, f'M trip 2 clicked on the board → «Երթ 2» in the bar ({bar_trip()})')
+                ws, bar = rect('#dpWs'), rect(BAR)
+                check(bar_trip() == ids[1] and abs(bar[3] - ws[3]) <= 2, f'M trip 2 clicked on the board → «Երթ 2» in the bar ({bar_trip()})')
 
             # E — обычный вид: полосы нет, шапка рейса с кнопками над точками, как раньше
             page.add_init_script("try { localStorage.setItem('dpLayout', 'list'); } catch (e) {}")
