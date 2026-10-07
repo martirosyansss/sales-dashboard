@@ -123,20 +123,44 @@ def test_sql_is_read_only():
     assert SQL_CREW_PAY.count('WITH (NOLOCK)') == 3 and SQL_CREW_PAY.count('?') == 2
 
 
-def test_one_person_with_two_codes_is_one_row():
-    """Կարապետ возил под двумя кодами (как B004/19 и B003/24): одна строка, коды через запятую; один и тот же магазин в
-    один день под обоими кодами — одна точка и один день; формула — один раз на человека."""
-    agents = {**AGENTS, 21: ('B004/19', 'հակոբյան  կարապետ '), 22: ('B003/24', 'Հակոբյան Կարապետ')}   # имя — по основному коду
-    invoices = [inv(21, 1, 5, kg=100), inv(22, 1, 5, kg=50), inv(22, 1, 6, kg=10), inv(22, 2, 7, kg=40),
-                inv(KORYUN, 3, 1)]
-    p = cp.Params(fix=90_000, rate_point=100, rate_tonne=1000, minimum=0, norm_per_day=1, old_fix=0, old_pct=0)
+def test_one_person_who_switched_code_is_one_row():
+    """Կարապետ сменил код посреди месяца (B004/19, потом B003/24): дни кодов не пересекаются — одна строка, коды через
+    запятую, формула один раз; код только с нулевыми документами в строку не попадает."""
+    agents = {**AGENTS, 21: ('B004/19', 'հակոբյան  կարապետ '), 22: ('B003/24', 'Հակոբյան Կարապետ'),
+              23: ('B009/1', 'Հակոբյան Կարապետ')}                                   # имя — по основному коду
+    invoices = [inv(21, 1, 5, kg=100), inv(21, 1, 6, kg=60), inv(22, 2, 5, kg=50), inv(22, 3, 6, kg=10),
+                inv(22, 3, 7, kg=40), inv(23, 4, 8, kg=0, total=0), inv(KORYUN, 4, 1)]
+    p = cp.Params(fix=80_000, rate_point=100, rate_tonne=1000, minimum=0, norm_per_day=1, old_fix=0, old_pct=0)
     res = cp.compute(cp.CrewData(tuple(invoices), agents), p)
-    assert len(res.rows) == 2 and res.workdays == 3
+    assert len(res.rows) == 2 and res.workdays == 4 and res.overlapping_codes == ()
     r = row(res, 21)
     assert r.agent_ids == (22, 21) and r.code == 'B003/24, B004/19' and r.name == 'Հակոբյան Կարապետ'
-    assert (r.days, r.points, r.tonnes) == (2, 3, pytest.approx(0.2))
-    assert r.fix == 60_000 and r.piece == 300 + 200
-    assert [(d.day.day, d.points, round(d.tonnes, 3)) for d in r.by_day] == [(1, 2, 0.16), (2, 1, 0.04)]
+    assert (r.days, r.points, r.tonnes) == (3, 5, pytest.approx(0.26))
+    assert r.fix == 60_000 and r.piece == 500 + 260
+    assert [(d.day.day, d.points, round(d.tonnes, 3)) for d in r.by_day] == [(1, 2, 0.16), (2, 1, 0.05), (3, 2, 0.05)]
+
+
+def test_namesakes_on_same_days_are_separate_rows_with_warning():
+    """Два разных առաքիչ-тёзки работают в одни дни: не сливаем (каждому — свой фикс и минимум), предупреждаем."""
+    agents = {**AGENTS, 21: ('B004/19', 'Գրիգորյան Արմեն'), 22: ('B003/24', 'Գրիգորյան  Արմեն')}
+    invoices = [inv(21, 1, 5, kg=100), inv(21, 2, 6, kg=100), inv(22, 2, 7, kg=100), inv(22, 3, 8, kg=100)]
+    p = cp.Params(fix=90_000, rate_point=0, rate_tonne=0, minimum=0, norm_per_day=1, old_fix=0, old_pct=0)
+    res = cp.compute(cp.CrewData(tuple(invoices), agents), p)
+    assert [r.agent_ids for r in res.rows] == [(22,), (21,)] and [r.fix for r in res.rows] == [60_000, 60_000]
+    assert res.overlapping_codes == (('B003/24', 'B004/19'),)
+
+
+def test_excluded_person_with_another_counted_code_is_warned():
+    agents = {**AGENTS, 21: ('B003/24', 'Օգնական')}                       # HELPER B008/10 исключён, его второй код — нет
+    res = cp.compute(cp.CrewData((inv(HELPER, 1, 1), inv(21, 2, 2), inv(KORYUN, 3, 3)), agents), cp.Params())
+    assert res.excluded_kin == ('B003/24',) and len(res.rows) == 2
+
+
+def test_float_noise_is_not_a_point():
+    invoices = [inv(KORYUN, 1, 1, kg=0.0004, total=0.4), inv(KORYUN, 2, 2, kg=0.001, total=0),
+                inv(KORYUN, 3, 3, kg=0, total=0.6)]
+    r = row(cp.compute(data(*invoices), cp.Params()), KORYUN)
+    assert [d.day.day for d in r.by_day] == [2, 3]
 
 
 def test_zero_and_negative_only_documents_make_no_point_or_day():
@@ -258,6 +282,26 @@ def test_api_erp_down_is_an_error_not_zeros(pay):
     r = pay.get('/api/routes/pay?month=2026-08')
     assert r.status_code == 503 and r.get_json()['success'] is False and 'rows' not in r.get_json()
     assert pay.get('/api/routes/pay.csv?month=2026-08').status_code == 503
+    erp_calls = len(pay.calls)
+    params = pay.get('/api/routes/pay/params')                              # параметры — без ERP
+    assert params.status_code == 200 and params.get_json()['params'] == cp.Params().json()
+    assert params.get_json()['store_error'] is False and params.get_json()['updated_at'] is None
+    saved = pay.post('/api/routes/pay/params', json={**cp.Params().json(), 'fix': 120_000})
+    assert saved.status_code == 200 and saved.get_json()['params']['fix'] == 120_000 and saved.get_json()['updated_at']
+    assert len(pay.calls) == erp_calls
+
+
+def test_corrupt_params_row_shows_defaults_and_save_fixes_it(pay):
+    import sqlite3
+    store = pay.application.extensions['route_optimizer'].store
+    store.save_crew_pay_params(cp.Params(fix=1), 'qa')
+    with sqlite3.connect(store.path) as conn:
+        conn.execute("UPDATE settings SET value = 'oops' WHERE key = 'crew_pay'")
+    body = pay.get('/api/routes/pay/params').get_json()
+    assert body['store_error'] is True and body['params'] == cp.Params().json()
+    assert pay.get('/api/routes/pay?month=2026-09').status_code == 500          # расчёт с битой записью — ошибка, не дефолты
+    assert pay.post('/api/routes/pay/params', json=cp.Params().json()).get_json()['store_error'] is False
+    assert pay.get('/api/routes/pay?month=2026-09').status_code == 200
 
 
 def test_csv(pay):
@@ -309,7 +353,7 @@ def test_params_save_and_validation(pay):
 @pytest.mark.parametrize('role', [None, 'garage', 'warehouse', 'user'])
 def test_only_admin(pay, role):
     pay.role['value'] = role
-    for path in ('/routes/pay', '/api/routes/pay', '/api/routes/pay.csv'):
+    for path in ('/routes/pay', '/api/routes/pay', '/api/routes/pay.csv', '/api/routes/pay/params'):
         assert pay.get(path).status_code == 403, path
     assert pay.post('/api/routes/pay/params', json=cp.Params().json()).status_code == 403
     assert pay.calls == []

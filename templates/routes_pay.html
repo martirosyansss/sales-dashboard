@@ -160,7 +160,8 @@
             </div>
             <div class="rt-field cp-wide">
                 <label for="cpPeople">Չհաշվվող առաքիչներ՝ կոդերը ստորակետով</label>
-                <input id="cpPeople" name="excluded_people" class="rt-input" type="text" autocomplete="off" spellcheck="false" aria-describedby="cpPeopleErr">
+                <input id="cpPeople" name="excluded_people" class="rt-input" type="text" autocomplete="off" spellcheck="false" aria-describedby="cpPeopleHint cpPeopleErr">
+                <span id="cpPeopleHint" class="rt-field-hint">Եթե մարդը ERP-ում ունի մի քանի կոդ, նշեք մարդու բոլոր կոդերը։</span>
                 <span id="cpPeopleErr" class="rt-ferr" data-for="excluded_people"></span>
             </div>
         </div>
@@ -173,5 +174,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/routes_pay.js') }}?v=2"></script>
+<script src="{{ url_for('static', filename='js/routes_pay.js') }}?v=3"></script>
 {% endblock %}

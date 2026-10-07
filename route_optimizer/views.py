@@ -4797,6 +4797,8 @@ def api_pay() -> Any:
                     'months': [_add_months(this, -i).strftime('%Y-%m') for i in range(PAY_MONTHS)],
                     'params': m.params.json(), 'params_updated_at': m.params_at, 'params_updated_by': m.params_by,
                     'workdays': result.workdays, 'unknown_codes': list(result.unknown_codes),
+                    'overlapping_codes': [list(c) for c in result.overlapping_codes],
+                    'excluded_kin': list(result.excluded_kin),
                     'rows': [_pay_row_json(r) for r in result.rows],
                     'totals': {k: round(v, 3) if k == 'tonnes' else v for k, v in cp.totals(result.rows).items()}})
 
@@ -4855,17 +4857,38 @@ def api_pay_csv() -> Any:
                     headers={'Content-Disposition': f'attachment; filename="{name}"'})
 
 
+def _pay_params_body(state: RoutesState) -> dict[str, Any]:
+    """Параметры формулы без ERP: форма редактируется, даже когда ERP недоступна. Битая запись в базе — значения по
+    умолчанию и store_error: сохранение формы перезапишет её."""
+    try:
+        params, at, by = state.store.crew_pay_params()
+        broken = False
+    except StoreError:
+        logger.exception('[Routes] Աշխատավարձ: параметры в базе не читаются — форма с значениями по умолчанию')
+        params, at, by, broken = cp.Params(), None, None, True
+    return {'success': True, 'params': params.json(), 'updated_at': at, 'updated_by': by, 'store_error': broken}
+
+
+@bp.get('/api/routes/pay/params')
+@_admin_only
+@_api
+def api_pay_params_get() -> Any:
+    return jsonify(_pay_params_body(_state()))
+
+
 @bp.post('/api/routes/pay/params')
 @_admin_only
 @_api
 def api_pay_params() -> Any:
-    """Сохранить параметры формулы (все поля; ошибки — по полям). ERP не трогается: только route_optimizer.db."""
+    """Сохранить параметры формулы (все поля; ошибки — по полям). ERP не трогается: только route_optimizer.db; битую
+    запись перезаписывает. Ответ — как у GET: параметры и кто/когда сохранил."""
     payload, error = _json_body()
     if error is not None:
         return error
     params, errors = cp.check_params(payload)
     if params is None:
         return _bad_request(errors)
-    _state().store.save_crew_pay_params(params, session.get('username'))
+    state = _state()
+    state.store.save_crew_pay_params(params, session.get('username'))
     logger.info('[Routes] Աշխատավարձ: параметры сохранены пользователем %s: %s', session.get('username'), params.json())
-    return jsonify({'success': True, 'params': params.json()})
+    return jsonify(_pay_params_body(state))

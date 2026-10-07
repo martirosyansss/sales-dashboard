@@ -1,6 +1,7 @@
 /* «Աշխատավարձ» /routes/pay — зарплата առաքիչ за месяц (docs/research/09-crew-pay.md, формула владельца 07.10).
    API: GET /api/routes/pay?month=YYYY-MM (люди, итог, D, параметры, месяцы), GET /api/routes/pay.csv?month= (Excel),
-   POST /api/routes/pay/params (параметры формулы, ошибки — по полям). Только администратору.
+   GET /api/routes/pay/params (параметры без ERP: форма работает и при недоступной ERP), POST /api/routes/pay/params
+   (сохранить; ошибки — по полям). Только администратору.
    Всё, что пришло с сервера, выводится только через textContent. CSRF-заголовок к fetch добавляет base_v2.html. */
 (function () {
     'use strict';
@@ -29,8 +30,8 @@
         return el;
     }
 
-    // paramsLoaded — форма параметров заполнена с сервера (до этого «Պահպանել» выключена); правки в форме при смене
-    // месяца не затираются: форма заполняется только при первой загрузке и после сохранения
+    // paramsLoaded — форма параметров заполнена из GET /api/routes/pay/params (до этого «Պահպանել» выключена); правки в
+    // форме при смене месяца не затираются: форма заполняется только при открытии страницы и после сохранения
     const state = { data: null, month: '', open: null, seq: 0, paramsLoaded: false };
 
     function announce(text) { $('cpStatus').textContent = ''; setTimeout(() => { $('cpStatus').textContent = text; }, 30); }
@@ -82,7 +83,6 @@
             state.data = data;
             state.month = data.month;
             render();
-            if (!state.paramsLoaded) fillParams(data.params);
             announce('Աշխատավարձը հաշվված է՝ ' + monthHy(data.month));
         } catch (e) {
             if (seq !== state.seq) return;
@@ -100,15 +100,17 @@
         renderMonths(d.months, d.month);
         $('cpSub').textContent = monthHy(d.month) + (d.current ? ' (մինչև այսօր)' : '') + ' · աշխատանքային օրեր՝ ' + d.workdays;
         $('cpOldHead').textContent = 'Հին սխեմա (' + fmt(d.params.old_pct, d.params.old_pct % 1 ? 1 : 0) + '%)';
-        $('cpWarn').hidden = !d.unknown_codes.length;
-        $('cpWarnText').textContent = d.unknown_codes.length
-            ? 'ERP-ում չկան այս կոդերը՝ ' + d.unknown_codes.join(', ') + '։ Ստուգեք պարամետրերը։' : '';
+        const warn = [
+            d.unknown_codes.length ? 'ERP-ում չկան այս կոդերը՝ ' + d.unknown_codes.join(', ') + '։ Ստուգեք պարամետրերը։' : '',
+            ...d.overlapping_codes.map(c => 'Նույն անունով մի քանի կոդ նույն օրերին՝ ' + c.join(', ')
+                + ' — ստուգեք։ Հաշվված են առանձին, որպես տարբեր մարդիկ։'),
+            d.excluded_kin.length ? 'Այս կոդերը հաշվվում են, բայց նույն անունով կոդ կա չհաշվվողների մեջ՝ '
+                + d.excluded_kin.join(', ') + ' — նշեք մարդու բոլոր կոդերը։' : '',
+        ].filter(Boolean);
+        $('cpWarn').hidden = !warn.length;
+        $('cpWarnText').textContent = warn.join(' ');
         renderFormula(d.params, d.workdays);
         renderTable(d);
-        $('cpChanged').textContent = d.params_updated_at
-            ? 'Պարամետրերը փոխվել են՝ ' + dayHy(d.params_updated_at) + ' ' + d.params_updated_at.slice(11, 16)
-              + (d.params_updated_by ? ', ' + d.params_updated_by : '') + '։ Նոր պարամետրերը կիրառվում են նաև նախորդ ամիսների վրա։'
-            : 'Պարամետրերը լռելյայն են (դեռ չեն փոխվել)։';
     }
 
     // Месяцы: с сервера, а до первого ответа (или если ERP недоступна) — 12 последних по часам компьютера
@@ -152,7 +154,8 @@
         const num = (text, cls) => h('td', { class: 'num' + (cls ? ' ' + cls : ''), text });
         $('cpRows').replaceChildren(...rows.map((r, i) => {
             const tr = h('tr', { 'data-i': i },
-                h('td', { class: 'txt', text: r.code }),
+                h('td', { class: 'txt' }, r.code,
+                    r.agent_ids.length > 1 ? h('span', { class: 'rt-badge b-none', text: r.agent_ids.length + ' կոդ' }) : null),
                 h('td', { class: 'txt' }, h('button', { type: 'button', class: 'rt-linkbtn', text: r.name || r.code,
                     'aria-label': (r.name || r.code) + '՝ օր առ օր' })),
                 num(r.days + '/' + d.workdays),
@@ -206,11 +209,26 @@
         norm_per_day: 'cpNorm', old_fix: 'cpOldFix', old_pct: 'cpOldPct' };
     const CODE_FIELDS = { excluded_lines: 'cpLines', excluded_people: 'cpPeople' };
 
-    function fillParams(p) {
+    // body — ответ GET/POST /api/routes/pay/params: параметры, кто/когда сохранил, битая ли запись в базе
+    function fillParams(body) {
+        const p = body.params;
         Object.entries(NUM_FIELDS).forEach(([k, id]) => { $(id).value = String(p[k]); });
         Object.entries(CODE_FIELDS).forEach(([k, id]) => { $(id).value = p[k].join(', '); });
         state.paramsLoaded = true;
         $('cpSave').disabled = false;
+        $('cpChanged').textContent = body.store_error
+            ? 'Պահպանված պարամետրերը վնասված են․ ցույց են տրված լռելյայն արժեքները — ստուգեք և պահպանեք։'
+            : body.updated_at
+                ? 'Պարամետրերը փոխվել են՝ ' + dayHy(body.updated_at) + ' ' + body.updated_at.slice(11, 16)
+                  + (body.updated_by ? ', ' + body.updated_by : '') + '։ Նոր պարամետրերը կիրառվում են նաև նախորդ ամիսների վրա։'
+                : 'Պարամետրերը լռելյայն են (դեռ չեն փոխվել)։';
+    }
+    async function loadParams() {
+        try {
+            fillParams(await api('/api/routes/pay/params'));
+        } catch (e) {
+            $('cpChanged').textContent = 'Պարամետրերը չբեռնվեցին՝ ' + e.message;
+        }
     }
     function fieldErrors(errors) {
         document.querySelectorAll('#cpParams .rt-ferr').forEach(el => {
@@ -234,8 +252,7 @@
         $('cpSaved').textContent = '';
         fieldErrors({});
         try {
-            const saved = await api('/api/routes/pay/params', body);
-            fillParams(saved.params);
+            fillParams(await api('/api/routes/pay/params', body));
             $('cpSaved').textContent = 'Պարամետրերը պահպանվեցին';
             await load(state.month);
         } catch (e) {
@@ -258,6 +275,10 @@
             try {
                 resp = await fetch('/api/routes/pay.csv?month=' + encodeURIComponent(month), { credentials: 'same-origin', cache: 'no-store' });
             } catch (e) { throw new ApiError('Սերվերը հասանելի չէ։ Ստուգեք կապը և կրկնեք։'); }
+            if (resp.status === 401) {   // сессия кончилась — на вход, как api()
+                window.location.assign('/login?next=' + encodeURIComponent('/routes/pay'));
+                throw new ApiError('Մուտք գործեք նորից։');
+            }
             if (!resp.ok) {
                 let body = null;
                 try { body = await resp.json(); } catch (e) { /* не JSON */ }
@@ -278,5 +299,6 @@
 
     $('cpMonth').addEventListener('change', () => load($('cpMonth').value));
     renderMonths(localMonths(), '');
+    loadParams();
     load('');
 })();

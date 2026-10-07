@@ -5,11 +5,12 @@
 Чистый расчёт без ввода-вывода: строки ERP (erp.load_crew_pay) + параметры → люди месяца.
 
 Экспедитор — SALES.fVANAGENTID накладной, если он не сам менеджер накладной; накладные — проведённые за месяц.
-Человек — экспедиторы с одинаковым именем (без учёта регистра и лишних пробелов): у одного человека бывает несколько
-кодов ERP (Հակոբյան Կարապետ — B004/19 и B003/24), считаем его одной строкой, как people.py.
-Клиенто-день человека учитывается, только если в нём есть вес или сумма (kg > 0 или Σ fTOTALSUM > 0): документ из одних
-нулей или минусов (возврат) не создаёт ни точки, ни рабочего дня, ни тонн. Отдельные документы возврата ERP не читаются —
-возвраты пока не вычитаются (минусовые строки внутри накладной вычитаются, как в ERP).
+Человек — код экспедитора. Коды с одинаковым именем (без учёта регистра и лишних пробелов) — одна строка, только если
+их рабочие дни в месяце не пересекаются: человек сменил код (Հակոբյան Կարապետ — B004/19, потом B003/24). Если пересекаются —
+это, скорее всего, разные люди-тёзки: строки раздельные, а в предупреждении — их коды (overlapping_codes).
+Клиенто-день кода учитывается, только если в нём есть вес или сумма (kg > KEEP_KG или Σ fTOTALSUM > KEEP_SUM — не шум
+float): документ из одних нулей или минусов (возврат) не создаёт ни точки, ни рабочего дня, ни тонн, ни кода в строке.
+Отдельные документы возврата ERP не читаются — возвраты пока не вычитаются (минусовые строки внутри накладной — как в ERP).
     days    — разных дней с учтёнными клиенто-днями (по всем кодам человека);
     points  — разных (день, клиент): несколько накладных одному магазину в день — 1 точка;
     tonnes  — Σ количество × вес товара / 1000;
@@ -29,7 +30,7 @@ from __future__ import annotations
 
 import math
 import re
-from collections import Counter, defaultdict
+from collections import defaultdict
 from dataclasses import dataclass, fields
 from datetime import date
 from typing import Any, Mapping, Sequence
@@ -154,6 +155,8 @@ class Result:
     workdays: int                       # D; 0 — данных за месяц нет
     rows: tuple[Row, ...]
     unknown_codes: tuple[str, ...]      # коды исключений, которых нет в ERP (опечатка) — показать владельцу
+    overlapping_codes: tuple[tuple[str, ...], ...] = ()   # тёзки с общими рабочими днями — раздельные строки, проверить
+    excluded_kin: tuple[str, ...] = ()  # учтённые коды с тем же именем, что у исключённого: исключён не каждый код человека?
 
 
 def money(x: float) -> int:
@@ -167,7 +170,17 @@ def person_key(name: str, agent_id: int) -> str:
     return norm or f'#{agent_id}'
 
 
+KEEP_KG = 0.0005     # кг: меньше — шум float, а не груз
+KEEP_SUM = 0.5       # ֏: меньше — шум float, а не продажа
+
+
 def compute(data: CrewData, p: Params) -> Result:
+    def code_of(aid: int) -> str:
+        return data.agents.get(aid, (str(aid), ''))[0]
+
+    def key_of(aid: int) -> str:
+        return person_key(data.agents.get(aid, ('', ''))[1], aid)
+
     # коды ERP — без учёта регистра и пробелов по краям; в SALESAGENTS код может повторяться — исключаем все его fID
     by_code: dict[str, set[int]] = defaultdict(set)
     for aid, (code, _) in data.agents.items():
@@ -178,26 +191,39 @@ def compute(data: CrewData, p: Params) -> Result:
     people = {aid for c in excl_people for aid in by_code.get(c, ())}
     unknown = tuple(c for c in (*excl_lines, *excl_people) if c not in by_code)
 
-    # клиенто-день человека: [кг, сумма] по всем его кодам и линиям
-    cells: dict[str, dict[tuple[date, int], list[float]]] = defaultdict(lambda: defaultdict(lambda: [0.0, 0.0]))
-    ids: dict[str, Counter[int]] = defaultdict(Counter)   # коды человека: сколько строк под каждым
+    # клиенто-день кода: [кг, сумма] по всем линиям; дальше — только с весом или суммой
+    cells: dict[int, dict[tuple[date, int], list[float]]] = defaultdict(lambda: defaultdict(lambda: [0.0, 0.0]))
     for inv in data.invoices:
         if not inv.van_id or inv.van_id == inv.line_id or inv.line_id in lines or inv.van_id in people:
             continue
-        key = person_key(data.agents.get(inv.van_id, ('', ''))[1], inv.van_id)
-        ids[key][inv.van_id] += 1
-        cell = cells[key][(inv.day, inv.customer_id)]
+        cell = cells[inv.van_id][(inv.day, inv.customer_id)]
         cell[0] += inv.kg
         cell[1] += inv.total
-    # только клиенто-дни с весом или суммой: документ из нулей и минусов — не точка и не рабочий день
-    kept = {key: {dc: c for dc, c in per.items() if c[0] > 0 or c[1] > 0} for key, per in cells.items()}
-    kept = {key: per for key, per in kept.items() if per}
+    kept = {aid: {dc: c for dc, c in per.items() if c[0] > KEEP_KG or c[1] > KEEP_SUM} for aid, per in cells.items()}
+    kept = {aid: per for aid, per in kept.items() if per}
     d = len({day for per in kept.values() for day, _ in per})
+    excluded_keys = {key_of(aid) for aid in people}
+    kin = tuple(sorted(code_of(aid) for aid in kept if key_of(aid) in excluded_keys))
     if not d:
-        return Result(0, (), unknown)
+        return Result(0, (), unknown, (), kin)
+
+    # коды одного имени: без общих рабочих дней — один человек (одна строка), с общими — тёзки (по строке на код)
+    groups: dict[str, list[int]] = defaultdict(list)
+    for aid in kept:
+        groups[key_of(aid)].append(aid)
+    people_ids: list[tuple[int, ...]] = []
+    overlapping: list[tuple[str, ...]] = []
+    for aids in groups.values():
+        days = [{day for day, _ in kept[a]} for a in aids]
+        if any(days[x] & days[y] for x in range(len(aids)) for y in range(x + 1, len(aids))):
+            overlapping.append(tuple(sorted(code_of(a) for a in aids)))
+            people_ids += [(a,) for a in aids]
+        else:
+            people_ids.append(tuple(aids))
 
     rows = []
-    for key, per in kept.items():
+    for aids in people_ids:
+        per = {dc: c for a in aids for dc, c in kept[a].items()}   # дни кодов не пересекаются — ключи не совпадают
         by_date: dict[date, list[float]] = defaultdict(lambda: [0, 0.0])   # точки, кг
         for (day, _), (kg, _) in per.items():
             by_date[day][0] += 1
@@ -209,16 +235,15 @@ def compute(data: CrewData, p: Params) -> Result:
         fix = money(p.fix * share)
         piece = money(p.rate_point * n_points + p.rate_tonne * tonnes)
         minimum = money(p.minimum * min(1.0, n_points / (p.norm_per_day * d)))
-        agent_ids = tuple(sorted(ids[key], key=lambda a: data.agents.get(a, (str(a), ''))[0]))
-        code = ', '.join(data.agents.get(a, (str(a), ''))[0] for a in agent_ids)
-        main = max(agent_ids, key=lambda a: ids[key][a])   # имя — по основному коду (больше всего строк; ничья — первый)
+        agent_ids = tuple(sorted(aids, key=code_of))
+        main = max(agent_ids, key=lambda a: len(kept[a]))   # имя — по основному коду (больше всего точек; ничья — первый)
         name = ' '.join(data.agents.get(main, ('', ''))[1].split())
         by_day = tuple(Day(day, int(n), kg / 1000, money(p.rate_point * n + p.rate_tonne * kg / 1000))
                        for day, (n, kg) in sorted(by_date.items()))
-        rows.append(Row(agent_ids, code, name, n_days, n_points, tonnes, money(sales), fix, piece, minimum,
-                        max(fix + piece, minimum), money(p.old_fix * share) + money(p.old_pct / 100 * sales),
-                        minimum > fix + piece, by_day))
-    return Result(d, tuple(sorted(rows, key=lambda r: (r.name, r.code))), unknown)
+        rows.append(Row(agent_ids, ', '.join(code_of(a) for a in agent_ids), name, n_days, n_points, tonnes,
+                        money(sales), fix, piece, minimum, max(fix + piece, minimum),
+                        money(p.old_fix * share) + money(p.old_pct / 100 * sales), minimum > fix + piece, by_day))
+    return Result(d, tuple(sorted(rows, key=lambda r: (r.name, r.code))), unknown, tuple(sorted(overlapping)), kin)
 
 
 def totals(rows: Sequence[Row]) -> dict[str, Any]:
