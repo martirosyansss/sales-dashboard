@@ -6,11 +6,12 @@
 Имя без префикса test_: pytest его не собирает (нужны Playwright с Chromium). Приложение и заглушка ERP — как в
 tests/routes_dispatch_browser_check.py; база маршрутов — временная. Порт 8772 на 127.0.0.1.
 
-S1 по умолчанию: пять видов тревог отмечены, тихие часы 20:00–08:00, повтор 30 мин;
-S2 снять «центр», тихие часы 21:00–07:30, повтор 45 → форма изменена, «Պահպանել» → в настройках сервера виды без «center»,
-   21:00 / 07:30 / 45;
+S1 по умолчанию: шесть видов тревог отмечены (с «не успеет», №87), тихие часы 20:00–08:00, повтор 30 мин, порог «не успеет»
+   без окна 30 мин;
+S2 снять «центр», тихие часы 21:00–07:30, повтор 45, порог 45 → форма изменена, «Պահպանել» → в настройках сервера виды без
+   «center», 21:00 / 07:30 / 45 / 45;
 S3 перезагрузка: поля показывают сохранённое, форма чистая;
-S4 повтор 0 — ошибка у поля, настройки не сохранены;
+S4 повтор 0 — ошибка у поля, настройки не сохранены; порог «не успеет» 4 — тоже;
 S5 снять все виды — сохраняется пустой список («ничего не слать»);
 P  телефон 390×860: нет горизонтальной прокрутки.
 Ошибки страницы и консоли — провал (кроме внешних ресурсов).
@@ -34,7 +35,8 @@ from werkzeug.serving import make_server  # noqa: E402
 PORT = 8772
 BASE = f'http://127.0.0.1:{PORT}'
 SHOTS = Path(tempfile.gettempdir()) / 'live-alerts-settings-check'
-KINDS = ['speed', 'stop', 'no_contact', 'gps', 'center']
+KINDS = ['speed', 'stop', 'no_contact', 'gps', 'center', 'late']
+NO_CENTER = [k for k in KINDS if k != 'center']
 
 
 def main() -> int:
@@ -67,10 +69,10 @@ def main() -> int:
             page.wait_for_selector('#rsN_live_alert_kinds', state='attached', timeout=30000)
             page.locator('details:has(#rsNorms) > summary').click()   # нормы и правила свёрнуты — как и пороги тревог
             page.locator('#rsN_live_alert_kinds').scroll_into_view_if_needed()
-            check(kinds() == KINDS, f'S1 all five kinds checked by default: {kinds()}')
+            check(kinds() == KINDS, f'S1 all six kinds checked by default: {kinds()}')
             q = lambda key: page.locator(f'[data-norm="{key}"]').input_value()  # noqa: E731
-            check((q('live_quiet_from'), q('live_quiet_to'), q('live_repeat_min')) == ('20:00', '08:00', '30'),
-                  'S1 quiet 20:00–08:00, repeat 30')
+            check((q('live_quiet_from'), q('live_quiet_to'), q('live_repeat_min'), q('late_nowin_min')) == ('20:00', '08:00', '30', '30'),
+                  'S1 quiet 20:00–08:00, repeat 30, late without window 30')
             page.screenshot(path=str(SHOTS / 'settings.png'))
 
             chip('center').click()   # чип: настоящий чекбокс скрыт, как у рабочих дней
@@ -78,18 +80,20 @@ def main() -> int:
             page.locator('[data-norm="live_quiet_to"]').fill('7:30')    # «7:30» → «07:30»
             page.locator('[data-norm="live_repeat_min"]').fill('45')
             page.locator('[data-norm="live_repeat_min"]').dispatch_event('change')
+            page.locator('[data-norm="late_nowin_min"]').fill('45')
+            page.locator('[data-norm="late_nowin_min"]').dispatch_event('change')
             check('is-dirty' in page.locator('#rsDirty').get_attribute('class'), 'S2 form dirty')
             page.locator('#rsSaveBtn').click()
             page.wait_for_function("() => document.getElementById('rsDirty').textContent === 'Փոփոխություններ չկան'", timeout=15000)
             s = saved()
-            check(s['live_alert_kinds'] == KINDS[:-1] and (s['live_quiet_from'], s['live_quiet_to'], s['live_repeat_min'])
-                  == ('21:00', '07:30', 45), f'S2 saved: {[s[k] for k in ("live_alert_kinds", "live_quiet_from", "live_quiet_to", "live_repeat_min")]}')
+            check(s['live_alert_kinds'] == NO_CENTER and (s['live_quiet_from'], s['live_quiet_to'], s['live_repeat_min'], s['late_nowin_min'])
+                  == ('21:00', '07:30', 45, 45), f'S2 saved: {[s[k] for k in ("live_alert_kinds", "live_quiet_from", "live_quiet_to", "live_repeat_min", "late_nowin_min")]}')
 
             page.reload()
             page.wait_for_selector('#rsN_live_alert_kinds', state='attached', timeout=30000)
             page.locator('details:has(#rsNorms) > summary').click()
-            check(kinds() == KINDS[:-1] and q('live_quiet_from') == '21:00' and q('live_quiet_to') == '07:30'
-                  and q('live_repeat_min') == '45' and page.locator('#rsDirty').inner_text() == 'Փոփոխություններ չկան',
+            check(kinds() == NO_CENTER and q('live_quiet_from') == '21:00' and q('live_quiet_to') == '07:30'
+                  and q('live_repeat_min') == '45' and q('late_nowin_min') == '45' and page.locator('#rsDirty').inner_text() == 'Փոփոխություններ չկան',
                   'S3 reload shows saved values, form clean')
 
             page.locator('[data-norm="live_repeat_min"]').fill('0')
@@ -101,6 +105,12 @@ def main() -> int:
                   'S4 repeat 0 — error at the field: ' + err.replace('\n', ' ')[:80])
             check(saved()['live_repeat_min'] == 45, 'S4 nothing saved with the error')
             page.locator('[data-norm="live_repeat_min"]').fill('45')
+            page.locator('[data-norm="late_nowin_min"]').fill('4')
+            page.locator('#rsSaveBtn').click()
+            page.wait_for_timeout(1500)
+            check(page.locator('#rsN_late_nowin_min').get_attribute('aria-invalid') == 'true' and saved()['late_nowin_min'] == 45,
+                  'S4 late threshold 4 — error at the field, nothing saved')
+            page.locator('[data-norm="late_nowin_min"]').fill('45')
 
             for k in KINDS:
                 if k in kinds():

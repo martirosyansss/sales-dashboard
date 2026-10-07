@@ -31,6 +31,10 @@ from .vehicle_access import VehicleAccess, check_access
 
 SCHEMA_VERSION = 24
 CREW_PAY_KEY = 'crew_pay'   # строка settings с параметрами «Աշխատավարձ» (Store.crew_pay_params); не ключ DEFAULT_SETTINGS
+# строка settings: какие виды тревог карты знала программа, сохранившая live_alert_kinds (№87); не ключ
+# DEFAULT_SETTINGS — прежние версии её не читают. Нет строки — список сохранён до №87 (знали LIVE_ALERT_KINDS_V1)
+LIVE_KINDS_KNOWN_KEY = 'live_alert_kinds_known'
+LIVE_ALERT_KINDS_V1 = ('speed', 'stop', 'no_contact', 'gps', 'center')
 
 # manager_profile.included: 1/0 — выбор владельца, NULL — «авто» (в расчёте, если есть работа за 8 недель)
 _MANAGER_PROFILE_COLUMNS = (
@@ -545,10 +549,13 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     'live_no_contact_min': 5,
     # тревоги карты в Telegram-группу (этап 2): какие слать, тихие часы (с — до, по Еревану; одинаковые — без тихих
     # часов), не чаще раза в столько минут на тревогу того же вида у машины
-    'live_alert_kinds': ['speed', 'stop', 'no_contact', 'gps', 'center'],
+    'live_alert_kinds': ['speed', 'stop', 'no_contact', 'gps', 'center', 'late'],
     'live_quiet_from': '20:00',
     'live_quiet_to': '08:00',
     'live_repeat_min': 30,
+    # «Не успеет» (ответ владельца №87, п.2): магазин без окна приёма «опаздывает», когда прогноз прибытия позже планового
+    # ETA не меньше чем на столько минут (с окном — позже конца окна)
+    'late_nowin_min': 30,
     'yerevan_zone': [[40.2173, 44.3948], [40.2129, 44.4031], [40.2021, 44.4052], [40.1964, 44.4102], [40.1936, 44.4029],
                     [40.1912, 44.4067], [40.19, 44.4042], [40.1853, 44.4078], [40.1748, 44.4063], [40.17, 44.4111],
                     [40.1671, 44.4196], [40.1694, 44.4271], [40.1675, 44.4303], [40.1599, 44.429], [40.1578, 44.4373],
@@ -630,6 +637,7 @@ _NUMERIC: dict[str, tuple[float, float, bool]] = {
     'live_stop_min': (1, 240, False),
     'live_no_contact_min': (1, 120, False),
     'live_repeat_min': (1, 1440, False),
+    'late_nowin_min': (5, 240, False),     # и целое (validate_settings)
 }
 
 TRUCK_CAPACITY_KG = (100, 30000)
@@ -652,7 +660,8 @@ WINDOW_KINDS = ('before', 'after', 'between', 'at')
 WINDOW_TOL_MAX = 120
 DEFAULT_WINDOW_TOL = 15     # «в 11:00 ± 15 мин» — допуск по умолчанию (№37)
 UNLOAD_MIN_RANGE = (1, 120)  # время у магазина (№50), целые минуты
-LIVE_ALERT_KINDS = ('speed', 'stop', 'no_contact', 'gps', 'center')   # виды тревог карты (live.py) — переключатели настроек
+# виды тревог карты (live.py) — переключатели настроек; late — прогноз «не успеет» (№87)
+LIVE_ALERT_KINDS = ('speed', 'stop', 'no_contact', 'gps', 'center', 'late')
 GARAGE_KINDS = ('repair', 'accident', 'fixed', 'odometer')   # журнал гаража (№53), как garage.KINDS
 GARAGE_TEXT_MAX = 300
 GARAGE_AMOUNT_MAX = 100_000_000
@@ -1391,6 +1400,10 @@ def validate_settings(values: Mapping[str, Any],
             errors[key] = err
         else:
             out[key] = v
+    # порог «не успеет» без окна (№87) — целые минуты, как у поля страницы
+    if 'late_nowin_min' in out and not float(out['late_nowin_min']).is_integer():
+        errors['late_nowin_min'] = 'ամբողջ թիվ րոպեներով'
+        del out['late_nowin_min']
     if 'size_small_max_kg' in out and 'size_medium_max_kg' in out \
             and out['size_small_max_kg'] >= out['size_medium_max_kg']:
         errors['size_medium_max_kg'] = 'միջին խանութների շեմը պետք է մեծ լինի փոքր խանութների շեմից'
@@ -1454,6 +1467,24 @@ def validate_settings(values: Mapping[str, Any],
     else:
         out['yerevan_zone'] = [[float(p[0]), float(p[1])] for p in zone]
     return out, errors
+
+
+def _loaded_alert_kinds(kinds: Any, known_raw: str | None) -> Any:
+    """Виды тревог карты из базы (№87). Вид, которого эта версия не знает (база после более новой), — молча мимо, а не
+    «база повреждена»; виды этой версии, которых не знала сохранившая список программа (LIVE_KINDS_KNOWN_KEY, нет
+    строки — LIVE_ALERT_KINDS_V1), — добавляются включёнными: по умолчанию слать всё. Пустой список («ничего не слать»)
+    — как есть.
+    Не список строк — без изменений (ошибку покажет validate_settings)."""
+    if not isinstance(kinds, list) or not all(isinstance(k, str) for k in kinds) or not kinds:
+        return kinds
+    try:
+        known = json.loads(known_raw) if known_raw is not None else LIVE_ALERT_KINDS_V1
+    except (TypeError, ValueError):
+        known = LIVE_ALERT_KINDS_V1
+    if not isinstance(known, list) or not all(isinstance(k, str) for k in known):
+        known = LIVE_ALERT_KINDS_V1
+    have = [k for k in kinds if k in LIVE_ALERT_KINDS]
+    return have + [k for k in LIVE_ALERT_KINDS if k not in known and k not in have]
 
 
 def _check_point(lat: Any, lon: Any) -> tuple[Point | None, str | None]:
@@ -1985,6 +2016,9 @@ class Store:
                 raw[key] = json.loads(value)
             except (TypeError, ValueError) as e:
                 raise StoreError(f'{self._name()}: վնասված է «{key}» կարգավորումը{_FIX_HINT}') from e
+        if 'live_alert_kinds' in {k for k, _ in setting_rows}:
+            raw['live_alert_kinds'] = _loaded_alert_kinds(raw['live_alert_kinds'],
+                                                          dict(setting_rows).get(LIVE_KINDS_KNOWN_KEY))
         # предела форс-мажора в базе ещё нет (база до этой настройки), а день машин кончается позже 20:00 —
         # предел = конец дня: значение по умолчанию не должно делать базу «повреждённой»
         work_end = raw.get('truck_work_end')
@@ -2104,6 +2138,10 @@ class Store:
             conn.execute('INSERT INTO settings(key, value) VALUES(?, ?) '
                          'ON CONFLICT(key) DO UPDATE SET value = excluded.value',
                          (key, json.dumps(value, ensure_ascii=False)))
+        if 'live_alert_kinds' in changes.settings:   # список выбран при этих видах — новые потом добавит load()
+            conn.execute('INSERT INTO settings(key, value) VALUES(?, ?) '
+                         'ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+                         (LIVE_KINDS_KNOWN_KEY, json.dumps(list(LIVE_ALERT_KINDS))))
         if changes.depot_set:
             if changes.depot is None:
                 conn.execute('DELETE FROM depot WHERE id = 1')

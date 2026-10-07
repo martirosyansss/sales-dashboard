@@ -42,7 +42,10 @@
    магазинов, загрузка %, ⚠); шаги 1–2 и пересборка — в выдвижной панели «Մեքենաներ, պատվերներ». Узлы страницы не
    пересоздаются — переносятся в слоты и обратно (id и обработчики те же).
    Ход дня (№82, как мониторинг Яндекса): сегодня кружки магазинов на шкале — по факту «Առաքիչ» (GET
-   /api/routes/dispatch/progress раз в минуту): доставлен, частично, отказ, машина на месте, опаздывает; у машины «✓ 7/17». */
+   /api/routes/dispatch/progress раз в минуту): доставлен, частично, отказ, машина на месте, опаздывает; у машины «✓ 7/17».
+   «Не успеет» (№87): опаздывает — прогноз позже конца окна приёма или плана (сервер, live.late_forecast), подсказка кружка —
+   на сколько; машина не успевает вернуться до конца дня — прогноз возврата красным под временем возврата; в строке
+   счётчиков — «N խանութ ուշանում է» и «M մեքենա չի հասցնում վերադառնալ», нажатие — следующая такая машина. */
 (function () {
     'use strict';
 
@@ -750,7 +753,7 @@
         const sm = plan.summary;
         if (sm.loading_configured === false || sm.fuel_load_unconfigured || sm.wear_unconfigured)
             add('is-warn', 'fa-gear', 'Լրացնել մեքենաների նորմերը', 0, null, '/routes/settings#trucks');
-        box.hidden = !box.children.length;
+        syncLateChips();
     }
 
     // ---------- Новые заказы дня (ответ владельца №72) ----------
@@ -2127,6 +2130,7 @@
 
             const end = document.createElement('div');
             end.className = 'dp-bend';
+            end.dataset.truck = t.car_code;
             end.innerHTML = '<b></b><small></small>';
             end.firstChild.textContent = t.return;
             if (t.over_time) end.firstChild.className = 'is-bad'; else if (t.late) end.firstChild.className = 'is-late';
@@ -4445,9 +4449,11 @@
         let r;
         try { r = await api('GET', '/api/routes/dispatch/progress?date=' + encodeURIComponent(day)); } catch (e) { return; }
         if (seq !== progressSeq || !state.data || state.data.day !== day) return;   // пришёл более свежий ответ / сменили день
-        state.progress = r && r.live ? { day, trucks: r.trucks || {}, now: r.now } : null;
+        state.progress = r && r.live ? { day, trucks: r.trucks || {}, returns: isObj(r.returns) ? r.returns : {}, now: r.now } : null;
         paintProgress();
     }
+    // №87: подсказка опаздывающего кружка — на сколько позже окна приёма или плана
+    const lateText = (g) => (g.late_kind === 'window' ? 'Կուշանա պատուհանից ' : 'Կուշանա պլանից ') + fmt(g.late_min) + ' րոպեով';
     function paintProgress() {
         const p = state.progress && state.data && state.progress.day === state.data.day ? state.progress : null;
         $('dpBoard').querySelectorAll('.dp-bar').forEach(bar => {
@@ -4459,7 +4465,8 @@
                 tick.title = tick.dataset.baseTitle;
                 if (!g || g.s === 'pending') return;
                 tick.classList.add('pg-' + g.s);
-                tick.title += ' — ' + PG_HY[g.s] + (g.at ? ' ' + g.at : '') + (g.s === 'late' && g.delay ? ' (+' + g.delay + ' ր)' : '');
+                tick.title += ' — ' + (g.s === 'late' && g.late_min ? lateText(g) + (g.at ? ' (≈ ' + g.at + ')' : '')
+                    : PG_HY[g.s] + (g.at ? ' ' + g.at : ''));
             });
         });
         $('dpBoard').querySelectorAll('.dp-blabel').forEach(lab => {
@@ -4470,13 +4477,54 @@
             if (!car) return;
             const all = Object.values(car), done = all.filter(g => g.s === 'done' || g.s === 'partial').length;
             const refused = all.filter(g => g.s === 'refused').length, late = all.filter(g => g.s === 'late').length;
+            const back = p.returns[lab.dataset.truck];   // №87: не успевает вернуться до конца дня
             el.textContent = '✓ ' + done + '/' + all.length + (refused ? ' · ✗ ' + refused : '') + (late ? ' · ուշ ' + late : '');
             el.classList.toggle('is-late', late > 0);
             if (lab.dataset.baseLabel === undefined) lab.dataset.baseLabel = lab.getAttribute('aria-label') || '';
             lab.setAttribute('aria-label', lab.dataset.baseLabel + ' · առաքված ' + done + '/' + all.length
-                + (refused ? ', հրաժարում ' + refused : '') + (late ? ', ուշանում է ' + late : ''));
+                + (refused ? ', հրաժարում ' + refused : '') + (late ? ', ուշանում է ' + late : '')
+                + (back ? ', չի հասցնում վերադառնալ (+' + back.late_min + ' րոպե)' : ''));
+        });
+        // №87: не успевает вернуться — под плановым временем возврата прогноз (красным) вместо «վերադարձ · ≈ N կմ»
+        $('dpBoard').querySelectorAll('.dp-bend[data-truck]').forEach(end => {
+            const back = p ? p.returns[end.dataset.truck] : null, sm = end.querySelector('small');
+            if (end.dataset.baseText === undefined) end.dataset.baseText = sm.textContent;
+            sm.textContent = back ? 'կանխատեսում ≈ ' + back.eta + ' · +' + fmt(back.late_min) + NB + 'ր' : end.dataset.baseText;
+            sm.classList.toggle('pg-back', !!back);
+            end.title = back ? 'Չի հասցնում վերադառնալ մինչև ' + back.limit + '՝ կանխատեսված վերադարձ ≈ ' + back.eta : '';
         });
         $('dpBoard').classList.toggle('has-progress', !!p);
+        syncLateChips();
+    }
+    // №87: «N խանութ ուշանում է» / «M մեքենա չի հասցնում վերադառնալ» — в строке счётчиков (dpInbox, её перерисовывает
+    // renderInbox — тогда и снова здесь); нажатие — следующая такая машина по кругу (шкала, карта, карточка)
+    let lateTurn = 0;
+    function syncLateChips() {
+        const box = $('dpInbox'), d = state.data;
+        ['dpLateChip', 'dpLateBackChip'].forEach(id => { const el = $(id); if (el) el.remove(); });
+        const p = state.progress && d && d.plan && state.progress.day === d.day ? state.progress : null;
+        if (p) {
+            const codes = d.plan.trucks.map(t => t.car_code);
+            const stores = codes.filter(c => p.trucks[c]).map(c => [c, Object.values(p.trucks[c]).filter(g => g.s === 'late').length]).filter(x => x[1]);
+            const backs = codes.filter(c => p.returns[c]);
+            const chip = (id, label, cars) => {
+                const el = document.createElement('button');
+                el.type = 'button';
+                el.id = id;
+                el.className = 'dp-inchip is-bad';
+                el.innerHTML = '<i class="fas fa-hourglass-half" aria-hidden="true"></i><span></span>';
+                el.lastChild.textContent = label;
+                el.addEventListener('click', () => {
+                    const t = d.plan.trucks.find(x => x.car_code === cars[lateTurn++ % cars.length]);
+                    if (t) focusFromBoard(t, null);
+                });
+                box.prepend(el);   // самое срочное — первым
+            };
+            if (backs.length) chip('dpLateBackChip', pl(backs.length, 'մեքենա') + ' չի հասցնում վերադառնալ', backs);
+            const n = stores.reduce((a, x) => a + x[1], 0);
+            if (n) chip('dpLateChip', pl(n, 'խանութ') + ' ուշանում է', stores.map(x => x[0]));
+        }
+        box.hidden = !box.children.length;
     }
 
     // ---------- Вариант А (ответ владельца №82): рабочий экран на широком экране ----------

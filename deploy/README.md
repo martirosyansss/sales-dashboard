@@ -242,6 +242,18 @@ schtasks /Run /TN SalesDashboard-Server
 **восстановить обе базы из этих копий** (с их `-wal`, если он был) — старая программа новые схемы не откроет.
 Данные, принятые после обновления (трек, заправки, выученные нормы, черновики «Развоза»), при откате теряются.
 
+**Откат на версию до №87 («не успеет в окно», вид тревоги `late`).** Схема баз не менялась, копии восстанавливать не
+нужно, но прежняя программа не знает вид `late` в настройке `live_alert_kinds` и не откроет базу «Маршрутов»
+(«վնասված են կարգավորումները (live_alert_kinds: ահազանգի անհայտ տեսակ՝ late)»). После остановки дашборда и до запуска
+прежнего кода уберите `late` из списка и строку `live_alert_kinds_known` (тогда при новом обновлении `late`
+снова включится сам; папка — своя на каждом сервере; строку `late_nowin_min` прежняя программа не читает):
+
+```powershell
+python -c "import json, sqlite3; c = sqlite3.connect(r'C:\Sales Dashboard\route_optimizer.db'); k = 'live_alert_kinds'; r = c.execute('SELECT value FROM settings WHERE key = ?', (k,)).fetchone(); r and c.execute('UPDATE settings SET value = ? WHERE key = ?', (json.dumps([x for x in json.loads(r[0]) if x != 'late']), k)); c.execute('DELETE FROM settings WHERE key = ?', (k + '_known',)); c.commit()"
+```
+
+Версии с №87 сами пропускают при чтении неизвестные им виды тревог — следующие новые виды откат уже не ломают.
+
 ## Безопасность
 
 - Токен хранится в открытом виде в `C:\Sales Dashboard\.git\config` —
