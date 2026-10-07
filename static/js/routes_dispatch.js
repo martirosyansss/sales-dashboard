@@ -3362,7 +3362,9 @@
             bar.className = 'dp-ws-tripbar';
             bar.setAttribute('role', 'group');
         }
-        if (side.lastElementChild !== bar) side.appendChild(bar);   // после карточек и «Ինչու» — последним в панели
+        // в DOM — сразу после крестика (Tab: сначала действия рейса, потом точки), на экране — последним (CSS order)
+        const close = $('dpWsClose');
+        if (close.nextElementSibling !== bar) close.after(bar);
         const prev = bar.hidden ? null : bar.dataset.trip, has = prev !== null && trips.some(el => el.dataset.trip === prev);
         const sel = f.trip != null && trips.some(el => el.dataset.trip === String(f.trip)) ? String(f.trip) : null;
         let id;
@@ -3379,14 +3381,23 @@
         bar.classList.toggle('is-bad', !!(tr.over_time || tr.over_capacity || tr.vehicle_miss));
         bar.style.setProperty('--dp-c', truckColor(t.car_code));
         bar.setAttribute('aria-label', 'Երթ ' + (i + 1) + '՝ ' + truckLabel(t));
+        // перерисовка с клавиатуры («Քարտեզում» перерисовывает карту и полосу) — фокус на ту же кнопку новой полосы
+        const had = bar.contains(document.activeElement) && prev === id
+            ? ['dp-mapbtn', 'dp-addbtn', 'dp-editbtn', 'dp-loadbtn'].find(c => document.activeElement.classList.contains(c)) : null;
         bar.textContent = '';
-        bar.appendChild(tripHead(t, tr, i, state.editing.has(tr.id)));
+        const head = tripHead(t, tr, i, state.editing.has(tr.id));
+        head.querySelector('.dp-trip-t').setAttribute('aria-hidden', 'true');   // рейс назван в aria-label полосы; заголовок — в списке
+        bar.appendChild(head);
+        side.style.scrollPaddingBottom = (bar.offsetHeight + 8) + 'px';   // Tab по «×» — не под полосой
+        const back = had && bar.querySelector('.' + had);
+        if (back) back.focus({ preventScroll: true });
     }
     // кнопка рейса: на рабочем экране — в полосе внизу панели (в списке над точками её не видно), иначе — в шапке рейса
     function tripBtn(tripId, cls) {
         const bar = $('dpWsTripBar');
         const b = bar && !bar.hidden && bar.dataset.trip === String(tripId) ? bar.querySelector(cls) : null;
-        return b || $('dpTruckCards').querySelector('.dp-trip[data-trip="' + tripId + '"] ' + cls);
+        const el = b || $('dpTruckCards').querySelector('.dp-trip[data-trip="' + tripId + '"] ' + cls);
+        return el && el.getClientRects().length ? el : null;   // скрытая кнопка списка (рейс не в полосе) — фокус не возьмёт
     }
 
     // Рейс дешевле порога (ответ владельца №25): везти сейчас или завтра — решает логист

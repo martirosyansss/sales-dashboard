@@ -99,7 +99,17 @@ def main() -> int:
             page.wait_for_timeout(200)
             side, bar = rect('#dpWsSide'), rect(BAR)
             check(abs(bar[3] - side[3]) <= 2 and bar[1] >= side[1], f'A trip bar fully at the bottom of the panel at scroll 0 {bar} / {side}')
-            check(page.locator('#dpWsSide > :last-child').get_attribute('id') == 'dpWsTripBar', 'A trip bar is the last block of the panel')
+            check(page.evaluate("document.getElementById('dpWsClose').nextElementSibling.id") == 'dpWsTripBar',
+                  'A in the DOM the bar follows «×» (Tab reaches trip actions before the stores)')
+            low = page.evaluate("[...document.getElementById('dpWsSide').children].filter(e => e.id !== 'dpWsTripBar' && e.getClientRects().length)"
+                                ".map(e => e.getBoundingClientRect().bottom + document.getElementById('dpWsSide').scrollTop)")
+            side_loc.evaluate('e => { e.scrollTop = e.scrollHeight; }')
+            page.wait_for_timeout(200)
+            last_bottom = page.evaluate("Math.max(...[...document.getElementById('dpWsSide').children].filter(e => e.id !== 'dpWsTripBar' && e.getClientRects().length)"
+                                        ".map(e => e.getBoundingClientRect().bottom))")
+            check(rect(BAR)[1] >= last_bottom - 1 and low, f'A on screen the bar is below all other blocks of the panel ({last_bottom:.0f})')
+            side_loc.evaluate('e => { e.scrollTop = 0; }')
+            page.wait_for_timeout(200)
             txt = page.locator(BAR).inner_text()
             check('Երթ 1' in txt and 'Քարտեզում' in txt and 'Փոփոխել' in txt and 'կմ' in txt and ('կգ' in txt or 'տ' in txt),
                   'A bar: trip title, «Քարտեզում», «Փոփոխել», km and weight')
@@ -128,6 +138,16 @@ def main() -> int:
                 page.wait_for_timeout(200)
                 xr, bar = xs.last.evaluate(RECT), rect(BAR)
                 check(xr[3] <= bar[1] + 1, f'B focused «×» is not hidden under the bar {xr} / {bar}')
+
+            # K — клавиатура: Tab после «×» панели — в полосу; Enter на «Քարտեզում» — фокус остаётся на ней
+            page.focus('#dpWsClose')
+            page.keyboard.press('Tab')
+            check(page.evaluate("!!document.activeElement.closest('#dpWsTripBar')"), 'K Tab after «×» lands in the trip bar')
+            page.focus(BAR + ' .dp-mapbtn')
+            page.keyboard.press('Enter')
+            page.wait_for_timeout(600)
+            check(page.evaluate("!!document.activeElement && !!document.activeElement.closest('#dpWsTripBar .dp-mapbtn')"),
+                  'K Enter on «Քարտեզում» keeps focus on it (bar redrawn)')
 
             # C — «Փոփոխել» в полосе
             tid = bar_trip()

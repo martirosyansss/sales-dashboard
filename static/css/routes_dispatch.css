@@ -1183,9 +1183,12 @@ body.dp-ws-on .rt-secbar .rt-tabs a { padding-top: 3px; padding-bottom: 3px; }
    (sticky отсчитывает от него — иначе под полосой просвечивала бы точка). В списке над точками — только «Երթ N · время». */
 #rtDispatch .dp-ws-side .dp-tcard .dp-trip-acts, #rtDispatch .dp-ws-side .dp-tcard .dp-trip-line { display: none; }
 #rtDispatch .dp-ws-side .dp-tcard .dp-trip-head { margin-bottom: 6px; }
-#rtDispatch .dp-ws-side { scroll-padding-bottom: 130px; }   /* Tab по «×» точки — не прятать кнопку под полосой */
+/* панель — колонкой: полоса в DOM сразу после крестика (порядок Tab), на экране — последней; scroll-padding — по высоте
+   полосы (JS), чтобы Tab по «×» точки не прятал кнопку под ней */
+#rtDispatch .dp-ws-side { display: flex; flex-direction: column; scroll-padding-bottom: 130px; }
+#rtDispatch .dp-ws-side > * { flex-shrink: 0; }
 .dp-ws-tripbar {
-    position: sticky; bottom: -10px; z-index: 3; margin: 10px -10px -10px; padding: 8px 12px 10px 16px;
+    order: 99; position: sticky; bottom: -10px; z-index: 3; margin: 10px -10px -10px; padding: 8px 12px 10px 16px;
     border-top: 1px solid var(--rt-line); background: var(--rt-panel-2); box-shadow: 0 -8px 14px -10px rgba(0, 0, 0, .55);
 }
 .dp-ws-tripbar[hidden] { display: none; }
