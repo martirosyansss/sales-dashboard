@@ -14,14 +14,19 @@ float): документ из одних нулей или минусов (во�
     days    — разных дней с учтёнными клиенто-днями (по всем кодам человека);
     points  — разных (день, клиент): несколько накладных одному магазину в день — 1 точка;
     tonnes  — Σ количество × вес товара / 1000;
-    D       — рабочих дней компании: разных дней с любой учтённой накладной экспедитора в месяце.
+    D       — рабочих дней компании: разных дней с любой учтённой накладной экспедитора в месяце (в текущем — по сегодня);
+    D_month — рабочих дней всего месяца: у прошлого месяца — D, у текущего — |дни с доставкой по сегодня ∪ рабочие дни
+              календаря «Маршрутов» с сегодня до конца месяца| (дни недели и нерабочие даты №64; считает views):
+              прошлое — по факту (доставка в воскресенье — рабочий день), будущее — по календарю. В последний день
+              месяца с доставками это ровно D закрытого месяца. Без D_month за неделю работы платили бы полный фикс
+              и полный минимум: текущий месяц показывает начисленное по сегодня.
 Не учитываются накладные линий excluded_lines (по коду менеджера; по умолчанию линия 19 л) и экспедиторы excluded_people.
 
-    fix     = FIX × min(1, days / D)
+    fix     = FIX × min(1, days / D_month)
     piece   = RATE_POINT × points + RATE_TONNE × tonnes
-    minimum = MIN × min(1, points / (NORM_PER_DAY × D))
+    minimum = MIN × min(1, points / (NORM_PER_DAY × D_month))
     pay     = max(fix + piece, minimum)
-    old     = OLD_FIX × min(1, days / D) + OLD_PCT % × продажи      — нынешняя схема, только для сравнения
+    old     = OLD_FIX × min(1, days / D_month) + OLD_PCT % × продажи      — нынешняя схема, только для сравнения
 
 Деньги — целые драмы: fix, piece, minimum округляются по отдельности (половина — вверх), pay и old считаются из
 округлённых частей, чтобы строка таблицы сходилась до драма (pay = fix + piece или ровно minimum).
@@ -33,14 +38,14 @@ import re
 from collections import defaultdict
 from dataclasses import dataclass, fields
 from datetime import date
-from typing import Any, Mapping, Sequence
+from typing import Any, Collection, Mapping, Sequence
 
 
 @dataclass(frozen=True)
 class Params:
     fix: float = 100_000            # ֏ в месяц за полный месяц
-    rate_point: float = 175         # ֏ за точку
-    rate_tonne: float = 1_200       # ֏ за тонну
+    rate_point: float = 250         # ֏ за точку (владелец 07.10; было 175)
+    rate_tonne: float = 1_750       # ֏ за тонну (владелец 07.10; было 1 200)
     minimum: float = 250_000        # ֏ в месяц при выполненной норме
     norm_per_day: float = 12        # точек в рабочий день — норма для минимума
     old_fix: float = 100_000        # нынешняя схема: фикс
@@ -157,6 +162,7 @@ class Result:
     unknown_codes: tuple[str, ...]      # коды исключений, которых нет в ERP (опечатка) — показать владельцу
     overlapping_codes: tuple[tuple[str, ...], ...] = ()   # тёзки с общими рабочими днями — раздельные строки, проверить
     excluded_kin: tuple[str, ...] = ()  # учтённые коды с тем же именем, что у исключённого: исключён не каждый код человека?
+    workdays_month: int = 0             # D_month ≥ D — знаменатель фикса и нормы; у прошлого месяца = D
 
 
 def money(x: float) -> int:
@@ -174,7 +180,9 @@ KEEP_KG = 0.0005     # кг: меньше — шум float, а не груз
 KEEP_SUM = 0.5       # ֏: меньше — шум float, а не продажа
 
 
-def compute(data: CrewData, p: Params) -> Result:
+def compute(data: CrewData, p: Params, calendar_rest: Collection[date] | None = None) -> Result:
+    """calendar_rest — рабочие дни календаря с сегодня до конца месяца (только текущий месяц): D_month = |дни с доставкой
+    ∪ calendar_rest|; None — месяц закрыт (или календарь не прочитан), D_month = D."""
     def code_of(aid: int) -> str:
         return data.agents.get(aid, (str(aid), ''))[0]
 
@@ -201,11 +209,13 @@ def compute(data: CrewData, p: Params) -> Result:
         cell[1] += inv.total
     kept = {aid: {dc: c for dc, c in per.items() if c[0] > KEEP_KG or c[1] > KEEP_SUM} for aid, per in cells.items()}
     kept = {aid: per for aid, per in kept.items() if per}
-    d = len({day for per in kept.values() for day, _ in per})
+    worked = {day for per in kept.values() for day, _ in per}
+    d = len(worked)
     excluded_keys = {key_of(aid) for aid in people}
     kin = tuple(sorted(code_of(aid) for aid in kept if key_of(aid) in excluded_keys))
+    dm = d if calendar_rest is None else len(worked | set(calendar_rest))
     if not d:
-        return Result(0, (), unknown, (), kin)
+        return Result(0, (), unknown, (), kin, dm)
 
     # коды одного имени: без общих рабочих дней — один человек (одна строка), с общими — тёзки (по строке на код)
     groups: dict[str, list[int]] = defaultdict(list)
@@ -231,10 +241,10 @@ def compute(data: CrewData, p: Params) -> Result:
         n_days, n_points = len(by_date), len(per)
         tonnes = sum(kg for kg, _ in per.values()) / 1000
         sales = sum(total for _, total in per.values())
-        share = min(1.0, n_days / d)
+        share = min(1.0, n_days / dm)
         fix = money(p.fix * share)
         piece = money(p.rate_point * n_points + p.rate_tonne * tonnes)
-        minimum = money(p.minimum * min(1.0, n_points / (p.norm_per_day * d)))
+        minimum = money(p.minimum * min(1.0, n_points / (p.norm_per_day * dm)))
         agent_ids = tuple(sorted(aids, key=code_of))
         main = max(agent_ids, key=lambda a: len(kept[a]))   # имя — по основному коду (больше всего точек; ничья — первый)
         name = ' '.join(data.agents.get(main, ('', ''))[1].split())
@@ -243,7 +253,7 @@ def compute(data: CrewData, p: Params) -> Result:
         rows.append(Row(agent_ids, ', '.join(code_of(a) for a in agent_ids), name, n_days, n_points, tonnes,
                         money(sales), fix, piece, minimum, max(fix + piece, minimum),
                         money(p.old_fix * share) + money(p.old_pct / 100 * sales), minimum > fix + piece, by_day))
-    return Result(d, tuple(sorted(rows, key=lambda r: (r.name, r.code))), unknown, tuple(sorted(overlapping)), kin)
+    return Result(d, tuple(sorted(rows, key=lambda r: (r.name, r.code))), unknown, tuple(sorted(overlapping)), kin, dm)
 
 
 def totals(rows: Sequence[Row]) -> dict[str, Any]:
