@@ -41,6 +41,7 @@ W устаревший чат (views._seen_stale): план на сервере 
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import os
 import sys
@@ -575,6 +576,27 @@ def main() -> int:
             ws.set_viewport_size({'width': 1000, 'height': 900})
             ws.wait_for_timeout(300)
             check(ws.locator('#rtDispatch.is-ws').count() == 0, 'Y narrow window: no workspace')
+            # Z (№82): ход дня — сегодня кружки магазинов по факту «Առաքիչ» (ответ сервера подменён)
+            ws.set_viewport_size({'width': 1440, 'height': 950})
+            now2 = datetime(2026, 10, 2, 10, 0)            # «сегодня» — день V с его планом
+            views._clock = lambda: now2
+            views._yerevan_now = lambda: now2.replace(tzinfo=ZoneInfo('Asia/Yerevan'))
+            today_day = page.request.get(f'{BASE}/api/routes/dispatch?date={DAY2}').json()
+            check(today_day.get('today') == DAY2 and today_day.get('plan'), 'Z day V is today and has a plan')
+            t0 = next((t for t in (today_day.get('plan') or {}).get('trucks', []) if t['trips'] and t['trips'][0]['stops']), None)
+            if t0 is not None:
+                cids = [s['customer_id'] for s in t0['trips'][0]['stops']]
+                fake = {'success': True, 'live': True, 'now': '11:00', 'trucks': {t0['car_code']: {
+                    str(cids[0]): {'s': 'done', 'at': '09:40', 'delay': None},
+                    **({str(cids[1]): {'s': 'late', 'at': '11:30', 'delay': 25}} if len(cids) > 1 else {})}}}
+                ws.route('**/api/routes/dispatch/progress**', lambda r: r.fulfill(status=200, content_type='application/json',
+                                                                              body=json.dumps(fake)))
+                ws.goto(f'{BASE}/routes/dispatch?date={DAY2}')
+                ws.wait_for_selector('#dpBoard .dp-tick.pg-done', timeout=15000)
+                lab = ws.locator(f'#dpBoard .dp-blabel[data-truck="{t0["car_code"]}"] .dp-blx-pg')
+                check(ws.locator('#dpBoard .dp-tick.pg-done').count() >= 1
+                      and (len(cids) < 2 or ws.locator('#dpBoard .dp-tick.pg-late').count() >= 1)
+                      and lab.inner_text().startswith('✓ 1/'), f'Z progress painted: done/late stops, «{lab.inner_text()}» on the truck')
             check(not ws_errors, f'Y no page errors {ws_errors[:2]}')
             ws.close()
             views._clock, views._yerevan_now = real_clock, real_yerevan

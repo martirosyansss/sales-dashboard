@@ -3997,6 +3997,95 @@ def api_live_truck() -> Any:
     return jsonify({**_live_head(ctx, day, now), 'truck': _live_card(ctx, day, now, car, fleet.get(car), True)})
 
 
+# --- Ход дня на шкале «Развоза» (ответ владельца №82: как мониторинг Яндекса / Routific live) ---
+# Кружок магазина на шкале — по факту терминала «Առաքիչ»: доставлен, частично, отказ, машина на месте, опаздывает
+# (ETA онлайн-карты позже плана на PROGRESS_LATE_MIN). Только сегодня; данные — тот же расчёт, что у онлайн-карты (№76).
+
+PROGRESS_LATE_MIN = 15
+PROGRESS_STATE = {'full': 'done', 'covered': 'done', 'partial': 'partial', 'refused': 'refused', 'in_progress': 'here'}
+
+
+def _iso_hm(iso: Any) -> str | None:
+    """«HH:MM» по Еревану из ISO-времени онлайн-карты; нет или битое — None."""
+    if not isinstance(iso, str):
+        return None
+    try:
+        return datetime.fromisoformat(iso).astimezone(live.YEREVAN).strftime('%H:%M')
+    except ValueError:
+        return None
+
+
+def _day_progress(state: RoutesState, day: date) -> dict[str, dict[str, dict[str, Any]]]:
+    """Машина → клиент (str) → {'s': done | partial | refused | here | late | pending, 'at': «HH:MM» (доставлен — когда,
+    иначе ETA) | None, 'delay': минуты ETA позже плана | None}. Машины без точек терминала — нет."""
+    ctx, now, fleet, cards = _live_cards(state, day)
+    with state.live_lock:
+        hit = _PROGRESS_CACHE.get(day)
+    if hit is not None and hit[0] is cards:    # тот же расчёт флота (_live_cards) — тот же ход дня
+        return hit[1]
+    out: dict[str, dict[str, dict[str, Any]]] = {}
+    _budget.until = _monotonic() + LIVE_BUDGET_S   # как у онлайн-карты: дальше участки «от машины» — запасная модель
+    try:
+        _progress_fill(ctx, day, now, fleet, out)
+    finally:
+        _budget.until = math.inf
+    with state.live_lock:
+        _PROGRESS_CACHE[day] = (cards, out)
+        while len(_PROGRESS_CACHE) > 4:
+            _PROGRESS_CACHE.pop(next(iter(_PROGRESS_CACHE)))
+    return out
+
+
+_PROGRESS_CACHE: dict[date, tuple[Any, dict[str, dict[str, dict[str, Any]]]]] = {}
+
+
+def _progress_fill(ctx: _LiveContext, day: date, now: datetime, fleet: Mapping[str, Any],
+                   out: dict[str, dict[str, dict[str, Any]]]) -> None:
+    for car, facts in sorted(fleet.items()):
+        stops = [s for s in (facts or {}).get('stops') or () if isinstance(s.get('customer_id'), int)]
+        if not stops:
+            continue
+        card = _live_card(ctx, day, now, car, facts, True)   # ETA каждого магазина — в подробной карточке
+        detail = {s['stop_id']: s for s in card.get('stops') or ()}
+        here = (card.get('next') or {}).get('stop_id') if (card.get('next') or {}).get('here') else None
+        mine: dict[str, dict[str, Any]] = {}
+        for s in stops:
+            d = detail.get(s['stop_id'], {})
+            st = PROGRESS_STATE.get(s.get('status') or '', 'pending')
+            if st == 'pending' and s['stop_id'] == here:
+                st = 'here'
+            delay = None
+            if st in ('pending', 'here') and d.get('eta') and d.get('planned_eta'):
+                delay = round((datetime.fromisoformat(d['eta']) - datetime.fromisoformat(d['planned_eta'])).total_seconds() / 60)
+                if st == 'pending' and delay >= PROGRESS_LATE_MIN:
+                    st = 'late'
+            at = _iso_hm(d.get('delivered_at') or s.get('delivered_at')) if st in ('done', 'partial', 'refused') else _iso_hm(d.get('eta'))
+            prev = mine.get(str(s['customer_id']))
+            # магазин с несколькими накладными — худшее состояние (не доставлено важнее доставленного)
+            if prev is None or _PROGRESS_RANK[st] > _PROGRESS_RANK[prev['s']]:
+                mine[str(s['customer_id'])] = {'s': st, 'at': at, 'delay': delay}
+        out[car] = mine
+
+
+# худшее у магазина с несколькими накладными; «машина на месте» важнее «опаздывает» (она уже у него)
+_PROGRESS_RANK = {'done': 0, 'partial': 1, 'refused': 2, 'pending': 3, 'late': 4, 'here': 5}
+
+
+@bp.get('/api/routes/dispatch/progress')
+@_api
+def api_dispatch_progress() -> Any:
+    """Ход дня для шкалы «Развоза» ?date= (только сегодня по Еревану): {'live': bool, 'trucks': _day_progress}.
+    Раздела «Առաքիչ» нет или день не сегодня — live false, машин нет (страница не красит кружки)."""
+    day, error = _live_day()
+    if error is not None:
+        return error
+    state = _state()
+    if state.live_facts is None or day != _yerevan_now().date():
+        return jsonify({'success': True, 'live': False, 'trucks': {}})
+    return jsonify({'success': True, 'live': True, 'now': _yerevan_now().strftime('%H:%M'),
+                    'trucks': _day_progress(state, day)})
+
+
 # --- Журнал гаража «Ավտոտնակ» (№53, docs/plans/garage-journal-plan.md) ---
 # Страница начальника гаража (роль «Гараж» видит только её; доступ — app_v2._auth_and_scope_gate) и администратора.
 # Ошибки записи — по-армянски (store.check_garage_entry, GarageError). Ремонт ֏/км — garage.price на сегодня.

@@ -40,7 +40,9 @@
    Вариант А (ответ владельца №82, как Routific / Яндекс): на широком экране с рейсами — рабочий экран на высоту окна
    (layoutWs): карта с итогами поверх, справа — карточка выбранной машины, снизу — машины и шкала дня (кружки с номерами
    магазинов, загрузка %, ⚠); шаги 1–2 и пересборка — в выдвижной панели «Մեքենաներ, պատվերներ». Узлы страницы не
-   пересоздаются — переносятся в слоты и обратно (id и обработчики те же). */
+   пересоздаются — переносятся в слоты и обратно (id и обработчики те же).
+   Ход дня (№82, как мониторинг Яндекса): сегодня кружки магазинов на шкале — по факту «Առաքիչ» (GET
+   /api/routes/dispatch/progress раз в минуту): доставлен, частично, отказ, машина на месте, опаздывает; у машины «✓ 7/17». */
 (function () {
     'use strict';
 
@@ -280,6 +282,8 @@
     }
 
     function setData(data) {
+        if (!state.data || !data || state.data.day !== data.day) state.progress = null;   // ход дня — своего дня
+        setTimeout(loadProgress, 0);
         const trips = new Set();
         if (data.plan) data.plan.trucks.forEach(t => t.trips.forEach(tr => trips.add(tr.id)));
         const hadPlan = !!(state.data && state.data.day === data.day && state.data.plan);
@@ -2017,6 +2021,7 @@
             const pct = Math.max(0, ...t.trips.map(tr => num(tr.load_pct) || 0));
             const bad = t.trips.filter(tripBad).length;
             lab.querySelector('.dp-blx-t').textContent = pl(t.stops, 'կետ') + ' · ' + kgText(t.kg) + ' · ' + pct + '%' + (bad ? ' · ⚠ ' + bad : '');
+            lab.querySelector('.dp-blabel-x').insertAdjacentHTML('beforeend', '<span class="dp-blx-pg" hidden></span>');
             const fill = lab.querySelector('.dp-blfill');
             fill.classList.toggle('is-hi', pct >= 90 && pct <= 100);
             fill.classList.toggle('is-over', pct > 100);
@@ -2060,6 +2065,7 @@
                     const tick = document.createElement('i');
                     tick.className = 'dp-tick' + (s.window_miss || s.center_miss || s.vehicle_miss ? ' is-bad' : '');
                     tick.textContent = String(k + 1);      // №82: в варианте А — кружок с номером магазина
+                    tick.dataset.cid = String(s.customer_id);
                     tick.title = (k + 1) + '. ' + (s.name || s.code) + ' · ' + (s.eta || '');
                     tick.style.left = ((e - dep) / (ret - dep) * 100).toFixed(2) + '%';
                     bar.appendChild(tick);
@@ -2105,6 +2111,7 @@
         scroll.className = 'dp-board-scroll';
         scroll.appendChild(grid);
         box.appendChild(scroll);
+        paintProgress();
         syncFocus();
     }
 
@@ -3716,6 +3723,53 @@
         } catch (e) { setBusy(false); render(); showActionError(e); }
     }
 
+    // ---------- Ход дня на шкале (№82, как мониторинг Яндекса / Routific live) ----------
+    // Сегодня, пока открыта страница с рейсами, — раз в PROGRESS_MS факт терминалов «Առաքիչ»; кружок магазина красится,
+    // у машины — «✓ доставлено / всего». Прошлый и будущий день, «Առաքիչ» нет — кружки как в плане
+    const PROGRESS_MS = 60 * 1000;
+    const PG_HY = { done: 'առաքված', partial: 'մասնակի', refused: 'հրաժարվել է', here: 'մեքենան տեղում է', late: 'ուշանում է', pending: 'սպասում է' };
+    let progressSeq = 0;
+    async function loadProgress() {
+        const d = state.data;
+        if (!d || !d.plan || d.day !== d.today || document.hidden || !$('rtDispatch').classList.contains('is-ws')) return;
+        const day = d.day, seq = ++progressSeq;
+        let r;
+        try { r = await api('GET', '/api/routes/dispatch/progress?date=' + encodeURIComponent(day)); } catch (e) { return; }
+        if (seq !== progressSeq || !state.data || state.data.day !== day) return;   // пришёл более свежий ответ / сменили день
+        state.progress = r && r.live ? { day, trucks: r.trucks || {}, now: r.now } : null;
+        paintProgress();
+    }
+    function paintProgress() {
+        const p = state.progress && state.data && state.progress.day === state.data.day ? state.progress : null;
+        $('dpBoard').querySelectorAll('.dp-bar').forEach(bar => {
+            const car = p ? p.trucks[bar.dataset.truck] : null;
+            bar.querySelectorAll('i.dp-tick').forEach(tick => {
+                const g = car ? car[tick.dataset.cid] : null;
+                tick.classList.remove('pg-done', 'pg-partial', 'pg-refused', 'pg-here', 'pg-late');
+                if (tick.dataset.baseTitle === undefined) tick.dataset.baseTitle = tick.title;
+                tick.title = tick.dataset.baseTitle;
+                if (!g || g.s === 'pending') return;
+                tick.classList.add('pg-' + g.s);
+                tick.title += ' — ' + PG_HY[g.s] + (g.at ? ' ' + g.at : '') + (g.s === 'late' && g.delay ? ' (+' + g.delay + ' ր)' : '');
+            });
+        });
+        $('dpBoard').querySelectorAll('.dp-blabel').forEach(lab => {
+            const el = lab.querySelector('.dp-blx-pg');
+            const car = p ? p.trucks[lab.dataset.truck] : null;
+            if (!el) return;
+            el.hidden = !car;
+            if (!car) return;
+            const all = Object.values(car), done = all.filter(g => g.s === 'done' || g.s === 'partial').length;
+            const refused = all.filter(g => g.s === 'refused').length, late = all.filter(g => g.s === 'late').length;
+            el.textContent = '✓ ' + done + '/' + all.length + (refused ? ' · ✗ ' + refused : '') + (late ? ' · ուշ ' + late : '');
+            el.classList.toggle('is-late', late > 0);
+            if (lab.dataset.baseLabel === undefined) lab.dataset.baseLabel = lab.getAttribute('aria-label') || '';
+            lab.setAttribute('aria-label', lab.dataset.baseLabel + ' · առաքված ' + done + '/' + all.length
+                + (refused ? ', հրաժարում ' + refused : '') + (late ? ', ուշանում է ' + late : ''));
+        });
+        $('dpBoard').classList.toggle('has-progress', !!p);
+    }
+
     // ---------- Вариант А (ответ владельца №82): рабочий экран на широком экране ----------
     // Узлы страницы переносятся в слоты рабочего экрана и обратно (место запоминает комментарий-«якорь»): id, обработчики и
     // состояние (карта Leaflet, раскрытые карточки) те же. Ширина меньше 1101 px или рейсов нет — прежняя страница
@@ -4455,6 +4509,8 @@
         if (nav && typeof window.ResizeObserver !== 'undefined') new ResizeObserver(navH).observe(nav); else window.addEventListener('resize', navH);
         aiPanel = window.RoutesDispatchAI ? window.RoutesDispatchAI.attach({ $, state, api, announce, dayHuman, truckLabel, load }) : null;
         setInterval(poll, 30 * 1000);       // poll() сам проверяет, прошло ли 5 минут (и после сна компьютера тоже)
+        setInterval(loadProgress, PROGRESS_MS);   // №82: ход дня на шкале — сегодня
+        document.addEventListener('visibilitychange', () => { if (!document.hidden) loadProgress(); });
         document.addEventListener('visibilitychange', poll);
         load(day);
     }
