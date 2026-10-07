@@ -807,6 +807,44 @@ def test_live_source_fleet(courier_app):
     assert car1['device']['at'] == t(20).isoformat() and car1['closed_at'] == t(5).isoformat()
 
 
+def test_live_source_later_heartbeat_without_exit_clears_reason(courier_app):
+    """courier/live.py: device — последнее по времени состояние; exit не «залипает» после heartbeat без него."""
+    from courier import events as ev
+    from courier.live import LiveSource
+    store = courier_app.extensions['courier'].store
+    ds = DAY.isoformat()
+    store.save_day(ds, 'CAR1', [_day_stop(SID1, 1, A, [('l1', 10, 12.0)], 1)], 'v1', LIVE_NOW.isoformat())
+    who = _who(store, 'CAR1', 'Արամ', '1111')
+    t = lambda m: LIVE_NOW - timedelta(minutes=m)   # noqa: E731
+    dev = {'battery': 80, 'charging': False, 'gps': 'on', 'net': 'wifi', 'app': '2.2.5'}
+
+    def car_device(events):
+        assert ev.ingest(store, who, events).json()['rejected'] == []
+        with courier_app.app_context():
+            return LiveSource(store).fleet(ds)['CAR1']['device']
+    assert car_device([_ev('track', None, {'points': [], 'device': dev}, t(30)),
+                       _ev('track', None, {'points': [], 'device': {**dev, 'exit': 'closed'}}, t(20))])['exit'] == 'closed'
+    later = car_device([_ev('track', None, {'points': [], 'device': dev}, t(5))])   # приложение запущено снова
+    assert 'exit' not in later and later['at'] == t(5).isoformat()
+
+
+def test_build_text_no_contact_reason_from_device_state():
+    from route_optimizer import live_alerts as la
+    a = {'kind': 'no_contact', 'from': T0.isoformat(), 'to': None, 'active': True, 'minutes': 7, 'lat': None, 'lon': None}
+
+    def text(device, state='offline', reason=None):
+        card = {'car_code': 'X1', 'name': 'N', 'drivers': ['Արամ'], 'device': device, 'state': state,
+                'offline_reason': reason, 'position': {'lat': 40.1, 'lon': 44.5}}
+        return la.build_text(card, a, 'start', RULES)
+    assert 'Հավելվածը փակվել է' in text({**NEW_APK, 'exit': 'closed'}, reason='closed')
+    assert 'Հեռախոսն անջատվել է' in text({**NEW_APK, 'exit': 'shutdown'})
+    # другая активная тревога: state='alert', offline_reason пуст — причина всё равно в тексте
+    assert 'Հավելվածը փակվել է' in text({**NEW_APK, 'exit': 'closed'}, state='alert', reason=None)
+    for device in (NEW_APK, None, {**NEW_APK, 'exit': 'weird'}):
+        out = text(device)
+        assert 'փակվել է' not in out and 'անջատվել է' not in out and 'Կապ չկա՝ 7 րոպե' in out
+
+
 def test_live_source_returns_weight_and_refuels(courier_app):
     """Возврат: вес = кол-во × вес единицы товара по строкам точки (нет там — по любой точке машины, нет нигде — None);
     заправки машины за последние дни — для сверки топлива."""

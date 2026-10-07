@@ -198,8 +198,12 @@ def build_text(card: Mapping[str, Any], a: Mapping[str, Any], phase: str, rules:
         lines.append(f'Կանգառի տևողությունը՝ {a.get("minutes")} րոպե' + (' (ճաշի ժամին)։' if a.get('lunch') else '։'))
     elif kind == 'no_contact':
         lines.append(f'Կապ չկա՝ {a.get("minutes")} րոպե։')
-        if card.get('offline_reason') in EXIT_TEXT:
-            lines.append(EXIT_TEXT[card['offline_reason']].capitalize() + '։')
+        # причина — из последнего состояния терминала (не из offline_reason: при другой активной тревоге state='alert').
+        # Последнее состояние = то, что было до тишины; позднее сообщение после восстановления видит уже новое (без exit)
+        device = card.get('device')
+        reason = device.get('exit') if isinstance(device, Mapping) else None
+        if reason in EXIT_TEXT:
+            lines.append(EXIT_TEXT[reason].capitalize() + '։')
     elif kind == 'center':
         lines.append('Մեքենան մտել է փոքր կենտրոն, որտեղ նրան թույլատրված չէ։')
     lat, lon, last_known = a.get('lat'), a.get('lon'), False

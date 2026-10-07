@@ -17,7 +17,7 @@
         offline: ['կապ չկա', 'is-offline'], nodata: ['տվյալ չկա', 'is-nodata'], closed: ['օրն ավարտված է', 'is-closed'],
     };
     const OFFLINE_WHY = { closed: 'հավելվածը փակվել է', shutdown: 'հեռախոսն անջատվել է' };   // t.offline_reason (APK 2.2.5)
-    const stateLabel = (t, label) => (t.state === 'offline' && OFFLINE_WHY[t.offline_reason] ? label + ' · ' + OFFLINE_WHY[t.offline_reason] : label);
+    const stateLabel = (t, label) => (t.state === 'offline' && Object.hasOwn(OFFLINE_WHY, t.offline_reason) ? label + ' · ' + OFFLINE_WHY[t.offline_reason] : label);
     const ALERT = {
         speed: ['fa-gauge-high', 'Արագության գերազանցում'], stop: ['fa-square-parking', 'Երկար կանգառ ոչ խանութում'],
         no_contact: ['fa-tower-broadcast', 'Կապ չկա'], gps: ['fa-location-crosshairs', 'GPS-ն անջատված է'],
