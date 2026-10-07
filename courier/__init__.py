@@ -60,6 +60,8 @@ def init_app(app: Flask, db: Any, db_path: str | None = None) -> None:
         catalog_loader=lambda today: erp_day.product_catalog(cs, today),
         cars_loader=lambda today: erp_day.terminal_cars(cs, today, routes_bundle(app.extensions.get(ROUTES_EXTENSION))),
         invoice_loader=lambda day: erp_day.invoice_cars(cs, day),
+        tare_links_loader=lambda: erp_day.container_links(cs),
+        customer_code_loader=lambda codes: erp_day.customers_by_code(cs, codes),
     )
     app.register_blueprint(api.bp)
     app.register_blueprint(views.bp)
