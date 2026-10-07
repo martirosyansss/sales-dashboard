@@ -208,6 +208,7 @@ class RoutesState:
     # → фоновый поток (не больше одного); замок — только словари, расчёт не под ним
     score_week_cache: dict[str, tuple[float, dict[str, Any]]] = field(default_factory=dict)
     score_week_running: dict[str, threading.Thread] = field(default_factory=dict)
+    score_week_failed: dict[str, float] = field(default_factory=dict)   # неделя → момент сбоя расчёта (monotonic)
     score_week_lock: threading.Lock = field(default_factory=threading.Lock)
     # рельеф трека машино-дня (№85): (машина, день) → (отпечаток трека и высот, (подъём м, км) или None) — _track_climbs
     track_climbs: dict[tuple[str, str], tuple[Any, Any]] = field(default_factory=dict)
@@ -3163,13 +3164,15 @@ def learning_page() -> str:
 _DayRead = Callable[[str, str, Any, Mapping[str, Any], list[ac.PlanStop], ac.DayActual], None]
 
 
-def _learning_days(state: RoutesState, bundle: Bundle, since: date, until: date, on_read: _DayRead | None = None
+def _learning_days(state: RoutesState, bundle: Bundle, since: date, until: date, on_read: _DayRead | None = None,
+                   versions: dict[tuple[str, str], Any] | None = None
                    ) -> list[tuple[str, date, list[ac.PlanStop], ac.DayActual, dict[str, Any] | None, int, int]]:
     """Машино-дни с треком за since…until: (машина, день, точки плана, факт, черновик развоза, рейсов и точек машины
     по плану). Место точки в объезде — по черновику «Развоза» дня, без него — порядок /day терминала. Факт дня — из
     кэша, пока не изменились трек, доставки, снимок /day (FleetFacts.version), склад, план машины и окна приёма.
     on_read(машина, день, отпечаток кэша, данные FleetFacts.day, точки, факт) — после чтения машино-дня мимо кэша:
-    вызывающий берёт из того же чтения своё (трек «Վարորդներ» — _scorecard_cars), не читая день снова."""
+    вызывающий берёт из того же чтения своё (трек «Վարորդներ» — _scorecard_cars), не читая день снова. versions —
+    заполняется (машина, день) → отпечаток, с которым посчитан факт каждой возвращённой строки."""
     if state.fleet_facts is None:
         return []
     windows = {cid: w.span() for cid, w in bundle.windows.items()}
@@ -3197,6 +3200,8 @@ def _learning_days(state: RoutesState, bundle: Bundle, since: date, until: date,
                     state.actuals_cache.pop(next(iter(state.actuals_cache)))
             if on_read is not None:
                 on_read(car, ds, version, data, stops, actual)
+        if versions is not None:
+            versions[(car, ds)] = version
         out.append((car, date.fromisoformat(ds), stops, actual, drafts[ds], plan_trips, len(ranks)))
     return out
 
@@ -4207,6 +4212,7 @@ SCORECARD_ROLES = ('admin', 'garage')   # кто видит «Վարորդներ
 SCORE_WEEK_TTL_S = 300.0     # неделя для APK (week_score): готовый расчёт отдаётся терминалам столько секунд
 SCORE_WEEK_WAIT_S = 2.0      # запрос, начавший расчёт недели, ждёт его не дольше; остальные — не ждут вовсе
 SCORE_WEEK_KEEP = 16         # недель в памяти: прежний расчёт отдаётся, пока считается новый
+SCORE_WEEK_RETRY_S = 30.0    # расчёт недели упал — снова не раньше (до того — прежний расчёт или 503 score)
 SCORECARD_FORBIDDEN = 'Մուտքն արգելված է'
 
 
@@ -4342,20 +4348,18 @@ def _scorecard_cars(state: RoutesState, bundle: Bundle, day: date, rules: live.R
         with state.scorecard_lock:
             _bounded(state.scorecard_track, (car, d), ((version, rkey), got), SCORECARD_CACHE_CAR_DAYS)
 
-    for car, _, stops, actual, draft, _, _ in _learning_days(state, bundle, day, day, remember):
-        with state.actuals_lock:
-            cached = state.actuals_cache.get((car, ds))
-        version = cached[0] if cached is not None else None
+    versions: dict[tuple[str, str], Any] = {}
+    for car, _, stops, actual, draft, _, _ in _learning_days(state, bundle, day, day, remember, versions):
+        version = versions[(car, ds)]   # отпечаток этой строки факта (не перечитанный кэш: его мог сменить поток)
         with state.scorecard_lock:
             hit = state.scorecard_track.get((car, ds))
-        if hit is not None and version is not None and hit[0] == (version, rkey):
+        if hit is not None and hit[0] == (version, rkey):
             speed, offroute = hit[1]
         else:   # факт обучения был в кэше, а скорости и стоянок нет (пороги сменились, вытеснено) — одно чтение
             speed, offroute = _track_metrics(facts.day(car, ds)['track'], actual, day, bundle.depot, rules)
-            if version is not None:
-                with state.scorecard_lock:
-                    _bounded(state.scorecard_track, (car, ds), ((version, rkey), (speed, offroute)),
-                             SCORECARD_CACHE_CAR_DAYS)
+            with state.scorecard_lock:
+                _bounded(state.scorecard_track, (car, ds), ((version, rkey), (speed, offroute)),
+                         SCORECARD_CACHE_CAR_DAYS)
         vm = ac.visit_metrics(actual, stops, day)
         first, _ = _plan_etas(draft, car, day)
         out[car] = sc.CarDay(actual.km_gps, ac.stop_marks(actual, stops, day), first, speed, offroute,
@@ -4539,15 +4543,19 @@ def api_drivers_scorecard() -> Any:
 
 
 def _week_job(app: Any, state: RoutesState, key: str, monday: date) -> None:
-    """Фоновый расчёт недели для APK (week_score): результат — в score_week_cache; сбой — в журнал (следующий запрос
-    начнёт расчёт заново). Контекст приложения — для факта «Առաքիչ» (courier.scorecard берёт базу из него)."""
+    """Фоновый расчёт недели для APK (week_score): результат — в score_week_cache; сбой — в журнал и момент сбоя в
+    score_week_failed (заново — не раньше SCORE_WEEK_RETRY_S). Контекст приложения — для факта «Առաքիչ»
+    (courier.scorecard берёт базу из него)."""
     try:
         with app.app_context():
             body = _scorecard(state, monday, monday + timedelta(days=6))
         with state.score_week_lock:
             _bounded(state.score_week_cache, key, (time.monotonic(), body), SCORE_WEEK_KEEP)
+            state.score_week_failed.pop(key, None)
     except Exception:
         logger.exception('[Routes] Վարորդներ: неделя %s для APK не посчитана', key)
+        with state.score_week_lock:
+            state.score_week_failed[key] = time.monotonic()
     finally:
         with state.score_week_lock:
             state.score_week_running.pop(key, None)
@@ -4569,11 +4577,19 @@ def week_score(state: RoutesState | None, driver_id: int, monday: date) -> tuple
         hit = state.score_week_cache.get(key)
         fresh = hit is not None and time.monotonic() - hit[0] <= SCORE_WEEK_TTL_S
         job = None
-        if not fresh and not state.score_week_running:
+        failed = state.score_week_failed.get(key)
+        backoff = failed is not None and time.monotonic() - failed < SCORE_WEEK_RETRY_S
+        if not fresh and not state.score_week_running and not backoff:
             job = threading.Thread(target=_week_job, args=(current_app._get_current_object(), state, key, monday),
                                    name='routes-score-week', daemon=True)
             state.score_week_running[key] = job
-            job.start()
+            try:
+                job.start()
+            except Exception:   # поток не стартовал (нет ресурсов): отметка «считается» не должна остаться навсегда
+                logger.exception('[Routes] Վարորդներ: расчёт недели %s для APK не запущен', key)
+                state.score_week_running.pop(key, None)
+                state.score_week_failed[key] = time.monotonic()
+                job = None
     if job is not None:
         job.join(SCORE_WEEK_WAIT_S)
         with state.score_week_lock:

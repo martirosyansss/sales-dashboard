@@ -286,6 +286,7 @@ def sc_app(app_v2, monkeypatch):
     monkeypatch.setattr(state, 'scorecard_cache', {})
     monkeypatch.setattr(state, 'score_week_cache', {})
     monkeypatch.setattr(state, 'score_week_running', {})
+    monkeypatch.setattr(state, 'score_week_failed', {})
     for name in ('scorecard_track', 'fuel_span_cache', 'fuel_day_cache'):
         monkeypatch.setattr(state, name, {})
     monkeypatch.setattr(state, 'actuals_cache', {})
@@ -820,3 +821,36 @@ def test_apk_score_auth_and_week_validation(client, apk, monkeypatch):
     monkeypatch.setattr(apk.state, 'crew_facts', None)
     r = client.get(f'{API}/score', headers=aram, base_url=LAN)
     assert r.status_code == 503 and r.get_json()['error'] == 'server'
+
+
+def test_apk_score_failure_backoff_and_thread_start_failure(client, apk, monkeypatch):
+    """Расчёт недели упал — 503 `score`, заново не раньше SCORE_WEEK_RETRY_S (без шквала пересчётов); поток не
+    стартовал — отметка «считается» не остаётся, тоже 503 `score` и пауза."""
+    import threading
+    from route_optimizer import views
+    fake, boom = views._scorecard, {'on': True}
+
+    def flaky(st, since, until):
+        if boom['on']:
+            apk.calls.append('boom')
+            raise RuntimeError('база недоступна')
+        return fake(st, since, until)
+    monkeypatch.setattr(views, '_scorecard', flaky)
+    aram = apk.login('CAR1', '1111')
+    get = lambda: client.get(f'{API}/score', headers=aram, base_url=LAN)   # noqa: E731
+    r = get()
+    assert r.status_code == 503 and r.get_json()['error'] == 'score' and apk.calls == ['boom']
+    assert not apk.state.score_week_running and '2026-10-05' in apk.state.score_week_failed
+    boom['on'] = False
+    assert get().status_code == 503 and apk.calls == ['boom']   # пауза после сбоя: расчёт не запускается
+    monkeypatch.setattr(views, 'SCORE_WEEK_RETRY_S', 0.0)
+    assert get().status_code == 200 and len(apk.calls) == 2 and not apk.state.score_week_failed
+
+    class NoThread(threading.Thread):
+        def start(self):
+            raise RuntimeError("can't start new thread")
+    monkeypatch.setattr(views.threading, 'Thread', NoThread)
+    monkeypatch.setattr(views, 'SCORE_WEEK_RETRY_S', 30.0)
+    r = client.get(f'{API}/score?week=2026-09-28', headers=aram, base_url=LAN)
+    assert r.status_code == 503 and r.get_json()['error'] == 'score'
+    assert not apk.state.score_week_running and '2026-09-28' in apk.state.score_week_failed
