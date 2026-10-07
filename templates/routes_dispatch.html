@@ -11,7 +11,7 @@
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=24">
 <!-- Страница на армянском (ответ владельца №31). Редизайн: тёмная спокойная тема (ответ владельца №51), свои стили поверх routes.css -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=54">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=56">
 {% endblock %}
 
 {% block content %}
@@ -130,15 +130,18 @@
             <button type="button" id="dpActionReload" class="rt-btn rt-btn-ghost rt-btn-sm d-none">Թարմացնել էջը</button>
         </div>
 
-        <!-- №82 вариант А: рабочий экран на высоту окна — карта (итоги поверх), справа машина, снизу машины и шкала дня -->
+        <!-- №82 вариант А: рабочий экран на высоту окна — карта (итоги поверх), снизу машины и шкала дня, справа от шкалы —
+             выбранная машина (владелец 07.10: карточка не поверх карты, а внизу экрана) -->
         <div class="dp-ws" id="dpWs" hidden>
             <div class="dp-ws-main">
                 <div class="dp-ws-map" id="dpWsMap"><div class="dp-ws-kpi" id="dpWsKpi"></div></div>
+            </div>
+            <div class="dp-ws-low">
+                <div class="dp-ws-bottom" id="dpWsBottom"></div>
                 <aside class="dp-ws-side" id="dpWsSide" aria-label="Ընտրված մեքենան" hidden>
                     <button type="button" class="dp-ws-close" id="dpWsClose" aria-label="Փակել մեքենայի քարտը" title="Փակել"><i class="fas fa-xmark" aria-hidden="true"></i></button>
                 </aside>
             </div>
-            <div class="dp-ws-bottom" id="dpWsBottom"></div>
         </div>
 
         <!-- №82: шаги 1–2 и пересборка на широком экране — выдвижная панель «Մեքենաներ, պատվերներ» -->
@@ -534,5 +537,5 @@
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=1" data-yandex-key="{{ yandex_tiles_key }}"></script>
 <!-- панель «Հարցրու AI-ին» — до страницы: init подключает её (RoutesDispatchAI.attach) -->
 <script src="{{ url_for('static', filename='js/routes_dispatch_ai.js') }}?v=3"></script>
-<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=96"></script>
+<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=97"></script>
 {% endblock %}
