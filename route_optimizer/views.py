@@ -1950,7 +1950,8 @@ def driver_name_hints(state: RoutesState) -> list[str]:
     строкой) — тот же список, что у «Վարորդ»: ERP (кэш _erp_drivers) и свои за DRIVER_LIST_DAYS, по алфавиту. ERP
     здесь не ждём: кэша нет или он устарел — перечитывается в фоне (один поток за раз), ответ — с тем, что есть."""
     cached = state.driver_list_cache
-    if (cached is None or time.monotonic() >= cached[0]) and state.driver_list_loader is not None             and state.driver_list_lock.acquire(blocking=False):
+    if (cached is None or time.monotonic() >= cached[0]) and state.driver_list_loader is not None \
+            and state.driver_list_lock.acquire(blocking=False):
         today = _clock().date()
 
         def refresh() -> None:
