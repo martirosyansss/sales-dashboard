@@ -15,8 +15,8 @@
 /* таблица прокручивается внутри карточки — страница не шире экрана */
 .cp-scroll { max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch;
     border: 1px solid var(--rt-line); border-radius: var(--rt-radius-sm); }
-.cp-table { min-width: 980px; }
-.cp-days { min-width: 420px; }
+.cp-table { min-width: 1060px; }
+.cp-days { min-width: 500px; }
 .rt-numtable.cp-table thead th:nth-child(2) { text-align: left; }
 .cp-table td.txt { white-space: nowrap; }
 .cp-table tbody tr { cursor: pointer; }
@@ -24,7 +24,7 @@
 .cp-table tbody tr.is-open td { background: var(--rt-acc-glow); }
 .cp-table td.pay { font-weight: 700; }
 .cp-table td.is-min { color: var(--rt-warn); }
-.cp-table .rt-badge { margin-left: 6px; vertical-align: 1px; }
+.cp-table .rt-badge, .cp-days .rt-badge { margin-left: 6px; vertical-align: 1px; }
 .cp-table tfoot td { font-weight: 700; border-top: 1px solid var(--rt-line); padding: 10px 12px; }
 .cp-legend { margin: 10px 0 0; }
 .cp-changed { margin: -8px 0 12px; }

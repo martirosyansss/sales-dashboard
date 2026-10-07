@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400..700&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+Armenian:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=24">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_pay.css') }}?v=2">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_pay.css') }}?v=3">
 {% endblock %}
 
 {% block content %}
@@ -64,7 +64,7 @@
             <h2 class="rt-card-title" id="cpTableTitle"><i class="fas fa-people-carry-box" aria-hidden="true"></i>Առաքիչներ</h2>
             <span id="cpSub" class="cp-sub"></span>
         </div>
-        <div id="cpLoading" class="rt-loading"><div class="rt-spinner"></div>Կարդում եմ ERP-ից…</div>
+        <div id="cpLoading" class="rt-loading"><div class="rt-spinner"></div>Կարդում եմ ERP-ից և հաշվում պլանային կմ-ները… Առաջին անգամ դա կարող է տևել մինչև մեկուկես րոպե։</div>
         <p id="cpEmpty" class="rt-empty" hidden>Այս ամսում առաքիչների ապրանքագրեր չկան։</p>
         <div id="cpTableWrap" class="cp-scroll" hidden>
             <table class="rt-numtable cp-table">
@@ -76,6 +76,7 @@
                         <th scope="col">Օրեր</th>
                         <th scope="col">Կետեր</th>
                         <th scope="col">Տոննա</th>
+                        <th scope="col" id="cpKmHead">Կմ</th>
                         <th scope="col">Ֆիքս</th>
                         <th scope="col">Գործավարձ</th>
                         <th scope="col">Նվազագույն</th>
@@ -102,12 +103,12 @@
         <div class="cp-scroll">
             <table class="rt-numtable cp-days">
                 <thead>
-                    <tr><th scope="col">Ամսաթիվ</th><th scope="col">Կետեր</th><th scope="col">Տոննա</th><th scope="col">Գործավարձ (մոտավոր)</th></tr>
+                    <tr><th scope="col">Ամսաթիվ</th><th scope="col">Կետեր</th><th scope="col">Տոննա</th><th scope="col">Կմ (պլանային)</th><th scope="col">Գործավարձ (մոտավոր)</th></tr>
                 </thead>
                 <tbody id="cpDayRows"></tbody>
             </table>
         </div>
-        <p class="rt-field-hint cp-legend">Օրվա գործավարձը մոտավոր է՝ կլորացված օր առ օր, ամսվա գումարը հաշվվում է ամբողջ ամսվա կետերով և տոննաներով։</p>
+        <p class="rt-field-hint cp-legend">Օրվա գործավարձը մոտավոր է՝ կլորացված օր առ օր, ամսվա գումարը հաշվվում է ամբողջ ամսվա կետերով, տոննաներով և կմ-ով։</p>
     </section>
 
     <!-- Параметры формулы: route_optimizer.db (ERP не меняется) -->
@@ -132,6 +133,12 @@
                 <label for="cpRateTonne">Մեկ տոննայի համար, ֏</label>
                 <input id="cpRateTonne" name="rate_tonne" class="rt-input" type="number" min="0" step="1" inputmode="numeric" aria-describedby="cpRateTonneErr">
                 <span id="cpRateTonneErr" class="rt-ferr" data-for="rate_tonne"></span>
+            </div>
+            <div class="rt-field">
+                <label for="cpRateKm">Մեկ կմ-ի համար, ֏</label>
+                <input id="cpRateKm" name="rate_km" class="rt-input" type="number" min="0" step="1" inputmode="decimal" aria-describedby="cpRateKmHint cpRateKmErr">
+                <span id="cpRateKmHint" class="rt-field-hint">պլանային կմ՝ պահեստ → խանութներ → պահեստ, ոչ թե փաստացի</span>
+                <span id="cpRateKmErr" class="rt-ferr" data-for="rate_km"></span>
             </div>
             <div class="rt-field">
                 <label for="cpMin">Նվազագույն ամսական, ֏</label>
@@ -175,5 +182,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/routes_pay.js') }}?v=6"></script>
+<script src="{{ url_for('static', filename='js/routes_pay.js') }}?v=8"></script>
 {% endblock %}
