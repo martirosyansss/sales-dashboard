@@ -3,7 +3,7 @@
 API страницы с подменённым загрузчиком ERP (живой ERP не нужен), CSV и доступ только администратору."""
 import json
 import sys
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -16,6 +16,7 @@ from route_optimizer.erp import ErpError, check_sql, SQL_CREW_PAY  # noqa: E402
 from test_route_optimizer import REF, _no_road_map, client  # noqa: E402,F401
 
 NOW = datetime(2026, 10, 7, 10, 0)
+YEREVAN = timezone(timedelta(hours=4))
 LINE, LINE19, LINE19B = 1, 2, 3                   # менеджеры (линии)
 KORYUN, AGHVAN, HELPER = 11, 12, 13               # экспедиторы
 AGENTS = {LINE: ('A001/4', 'Մենեջեր'), LINE19: ('A008/3', '19 լ'), LINE19B: ('A008/6', '19 լ բ'),
@@ -234,29 +235,63 @@ def avakimyan_week():
     return out
 
 
+SIX = [1, 2, 3, 4, 5, 6]
+
+
+def rest(today, workdays=SIX, holidays=()):
+    """Рабочие дни календаря с today до конца месяца — тот же views._calendar_rest, что у страницы."""
+    return views._calendar_rest(today, {'workdays': workdays, 'holidays': list(holidays)})
+
+
+def test_calendar_rest():
+    assert len(rest(date(2026, 10, 7))) == 22                                   # 07–31.10 без 11, 18, 25
+    assert len(rest(date(2026, 10, 7), holidays=['2026-10-12', '2026-10-04'])) == 21
+    assert len(rest(date(2026, 10, 7), workdays=[1, 2, 3, 4, 5])) == 18
+    assert rest(date(2026, 10, 31)) == {date(2026, 10, 31)} and rest(date(2026, 10, 25)) == set(rest(date(2026, 10, 26)))
+    assert len(rest(date(2026, 12, 1), holidays=['2026-12-31'])) == 26          # граница года
+
+
 def test_current_month_prorated_by_whole_month_not_elapsed_days():
+    """07.10: доставки 1–3, 5–7 (6 дней) + календарь 07–31.10 (22 дня, 07.10 в обоих) — D_month 27, а не 6."""
     p = cp.Params()
     week = data(*avakimyan_week())
     before = row(cp.compute(week, p), KORYUN)                         # без D_month — как было: полный месяц за неделю
     assert (before.days, before.points, round(before.tonnes, 3)) == (6, 75, 9.7)
     assert before.fix == 100_000 and before.minimum == 250_000 and before.pay == 250_000
-    res = cp.compute(week, p, 26)
+    res = cp.compute(week, p, rest(date(2026, 10, 7)))
     r = row(res, KORYUN)
-    assert (res.workdays, res.workdays_month) == (6, 26)
-    assert r.fix == cp.money(100_000 * 6 / 26) == 23_077
+    assert (res.workdays, res.workdays_month) == (6, 27)
+    assert r.fix == cp.money(100_000 * 6 / 27) == 22_222
     assert r.piece == cp.money(250 * 75 + 1750 * 9.7) == 35_725
-    assert r.minimum == cp.money(250_000 * 75 / (12 * 26)) == 60_096
-    assert r.pay == 60_096 and r.min_applied
-    assert r.old == 23_077 + cp.money(0.02 * 75)
+    assert r.minimum == cp.money(250_000 * 75 / (12 * 27)) == 57_870
+    assert r.pay == 57_947 and not r.min_applied
+    assert r.old == 22_222 + cp.money(0.02 * 75)
+
+
+def test_mid_month_past_days_by_fact_future_by_calendar():
+    """09.10, доставок сегодня ещё нет: 08.10 (рабочий по календарю) без доставок — не в D_month; 09.10 — как будущий день
+    календаря: 6 + 20 (09–31.10 без воскресений) = 26."""
+    res = cp.compute(data(*avakimyan_week()), cp.Params(), rest(date(2026, 10, 9)))
+    assert (res.workdays, res.workdays_month) == (6, 26)
+    assert row(res, KORYUN).fix == cp.money(100_000 * 6 / 26)
+
+
+def test_sunday_delivery_counts_as_workday():
+    """Доставка в воскресенье 04.10 — рабочий день по факту: 7 + 21 будущих (08–31.10) = 28."""
+    week = data(*avakimyan_week(), oct_inv(AGHVAN, 4, 900, kg=10))
+    res = cp.compute(week, cp.Params(), rest(date(2026, 10, 7)))
+    assert (res.workdays, res.workdays_month) == (7, 28)
+    assert row(res, AGHVAN).fix == cp.money(100_000 / 28)
 
 
 def test_month_workdays_never_below_elapsed_days():
-    """Календарь говорит «3 рабочих дня», а накладные были в 6 дней (работали в выходной) — D_month = D."""
+    """D_month ⊇ дни с доставкой: пустой остаток календаря (праздники до конца месяца) или закрытый месяц — D."""
     week, p = data(*avakimyan_week()), cp.Params()
-    for planned in (3, 6, 0, None):
+    for planned in (frozenset(), {date(2026, 10, 7)}, None):
         res = cp.compute(week, p, planned)
         assert res.workdays_month == 6 and res.rows == cp.compute(week, p).rows, planned
-    assert cp.compute(data(), p, 27).workdays_month == 27 and cp.compute(data(), p).workdays_month == 0
+    assert cp.compute(data(), p, rest(date(2026, 10, 7))).workdays_month == 22
+    assert cp.compute(data(), p).workdays_month == 0
 
 
 def save_calendar(pay, **settings):
@@ -266,23 +301,72 @@ def save_calendar(pay, **settings):
     store.save(changes, 'qa')
 
 
+def set_today(monkeypatch, yerevan, server=None):
+    monkeypatch.setattr(views, '_yerevan_now', lambda: yerevan)
+    monkeypatch.setattr(views, '_clock', lambda: server or yerevan.replace(tzinfo=None))
+
+
 def test_api_current_month_uses_calendar_of_routes_settings(pay):
     pay.source['invoices'] = avakimyan_week()
     body = pay.get('/api/routes/pay').get_json()
-    assert body['current'] and (body['workdays'], body['workdays_month']) == (6, 27)      # пн–сб: 31 − 4 воскресенья
+    assert body['current'] and (body['workdays'], body['workdays_month']) == (6, 27)      # 5 прошедших + 22 по календарю
     k = body['rows'][0]
     assert k['fix'] == cp.money(100_000 * 6 / 27) and k['minimum'] == cp.money(250_000 * 75 / (12 * 27))
-    # праздник в будний день и праздник в воскресенье (не вычитается дважды) — 26
+    # праздник в будний день впереди — минус день; праздник в прошедшее воскресенье без доставок — ничего
     save_calendar(pay, holidays=['2026-10-12', '2026-10-04'])
     assert pay.get('/api/routes/pay').get_json()['workdays_month'] == 26
-    # пятидневка: ещё 5 суббот (3, 10, 17, 24, 31) — 21
+    # пятидневка: впереди 17 дней (без суббот и 12.10), прошедшая суббота 03.10 с доставкой — по факту: 5 + 17
     save_calendar(pay, workdays=[1, 2, 3, 4, 5])
     body = pay.get('/api/routes/pay').get_json()
-    assert body['workdays_month'] == 21 and body['rows'][0]['fix'] == cp.money(100_000 * 6 / 21)
+    assert body['workdays_month'] == 22 and body['rows'][0]['fix'] == cp.money(100_000 * 6 / 22)
     lines = pay.get('/api/routes/pay.csv').get_data().decode('utf-8')[1:].split('\r\n')
-    assert 'Աշխատանքային օրեր ամսում;21' in lines
+    assert 'Աշխատանքային օրեր ամսում;22' in lines and not any(x.startswith('Ստուգել;') for x in lines)
     assert any(x.startswith('B001/1;Իսկանդարյան Կորյուն;6;6;75;') for x in lines)      # в таблице — D (6)
     assert len(pay.calls) == 1                                                            # календарь — без нового чтения ERP
+
+
+def test_last_day_of_current_month_equals_closed_month(pay, monkeypatch):
+    """31.10 (сб) с доставками: текущий месяц = тот же месяц, открытый 01.11 как прошлый, до драма. 12.10 и прочие
+    рабочие дни без доставок не в D_month — иначе 31.10 платили бы меньше, чем 01.11."""
+    pay.source['invoices'] = avakimyan_week() + [oct_inv(KORYUN, 31, 500, kg=100), oct_inv(AGHVAN, 4, 501, kg=10)]
+    set_today(monkeypatch, datetime(2026, 10, 31, 18, 0, tzinfo=YEREVAN))
+    last = pay.get('/api/routes/pay').get_json()
+    set_today(monkeypatch, datetime(2026, 11, 1, 9, 0, tzinfo=YEREVAN))
+    closed = pay.get('/api/routes/pay?month=2026-10').get_json()
+    assert last['current'] and not closed['current']
+    assert (last['workdays'], last['workdays_month']) == (closed['workdays'], closed['workdays_month']) == (8, 8)
+    assert last['rows'] == closed['rows'] and last['totals'] == closed['totals']
+
+
+def test_pay_uses_yerevan_date_not_server_clock(pay, monkeypatch):
+    """Сервер в UTC: 31.10 22:30, в Ереване уже 01.11 02:30 — текущий месяц ноябрь, читается по 01.11 включительно."""
+    pay.source['invoices'] = []
+    set_today(monkeypatch, datetime(2026, 11, 1, 2, 30, tzinfo=YEREVAN), server=datetime(2026, 10, 31, 22, 30))
+    body = pay.get('/api/routes/pay').get_json()
+    assert body['month'] == '2026-11' and body['current'] and body['months'][0] == '2026-11'
+    assert pay.calls == [(date(2026, 11, 1), date(2026, 11, 2))]
+    assert body['workdays_month'] == 25                                                    # ноябрь 2026: 30 − 5 воскресений
+    assert pay.get('/api/routes/pay?month=2026-11').status_code == 200
+    lines = pay.get('/api/routes/pay.csv').get_data().decode('utf-8')[1:].split('\r\n')
+    assert lines[0] == 'Աշխատավարձ;2026-11' and lines[1] == 'Հաշվված է;2026-11-01 02:30'
+
+
+def test_calendar_unreadable_falls_back_to_elapsed_days_with_warning(pay, monkeypatch):
+    pay.source['invoices'] = avakimyan_week()
+    store = pay.application.extensions['route_optimizer'].store
+
+    def broken():
+        raise st.StoreError('settings')
+    monkeypatch.setattr(store, 'load', broken)
+    r = pay.get('/api/routes/pay')
+    body = r.get_json()
+    assert r.status_code == 200 and (body['workdays'], body['workdays_month']) == (6, 6)
+    assert body['calendar_warning'] == views.PAY_CALENDAR_WARNING and 'օրացույց' in body['calendar_warning']
+    assert body['rows'][0]['fix'] == 100_000
+    csv_lines = pay.get('/api/routes/pay.csv').get_data().decode('utf-8')[1:].split('\r\n')
+    assert 'Ստուգել;' + views.PAY_CALENDAR_WARNING in csv_lines
+    past = pay.get('/api/routes/pay?month=2026-09').get_json()                     # прошлому месяцу календарь не нужен
+    assert past['calendar_warning'] is None
 
 
 def test_past_month_unchanged_and_saved_params_win(pay):
@@ -344,6 +428,7 @@ SEPT = [inv(KORYUN, 1, 1, kg=1000, total=100_000), inv(KORYUN, 2, 2, kg=500, tot
 def pay(client, monkeypatch):
     """Клиент «Маршрутов», «сегодня» — 07.10.2026; роль — из g.user_role (как ставит app_v2), по умолчанию admin."""
     monkeypatch.setattr(views, '_clock', lambda: NOW)
+    monkeypatch.setattr(views, '_yerevan_now', lambda: NOW.replace(tzinfo=YEREVAN))
     app = client.application
     state = app.extensions['route_optimizer']
     calls = []
@@ -386,7 +471,7 @@ def test_api_current_month_until_today_and_bad_months(pay):
     pay.source['invoices'] = []
     body = pay.get('/api/routes/pay').get_json()
     assert body['month'] == '2026-10' and body['current'] and body['workdays'] == 0 and body['rows'] == []
-    assert body['workdays_month'] == 27                                     # октябрь 2026 без воскресений (пн–сб)
+    assert body['workdays_month'] == 22 and body['calendar_warning'] is None   # пн–сб с 07.10 по 31.10
     assert pay.calls == [(date(2026, 10, 1), date(2026, 10, 8))]
     for bad in ('2025-10', '2026-11', '2026-13', 'x', '2026-9'):
         r = pay.get(f'/api/routes/pay?month={bad}')

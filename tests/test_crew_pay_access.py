@@ -65,7 +65,7 @@ def test_admin_sees_page_tab_and_data(client, users, calls):
     page = client.get('/routes/pay', base_url=LAN)
     assert page.status_code == 200
     html = page.get_data(as_text=True)
-    assert '<a href="/routes/pay" aria-current="page">Աշխատավարձ</a>' in html and 'js/routes_pay.js?v=5' in html and 'css/routes_pay.css?v=2' in html
+    assert '<a href="/routes/pay" aria-current="page">Աշխատավարձ</a>' in html and 'js/routes_pay.js?v=6' in html and 'css/routes_pay.css?v=2' in html
     assert '<a href="/routes/pay">Աշխատավարձ</a>' in client.get('/routes/garage', base_url=LAN).get_data(as_text=True)
     body = client.get('/api/routes/pay?month=2026-09', base_url=LAN).get_json()
     assert body['success'] and [r['name'] for r in body['rows']] == ['Կորյուն']
