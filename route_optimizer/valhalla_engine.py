@@ -906,9 +906,8 @@ class ValhallaRoads:
         """Рельеф (№85) — по графу OSM (fallback): у Valhalla высот нет."""
         return self.fallback is not None and self.fallback.terrain
 
-    def ensure_climb(self, points: Iterable[Point | None]) -> None:
-        if self.fallback is not None:
-            self.fallback.ensure_climb(points)
+    def ensure_climb(self, points: Iterable[Point | None], wait: bool | None = None) -> bool:
+        return self.fallback is not None and self.fallback.ensure_climb(points, wait)
 
     def climb(self, a: Point, b: Point) -> float | None:
         """Подъём участка — по кратчайшему пути графа OSM (fallback): км из графа — тот же путь; км Valhalla — его путь

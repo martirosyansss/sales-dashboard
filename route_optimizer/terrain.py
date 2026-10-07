@@ -86,9 +86,15 @@ def tile_path(name: str, folder: str | None = None) -> str:
     return os.path.join(folder or dem_dir(), f'{name}.hgt.gz')
 
 
+DOWNLOAD_TIMEOUT_S = 60
+DOWNLOAD_TRIES = 2
+
+
 def download_tiles(names: Iterable[str], folder: str | None = None) -> list[str]:
-    """Скачать тайлы, которых нет в папке (уже скачанные не трогаются). Тайла нет на сервере (море, вне покрытия) —
-    пропуск с предупреждением. Ответ — имена скачанных сейчас."""
+    """Скачать тайлы, которых нет в папке (уже скачанные не трогаются): во временный .part, проверка (распаковывается до
+    конца, квадрат int16), затем замена. Сбой (сеть, таймаут DOWNLOAD_TIMEOUT_S, обрыв, битый gzip) — ещё попытка, всего
+    DOWNLOAD_TRIES; тайла нет на сервере (404: море, вне покрытия) — сразу пропуск. Ответ — имена скачанных сейчас."""
+    import shutil
     import urllib.error
     import urllib.request
 
@@ -101,19 +107,34 @@ def download_tiles(names: Iterable[str], folder: str | None = None) -> list[str]
             continue
         url = DEM_URL.format(folder=name[:3], name=name)
         tmp = path + '.part'
-        try:
-            urllib.request.urlretrieve(url, tmp)
-            with gzip.open(tmp) as f:   # проверка: распаковывается и квадратный
-                _side(len(f.read()))
-            os.replace(tmp, path)
-            got.append(name)
-        except (urllib.error.HTTPError, ValueError, OSError) as e:
-            logger.warning('[Routes] Тайл высот %s не скачан: %s', name, e)
+        for attempt in range(1, DOWNLOAD_TRIES + 1):
             try:
-                os.remove(tmp)
-            except OSError:
-                pass
+                with urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT_S) as r, open(tmp, 'wb') as f:
+                    shutil.copyfileobj(r, f)
+                with gzip.open(tmp) as f:   # проверка: распаковывается до конца и квадратный
+                    _side(len(f.read()))
+                os.replace(tmp, path)
+                got.append(name)
+                break
+            except (urllib.error.URLError, ValueError, OSError, EOFError) as e:
+                logger.warning('[Routes] Тайл высот %s не скачан (попытка %d): %s', name, attempt, e)
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+                if isinstance(e, urllib.error.HTTPError) and e.code == 404:
+                    break
     return got
+
+
+def dem_signature(folder: str | None = None) -> str | None:
+    """Отпечаток всех тайлов папки (имена и размеры); тайлов нет — None (рельефа треков нет)."""
+    folder = folder or dem_dir()
+    try:
+        names = sorted(n for n in os.listdir(folder) if n.endswith('.hgt.gz'))
+    except OSError:
+        return None
+    return tiles_key([n[:-len('.hgt.gz')] for n in names], folder) if names else None
 
 
 def _side(n_bytes: int) -> int:
@@ -124,7 +145,8 @@ def _side(n_bytes: int) -> int:
 
 
 def read_tile(path: str) -> Any | None:
-    """Растр тайла float32 (пустые пиксели — NaN); файла нет или он битый — None."""
+    """Растр тайла int16 как в файле (пусто — DEM_VOID): вдвое меньше float32 в кэше тайлов; файла нет или он битый —
+    None."""
     try:
         with gzip.open(path) as f:
             raw = f.read()
@@ -133,9 +155,7 @@ def read_tile(path: str) -> Any | None:
         if os.path.exists(path):
             logger.warning('[Routes] Тайл высот %s не прочитан', os.path.basename(path), exc_info=True)
         return None
-    z = np.frombuffer(raw, dtype='>i2').reshape(side, side).astype(np.float32)
-    z[z == DEM_VOID] = np.nan
-    return z
+    return np.frombuffer(raw, dtype='>i2').reshape(side, side).astype(np.int16)
 
 
 def tiles_key(names: Sequence[str], folder: str | None = None) -> str:
@@ -156,9 +176,11 @@ def elev_key(graph_identity: str, sigma_m: float = DEM_SIGMA_M) -> str:
 
 
 class _Tiles:
-    """Тайлы папки с кэшем последних прочитанных (соседи нужны для полей сглаживания)."""
+    """Тайлы папки (int16) с кэшем последних прочитанных: соседи нужны для полей сглаживания. keep 2 — пик памяти сборки
+    высот ~295 МБ (замер tracemalloc 07.10: 724 тыс. узлов, 12 тайлов; тайл в кэше 26 МБ, окно сглаживания float32 53 МБ
+    и его гауссы), время то же (~14 с): соседей перечитывают с диска."""
 
-    def __init__(self, folder: str, keep: int = 9):
+    def __init__(self, folder: str, keep: int = 2):
         self.folder = folder
         self.keep = keep
         self._cache: dict[str, Any] = {}
@@ -182,7 +204,7 @@ def _smoothed(tiles: _Tiles, name: str, sigma_m: float) -> tuple[Any, int] | Non
     sr = sigma_m / px
     sc = sigma_m / (px * math.cos(math.radians(la + 0.5)))
     h = int(math.ceil(DEM_TRUNCATE * max(sr, sc))) + 1 if sigma_m > 0 else 1
-    win = np.full((side + 2 * h, side + 2 * h), np.nan, dtype=np.float32)
+    win = np.full((side + 2 * h, side + 2 * h), DEM_VOID, dtype=np.int16)
     step = side - 1                                  # соседние тайлы делят крайнюю строку и столбец
     # сначала сам тайл: общие с соседями край и угол — его
     for dla, dlo in [(0, 0), *((a, b) for a in (1, 0, -1) for b in (-1, 0, 1) if (a, b) != (0, 0))]:
@@ -195,14 +217,22 @@ def _smoothed(tiles: _Tiles, name: str, sigma_m: float) -> tuple[Any, int] | Non
         if ra < rb and ca < cb:
             part = t[ra - r0:rb - r0, ca - c0:cb - c0]
             cur = win[ra:rb, ca:cb]
-            np.copyto(cur, part, where=np.isnan(cur))
+            np.copyto(cur, part, where=cur == DEM_VOID)
+    ok = win != DEM_VOID
+    out = win.astype(np.float32)
+    del win
     if sigma_m <= 0:
-        return win, h
-    ok = np.isfinite(win)
-    num = gaussian_filter(np.where(ok, win, 0.0).astype(np.float32), (sr, sc), mode='constant', truncate=DEM_TRUNCATE)
-    den = gaussian_filter(ok.astype(np.float32), (sr, sc), mode='constant', truncate=DEM_TRUNCATE)
-    with np.errstate(invalid='ignore', divide='ignore'):
-        out = np.where(den > 0.05, num / den, np.nan).astype(np.float32)
+        out[~ok] = np.nan
+        return out, h
+    full = bool(ok.all())
+    out[~ok] = 0.0
+    out = gaussian_filter(out, (sr, sc), mode='constant', truncate=DEM_TRUNCATE)
+    if not full:   # пустые пиксели и тайлы, которых нет, — нормированная свёртка (иначе внутри тайла вес ровно 1)
+        den = gaussian_filter(ok.astype(np.float32), (sr, sc), mode='constant', truncate=DEM_TRUNCATE)
+        with np.errstate(invalid='ignore', divide='ignore'):
+            np.divide(out, den, out=out)
+        out[den <= 0.05] = np.nan
+        del den
     return out, h
 
 
@@ -214,18 +244,45 @@ def sample(lat: Any, lon: Any, folder: str | None = None, sigma_m: float = DEM_S
     if not len(lat):
         return out
     tiles = _Tiles(folder or dem_dir())
-    names = np.array([tile_name(a, b) for a, b in zip(np.floor(lat) + 0.5, np.floor(lon) + 0.5)])
-    for name in sorted(set(names.tolist())):
+    cell = (np.floor(lat).astype(np.int64) + 1000) * 10000 + (np.floor(lon).astype(np.int64) + 1000)   # тайл точки
+    for code in np.unique(cell).tolist():
+        name = tile_name(code // 10000 - 1000 + 0.5, code % 10000 - 1000 + 0.5)
         got = _smoothed(tiles, name, sigma_m)
         if got is None:
             continue
         win, h = got
         la, lo = _tile_origin(name)
         step = win.shape[0] - 2 * h - 1
-        sel = np.flatnonzero(names == name)
+        sel = np.flatnonzero(cell == code)
         rows = (la + 1 - lat[sel]) * step + h
         cols = (lon[sel] - lo) * step + h
         out[sel] = map_coordinates(win, [rows, cols], order=1, mode='nearest', cval=np.nan)
+        del win, got   # растр тайла не держится, пока сглаживается следующий (пик памяти)
+    return out
+
+
+def track_climbs(tracks: Sequence[Sequence[tuple[float, float]]], folder: str | None = None,
+                 sigma_m: float = DEM_SIGMA_M) -> list[tuple[float, float] | None]:
+    """(эффективный подъём, м; км) GPS-треков (№85, «Նորմ և փաստ»): высоты — прямо из сглаженного DEM в точках трека (тот же
+    σ и CLIMB_C, что у участков рейсов; привязка к узлам графа превращала бы шум привязки в подъём), все треки — одним
+    проходом по тайлам. Точка вне тайлов пропускается (подъём — между соседними точками с высотой, длина — по треку); трек
+    короче двух точек или без высот — None."""
+    if np is None:
+        return [None] * len(tracks)
+    pts = [p for t in tracks for p in t]
+    z = sample([p[0] for p in pts], [p[1] for p in pts], folder, sigma_m)
+    out: list[tuple[float, float] | None] = []
+    at = 0
+    for t in tracks:
+        h, at = z[at:at + len(t)], at + len(t)
+        if len(t) < 2 or not np.isfinite(h).any():
+            out.append(None)
+            continue
+        la, lo = np.radians([p[0] for p in t]), np.radians([p[1] for p in t])
+        hav = np.sin(np.diff(la) / 2) ** 2 + np.cos(la[:-1]) * np.cos(la[1:]) * np.sin(np.diff(lo) / 2) ** 2
+        dist = np.concatenate([[0.0], np.cumsum(2 * 6371.0088 * np.arcsin(np.sqrt(np.minimum(1.0, hav))))])
+        ok = np.isfinite(h)
+        out.append((float(math.fsum(edge_climb(h[ok][:-1], h[ok][1:], np.diff(dist[ok])))), float(dist[-1])))
     return out
 
 

@@ -30,7 +30,8 @@ from . import dispatch as dp
 from . import evaluate, garage, learning, live, optimize
 from . import fleet as fl
 from . import waybill as wb
-from .running_costs import curb_tonnes, profile_fields, terrain_liters
+from . import terrain as dem
+from .running_costs import TERRAIN_U_BAR_TRACK, curb_tonnes, profile_fields, terrain_liters
 from .erp import CUSTOMER_FIND_MAX_LEN, CustomerHint, CustomerRef, ErpError
 from .geo import Point, haversine_km, in_city, is_valid_point
 from .roads import SNAP_MAX_KM, CenterBypassRoads, RoadDistances, RoadProvider, roads_version
@@ -4329,39 +4330,44 @@ GARAGE_TRACK_STEP_KM = 0.05   # рельеф трека (№85): точки не
 
 
 def _track_climbs(state: RoutesState, since: date, until: date) -> dict[tuple[str, str], tuple[float, float]]:
-    """Рельеф GPS-треков машино-дней since…until (№85): (машина, день) → (эффективный подъём, м; км трека) по высотам
-    узлов графа (RoadDistances.track_climbs; точки трека — не ближе GARAGE_TRACK_STEP_KM). Кэш — пока не сменились трек
-    (FleetFacts.version) и высоты. Высот нет — {}: «Նորմ և փաստ» без рельефа, как раньше."""
-    roads = state.roads.get() if state.roads is not None else None
-    if state.fleet_facts is None or roads is None or not roads.terrain:
+    """Рельеф GPS-треков машино-дней since…until (№85): (машина, день) → (эффективный подъём, м; км трека) — высоты прямо из
+    сглаженного DEM в точках трека (terrain.track_climbs; точки — не ближе GARAGE_TRACK_STEP_KM). Кэш — пока не сменились
+    трек (FleetFacts.version), параметры DEM и тайлы. Тайлов нет — {}; сбой — в журнал и {}: страница — без рельефа, не
+    ошибка."""
+    try:
+        sig = dem.dem_signature() if dem.terrain_supported() else None
+        if state.fleet_facts is None or sig is None:
+            return {}
+        key = (dem.elev_params(), sig)
+        out: dict[tuple[str, str], tuple[float, float]] = {}
+        todo = []
+        for car, ds in state.fleet_facts.car_days(since.isoformat(), until.isoformat()):
+            version = (state.fleet_facts.version(car, ds), key)
+            with state.actuals_lock:
+                hit = state.track_climbs.get((car, ds))
+            if hit is not None and hit[0] == version:
+                if hit[1] is not None:
+                    out[car, ds] = hit[1]
+                continue
+            line: list[Point] = []
+            for f in ac.clean_track(learning.track_fixes(state.fleet_facts.day(car, ds)['track'])):
+                if not line or haversine_km(line[-1], f.point) >= GARAGE_TRACK_STEP_KM:
+                    line.append(f.point)
+            todo.append(((car, ds), version, line))
+        if todo:
+            got = dem.track_climbs([line for _, _, line in todo])
+            with state.actuals_lock:
+                for (k, version, _), climb in zip(todo, got):
+                    state.track_climbs.pop(k, None)
+                    state.track_climbs[k] = (version, climb)
+                    if climb is not None:
+                        out[k] = climb
+                while len(state.track_climbs) > ACTUALS_CACHE_MAX:
+                    state.track_climbs.pop(next(iter(state.track_climbs)))
+        return out
+    except Exception:
+        logger.exception('[Routes] «Նորմ և փաստ»: рельеф треков %s…%s не посчитан — без рельефа', since, until)
         return {}
-    key = roads.elevation()[0]
-    out: dict[tuple[str, str], tuple[float, float]] = {}
-    todo = []
-    for car, ds in state.fleet_facts.car_days(since.isoformat(), until.isoformat()):
-        version = (state.fleet_facts.version(car, ds), key)
-        with state.actuals_lock:
-            hit = state.track_climbs.get((car, ds))
-        if hit is not None and hit[0] == version:
-            if hit[1] is not None:
-                out[car, ds] = hit[1]
-            continue
-        line: list[Point] = []
-        for f in ac.clean_track(learning.track_fixes(state.fleet_facts.day(car, ds)['track'])):
-            if not line or haversine_km(line[-1], f.point) >= GARAGE_TRACK_STEP_KM:
-                line.append(f.point)
-        todo.append(((car, ds), version, line))
-    if todo:
-        got = roads.track_climbs([line for _, _, line in todo])
-        with state.actuals_lock:
-            for (k, version, _), climb in zip(todo, got):
-                state.track_climbs.pop(k, None)
-                state.track_climbs[k] = (version, climb)
-                if climb is not None:
-                    out[k] = climb
-            while len(state.track_climbs) > ACTUALS_CACHE_MAX:
-                state.track_climbs.pop(next(iter(state.track_climbs)))
-    return out
 
 
 def _month_ready(state: RoutesState, bundle: Bundle, since: date, until: date) -> str:
@@ -4423,7 +4429,9 @@ def api_garage_norm() -> Any:
     ручная, выученный — рядом) и расход по заправкам (garage.fuel_month: интервал — в месяц закрывающей заправки;
     расход вне learning.FUEL_L100 — подозрительные заправки), км плана «Развоза» и GPS в дни, где есть оба
     (garage.km_month), стоянки вне плана и точки не по порядку, флаги выше нормы / плана больше чем на
-    garage.ALERT_PCT %, по дням — строки learning.day_report. Дни GPS — до вчера (сегодня ещё не кончилось). Месяц
+    garage.ALERT_PCT %, по дням — строки learning.day_report. Флаг расхода — от нормы с рельефом треков (№85: норма
+    дня — км GPS × норма + литры подъёма трека, норма месяца — по дням с треком; norm.basis terrain), рельефа нет — от
+    прежней нормы (basis flat, terrain_missing). Дни GPS — до вчера (сегодня ещё не кончилось). Месяц
     раньше GARAGE_NORM_MONTHS назад — too_old, без данных. Факт месяца не успел посчитаться за GARAGE_NORM_WAIT_S —
     {pending: true}: досчитывается в фоне, страница спрашивает снова; фоновый расчёт упал — {failed: true}. Карта дня —
     /api/routes/garage/day."""
@@ -4474,15 +4482,18 @@ def api_garage_norm() -> Any:
     norms = _fuel_norms(state, bundle, _add_months(first, 1).isoformat())
     known = {t['car_code']: t for t in _garage_trucks(state, bundle)}
 
-    def hills(code: str, r: Mapping[str, Any], l100: float | None) -> dict[str, Any]:
-        """Норма дня по треку с рельефом (№85): км GPS × норма + литры подъёма трека сверх среднего; масса — собственная +
-        полгруза (груз по участкам трека не известен); не ниже нуля. Рельефа или нормы нет — {}: строка прежняя."""
+    has_dem = dem.terrain_supported() and dem.dem_signature() is not None
+
+    def hills(code: str, r: Mapping[str, Any], l100: float | None) -> tuple[dict[str, Any], float | None]:
+        """Норма дня по треку с рельефом (№85): км GPS × норма + литры подъёма трека сверх среднего (ū трека — постоянная
+        масса: собственная + полгруза, груз по участкам трека не известен); не ниже нуля. (поля строки, норма дня в литрах
+        без округления); рельефа или нормы нет — ({}, None): строка прежняя."""
         climb, cap = climbs.get((code, r['day'])), bundle.truck_capacity(code, erp_capacity)
         if climb is None or l100 is None or not cap or r['fact']['km'] is None:
-            return {}
-        extra = terrain_liters(curb_tonnes(cap) + cap / 2000.0, *climb)
-        return {'climb_m': round(climb[0]), 'terrain_l': round(extra, 1),
-                'norm_l': round(max(0.0, r['fact']['km'] * l100 / 100.0 + extra), 1)}
+            return {}, None
+        extra = terrain_liters(curb_tonnes(cap) + cap / 2000.0, *climb, u_bar=TERRAIN_U_BAR_TRACK)
+        norm_l = max(0.0, r['fact']['km'] * l100 / 100.0 + extra)
+        return {'climb_m': round(climb[0]), 'terrain_l': round(extra, 1), 'norm_l': round(norm_l, 1)}, norm_l
     out = []
     for code in sorted(set(known) | set(reports) | set(ends) | set(odd) | set(refuel_days)):
         t = known.get(code, {'car_code': code, 'name': '', 'active': False})
@@ -4492,18 +4503,23 @@ def api_garage_norm() -> Any:
             continue   # не в работе и в месяце ничего нет
         norm = norms.get(code, {'l100': None, 'source': None, 'learned': None})
         rows = sorted(reports.get(code, ()), key=lambda r: r['day'], reverse=True)
-        terrain = {r['day']: hills(code, r, norm['l100']) for r in rows}
-        hilly = [(r['fact']['km'], terrain[r['day']]['norm_l']) for r in rows if terrain[r['day']]]
-        # норма месяца по трекам с рельефом (№85) — рядом с нормой; флаги — по прежней норме (решение владельца)
-        on_hills = ({'terrain_l100': _r1(100.0 * math.fsum(x for _, x in hilly) / math.fsum(k for k, _ in hilly))}
-                    if hilly and math.fsum(k for k, _ in hilly) > 0 else {})
+        by_day = {r['day']: hills(code, r, norm['l100']) for r in rows}
+        hilly = [(r['fact']['km'], by_day[r['day']][1]) for r in rows if by_day[r['day']][1] is not None]
+        hill_km = math.fsum(k for k, _ in hilly)
+        # норма месяца по трекам с рельефом (№85): по ней — красный флаг (решение владельца); рельефа нет — прежняя норма,
+        # и ответ говорит почему (basis, terrain_missing: no_dem — нет тайлов высот, no_track — нет дней с треком и нормой)
+        terrain_l100 = 100.0 * math.fsum(x for _, x in hilly) / hill_km if hill_km > 0 else None
+        flag_l100 = terrain_l100 if terrain_l100 is not None else norm['l100']
+        basis = ({'basis': 'terrain', 'terrain_l100': _r1(terrain_l100), 'terrain_days': len(hilly)}
+                 if terrain_l100 is not None else
+                 {'basis': 'flat', 'terrain_missing': 'no_dem' if not has_dem else 'no_track'})
         out.append({**t, 'norm': {'l100': _r1(norm['l100']), 'source': norm['source'], 'learned': _r1(norm['learned']),
-                                  **on_hills},
+                                  **basis},
                     'fuel': {'l100': _r1(fuel.l100), 'liters': round(fuel.liters, 1), 'km': round(fuel.km, 1),
                              'intervals': fuel.intervals, 'refuels': fuel.refuels, 'reason': fuel.reason,
                              'too_high': fuel.too_high, 'too_low': fuel.too_low,
-                             'delta_pct': _r1(garage.delta_pct(fuel.l100, norm['l100'])),
-                             'over': garage.over(fuel.l100, norm['l100'])},
+                             'delta_pct': _r1(garage.delta_pct(fuel.l100, flag_l100)),
+                             'over': garage.over(fuel.l100, flag_l100)},
                     'km': {'days': km.days, 'plan_days': km.plan_days, 'plan': round(km.plan_km, 1),
                            'fact': round(km.fact_km, 1),
                            'delta': round(km.fact_km - km.plan_km, 1) if km.plan_days else None,
@@ -4513,7 +4529,7 @@ def api_garage_norm() -> Any:
                     'days': [{'day': r['day'], 'plan_km': r['plan']['km'], 'fact_km': r['fact']['km'],
                               'liters': r['fact']['liters'], 'unplanned_stays': r['fact']['unplanned_stays'],
                               'order_changes': r['kpi']['order_changes'],
-                              'over': garage.over(r['fact']['km'], r['plan']['km']), **terrain[r['day']]}
+                              'over': garage.over(r['fact']['km'], r['plan']['km']), **by_day[r['day']][0]}
                              for r in rows]})
     # сначала машины с флагом (и с подозрительными заправками), затем с данными — начальнику гаража на телефоне не листать
     out.sort(key=lambda x: (not (x['fuel']['over'] or x['km']['over'] or x['fuel']['too_high'] or x['fuel']['too_low']),

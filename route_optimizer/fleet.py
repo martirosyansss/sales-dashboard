@@ -698,11 +698,11 @@ def _sequence_cost(seq: Sequence[int], stops: Sequence[_Stop], d: Matrix, truck:
 
 
 def _leg_climbs(nodes: Sequence[Point], norms: Norms) -> list[float | None] | None:
-    """Подъёмы участков по порядку nodes (№85, roads.RoadDistances.climb); рельефа нет — None."""
+    """Подъёмы участков по порядку nodes (№85, roads.RoadDistances.climb); рельефа нет или подъёмы точек ещё считает фоновый
+    поток (запрос не ждёт) — None: литры рейса без рельефа."""
     roads = norms.roads
-    if roads is None or not getattr(roads, 'terrain', False):
+    if roads is None or not getattr(roads, 'terrain', False) or not roads.ensure_climb(nodes):
         return None
-    roads.ensure_climb(nodes)
     return [roads.climb(a, b) for a, b in zip(nodes, nodes[1:])]
 
 
@@ -1834,7 +1834,7 @@ def route_day(points: Sequence[Point], kgs: Sequence[float], revenues: Sequence[
               fixed: Sequence[tuple[str, Sequence[int], float]] | None = None,
               balance: bool = False, solver: bool = False, load_cap: float | None = None,
               allowed_trucks: Sequence[Collection[str] | None] | None = None, fed: Collection[str] = (),
-              iterations: int = vrp.ITERATIONS, solo: Sequence[bool] | None = None) -> list[Trip]:
+              iterations: int = vrp.ITERATIONS, solo: Sequence[bool] | None = None, report: bool = True) -> list[Trip]:
     """Рейсы дня по известным заказам — тот же расчёт, что у пробы Монте-Карло (plan_trips):
     заказ i — точка points[i], kgs[i] кг; Trip.items — номера заказов по порядку объезда.
     Тяжелее самой большой машины — несколько поездок к одному заказу поровну. overflow=False (план
@@ -1848,7 +1848,8 @@ def route_day(points: Sequence[Point], kgs: Sequence[float], revenues: Sequence[
     сборки (_solver, ответ №45; iterations — итераций поиска, меньше — быстрая проба набора машин, №77), берутся, если
     прошли проверку и лучше (_better), иначе — рейсы сборки. Обед (tn с
     обедом, №61) — во всех шагах по одному правилу; fed — машины, чей обед уже в занятом времени used / busy.
-    solo[i] — заказ i едет отдельным рейсом (№78, правило — в шапке модуля)."""
+    solo[i] — заказ i едет отдельным рейсом (№78, правило — в шапке модуля). report — литры рейсов с рельефом (№85,
+    _reported); сборка «Развоза» его не просит: литры её рейсов показывает dispatch.plan_view."""
     if (balance or solver) and (overflow or busy is not None or departs is not None):
         raise ValueError('balance и solver — только для сборки плана развоза: overflow=False, без busy и departs')
     load_cap = LOAD_CAP if solver else load_cap
@@ -1864,8 +1865,8 @@ def route_day(points: Sequence[Point], kgs: Sequence[float], revenues: Sequence[
                    p in yerevan, solo is not None and bool(solo[i]))
              for i, (p, kg, rev) in enumerate(zip(points, kgs, revenues))]
     if overflow or not trucks:
-        return _reported(plan_trips(stops, d, m, trucks, tn, used, overflow, earliest, reasons, busy, departs, fixed,
-                                    load_cap, fed), stops, d, [depot, *uniq], norms, trucks, tn)
+        trips = plan_trips(stops, d, m, trucks, tn, used, overflow, earliest, reasons, busy, departs, fixed, load_cap, fed)
+        return _reported(trips, stops, d, [depot, *uniq], norms, trucks, tn) if report else trips
     cap = max(t.capacity_kg for t in trucks)
     pinned = {i for _, idx, _ in (fixed or ()) for i in idx}
     # тяжёлый заказ в центре делится по тоннажу машин с правом въезда (_plan_timed)
@@ -1924,7 +1925,7 @@ def route_day(points: Sequence[Point], kgs: Sequence[float], revenues: Sequence[
         reasons.update({i: why.get(i, 'time') for i in range(len(stops)) if i not in placed})
     if departs is not None:
         departs.extend(when)
-    return _reported(trips, stops, d, [depot, *uniq], norms, trucks, tn)
+    return _reported(trips, stops, d, [depot, *uniq], norms, trucks, tn) if report else trips
 
 
 def _reported(trips: list[Trip], stops: Sequence[_Stop], d: Matrix, pts: Sequence[Point], norms: Norms,
@@ -2134,11 +2135,11 @@ def _matrices(points: Sequence[Point], depot: Point, norms: Norms, tn: TruckNorm
 
 
 def _with_climbs(d: Matrix, pts: Sequence[Point], norms: Norms) -> Matrix:
-    """Км d между точками pts (0 — склад) с подъёмами участков (KmMatrix, №85); у дорог нет высот — d как есть."""
+    """Км d между точками pts (0 — склад) с подъёмами участков (KmMatrix, №85); у дорог нет высот или подъёмы ещё считает
+    фоновый поток — d как есть."""
     roads = norms.roads
-    if roads is None or not getattr(roads, 'terrain', False):
+    if roads is None or not getattr(roads, 'terrain', False) or not roads.ensure_climb(pts):
         return d
-    roads.ensure_climb(pts)
     n = len(pts)
     out = KmMatrix(d)
     out.climb = [[0.0 if a == b else roads.climb(pts[a], pts[b]) for b in range(n)] for a in range(n)]

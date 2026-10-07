@@ -153,7 +153,7 @@ def test_norm_month_fuel_km_and_boundaries(client, monkeypatch):
     assert sep['has_data'] and sep['connected'] and not sep['too_old'] and sep['oldest_month'] == '2025-11'
     assert state.fleet_facts.since[-1] == '2026-07-03'                  # заправки — с месяца − 60 дней, не все
     car1 = _truck(sep, 'CAR1')
-    assert car1['norm'] == {'l100': 30.0, 'source': 'manual', 'learned': None}
+    assert car1['norm'] == {'l100': 30.0, 'source': 'manual', 'learned': None, 'basis': 'flat', 'terrain_missing': 'no_dem'}
     # Δ% — от неокруглённого 31,125 (а не от показанного 31,1)
     assert car1['fuel'] == {'l100': 31.1, 'liters': 249.0, 'km': 800.0, 'intervals': 2, 'refuels': 3, 'reason': None,
                             'too_high': 0, 'too_low': 0, 'delta_pct': round((31.125 - 30) / 30 * 100, 1),
@@ -204,7 +204,7 @@ def test_norm_is_manual_learned_only_beside(client, monkeypatch):
     state.store.save_learned('2026-09-15', [lr.Outcome('fuel', 'CAR2', True, 'ok', learned)])
     car1 = _truck(client.get('/api/routes/garage/norm').get_json(), 'CAR1')
     # выучено 35 — ровно факт октября; тревога всё равно по ручным 30: +16,7%
-    assert car1['norm'] == {'l100': 30.0, 'source': 'manual', 'learned': 35.0}
+    assert car1['norm'] == {'l100': 30.0, 'source': 'manual', 'learned': 35.0, 'basis': 'flat', 'terrain_missing': 'no_dem'}
     assert car1['fuel']['delta_pct'] == 16.7 and car1['fuel']['over']
     # сентябрь: журнал на конец месяца (прогоны раньше 01.10) — выученного ещё не было
     assert _truck(client.get('/api/routes/garage/norm?month=2026-09').get_json(), 'CAR1')['norm']['learned'] is None
@@ -216,14 +216,14 @@ def test_norm_is_manual_learned_only_beside(client, monkeypatch):
     assert r.status_code == 200, r.get_json()
     body = client.get('/api/routes/garage/norm').get_json()
     car1 = _truck(body, 'CAR1')
-    assert car1['norm'] == {'l100': 32.0, 'source': 'manual_profile', 'learned': 35.0}
+    assert car1['norm'] == {'l100': 32.0, 'source': 'manual_profile', 'learned': 35.0, 'basis': 'flat', 'terrain_missing': 'no_dem'}
     assert car1['fuel']['delta_pct'] == 9.4 and not car1['fuel']['over']
     # ручной нормы нет — выученная, с пометкой (страница: «ահազանգը թույլ է»); CAR2 с заправкой — в сентябре
     sep = client.get('/api/routes/garage/norm?month=2026-09').get_json()
-    assert _truck(sep, 'CAR2')['norm'] == {'l100': 35.0, 'source': 'learned', 'learned': 35.0}
+    assert _truck(sep, 'CAR2')['norm'] == {'l100': 35.0, 'source': 'learned', 'learned': 35.0, 'basis': 'flat', 'terrain_missing': 'no_dem'}
     state.store.save_learning_auto('fuel', False, 'qa')                 # автообучение выключено — выученного нет
     sep = client.get('/api/routes/garage/norm?month=2026-09').get_json()
-    assert _truck(sep, 'CAR2')['norm'] == {'l100': None, 'source': None, 'learned': None}
+    assert _truck(sep, 'CAR2')['norm'] == {'l100': None, 'source': None, 'learned': None, 'basis': 'flat', 'terrain_missing': 'no_dem'}
 
 
 def test_norm_suspicious_refuels_are_red_not_silent(client, monkeypatch):
@@ -380,7 +380,7 @@ def test_garage_page_tab_and_basemap_without_yandex_key(dashboard, monkeypatch):
     assert html.count('Օրեր GPS-ով') == 1                               # заголовок столбца (подпись карточки — в JS)
     leaflet = html.index('leaflet@1.9.4/dist/leaflet.js')
     basemap = html.index('js/routes_basemap.js?v=1" data-yandex-key=""')
-    assert leaflet < basemap < html.index('js/routes_garage.js?v=10')
+    assert leaflet < basemap < html.index('js/routes_garage.js?v=11')
     js = (ROOT / 'static' / 'js' / 'routes_garage.js').read_text(encoding='utf-8')
     assert "'/api/routes/garage/norm'" in js and "'/api/routes/garage/day?date='" in js
     assert '/api/routes/learning' not in js and 'road-lines' not in js

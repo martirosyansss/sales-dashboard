@@ -7,7 +7,8 @@
 добавляют к литрам участка TERRAIN_K · m · (U − TERRAIN_U_BAR · км), m — собственная масса машины (curb_tonnes) + остаток
 груза на участке, т. Нормы л/100 уже содержат средний рельеф наших дорог — вычитается средний подъём TERRAIN_U_BAR:
 холмистый рейс дороже нормы, ровный — дешевле. Поправка не уводит участок ниже нуля литров. Без подъёмов (climbs None) —
-расчёт байт в байт прежний.
+расчёт байт в байт прежний. Выученные по заправкам нормы (learning) уже содержат рельеф своих рейсов: вместе с поправкой он
+учтён бы дважды — пока рельеф только в показанных литрах (terrain.IN_PLAN), обучение его не вычитает (план №85, «Потом»).
 """
 from __future__ import annotations
 
@@ -25,6 +26,11 @@ TERRAIN_K = 9.81 * 1000.0 / (0.33 * 35.8e6)
 # сумма поправок по этой истории — 0,0 л. Пересчитать — при смене σ, CLIMB_C, норм л/100 или географии развоза: те же
 # участки свежей истории → mean_climb.
 TERRAIN_U_BAR = 4.746
+# Средний подъём для нормы по GPS-треку («Նորմ և փաստ»): там масса постоянная (собственная + полгруза — груз по участкам
+# трека не известен), поэтому центрирование — без веса массы: Σ U / Σ км тех же участков истории (тот же расчёт, что
+# TERRAIN_U_BAR, mean_climb с одинаковой массой) = 7,275 м/км. С ū по массе (4,746) норма трека была бы систематически
+# выше нормы на 2,5 м/км подъёма (~+2% литров у HOWO).
+TERRAIN_U_BAR_TRACK = 7.275
 CURB_T = ((2300.0, 2.3), (2600.0, 2.6), (5000.0, 4.5))   # тоннаж, кг → собственная масса, т (по классам парка)
 
 LOAD_COST_FIELDS = ('fuel_empty_l_per_100km', 'fuel_full_l_per_100km',
@@ -61,9 +67,10 @@ def mean_climb(legs: Iterable[tuple[float, float, float]]) -> float:
     return math.fsum(m * u for m, u, _ in legs) / km if km > 0 else 0.0
 
 
-def terrain_liters(mass_t: float, climb_m: float, km: float) -> float:
-    """Литры подъёма участка (№85) сверх среднего, уже входящего в нормы: TERRAIN_K · m · (U − TERRAIN_U_BAR · км)."""
-    return TERRAIN_K * mass_t * (climb_m - TERRAIN_U_BAR * km)
+def terrain_liters(mass_t: float, climb_m: float, km: float, u_bar: float | None = None) -> float:
+    """Литры подъёма участка (№85) сверх среднего, уже входящего в нормы: TERRAIN_K · m · (U − ū · км); ū — TERRAIN_U_BAR
+    (участки рейсов с остатком груза), у трека с постоянной массой — TERRAIN_U_BAR_TRACK."""
+    return TERRAIN_K * mass_t * (climb_m - (TERRAIN_U_BAR if u_bar is None else u_bar) * km)
 
 
 @dataclass(frozen=True)
@@ -125,7 +132,7 @@ def route_cost(distances: Sequence[float], deliveries: Sequence[float], truck: A
             remaining = max(0.0, remaining - deliveries[i])
     if empty is None:
         fuel = distance * base / 100.0  # прежний порядок арифметики для незаданных норм
-    if climbs is None:
+    if climbs is None or not up:   # нет ни одного известного подъёма — рейс без рельефа (не «0 м»)
         return RunningCost(fuel, wear, payload, empty is not None,
                            wear_base is not None or wear_load is not None)
     terrain = math.fsum(hills)

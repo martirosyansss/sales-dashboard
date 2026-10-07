@@ -25,10 +25,13 @@
   Считается только для точек ensure_climb («Развоз»), Dijkstra от их узлов с предшественниками: подъём — суммой по дереву
   кратчайших путей (_tree_sums), а не обходом путей. Кэш — <карта>.climb.npz (<карта>.climb-center.npz у объезда центра):
   узлы графа и матрица подъёмов между ними; ключ — граф, высоты и CLIMB_C. Кэша высот нет — terrain False, climb None.
+  У сервера (RoadProvider) новые точки досчитывает фоновый поток (своя блокировка, не блокировка км): запрос не ждёт —
+  пока подъёма нет, climb → None, литры рейса без рельефа; команды warm и dem досчитывают точки плана заранее.
 
 Команды:  python -m route_optimizer.roads download | build | warm [--if-stale] | dem [--force]
-(warm --if-stale — только если кэш расстояний не годится нынешнему графу и формату: задача обновления сервера;
-dem — скачать недостающие тайлы SRTM для графа в data/roads/dem и собрать кэш высот узлов)
+(warm --if-stale — только если кэш расстояний или подъёмов не годится нынешнему графу и формату: задача обновления
+сервера; кэш высот от прежней карты при этом пересобирается из уже скачанных тайлов. dem — скачать недостающие тайлы SRTM
+для графа в data/roads/dem, собрать кэш высот узлов и прогреть подъёмы точек плана, как warm)
 """
 from __future__ import annotations
 
@@ -42,7 +45,7 @@ import time
 import zlib
 from dataclasses import dataclass, field
 from functools import cached_property
-from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Collection, Iterable, Mapping, Sequence
 
 from . import terrain
 from .geo import EARTH_RADIUS_KM, Point, haversine_km, in_polygon
@@ -81,7 +84,12 @@ MIN_EDGE_KM = 1e-9         # нулевые рёбра (узлы с одной �
 PATH_SIMPLIFY_KM = 0.005   # линия на карте: отклонение от дороги не больше 5 м
 PATH_LIMIT_FACTOR = 3.0    # поиск пути для карты — в пределах 3 × по прямой + 2 км (не нашёлся — без предела)
 PATH_LIMIT_SLACK_KM = 2.0
-TRACK_NODE_KM = 0.1        # точка GPS-трека берёт высоту узла графа не дальше 100 м (рельеф трека, №85)
+CLIMB_CHUNK = 32           # подъёмы досчитываются кусками по столько узлов: кэш пишется после каждого (warm под пределом)
+# фоновый поток подъёмов уступает процессор запросам: после каждого шага спит CLIMB_PAUSE × его время (Dijkstra — по
+# CLIMB_BATCH источников). Замер 07.10 (сборка дня «Развоза», ~150 точек): без паузы во время фонового расчёта — 23 с
+# вместо 11, с паузой 3 — 14 с; фон при этом дольше: 95 с вместо 34 (один раз на новые точки)
+CLIMB_PAUSE = 3.0
+CLIMB_BATCH = 4
 GRAPH_FORMAT = 2
 DIST_FORMAT = 3            # 3 — направленная матрица (было: среднее туда и обратно)
 RULES_VERSION = 2          # правила way_direction: поменялись — граф и кэш расстояний пересобираются
@@ -392,15 +400,24 @@ class RoadNetwork:
             out[k:k + DIJKSTRA_BATCH] = rows[:, targets]
         return out
 
-    def climbs(self, sources: Any, targets: Any, z: Any, reverse: bool = False) -> Any:
+    def climbs(self, sources: Any, targets: Any, z: Any, reverse: bool = False, pause: float = 0.0) -> Any:
         """Эффективный подъём, м [len(sources) × len(targets)] по тем же кратчайшим путям, что у distances (reverse — от
         targets[j] к sources[i]); z — высоты узлов. Ребро дерева Dijkstra p → v — terrain.edge_climb, его длина — разность
-        расстояний от источника; сумма по пути — _tree_sums. Пути нет — NaN."""
+        расстояний от источника; сумма по пути — _tree_sums. Пути нет — NaN. pause — фоновый расчёт: после каждого шага
+        сон pause × его время, Dijkstra — по CLIMB_BATCH источников (запросы сервера не ждут процессор)."""
         g = self._gt if reverse else self._g
         out = np.empty((len(sources), len(targets)), dtype=np.float32)
-        for k in range(0, len(sources), DIJKSTRA_BATCH):
-            dist, pred = dijkstra(g, directed=True, indices=sources[k:k + DIJKSTRA_BATCH], return_predecessors=True)
+        batch = CLIMB_BATCH if pause > 0 else DIJKSTRA_BATCH
+
+        def rest(since: float) -> None:
+            if pause > 0:
+                time.sleep(pause * (time.perf_counter() - since))
+        for k in range(0, len(sources), batch):
+            started = time.perf_counter()
+            dist, pred = dijkstra(g, directed=True, indices=sources[k:k + batch], return_predecessors=True)
+            rest(started)
             for i in range(len(dist)):
+                started = time.perf_counter()
                 d, p = dist[i], pred[i]
                 root = p < 0
                 q = np.where(root, 0, p)
@@ -410,6 +427,7 @@ class RoadNetwork:
                 w[root] = 0.0
                 up = _tree_sums(p, w)[targets]
                 out[k + i] = np.where(np.isfinite(d[targets]), up, np.nan)
+                rest(started)
         return out
 
     def lines(self, lines: Sequence[Sequence[Point]]) -> list[list[Point]]:
@@ -576,7 +594,11 @@ def elevation_loader(path: str, version: str) -> Callable[[], tuple[str, Any] | 
                 identity = RoadGraph.stored_identity(graph_path, version)
                 key = terrain.elev_key(identity) if identity is not None else None
                 z = terrain.load_elevation(elev_path, key) if key is not None else None
-                stored = terrain.stored_elevation(elev_path) if z is not None else None
+                stored = terrain.stored_elevation(elev_path)
+                if z is None and stored is not None and not state.get('warned'):
+                    state['warned'] = True
+                    logger.warning('[Routes] Кэш высот %s — от другого графа или параметров DEM: без рельефа до '
+                                   '«python -m route_optimizer.roads dem» (или warm --if-stale)', os.path.basename(elev_path))
                 # в ключе — и отпечаток тайлов: докачан тайл, высоты те же по ключу, но другие — подъёмы пересчитываются
                 state.update(sig=sig, got=(f'{key}|{stored[1]}', z) if z is not None and stored is not None else None)
             return state['got']
@@ -597,7 +619,8 @@ class RoadDistances:
     def __init__(self, version: str, load_network: Callable[[], RoadNetwork],
                  cache_path: str | None = None,
                  graph_identity: Callable[[], str | None] | None = None, map_path: str | None = None,
-                 elevation: Callable[[], tuple[str, Any] | None] | None = None, climb_path: str | None = None):
+                 elevation: Callable[[], tuple[str, Any] | None] | None = None, climb_path: str | None = None,
+                 background: bool = False):
         self.version = version
         self.map_path = map_path   # файл карты (для отпечатка содержимого в road_model_id); None — граф в памяти
         self._load_network = load_network
@@ -613,6 +636,11 @@ class RoadDistances:
         self._climb_path = climb_path
         self._climbs = _empty_climbs()
         self._climb_failed = False
+        self.background = background        # ensure_climb досчитывает новые узлы фоновым потоком (сервер), запрос не ждёт
+        self._climb_lock = threading.Lock()   # расчёт и запись кэша подъёмов; блокировку км (_lock) не держит
+        self._want_lock = threading.Lock()    # очередь узлов фонового потока — держится мгновения
+        self._climb_want: set[int] = set()
+        self._climb_thread: threading.Thread | None = None
 
     @classmethod
     def for_map(cls, path: str, version: str, cache_name: str = 'dist') -> RoadDistances:
@@ -620,7 +648,7 @@ class RoadDistances:
         return cls(version, lambda: RoadNetwork(load_graph(path, version)),
                    _cache_path(path, cache_name),
                    lambda: RoadGraph.stored_identity(graph_path, version), path,
-                   elevation_loader(path, version), _cache_path(path, cache_name.replace('dist', 'climb', 1)))
+                   elevation_loader(path, version), _cache_path(path, cache_name.replace('dist', 'climb', 1)), True)
 
     @classmethod
     def for_graph(cls, graph: RoadGraph, version: str = 'memory',
@@ -641,7 +669,8 @@ class RoadDistances:
         те же, что у графа load(): высоты elevation — его."""
         zone = tuple(zone)
         return cls(f'{version}|center:{zone_key(zone)}', lambda: RoadNetwork(without_zone(load(), zone)),
-                   cache_path, lambda: without_zone(load(), zone).identity, map_path, elevation, climb_path)
+                   cache_path, lambda: without_zone(load(), zone).identity, map_path, elevation, climb_path,
+                   map_path is not None)
 
     @property
     def size(self) -> tuple[int, int]:
@@ -737,28 +766,63 @@ class RoadDistances:
         return (not self.failed and not self._climb_failed and self.elevation is not None
                 and self.elevation() is not None)
 
-    def ensure_climb(self, points: Iterable[Point | None]) -> None:
-        """Досчитать подъёмы между точками (и со всеми точками кэша подъёмов): км — ensure, подъём — Dijkstra от новых
-        узлов вперёд и по обратному графу (RoadNetwork.climbs). Высот нет — кэш подъёмов пуст, climb → None."""
+    def ensure_climb(self, points: Iterable[Point | None], wait: bool | None = None) -> bool:
+        """Подъёмы между точками (и со всеми точками кэша подъёмов): км — ensure, подъём — Dijkstra от новых узлов вперёд и по
+        обратному графу (RoadNetwork.climbs). Все узлы уже в кэше — сразу, без блокировок. Иначе wait (None — у сервера
+        нет, background) — досчитать сейчас; без ожидания — узлы в очередь фонового потока, ответ сразу. True — подъёмы
+        всех точек есть (точки без привязки не в счёт); False — рельефа нет или подъёмы ещё считаются (climb → None)."""
         got = self.elevation() if self.elevation is not None and not self._climb_failed else None
         if got is None:
             self._climbs = _empty_climbs()
-            return
+            return False
         points = [p for p in points if p is not None]
         self.ensure(points)
-        if self.failed:
-            return
-        with self._lock:
+        t, identity = self._table, self._identity
+        if self.failed or identity is None:
+            return False
+        key = _climb_key(identity, got[0])
+        rows = {t.points[k][0] for k in {point_key(p) for p in points} if k in t.points}
+        nodes = {int(t.nodes[r]) for r in rows if r >= 0}
+        c = self._climbs
+        if c.key == key and c.graph == identity and nodes <= c.index.keys():
+            return True
+        if wait if wait is not None else not self.background:
+            self._fill_climbs(nodes)
+            c = self._climbs
+            return c.key == key and nodes <= c.index.keys()
+        with self._want_lock:
+            self._climb_want |= nodes
+            if self._climb_thread is None:
+                self._climb_thread = threading.Thread(target=self._climb_worker, name='routes-climbs', daemon=True)
+                self._climb_thread.start()
+        return False
+
+    def _climb_worker(self) -> None:
+        """Фоновый поток подъёмов: берёт очередь узлов, пока она не пуста, уступая процессор запросам (CLIMB_PAUSE; сбой —
+        в журнал, рельефа нет)."""
+        while True:
+            with self._want_lock:
+                todo, self._climb_want = self._climb_want, set()
+                if not todo:
+                    self._climb_thread = None
+                    return
+            self._fill_climbs(todo, CLIMB_PAUSE)
+
+    def _fill_climbs(self, nodes: Collection[int], pause: float = 0.0) -> None:
+        """Досчитать подъёмы узлов графа nodes (под своей блокировкой, кусками по CLIMB_CHUNK с записью кэша после
+        каждого: прерванный warm не теряет сделанного; pause — фоновый поток, RoadNetwork.climbs). Сбой — рельефа нет до
+        пересоздания дорог."""
+        with self._climb_lock:
             try:
+                got = self.elevation() if self.elevation is not None and not self._climb_failed else None
                 t, identity = self._table, self._identity
-                if identity is None:
+                if got is None or identity is None:
                     return
                 key = _climb_key(identity, got[0])
-                if self._climbs.key != key:
+                if self._climbs.key != key or self._climbs.graph != identity:
                     self._read_climbs(key, identity)
-                c = self._climbs
-                rows = {t.points[k][0] for k in {point_key(p) for p in points} if k in t.points}
-                new = sorted({int(t.nodes[r]) for r in rows if r >= 0} - c.index.keys())
+                known = set(t.nodes.tolist())
+                new = sorted(n for n in set(nodes) - self._climbs.index.keys() if n in known)
                 if not new:
                     return
                 started = time.perf_counter()
@@ -766,18 +830,20 @@ class RoadDistances:
                 if net.graph.identity != identity:   # граф сменился — км пересчитает следующий ensure, подъёмы — за ним
                     return
                 z = got[1]
-                k_old = len(c.nodes)
-                nodes = np.concatenate([c.nodes, np.array(new, dtype=np.int64)])
-                up = np.full((len(nodes), len(nodes)), np.nan, dtype=np.float32)
-                up[:k_old, :k_old] = c.up
-                src = np.array(new, dtype=np.int64)
-                up[k_old:, :] = net.climbs(src, nodes, z)                              # новый узел → все
-                if k_old:
-                    up[:k_old, k_old:] = net.climbs(src, c.nodes, z, reverse=True).T   # прежние → новый
-                self._climbs = _Climbs(key, identity, nodes, up, {int(n): i for i, n in enumerate(nodes)})
-                logger.info('[Routes] Подъёмы участков: +%d узлов, всего %d; %.1f с', len(new), len(nodes),
+                for k in range(0, len(new), CLIMB_CHUNK):
+                    c = self._climbs
+                    part = np.array(new[k:k + CLIMB_CHUNK], dtype=np.int64)
+                    k_old = len(c.nodes)
+                    all_nodes = np.concatenate([c.nodes, part])
+                    up = np.full((len(all_nodes), len(all_nodes)), np.nan, dtype=np.float32)
+                    up[:k_old, :k_old] = c.up
+                    up[k_old:, :] = net.climbs(part, all_nodes, z, pause=pause)                  # новый узел → все
+                    if k_old:
+                        up[:k_old, k_old:] = net.climbs(part, c.nodes, z, reverse=True, pause=pause).T   # прежние → новый
+                    self._climbs = _Climbs(key, identity, all_nodes, up, {int(n): i for i, n in enumerate(all_nodes)})
+                    self._write_climbs()
+                logger.info('[Routes] Подъёмы участков: +%d узлов, всего %d; %.1f с', len(new), len(self._climbs.nodes),
                             time.perf_counter() - started)
-                self._write_climbs()
             except Exception:
                 logger.exception('[Routes] Подъёмы участков не посчитаны — без рельефа')
                 self._climb_failed = True
@@ -800,34 +866,6 @@ class RoadDistances:
             return None
         v = c.up.item(ia, ib)
         return v if math.isfinite(v) else None
-
-    def track_climbs(self, tracks: Sequence[Sequence[Point]]) -> list[tuple[float, float] | None]:
-        """(эффективный подъём, м; км) GPS-треков (№85, «Նորմ և փաստ»): высота точки — у ближайшего узла графа (не дальше
-        TRACK_NODE_KM; дальше — точка без высоты пропускается), подъём — terrain.edge_climb между соседними точками с
-        высотой (длина — по треку между ними), км — по прямой между всеми точками. Граф загружается один раз на все треки.
-        Рельефа нет, дороги сломаны, трек короче двух точек — None."""
-        got = self.elevation() if self.elevation is not None and not self.failed else None
-        if got is None or not any(len(t) >= 2 for t in tracks):
-            return [None] * len(tracks)
-        try:
-            net = self._load_network()
-        except Exception:
-            logger.exception('[Routes] Граф для рельефа треков не загружен — без рельефа')
-            return [None] * len(tracks)
-        out: list[tuple[float, float] | None] = []
-        for pts in tracks:
-            if len(pts) < 2:
-                out.append(None)
-                continue
-            nodes, off = net.snap(list(pts))
-            h = np.where((nodes >= 0) & (off <= TRACK_NODE_KM), got[1][np.maximum(nodes, 0)], np.nan)
-            lat = np.array([p[0] for p in pts], dtype=np.float64)
-            lon = np.array([p[1] for p in pts], dtype=np.float64)
-            at = np.concatenate([[0.0], np.cumsum(_haversine_np(lat[:-1], lon[:-1], lat[1:], lon[1:]))])
-            ok = np.isfinite(h)
-            hv, av = h[ok], at[ok]
-            out.append((float(math.fsum(terrain.edge_climb(hv[:-1], hv[1:], np.diff(av)))), float(at[-1])))
-        return out
 
     def _read_climbs(self, key: str, identity: str) -> None:
         """Кэш подъёмов из файла, если он посчитан на том же графе и тех же высотах; иначе пустой с этим ключом."""
@@ -1001,13 +1039,14 @@ class CenterBypassRoads:
     def terrain(self) -> bool:
         return self.base.terrain
 
-    def ensure_climb(self, points: Iterable[Point | None]) -> None:
-        """Подъёмы — по тем же графам, что км: обычный — для всех точек, объезд — для точек вне центра."""
+    def ensure_climb(self, points: Iterable[Point | None], wait: bool | None = None) -> bool:
+        """Подъёмы — по тем же графам, что км: обычный — для всех точек, объезд — для точек вне центра. True — готовы оба."""
         points = [p for p in points if p is not None]
         self.ensure(points)
-        self.base.ensure_climb(points)
-        if not self.base.failed:
-            self.bypass.ensure_climb([p for p in points if not self._inside_zone(p)])
+        ready = self.base.ensure_climb(points, wait)
+        if self.base.failed:
+            return False
+        return self.bypass.ensure_climb([p for p in points if not self._inside_zone(p)], wait) and ready
 
     def climb(self, a: Point, b: Point) -> float | None:
         """Подъём участка по тому же пути, что km: в объезд, если у объезда есть км (подъёма нет — None, не путь обычного
@@ -1143,10 +1182,26 @@ def _dist_cache_stale(path: str, zone: Sequence[Point] = ()) -> bool:
         return True   # графа в кэше нет или он от другой карты — warm соберёт и его
     if _cache_key_stale(_cache_path(path, 'dist'), identity):
         return True
+    elev = elevation_loader(path, version)()   # рельеф (№85): высоты есть — и кэш подъёмов должен им годиться
+    if elev is not None and _climb_cache_stale(_cache_path(path, 'climb'), _climb_key(identity, elev[0])):
+        return True
     if len(zone) < 3:
         return False
     graph = RoadGraph.load(graph_path, version)
-    return graph is None or _cache_key_stale(_cache_path(path, 'dist-center'), without_zone(graph, zone).identity)
+    if graph is None:
+        return True
+    around = without_zone(graph, zone).identity
+    return _cache_key_stale(_cache_path(path, 'dist-center'), around) or (
+        elev is not None and _climb_cache_stale(_cache_path(path, 'climb-center'), _climb_key(around, elev[0])))
+
+
+def _climb_cache_stale(cache: str, key: str) -> bool:
+    """Файл кэша подъёмов cache посчитан не с ключом key (нет файла, битый, другие граф или высоты)."""
+    try:
+        with open(cache, 'rb') as f, np.load(f, allow_pickle=False) as z:
+            return str(z['key']) != key
+    except Exception:   # файла нет или он битый
+        return True
 
 
 def _cache_key_stale(cache: str, identity: str) -> bool:
@@ -1207,11 +1262,20 @@ def _warm(path: str) -> None:
         around.ensure(points)
         n_points, n_nodes = around.bypass.size
         print(f'Объезд малого центра: в кэше точек {n_points}, узлов {n_nodes}; {time.perf_counter() - started:.0f} с')
+    if roads.terrain:   # рельеф (№85): подъёмы точек плана — заранее (кусками с записью кэша), фону сервера — только новые
+        for name, r in (('графа', roads), ('объезда центра', around if isinstance(around, CenterBypassRoads) else None)):
+            if r is None:
+                continue
+            started = time.perf_counter()
+            r.ensure_climb(points, wait=True)
+            done = (r.bypass if isinstance(r, CenterBypassRoads) else r)._climbs
+            print(f'Подъёмы {name}: узлов {len(done.nodes)}; {time.perf_counter() - started:.0f} с')
 
 
-def _dem(path: str, force: bool = False) -> int:
-    """Рельеф (№85): тайлы SRTM для узлов графа карты — в terrain.dem_dir() (скачанные не трогаются), затем кэш высот
-    узлов <карта>.elev.npz. Кэш годится (тот же граф, параметры и тайлы) — не пересобирается (force — пересобрать)."""
+def _dem(path: str, force: bool = False, download: bool = True) -> int:
+    """Рельеф (№85): тайлы SRTM для узлов графа карты — в terrain.dem_dir() (скачанные не трогаются; download False — только
+    уже скачанные), затем кэш высот узлов <карта>.elev.npz. Кэш годится (тот же граф, параметры и тайлы) — не
+    пересобирается (force — пересобрать)."""
     version = map_signature(path)
     if version is None or not roads_supported():
         print(f'Карты нет или нет numpy/scipy: {path}')
@@ -1219,7 +1283,7 @@ def _dem(path: str, force: bool = False) -> int:
     graph = load_graph(path, version)
     names = terrain.tiles_for(graph.lat, graph.lon)
     started = time.perf_counter()
-    got = terrain.download_tiles(names)
+    got = terrain.download_tiles(names) if download else []
     missing = [n for n in names if not os.path.exists(terrain.tile_path(n))]
     print(f'Тайлов высот {len(names)}: скачано сейчас {len(got)}, нет {len(missing)} {missing or ""}; '
           f'{time.perf_counter() - started:.0f} с')
@@ -1232,6 +1296,21 @@ def _dem(path: str, force: bool = False) -> int:
     terrain.save_elevation(elev_path, key, tiles, z)
     print(f'Высоты узлов: {len(z)}, без высоты {int(np.sum(~np.isfinite(z)))} → {elev_path}')
     return 0
+
+
+def _refresh_elevation(path: str) -> None:
+    """Кэш высот есть, но от прежней карты (или параметров DEM) — пересобрать из уже скачанных тайлов (без сети): иначе после
+    обновления карты рельефа нет до ручной команды dem. Кэша высот нет — рельеф не включён, ничего не делается."""
+    version = map_signature(path)
+    if version is None or not roads_supported() or terrain.stored_elevation(_cache_path(path, 'elev')) is None:
+        return
+    identity = RoadGraph.stored_identity(_cache_path(path, 'graph'), version)
+    if identity is not None and elevation_loader(path, version)() is not None:
+        return
+    try:
+        _dem(path, download=False)
+    except Exception:   # рельеф — необязательный: обновление идёт дальше без него
+        logger.exception('[Routes] Кэш высот не пересобран — без рельефа до команды dem')
 
 
 def main(argv: Sequence[str]) -> int:
@@ -1254,9 +1333,16 @@ def main(argv: Sequence[str]) -> int:
         RoadNetwork(graph)   # проверка: связность и KD-дерево строятся
         print(f'Граф: узлов {graph.n_nodes}, рёбер {len(graph.src)} → {_cache_path(path, "graph")}')
     elif command == 'dem':
-        return _dem(path, '--force' in argv)
+        code = _dem(path, '--force' in argv)
+        if code == 0:
+            try:   # подъёмы точек плана — сразу (читает ERP); не вышло — сервер досчитает их в фоне
+                _warm(path)
+            except (Exception, SystemExit) as e:
+                print(f'Подъёмы точек плана не прогреты ({e}) — сервер досчитает их в фоне')
+        return code
     elif command == 'warm':
         if '--if-stale' in argv:
+            _refresh_elevation(path)
             zone: list[Point] = []
             if map_signature(path) is not None and roads_supported():   # греть нечего — базу и не читаем
                 try:   # граница малого центра — из копии базы: сама не меняется

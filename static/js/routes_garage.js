@@ -616,7 +616,8 @@
             return [h('span', { class: 'gj-nodata', text: 'տվյալ չկա' }), h('small', { class: 'gj-sub', text: (FUEL_WHY[f.reason] || (() => ''))(f) })];
         }
         return [h('b', { class: 'gj-price' + (f.over ? ' gj-over' : ''), text: fmt(f.l100, 1) }),
-            f.delta_pct !== null ? h('small', { class: 'gj-sub' + (f.over ? ' gj-over' : ''), text: 'նորմից՝ ' + signed(f.delta_pct, 1) + '%' }) : null,
+            f.delta_pct !== null ? h('small', { class: 'gj-sub' + (f.over ? ' gj-over' : ''),
+                text: (t.norm.basis === 'terrain' ? 'ռելիեֆով նորմից՝ ' : 'նորմից՝ ') + signed(f.delta_pct, 1) + '%' }) : null,
             h('small', { class: 'gj-sub', text: fmt(f.liters, 1) + ' լ ÷ ' + fmt(f.km) + ' կմ · ' + fmt(f.intervals) + ' միջակայք' })];
     }
 
@@ -636,6 +637,7 @@
             h('b', { class: 'gj-day', text: dayHy(d.day) }),
             h('span', { class: d.over ? 'gj-over' : null, text: 'կմ՝ ' + (d.plan_km !== null ? fmt(d.plan_km) + ' → ' : 'պլան չկա → ') + fmt(d.fact_km) }),
             h('span', { title: LITERS_NOTE, text: 'լիտր՝ ' + (d.liters !== null ? '≈' + fmt(d.liters, 1) : '—') }),
+            num(d.norm_l) !== null ? h('span', { text: 'նորմ՝ ≈' + fmt(d.norm_l, 1) + ' լ · Վերելք՝ ' + fmt(d.climb_m) + ' մ' }) : null,
             h('span', { text: 'պլանից դուրս՝ ' + fmt(d.unplanned_stays) }),
             h('span', { text: 'ոչ հերթականությամբ՝ ' + fmt(d.order_changes) }),
             h('button', { type: 'button', class: 'rt-btn rt-btn-ghost rt-btn-sm', 'aria-label': 'Քարտեզ՝ ' + t.car_code + ', ' + dayHy(d.day),
@@ -648,7 +650,8 @@
             + 'Ծրագրի սովորած ծախսը ցույց է տրվում կողքին․ այն հաշվված է նույն լիցքավորումներից, ուստի ահազանգի հիմք չէ։ Փաստը՝ վարորդների լիցքավորումներից՝ '
             + 'լրիվ բաքից լրիվ բաք․ լիտրերը ÷ կմ ըստ օդոմետրի (միջակայքը, որն անցնում է ամսվա սահմանով, մտնում է այն ամիսը, երբ '
             + 'ավարտվել է)։ Կմ-ը համեմատվում է միայն այն օրերին, երբ կա և «Առաքում» էջի պլանը, և GPS հետագիծը։ Կարմիրով է նշված '
-            + 'այն, ինչ նորմից կամ պլանից ավելի է ' + pct + '%-ից ավելի։' + (d.month === d.current_month ? ' Այսօրը դեռ չի մտնում։' : '');
+            + 'այն, ինչ նորմից կամ պլանից ավելի է ' + pct + '%-ից ավելի։ Եթե կա GPS հետագիծ, ծախսը համեմատվում է ռելիեֆով նորմի հետ՝ '
+            + 'հետագծի վերելքները հաշվի առած (լեռնային օրը՝ ավելի, հարթը՝ պակաս)։' + (d.month === d.current_month ? ' Այսօրը դեռ չի մտնում։' : '');
         $('gjNormEmpty').hidden = d.has_data;
         $('gjNormEmptyText').textContent = d.too_old
             ? 'Ցույց են տրվում միայն վերջին 12 ամիսները։'
@@ -674,7 +677,8 @@
                 h('td', { class: 'gj-num w-half', 'data-label': 'Նորմ, լ/100 կմ' }, t.norm.l100 !== null
                     ? [h('b', { class: 'gj-price', text: fmt(t.norm.l100, 1) }),
                         h('small', { class: 'gj-sub' + (t.norm.source === 'learned' ? ' gj-weak' : ''), text: NORM_SRC[t.norm.source] || '' }),
-                        t.norm.source !== 'learned' && t.norm.learned !== null ? h('small', { class: 'gj-sub', text: 'սովորած՝ ' + fmt(t.norm.learned, 1) }) : null]
+                        t.norm.source !== 'learned' && t.norm.learned !== null ? h('small', { class: 'gj-sub', text: 'սովորած՝ ' + fmt(t.norm.learned, 1) }) : null,
+                        t.norm.basis === 'terrain' ? h('small', { class: 'gj-sub', text: 'Նորմ՝ ռելիեֆով՝ ' + fmt(t.norm.terrain_l100, 1) }) : null]
                     : [h('span', { text: '—' }), h('small', { class: 'gj-sub', text: 'նշված չէ' })]),
                 h('td', { class: 'gj-num w-half', 'data-label': 'Փաստ, լ/100 կմ' }, ...fuelCell(t)),
                 h('td', { class: 'gj-num', 'data-label': 'Կմ՝ պլան → փաստ' }, ...kmCell(t)),

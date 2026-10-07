@@ -1105,7 +1105,7 @@ def _plan_around(ctx: DayContext, sel: Sequence[fl.FleetTruck], routable: Mappin
     solo = [*(_solo(ctx, rest) or [False] * len(rest)), *(c in ctx.solo for t in keep for c in t.stops)] if ctx.solo else None
     trips = fl.route_day(pts, kgs, revs, ctx.depot, sel, ctx.norms, _horizon(ctx), overflow=False, windows=wins, center=cen,
                          reasons=reasons, fixed=fixed, balance=True, solver=True, allowed_trucks=access, iterations=iterations,
-                         solo=solo)
+                         solo=solo, report=False)
     own = {tuple(idx): t for t, (_, idx, _) in zip(keep, fixed)}
     out: list[DraftTrip] = []
     for t in trips:
@@ -1168,7 +1168,7 @@ def build(ctx: DayContext, stops: Sequence[Stop], old: Draft | None, trucks: Seq
                              windows=[_span(ctx, s.customer_id) for s in rest], center=[_central(ctx, s) for s in rest],
                              reasons=reasons, balance=True, solver=True,
                              allowed_trucks=[_allowed_trucks(ctx, s.customer_id) for s in rest], fed=fed,
-                             iterations=iterations, solo=_solo(ctx, rest)) if rest and sel else []
+                             iterations=iterations, solo=_solo(ctx, rest), report=False) if rest and sel else []
         draft.trips = list(pinned)
         for t in trips:
             draft.trips.append(DraftTrip(draft.next_id, t.truck, [rest[i].customer_id for i in t.items]))
@@ -1502,7 +1502,7 @@ def overtime(ctx: DayContext, stops: Sequence[Stop], draft: Draft) -> Draft:
                          earliest=True, windows=[_span(ctx, s.customer_id) for s in rest],
                          center=[_central(ctx, s) for s in rest], reasons=reasons, busy=busy, departs=departs,
                          load_cap=fl.LOAD_CAP, allowed_trucks=[_allowed_trucks(ctx, s.customer_id) for s in rest], fed=fed,
-                         solo=_solo(ctx, rest))
+                         solo=_solo(ctx, rest), report=False)
     new = []
     for t in trips:
         new.append(DraftTrip(draft.next_id, t.truck, [rest[i].customer_id for i in t.items]))
