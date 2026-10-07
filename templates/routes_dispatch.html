@@ -11,7 +11,7 @@
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=24">
 <!-- Страница на армянском (ответ владельца №31). Редизайн: тёмная спокойная тема (ответ владельца №51), свои стили поверх routes.css -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=52">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=53">
 {% endblock %}
 
 {% block content %}
@@ -60,10 +60,20 @@
             </div>
             <!-- №82 (вариант А, как Routific): на широком экране с рейсами — действия дня в шапке; узлы переносит layoutWs() -->
             <div class="dp-wsacts" id="dpWsActs" hidden>
-                <button type="button" id="dpPrepOpen" class="rt-btn rt-btn-ghost" aria-controls="dpDrawer" aria-expanded="false">
+                <button type="button" id="dpPrepOpen" class="rt-btn rt-btn-ghost" title="Մեքենաներ, պատվերներ" aria-controls="dpDrawer" aria-expanded="false">
                     <i class="fas fa-sliders" aria-hidden="true"></i><span>Մեքենաներ, պատվերներ</span></button>
-                <button type="button" id="dpWsAi" class="rt-btn rt-btn-ghost" aria-controls="dpAi" hidden><i class="fas fa-wand-magic-sparkles" aria-hidden="true"></i><span>AI</span></button>
-                <button type="button" id="dpViewList" class="rt-btn rt-btn-ghost" title="Ցուցակով (նախկին տեսք)" aria-label="Ցուցակով (նախկին տեսք)"><i class="fas fa-list" aria-hidden="true"></i></button>
+                <button type="button" id="dpWsAi" class="rt-btn rt-btn-ghost" title="AI օգնական" aria-controls="dpAi" hidden><i class="fas fa-wand-magic-sparkles" aria-hidden="true"></i><span>AI</span></button>
+                <span class="dp-tbsep" aria-hidden="true"></span>
+                <!-- сюда layoutWs() переносит утверждение и «Տպել / Excel»; редкие действия — в меню «⋯» -->
+                <div class="dp-more" id="dpWsMoreBox">
+                    <button type="button" id="dpWsMore" class="rt-btn rt-btn-ghost dp-icobtn" aria-haspopup="menu" aria-expanded="false" aria-controls="dpWsMenu"
+                        title="Այլ գործողություններ" aria-label="Այլ գործողություններ"><i class="fas fa-ellipsis" aria-hidden="true"></i></button>
+                    <div class="dp-menu" id="dpWsMenu" role="menu" aria-label="Այլ գործողություններ" hidden>
+                        <button type="button" role="menuitem" id="dpMenuUnapprove" hidden><i class="fas fa-lock-open" aria-hidden="true"></i><span>Չեղարկել հաստատումը</span></button>
+                        <button type="button" role="menuitem" id="dpMenuDiscard" hidden><i class="fas fa-rotate-left" aria-hidden="true"></i><span>Չեղարկել չուղարկված փոփոխությունները</span></button>
+                        <button type="button" role="menuitem" id="dpViewList"><i class="fas fa-list" aria-hidden="true"></i><span>Ցուցակով (նախկին տեսք)</span></button>
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -307,8 +317,8 @@
                         <h2 class="dp-step-title" id="dpStep3Title" tabindex="-1"><span class="rt-sr-only">Քայլ 3. </span>Երթեր</h2>
                     </div>
                     <div class="dp-summary-cta">
-                        <button type="button" id="dpPrint" class="rt-btn rt-btn-primary" aria-label="Տպել վարորդների համար"><i class="fas fa-print" aria-hidden="true"></i><span>Տպել վարորդների համար</span></button>
-                        <button type="button" id="dpExcel" class="rt-btn rt-btn-ghost"><i class="fas fa-file-excel" aria-hidden="true"></i><span>Excel</span></button>
+                        <button type="button" id="dpPrint" class="rt-btn rt-btn-primary" aria-label="Տպել վարորդների համար" title="Տպել վարորդների համար"><i class="fas fa-print" aria-hidden="true"></i><span>Տպել վարորդների համար</span></button>
+                        <button type="button" id="dpExcel" class="rt-btn rt-btn-ghost" title="Ներբեռնել Excel"><i class="fas fa-file-excel" aria-hidden="true"></i><span>Excel</span></button>
                         <button type="button" id="dpViewWs" class="rt-btn rt-btn-ghost dp-view-ws" title="Աշխատանքային էկրան՝ քարտեզ և ժամացույց"><i class="fas fa-table-columns" aria-hidden="true"></i><span>Աշխատանքային էկրան</span></button>
                     </div>
                 </div>
@@ -509,5 +519,5 @@
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=1" data-yandex-key="{{ yandex_tiles_key }}"></script>
 <!-- панель «Հարցրու AI-ին» — до страницы: init подключает её (RoutesDispatchAI.attach) -->
 <script src="{{ url_for('static', filename='js/routes_dispatch_ai.js') }}?v=3"></script>
-<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=93"></script>
+<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=94"></script>
 {% endblock %}

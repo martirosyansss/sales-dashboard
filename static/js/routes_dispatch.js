@@ -604,6 +604,7 @@
         b.lastChild.textContent = d.sent ? 'Հաստատել օրվա պլանը' : 'Հաստատել և ուղարկել վարորդներին';
         b.dataset.short = d.sent ? 'Հաստատել' : 'Հաստատել և ուղարկել';   // №82: в шапке рабочего экрана — коротко
         b.setAttribute('aria-label', b.lastChild.textContent);
+        b.title = b.lastChild.textContent;
         b.addEventListener('click', approvePlan);
         const note = document.createElement('p');
         note.className = 'dp-approve-note';
@@ -653,10 +654,18 @@
         const unsent = !!(d.sent && d.unsent && !d.is_past);
         const pill = document.createElement('span');
         pill.className = 'dp-sendpill ' + (!d.sent ? 'is-draft' : unsent ? 'is-unsent' : 'is-sent');
-        pill.innerHTML = '<i class="fas ' + (!d.sent ? 'fa-pen-ruler' : unsent ? 'fa-circle' : 'fa-paper-plane') + '" aria-hidden="true"></i><span></span>';
-        pill.lastChild.textContent = !d.sent ? 'Սևագիր — վարորդները դեռ չեն տեսնում'
+        pill.innerHTML = '<i class="fas ' + (!d.sent ? 'fa-pen-ruler' : unsent ? 'fa-circle' : 'fa-paper-plane') + '" aria-hidden="true"></i>'
+            + '<span class="dp-sp-l"></span><span class="dp-sp-s" aria-hidden="true"></span>';
+        const long = pill.querySelector('.dp-sp-l'), short = pill.querySelector('.dp-sp-s');
+        long.textContent = !d.sent ? 'Սևագիր — վարորդները դեռ չեն տեսնում'
             : unsent ? unsentTitle(d.unsent) : 'Ուղարկված է վարորդներին · ' + builtWhen(d.sent.at);
-        if (unsent) pill.title = unsentDetail(d.unsent);
+        // шапка рабочего экрана — коротко и целиком (полный текст — в подсказке и для экранного диктора)
+        const sentDay = d.sent && typeof d.sent.at === 'string' ? d.sent.at.slice(0, 10) : '';
+        short.textContent = !d.sent ? 'Սևագիր'
+            : unsent ? 'Չուղարկված' + (d.unsent.trucks.length ? ' · ' + pl(d.unsent.trucks.length, 'մեքենա') : '')
+            : 'Ուղարկված · ' + (sentDay && sentDay !== d.today ? dayHuman(sentDay) : d.sent.at.slice(11, 16));
+        if (d.approved) short.insertAdjacentHTML('afterbegin', '<i class="fas fa-lock dp-sp-lock" aria-hidden="true"></i>');
+        pill.title = (unsent ? unsentDetail(d.unsent) : long.textContent) + (d.approved ? ' · Պլանը հաստատված է' : '');
         box.appendChild(pill);
         if (!unsent) return;
         const b = document.createElement('button');
@@ -3982,11 +3991,14 @@
         document.body.classList.toggle('dp-ws-on', on);
         $('dpWs').hidden = !on;
         $('dpWsActs').hidden = !on;
+        syncMenu();
+        if (!on) openMenu(false);
         if (!on && !$('dpDrawer').hidden) { $('dpDrawer').hidden = true; $('dpPrepOpen').setAttribute('aria-expanded', 'false'); renderSteps(); }
         $('dpWsSide').hidden = !on || !state.mapFocus;
         if (on && !$('dpMapBox').open) $('dpMapBox').open = true;
         const fab = $('dpAiOpen');
         $('dpWsAi').hidden = !fab || (fab.hidden && $('dpAi').hidden);
+        fitToolbar();
         if (on) sizeWs();
         if (on !== was && state.map) setTimeout(() => {
             state.map.invalidateSize({ pan: false });
@@ -3996,6 +4008,16 @@
         }, 0);
         // M3: подписи Яндекса / Leaflet справа внизу — не под карточкой машины
         $('dpWs').classList.toggle('has-side', on && !!state.mapFocus);
+    }
+    // шапка рабочего экрана — одной строкой: не помещается — подписи кнопок ступенями уходят в подсказки (сначала второстепенные)
+    function fitToolbar() {
+        const bar = document.querySelector('#rtDispatch .dp-dayboard'), lv = ['tb-t1', 'tb-t2', 'tb-t3'];
+        bar.classList.remove(...lv);
+        if (!$('rtDispatch').classList.contains('is-ws')) return;
+        for (const c of lv) {
+            if (bar.scrollWidth <= bar.clientWidth) break;
+            bar.classList.add(c);
+        }
     }
     // высота рабочего экрана — до низа окна от его верха (шапка дашборда, день, подсказка и счётчики — выше)
     function sizeWs() {
@@ -4014,6 +4036,17 @@
             $('dpDrawerClose').focus();
         } else if (!$('dpPrepOpen').closest('[hidden]')) $('dpPrepOpen').focus();
     }
+    function openMenu(open, refocus) {
+        $('dpWsMenu').hidden = !open;
+        $('dpWsMore').setAttribute('aria-expanded', String(open));
+        if (open) { const f = $('dpWsMenu').querySelector('[role="menuitem"]:not([hidden])'); if (f) f.focus(); }
+        else if (refocus) $('dpWsMore').focus();
+    }
+    // пункты меню — только когда есть их кнопки (утверждение снять / неотправленные правки отменить)
+    function syncMenu() {
+        $('dpMenuUnapprove').hidden = !$('dpUnapprove');
+        $('dpMenuDiscard').hidden = !$('dpDiscardBtn');
+    }
     function initWs() {
         $('dpPrepOpen').addEventListener('click', () => openDrawer($('dpDrawer').hidden));
         $('dpDrawerClose').addEventListener('click', () => openDrawer(false));
@@ -4027,13 +4060,30 @@
         $('dpWsClose').addEventListener('click', closeSide);
         $('dpWsSide').addEventListener('keydown', (e) => { if (e.key === 'Escape' && !e.target.closest('select')) closeSide(); });
         $('dpWsAi').addEventListener('click', () => { const fab = $('dpAiOpen'); if (fab) fab.click(); });
-        $('dpViewList').addEventListener('click', () => setView('list'));
+        $('dpViewList').addEventListener('click', () => { openMenu(false); setView('list'); });
+        // меню «⋯»: пункты нажимают настоящие кнопки (там же подтверждение), сами кнопки на рабочем экране скрыты
+        $('dpWsMore').addEventListener('click', () => openMenu($('dpWsMenu').hidden));
+        [['dpMenuUnapprove', 'dpUnapprove'], ['dpMenuDiscard', 'dpDiscardBtn']].forEach(([item, real]) => $(item).addEventListener('click', () => {
+            openMenu(false, true);
+            const b = $(real);
+            if (b && !b.disabled) b.click();
+        }));
+        $('dpWsMenu').addEventListener('keydown', (e) => {
+            const items = [...$('dpWsMenu').querySelectorAll('[role="menuitem"]:not([hidden])')], i = items.indexOf(document.activeElement);
+            if (e.key === 'Escape' || e.key === 'Tab') { if (e.key === 'Escape') e.preventDefault(); openMenu(false, e.key === 'Escape'); }
+            else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                e.preventDefault();
+                items[(i + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length].focus();
+            }
+        });
+        document.addEventListener('click', (e) => { if (!$('dpWsMenu').hidden && !e.target.closest('#dpWsMoreBox')) openMenu(false); });
         $('dpViewWs').addEventListener('click', () => setView('ws'));
         if (WIDE) {
             const sync = () => { if (state.data) { layoutWs(); renderInbox(); } };
             if (WIDE.addEventListener) WIDE.addEventListener('change', sync); else if (WIDE.addListener) WIDE.addListener(sync);
         }
-        window.addEventListener('resize', () => { if ($('rtDispatch').classList.contains('is-ws')) sizeWs(); });
+        window.addEventListener('resize', () => { if ($('rtDispatch').classList.contains('is-ws')) { fitToolbar(); sizeWs(); } });
+        if (document.fonts && document.fonts.ready) document.fonts.ready.then(fitToolbar);   // ширина подписей — после загрузки шрифтов
         // шапка, подсказка и счётчики меняют высоту после отрисовки (шрифты, переносы) — высота рабочего экрана следом
         if (typeof window.ResizeObserver !== 'undefined') {
             const ro = new ResizeObserver(() => { if ($('rtDispatch').classList.contains('is-ws')) sizeWs(); });

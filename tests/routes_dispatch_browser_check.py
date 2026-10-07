@@ -597,6 +597,17 @@ def main() -> int:
             check(ws.locator('#dpDrawer #dpStep1').is_visible() and ws.locator('#dpDrawer #dpBuild').is_visible(),
                   'Y «Մեքենաներ, պատվերներ»: steps 1–2 and rebuild in the drawer')
             ws.click('#dpDrawerClose')
+            # шапка рабочего экрана — одной строкой, статус целиком (не «Ու…»), редкие действия — в меню «⋯»
+            bar = ws.evaluate("(() => { const b = document.querySelector('#rtDispatch .dp-dayboard'), p = document.querySelector('#dpSendState .dp-sendpill');"
+                              " return [b.scrollWidth, b.clientWidth, p ? p.scrollWidth <= p.clientWidth : true]; })()")
+            check(bar[0] <= bar[1] and bar[2], f'Y toolbar fits one line, status not clipped {bar}')
+            check(ws.locator('#dpViewList').is_hidden() and ws.locator('#dpWsMore').is_visible(), 'Y «Ցուցակով» is inside the «⋯» menu')
+            ws.click('#dpWsMore')
+            check(ws.get_attribute('#dpWsMore', 'aria-expanded') == 'true' and ws.evaluate("document.activeElement.getAttribute('role')") == 'menuitem',
+                  'Y «⋯» opens the menu, focus on the first item')
+            ws.keyboard.press('Escape')
+            check(ws.locator('#dpWsMenu').is_hidden() and ws.evaluate('document.activeElement.id') == 'dpWsMore', 'Y Esc closes the menu, focus back on «⋯»')
+            ws.click('#dpWsMore')
             ws.click('#dpViewList')
             check(ws.locator('#rtDispatch.is-ws').count() == 0 and ws.locator('.dp-split #dpTruckCards').count() == 1
                   and ws.locator('.dp-mapcol #dpMapBox').count() == 1 and ws.locator('#dpViewWs').is_visible(),
