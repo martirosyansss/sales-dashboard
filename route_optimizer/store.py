@@ -2624,24 +2624,28 @@ class Store:
             'excluded.value', (day,)), 'չհաջողվեց գրանցել ուսուցման վերահաշվարկի օրը')
 
     # Параметры «Աշխատավարձ» (crew_pay) — строка CREW_PAY_KEY таблицы settings без смены схемы: load() читает только ключи
-    # DEFAULT_SETTINGS, поэтому формула зарплат не попадает ни в настройки маршрутов, ни в их отпечаток.
-    def crew_pay_params(self) -> crew_pay.Params:
-        """Сохранённые параметры формулы зарплат; не сохраняли — по умолчанию; битая запись — StoreError."""
+    # DEFAULT_SETTINGS, поэтому формула зарплат не попадает ни в настройки маршрутов, ни в их отпечаток. Кто и когда менял —
+    # в той же JSON-строке (updated_at, updated_by).
+    def crew_pay_params(self) -> tuple[crew_pay.Params, str | None, str | None]:
+        """(параметры формулы зарплат, когда и кем сохранены); не сохраняли — по умолчанию; битая запись — StoreError."""
         row = self._read(lambda conn: conn.execute('SELECT value FROM settings WHERE key = ?', (CREW_PAY_KEY,)).fetchone())
         if row is None:
-            return crew_pay.Params()
+            return crew_pay.Params(), None, None
         try:
-            params, errors = crew_pay.check_params(json.loads(row[0]))
-        except (TypeError, ValueError, RecursionError):
-            params, errors = None, {'_': 'JSON'}
+            raw = json.loads(row[0])
+            params, errors = crew_pay.check_params(raw)
+        except (TypeError, ValueError, RecursionError, OverflowError):
+            raw, params, errors = None, None, {'_': 'JSON'}
         if params is None:
             raise StoreError(f'{self._name()}: վնասված են աշխատավարձի պարամետրերը ({", ".join(sorted(errors))}){_FIX_HINT}')
-        return params
+        at, by = raw.get('updated_at'), raw.get('updated_by')
+        return params, at if isinstance(at, str) else None, by if isinstance(by, str) else None
 
-    def save_crew_pay_params(self, params: crew_pay.Params) -> None:
+    def save_crew_pay_params(self, params: crew_pay.Params, user: str | None) -> None:
+        value = {**params.json(), 'updated_at': _now(), 'updated_by': user}
         self._transaction(lambda conn: conn.execute(
             'INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
-            (CREW_PAY_KEY, json.dumps(params.json(), ensure_ascii=False))), 'չհաջողվեց պահպանել աշխատավարձի պարամետրերը')
+            (CREW_PAY_KEY, json.dumps(value, ensure_ascii=False))), 'չհաջողվեց պահպանել աշխատավարձի պարամետրերը')
 
     def learning_auto(self) -> dict[str, bool]:
         """Автообучение по виду, выбранное владельцем; нет строки — learning.DEFAULT_AUTO."""

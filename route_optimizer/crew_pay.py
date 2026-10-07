@@ -4,12 +4,17 @@
 
 Чистый расчёт без ввода-вывода: строки ERP (erp.load_crew_pay) + параметры → люди месяца.
 
-Человек — экспедитор накладной SALES.fVANAGENTID, если он не сам менеджер накладной; накладные — проведённые за месяц.
-    days    — разных дней с его накладными;
+Экспедитор — SALES.fVANAGENTID накладной, если он не сам менеджер накладной; накладные — проведённые за месяц.
+Человек — экспедиторы с одинаковым именем (без учёта регистра и лишних пробелов): у одного человека бывает несколько
+кодов ERP (Հակոբյան Կարապետ — B004/19 и B003/24), считаем его одной строкой, как people.py.
+Клиенто-день человека учитывается, только если в нём есть вес или сумма (kg > 0 или Σ fTOTALSUM > 0): документ из одних
+нулей или минусов (возврат) не создаёт ни точки, ни рабочего дня, ни тонн. Отдельные документы возврата ERP не читаются —
+возвраты пока не вычитаются (минусовые строки внутри накладной вычитаются, как в ERP).
+    days    — разных дней с учтёнными клиенто-днями (по всем кодам человека);
     points  — разных (день, клиент): несколько накладных одному магазину в день — 1 точка;
-    tonnes  — Σ количество × вес товара / 1000 (возвраты вычитаются, как в ERP);
+    tonnes  — Σ количество × вес товара / 1000;
     D       — рабочих дней компании: разных дней с любой учтённой накладной экспедитора в месяце.
-Не учитываются накладные линий excluded_lines (по коду менеджера; по умолчанию линия 19 л) и люди excluded_people.
+Не учитываются накладные линий excluded_lines (по коду менеджера; по умолчанию линия 19 л) и экспедиторы excluded_people.
 
     fix     = FIX × min(1, days / D)
     piece   = RATE_POINT × points + RATE_TONNE × tonnes
@@ -24,7 +29,7 @@ from __future__ import annotations
 
 import math
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass, fields
 from datetime import date
 from typing import Any, Mapping, Sequence
@@ -40,7 +45,7 @@ class Params:
     old_fix: float = 100_000        # нынешняя схема: фикс
     old_pct: float = 2.0            # нынешняя схема: % от продаж
     excluded_lines: tuple[str, ...] = ('A008/3', 'A008/6')              # линия 19 л (коды менеджеров)
-    excluded_people: tuple[str, ...] = ('B008/10', 'B008/3', 'B008/4')  # коды экспедиторов
+    excluded_people: tuple[str, ...] = ('B008/10', 'B008/3', 'B008/4', 'A008/6')   # коды экспедиторов (как people.py)
 
     def json(self) -> dict[str, Any]:
         return {f.name: list(v) if isinstance(v := getattr(self, f.name), tuple) else v for f in fields(self)}
@@ -78,12 +83,16 @@ def check_params(raw: Any) -> tuple[Params | None, dict[str, str]]:
     errors: dict[str, str] = {}
     for name, (lo, hi) in _BOUNDS.items():
         v = raw.get(name)
-        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+        try:   # огромное целое из JSON во float не влезает (OverflowError) — это ошибка поля, а не 500
+            x = float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else math.nan
+        except OverflowError:
+            x = math.inf
+        if math.isnan(x):
             errors[name] = 'Լրացրեք թիվը'
-        elif not lo <= v <= hi:
+        elif not lo <= x <= hi:
             errors[name] = f'Թույլատրելի է {lo:g}-ից {hi:g}'
         else:
-            values[name] = float(v)
+            values[name] = x
     for name in ('excluded_lines', 'excluded_people'):
         codes, err = _codes(raw.get(name))
         if err:
@@ -120,8 +129,8 @@ class Day:
 
 @dataclass(frozen=True)
 class Row:
-    agent_id: int
-    code: str
+    agent_ids: tuple[int, ...]  # все коды ERP человека
+    code: str                   # их коды через запятую
     name: str
     days: int
     points: int
@@ -152,45 +161,62 @@ def money(x: float) -> int:
     return math.floor(x + 0.5)
 
 
+def person_key(name: str, agent_id: int) -> str:
+    """Один человек — одно имя без учёта регистра и лишних пробелов; без имени — сам код."""
+    norm = ' '.join(name.split()).casefold()
+    return norm or f'#{agent_id}'
+
+
 def compute(data: CrewData, p: Params) -> Result:
-    # коды ERP — без учёта регистра и пробелов по краям
-    by_code = {code.strip().upper(): aid for aid, (code, _) in data.agents.items()}
+    # коды ERP — без учёта регистра и пробелов по краям; в SALESAGENTS код может повторяться — исключаем все его fID
+    by_code: dict[str, set[int]] = defaultdict(set)
+    for aid, (code, _) in data.agents.items():
+        by_code[code.strip().upper()].add(aid)
     excl_lines = [c.strip().upper() for c in p.excluded_lines]
     excl_people = [c.strip().upper() for c in p.excluded_people]
-    lines = {by_code[c] for c in excl_lines if c in by_code}
-    people = {by_code[c] for c in excl_people if c in by_code}
+    lines = {aid for c in excl_lines for aid in by_code.get(c, ())}
+    people = {aid for c in excl_people for aid in by_code.get(c, ())}
     unknown = tuple(c for c in (*excl_lines, *excl_people) if c not in by_code)
 
-    workdays: set[date] = set()
-    points: dict[int, dict[date, set[int]]] = defaultdict(lambda: defaultdict(set))
-    kg: dict[int, dict[date, float]] = defaultdict(lambda: defaultdict(float))
-    sales: dict[int, float] = defaultdict(float)
+    # клиенто-день человека: [кг, сумма] по всем его кодам и линиям
+    cells: dict[str, dict[tuple[date, int], list[float]]] = defaultdict(lambda: defaultdict(lambda: [0.0, 0.0]))
+    ids: dict[str, Counter[int]] = defaultdict(Counter)   # коды человека: сколько строк под каждым
     for inv in data.invoices:
         if not inv.van_id or inv.van_id == inv.line_id or inv.line_id in lines or inv.van_id in people:
             continue
-        workdays.add(inv.day)
-        points[inv.van_id][inv.day].add(inv.customer_id)
-        kg[inv.van_id][inv.day] += inv.kg
-        sales[inv.van_id] += inv.total
-    d = len(workdays)
+        key = person_key(data.agents.get(inv.van_id, ('', ''))[1], inv.van_id)
+        ids[key][inv.van_id] += 1
+        cell = cells[key][(inv.day, inv.customer_id)]
+        cell[0] += inv.kg
+        cell[1] += inv.total
+    # только клиенто-дни с весом или суммой: документ из нулей и минусов — не точка и не рабочий день
+    kept = {key: {dc: c for dc, c in per.items() if c[0] > 0 or c[1] > 0} for key, per in cells.items()}
+    kept = {key: per for key, per in kept.items() if per}
+    d = len({day for per in kept.values() for day, _ in per})
     if not d:
         return Result(0, (), unknown)
 
     rows = []
-    for aid, per_day in points.items():
-        n_days = len(per_day)
-        n_points = sum(len(c) for c in per_day.values())
-        tonnes = sum(kg[aid].values()) / 1000
+    for key, per in kept.items():
+        by_date: dict[date, list[float]] = defaultdict(lambda: [0, 0.0])   # точки, кг
+        for (day, _), (kg, _) in per.items():
+            by_date[day][0] += 1
+            by_date[day][1] += kg
+        n_days, n_points = len(by_date), len(per)
+        tonnes = sum(kg for kg, _ in per.values()) / 1000
+        sales = sum(total for _, total in per.values())
         share = min(1.0, n_days / d)
         fix = money(p.fix * share)
         piece = money(p.rate_point * n_points + p.rate_tonne * tonnes)
         minimum = money(p.minimum * min(1.0, n_points / (p.norm_per_day * d)))
-        code, name = data.agents.get(aid, (str(aid), ''))
-        by_day = tuple(Day(day, len(c), kg[aid][day] / 1000,
-                           money(p.rate_point * len(c) + p.rate_tonne * kg[aid][day] / 1000))
-                       for day, c in sorted(per_day.items()))
-        rows.append(Row(aid, code, name, n_days, n_points, tonnes, money(sales[aid]), fix, piece, minimum,
-                        max(fix + piece, minimum), money(p.old_fix * share) + money(p.old_pct / 100 * sales[aid]),
+        agent_ids = tuple(sorted(ids[key], key=lambda a: data.agents.get(a, (str(a), ''))[0]))
+        code = ', '.join(data.agents.get(a, (str(a), ''))[0] for a in agent_ids)
+        main = max(agent_ids, key=lambda a: ids[key][a])   # имя — по основному коду (больше всего строк; ничья — первый)
+        name = ' '.join(data.agents.get(main, ('', ''))[1].split())
+        by_day = tuple(Day(day, int(n), kg / 1000, money(p.rate_point * n + p.rate_tonne * kg / 1000))
+                       for day, (n, kg) in sorted(by_date.items()))
+        rows.append(Row(agent_ids, code, name, n_days, n_points, tonnes, money(sales), fix, piece, minimum,
+                        max(fix + piece, minimum), money(p.old_fix * share) + money(p.old_pct / 100 * sales),
                         minimum > fix + piece, by_day))
     return Result(d, tuple(sorted(rows, key=lambda r: (r.name, r.code))), unknown)
 

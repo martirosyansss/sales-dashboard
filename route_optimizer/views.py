@@ -4743,25 +4743,44 @@ def _pay_data(state: RoutesState, since: date, until: date) -> cp.CrewData:
         return hit[1]
     data = state.crew_pay_loader(since, until)
     with state.crew_pay_lock:
+        state.crew_pay_cache.pop(key, None)   # перечитанный месяц — в конец очереди: вытесняется самый давний
         state.crew_pay_cache[key] = (time.monotonic(), data)
         while len(state.crew_pay_cache) > PAY_MONTHS:
             state.crew_pay_cache.pop(next(iter(state.crew_pay_cache)))
     return data
 
 
-def _pay_result(state: RoutesState, first: date, today: date) -> tuple[cp.Params, cp.Result]:
+@dataclass(frozen=True)
+class _PayMonth:
+    first: date
+    params: cp.Params
+    params_at: str | None    # когда и кем параметры сохранены (None — значения по умолчанию)
+    params_by: str | None
+    result: cp.Result
+
+
+def _pay_month_result(state: RoutesState, first: date, today: date) -> _PayMonth:
     """Расчёт месяца first: текущий — по сегодня включительно (накладные «из будущего» не берём)."""
     until = min(_add_months(first, 1), today + timedelta(days=1))
-    params = state.store.crew_pay_params()
-    return params, cp.compute(_pay_data(state, first, until), params)
+    params, at, by = state.store.crew_pay_params()
+    return _PayMonth(first, params, at, by, cp.compute(_pay_data(state, first, until), params))
 
 
 def _pay_row_json(r: cp.Row) -> dict[str, Any]:
-    return {'agent_id': r.agent_id, 'code': r.code, 'name': r.name, 'days': r.days, 'points': r.points,
+    return {'agent_ids': list(r.agent_ids), 'code': r.code, 'name': r.name, 'days': r.days, 'points': r.points,
             'tonnes': round(r.tonnes, 3), 'sales': r.sales, 'fix': r.fix, 'piece': r.piece, 'minimum': r.minimum,
             'pay': r.pay, 'old': r.old, 'diff': r.diff, 'min_applied': r.min_applied,
             'by_day': [{'date': d.day.isoformat(), 'points': d.points, 'tonnes': round(d.tonnes, 3), 'piece': d.piece}
                        for d in r.by_day]}
+
+
+def _pay_request() -> tuple[_PayMonth | None, Any]:
+    """(месяц из ?month=, None) или (None, ответ 400)."""
+    today = _clock().date()
+    first = _pay_month(request.args.get('month', ''), today)
+    if first is None:
+        return None, _bad_request({'month': 'Ընտրեք ամիսը վերջին 12 ամիսներից'})
+    return _pay_month_result(_state(), first, today), None
 
 
 @bp.get('/api/routes/pay')
@@ -4769,15 +4788,15 @@ def _pay_row_json(r: cp.Row) -> dict[str, Any]:
 @_api
 def api_pay() -> Any:
     """Месяц ?month=YYYY-MM (пусто — этот): люди, итог, D, параметры формулы и список месяцев для выбора."""
-    today = _clock().date()
-    first = _pay_month(request.args.get('month', ''), today)
-    if first is None:
-        return _bad_request({'month': 'Ընտրեք ամիսը վերջին 12 ամիսներից'})
-    params, result = _pay_result(_state(), first, today)
-    this = today.replace(day=1)
-    return jsonify({'success': True, 'month': first.strftime('%Y-%m'), 'current': first == this,
-                    'today': today.isoformat(), 'months': [_add_months(this, -i).strftime('%Y-%m') for i in range(PAY_MONTHS)],
-                    'params': params.json(), 'workdays': result.workdays, 'unknown_codes': list(result.unknown_codes),
+    m, error = _pay_request()
+    if m is None:
+        return error
+    this = _clock().date().replace(day=1)
+    result = m.result
+    return jsonify({'success': True, 'month': m.first.strftime('%Y-%m'), 'current': m.first == this,
+                    'months': [_add_months(this, -i).strftime('%Y-%m') for i in range(PAY_MONTHS)],
+                    'params': m.params.json(), 'params_updated_at': m.params_at, 'params_updated_by': m.params_by,
+                    'workdays': result.workdays, 'unknown_codes': list(result.unknown_codes),
                     'rows': [_pay_row_json(r) for r in result.rows],
                     'totals': {k: round(v, 3) if k == 'tonnes' else v for k, v in cp.totals(result.rows).items()}})
 
@@ -4788,34 +4807,50 @@ def _csv_cell(value: Any) -> str:
     return "'" + text if text[:1] in ('=', '+', '-', '@', '\t', '\r') else text
 
 
+# Подписи параметров в шапке CSV — как на странице
+PAY_PARAM_LABELS = (('fix', 'Ֆիքս ամսական, ֏'), ('rate_point', 'Մեկ կետի համար, ֏'),
+                    ('rate_tonne', 'Մեկ տոննայի համար, ֏'), ('minimum', 'Նվազագույն ամսական, ֏'),
+                    ('norm_per_day', 'Նորմ՝ կետ մեկ աշխատանքային օրում'), ('old_fix', 'Հին սխեմա՝ ֆիքս, ֏'),
+                    ('old_pct', 'Հին սխեմա՝ վաճառքի տոկոս, %'), ('excluded_lines', 'Չհաշվվող գծեր'),
+                    ('excluded_people', 'Չհաշվվող առաքիչներ'))
+
+
 @bp.get('/api/routes/pay.csv')
 @_admin_only
 @_api
 def api_pay_csv() -> Any:
-    """Таблица месяца для Excel: «;», десятичная запятая, UTF-8 с BOM."""
+    """Таблица месяца для Excel: «;», десятичная запятая, UTF-8 с BOM. Параметры применяются и к прошлым месяцам,
+    поэтому в начале файла — с какими параметрами и когда он посчитан."""
     import csv
     import io
-    today = _clock().date()
-    first = _pay_month(request.args.get('month', ''), today)
-    if first is None:
-        return _bad_request({'month': 'Ընտրեք ամիսը վերջին 12 ամիսներից'})
-    params, result = _pay_result(_state(), first, today)
+    m, error = _pay_request()
+    if m is None:
+        return error
+    result, params = m.result, m.params
 
-    def t(x: float) -> str:   # тонны с точностью до кг, десятичная запятая
-        return f'{x:.3f}'.replace('.', ',')
+    def n(x: float) -> str:   # число параметра без лишних нулей, десятичная запятая (Excel ru)
+        return f'{x:.3f}'.rstrip('0').rstrip('.').replace('.', ',')
 
     out = io.StringIO()
     w = csv.writer(out, delimiter=';', lineterminator='\r\n')
+    w.writerow(['Աշխատավարձ', m.first.strftime('%Y-%m')])
+    w.writerow(['Հաշվված է', _clock().strftime('%Y-%m-%d %H:%M')])
+    if m.params_at:
+        w.writerow(['Պարամետրերը փոխվել են', m.params_at.replace('T', ' ')[:16], _csv_cell(m.params_by or '')])
+    for key, label in PAY_PARAM_LABELS:
+        value = getattr(params, key)
+        w.writerow([label, _csv_cell(', '.join(value)) if isinstance(value, tuple) else n(value)])
+    w.writerow([])
     w.writerow(['Կոդ', 'Առաքիչ', 'Օրեր', 'Աշխատանքային օրեր', 'Կետեր', 'Տոննա', 'Ֆիքս', 'Գործավարձ', 'Նվազագույն',
-                'Վճարել', 'Նվազագույնը կիրառված է', f'Հին սխեմա ({params.old_pct:g}%)', 'Տարբերություն'])
+                'Վճարել', 'Նվազագույնը կիրառված է', f'Հին սխեմա ({n(params.old_pct)}%)', 'Տարբերություն'])
     for r in result.rows:
-        w.writerow([_csv_cell(r.code), _csv_cell(r.name), r.days, result.workdays, r.points, t(r.tonnes), r.fix, r.piece,
-                    r.minimum, r.pay, 'այո' if r.min_applied else '', r.old, r.diff])
+        w.writerow([_csv_cell(r.code), _csv_cell(r.name), r.days, result.workdays, r.points, f'{r.tonnes:.3f}'.replace('.', ','),
+                    r.fix, r.piece, r.minimum, r.pay, 'այո' if r.min_applied else '', r.old, r.diff])
     if result.rows:
         s = cp.totals(result.rows)
-        w.writerow(['', 'Ընդամենը', '', result.workdays, s['points'], t(s['tonnes']), s['fix'], s['piece'], '', s['pay'],
-                    '', s['old'], s['diff']])
-    name = f'crew-pay-{first:%Y-%m}.csv'
+        w.writerow(['', 'Ընդամենը', '', result.workdays, s['points'], f"{s['tonnes']:.3f}".replace('.', ','), s['fix'],
+                    s['piece'], '', s['pay'], '', s['old'], s['diff']])
+    name = f'crew-pay-{m.first:%Y-%m}.csv'
     return Response('\ufeff' + out.getvalue(), mimetype='text/csv',
                     headers={'Content-Disposition': f'attachment; filename="{name}"'})
 
@@ -4831,6 +4866,6 @@ def api_pay_params() -> Any:
     params, errors = cp.check_params(payload)
     if params is None:
         return _bad_request(errors)
-    _state().store.save_crew_pay_params(params)
+    _state().store.save_crew_pay_params(params, session.get('username'))
     logger.info('[Routes] Աշխատավարձ: параметры сохранены пользователем %s: %s', session.get('username'), params.json())
     return jsonify({'success': True, 'params': params.json()})

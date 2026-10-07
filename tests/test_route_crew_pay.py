@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """«Աշխատավարձ» (docs/research/09-crew-pay.md, формула владельца 07.10): расчёт crew_pay, параметры в route_optimizer.db,
 API страницы с подменённым загрузчиком ERP (живой ERP не нужен), CSV и доступ только администратору."""
+import json
 import sys
 from datetime import date, datetime
 from pathlib import Path
@@ -22,7 +23,7 @@ AGENTS = {LINE: ('A001/4', 'Մենեջեր'), LINE19: ('A008/3', '19 լ'), LINE1
           HELPER: ('B008/10', 'Օգնական')}
 
 
-def inv(van, day, customer, kg=0.0, total=0.0, line=LINE):
+def inv(van, day, customer, kg=0.0, total=1.0, line=LINE):
     return cp.Invoice(van, date(2026, 9, day), customer, line, total, kg)
 
 
@@ -31,7 +32,7 @@ def data(*invoices):
 
 
 def row(result, agent_id):
-    return next(r for r in result.rows if r.agent_id == agent_id)
+    return next(r for r in result.rows if agent_id in r.agent_ids)
 
 
 # ============================== расчёт ==============================
@@ -90,7 +91,7 @@ def test_exclusions_lines_people_self_delivery_and_unknown_codes():
                 inv(HELPER, 4, 4), inv(LINE, 5, 5, line=LINE), inv(AGHVAN, 6, 6)]
     p = cp.Params(excluded_lines=('a008/3', 'A008/6', 'X1'), excluded_people=('B008/10',))
     res = cp.compute(data(*invoices), p)
-    assert res.workdays == 2 and [r.agent_id for r in res.rows] == [KORYUN, AGHVAN]   # по имени: Ի раньше Հ
+    assert res.workdays == 2 and [r.agent_ids for r in res.rows] == [(KORYUN,), (AGHVAN,)]   # по имени: Ի раньше Հ
     assert row(res, KORYUN).points == 1 and res.unknown_codes == ("X1",)
     assert cp.compute(data(*invoices), cp.Params(excluded_lines=(), excluded_people=())).workdays == 5
 
@@ -122,25 +123,77 @@ def test_sql_is_read_only():
     assert SQL_CREW_PAY.count('WITH (NOLOCK)') == 3 and SQL_CREW_PAY.count('?') == 2
 
 
+def test_one_person_with_two_codes_is_one_row():
+    """Կարապետ возил под двумя кодами (как B004/19 и B003/24): одна строка, коды через запятую; один и тот же магазин в
+    один день под обоими кодами — одна точка и один день; формула — один раз на человека."""
+    agents = {**AGENTS, 21: ('B004/19', 'հակոբյան  կարապետ '), 22: ('B003/24', 'Հակոբյան Կարապետ')}   # имя — по основному коду
+    invoices = [inv(21, 1, 5, kg=100), inv(22, 1, 5, kg=50), inv(22, 1, 6, kg=10), inv(22, 2, 7, kg=40),
+                inv(KORYUN, 3, 1)]
+    p = cp.Params(fix=90_000, rate_point=100, rate_tonne=1000, minimum=0, norm_per_day=1, old_fix=0, old_pct=0)
+    res = cp.compute(cp.CrewData(tuple(invoices), agents), p)
+    assert len(res.rows) == 2 and res.workdays == 3
+    r = row(res, 21)
+    assert r.agent_ids == (22, 21) and r.code == 'B003/24, B004/19' and r.name == 'Հակոբյան Կարապետ'
+    assert (r.days, r.points, r.tonnes) == (2, 3, pytest.approx(0.2))
+    assert r.fix == 60_000 and r.piece == 300 + 200
+    assert [(d.day.day, d.points, round(d.tonnes, 3)) for d in r.by_day] == [(1, 2, 0.16), (2, 1, 0.04)]
+
+
+def test_zero_and_negative_only_documents_make_no_point_or_day():
+    """Клиенто-день из нулей или минусов (возврат) — не точка и не рабочий день; сумма без веса — точка."""
+    invoices = [inv(KORYUN, 1, 1, kg=100, total=10), inv(KORYUN, 2, 2, kg=0, total=0),
+                inv(KORYUN, 3, 3, kg=-20, total=-500), inv(KORYUN, 4, 4, kg=0, total=300),
+                inv(KORYUN, 5, 5, kg=50, total=10), inv(KORYUN, 5, 5, kg=-30, total=-5, line=99)]
+    res = cp.compute(data(*invoices), cp.Params())
+    r = row(res, KORYUN)
+    assert res.workdays == 3 and [d.day.day for d in r.by_day] == [1, 4, 5]
+    assert r.points == 3 and r.tonnes == pytest.approx(0.12) and r.sales == 315
+    assert cp.compute(data(inv(KORYUN, 1, 1, kg=0, total=0)), cp.Params()).workdays == 0
+
+
+def test_duplicate_erp_code_excludes_every_id():
+    agents = {**AGENTS, 31: ('A008/3', '19 լ կրկնօրինակ'), 32: ('B008/10 ', 'Օգնական 2')}
+    invoices = [inv(KORYUN, 1, 1, line=31), inv(32, 2, 2), inv(KORYUN, 3, 3, line=LINE19), inv(AGHVAN, 4, 4)]
+    res = cp.compute(cp.CrewData(tuple(invoices), agents), cp.Params())
+    assert [r.agent_ids for r in res.rows] == [(AGHVAN,)] and res.workdays == 1
+
+
+def test_default_excluded_people_match_research():
+    assert cp.Params().excluded_people == ('B008/10', 'B008/3', 'B008/4', 'A008/6')
+    agents = {**AGENTS, 41: ('A008/6', '19 լ առաքիչ')}
+    res = cp.compute(cp.CrewData((inv(41, 1, 1, line=LINE), inv(KORYUN, 1, 2)), agents), cp.Params())
+    assert [r.agent_ids for r in res.rows] == [(KORYUN,)]
+
+
+def test_huge_numbers_are_field_errors():
+    for bad in (10 ** 400, -10 ** 400, float('inf'), float('-inf')):
+        params, errors = cp.check_params({**cp.Params().json(), 'fix': bad, 'old_pct': bad})
+        assert params is None and set(errors) == {'fix', 'old_pct'}, bad
+
+
 # ============================== параметры в базе ==============================
 
 def test_store_params_roundtrip_without_schema_change(tmp_path):
     store = st.Store(str(tmp_path / 'routes.db'))
-    assert store.crew_pay_params() == cp.Params()
+    assert store.crew_pay_params() == (cp.Params(), None, None)
     p = cp.Params(fix=150_000, rate_point=220, rate_tonne=1500, excluded_people=())
-    store.save_crew_pay_params(p)
-    assert store.crew_pay_params() == p
+    store.save_crew_pay_params(p, 'boss')
+    params, at, by = store.crew_pay_params()
+    assert params == p and by == 'boss' and at.startswith('20')
     assert st.CREW_PAY_KEY not in store.load().settings and st.SCHEMA_VERSION == 24   # настройки маршрутов не задеты
 
 
 def test_store_corrupt_params_is_an_error(tmp_path):
     import sqlite3
     store = st.Store(str(tmp_path / 'routes.db'))
-    store.save_crew_pay_params(cp.Params())
-    with sqlite3.connect(store.path) as conn:
-        conn.execute("UPDATE settings SET value = '{\"fix\": -5}' WHERE key = 'crew_pay'")
-    with pytest.raises(st.StoreError):
-        store.crew_pay_params()
+    store.save_crew_pay_params(cp.Params(), None)
+    good = cp.Params().json()
+    for bad in ('{"fix": -5}', 'not json', '[1]', json.dumps({**good, 'fix': 10 ** 400}),
+                json.dumps(good).replace('"fix": 100000', '"fix": 1e400', 1)):
+        with sqlite3.connect(store.path) as conn:
+            conn.execute("UPDATE settings SET value = ? WHERE key = 'crew_pay'", (bad,))
+        with pytest.raises(st.StoreError):
+            store.crew_pay_params()
 
 
 # ============================== API ==============================
@@ -208,21 +261,38 @@ def test_api_erp_down_is_an_error_not_zeros(pay):
 
 
 def test_csv(pay):
-    pay.source['invoices'] = SEPT + [cp.Invoice(99, date(2026, 9, 2), 7, LINE, 0, 0)]
+    pay.source['invoices'] = SEPT + [cp.Invoice(99, date(2026, 9, 2), 7, LINE, 0, 10),
+                                     cp.Invoice(98, date(2026, 9, 2), 8, LINE, 0, 10)]
     AGENTS[99] = ('B9', '=HYPERLINK("x")')
+    AGENTS[98] = ('=B8', 'Ծածկագիր')                                            # код ERP с «=» — тоже экранируется
     try:
         r = pay.get('/api/routes/pay.csv?month=2026-09')
     finally:
-        del AGENTS[99]
+        del AGENTS[99], AGENTS[98]
     assert r.status_code == 200 and r.mimetype == 'text/csv'
     assert 'crew-pay-2026-09.csv' in r.headers['Content-Disposition']
     text = r.get_data().decode('utf-8')
-    assert text.startswith('﻿Կոդ;Առաքիչ;Օրեր;')
+    assert text.startswith('\ufeffԱշխատավարձ;2026-09\r\nՀաշվված է;2026-10-07 10:00\r\n')
     lines = text[1:].strip().split('\r\n')
-    assert len(lines) == 5 and 'Հին սխեմա (2%)' in lines[0]
-    assert "'=HYPERLINK" in text                                                  # формула Excel не исполнится
-    assert lines[2].startswith('B001/1;Իսկանդարյան Կորյուն;2;2;2;1,500;100000;2150;20833;102150;;103000;-850')
-    assert lines[-1].startswith(';Ընդամենը;;2;')
+    # параметры, с которыми посчитано (они действуют и на прошлые месяцы)
+    assert 'Ֆիքս ամսական, ֏;100000' in lines and 'Հին սխեմա՝ վաճառքի տոկոս, %;2' in lines
+    assert 'Չհաշվվող առաքիչներ;B008/10, B008/3, B008/4, A008/6' in lines
+    head = next(i for i, x in enumerate(lines) if x.startswith('Կոդ;Առաքիչ;Օրեր;'))
+    assert lines[head - 1] == '' and 'Հին սխեմա (2%)' in lines[head]
+    table = lines[head + 1:]
+    assert len(table) == 5
+    assert "'=HYPERLINK" in text and "\n'=B8;Ծածկագիր;" in text                    # формула Excel не исполнится
+    assert 'B001/1;Իսկանդարյան Կորյուն;2;2;2;1,500;100000;2150;20833;102150;;103000;-850' in table
+    assert table[-1].startswith(';Ընդամենը;;2;')
+
+
+def test_csv_shows_when_params_changed(pay):
+    assert pay.post('/api/routes/pay/params', json={**cp.Params().json(), 'old_pct': 1.5}).status_code == 200
+    body = pay.get('/api/routes/pay?month=2026-09').get_json()
+    assert body['params_updated_at'] and body['params_updated_by'] is None
+    lines = pay.get('/api/routes/pay.csv?month=2026-09').get_data().decode('utf-8')[1:].split('\r\n')
+    assert lines[2].startswith('Պարամետրերը փոխվել են;') and 'Հին սխեմա՝ վաճառքի տոկոս, %;1,5' in lines
+    assert any(x.startswith('Կոդ;') and 'Հին սխեմա (1,5%)' in x for x in lines)
 
 
 def test_params_save_and_validation(pay):

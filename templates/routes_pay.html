@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400..700&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+Armenian:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=24">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_pay.css') }}?v=1">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_pay.css') }}?v=2">
 {% endblock %}
 
 {% block content %}
@@ -32,8 +32,8 @@
             <div class="rt-head-tools">
                 <label for="cpMonth" class="cp-month-label">Ամիս</label>
                 <select id="cpMonth" class="rt-select cp-month"></select>
-                <a id="cpCsv" class="rt-btn rt-btn-ghost" href="/api/routes/pay.csv" download>
-                    <i class="fas fa-file-csv" aria-hidden="true"></i>Ներբեռնել CSV</a>
+                <button type="button" id="cpCsv" class="rt-btn rt-btn-ghost">
+                    <i class="fas fa-file-csv" aria-hidden="true"></i>Ներբեռնել CSV</button>
             </div>
         </div>
         <p class="rt-head-lead">Առաքիչների ամսական աշխատավարձը՝ ըստ ERP-ի անցկացված ապրանքագրերի։ Առաքիչը ապրանքագրում նշված
@@ -101,11 +101,12 @@
         <div class="cp-scroll">
             <table class="rt-numtable cp-days">
                 <thead>
-                    <tr><th scope="col">Ամսաթիվ</th><th scope="col">Կետեր</th><th scope="col">Տոննա</th><th scope="col">Գործավարձ</th></tr>
+                    <tr><th scope="col">Ամսաթիվ</th><th scope="col">Կետեր</th><th scope="col">Տոննա</th><th scope="col">Գործավարձ (մոտավոր)</th></tr>
                 </thead>
                 <tbody id="cpDayRows"></tbody>
             </table>
         </div>
+        <p class="rt-field-hint cp-legend">Օրվա գործավարձը մոտավոր է՝ կլորացված օր առ օր, ամսվա գումարը հաշվվում է ամբողջ ամսվա կետերով և տոննաներով։</p>
     </section>
 
     <!-- Параметры формулы: route_optimizer.db (ERP не меняется) -->
@@ -114,6 +115,7 @@
             <h2 class="rt-card-title" id="cpParamsTitle"><i class="fas fa-sliders" aria-hidden="true"></i>Պարամետրեր</h2>
         </div>
         <p class="rt-card-lead">Փոխեք թվերը և պահպանեք․ աղյուսակը կվերահաշվվի։ ERP-ում ոչինչ չի փոխվում։</p>
+        <p id="cpChanged" class="rt-field-hint cp-changed"></p>
         <div class="cp-grid">
             <div class="rt-field">
                 <label for="cpFix">Ֆիքս ամսական, ֏</label>
@@ -163,7 +165,7 @@
             </div>
         </div>
         <div class="cp-actions">
-            <button type="submit" id="cpSave" class="rt-btn rt-btn-primary"><i class="fas fa-floppy-disk" aria-hidden="true"></i>Պահպանել</button>
+            <button type="submit" id="cpSave" class="rt-btn rt-btn-primary" disabled><i class="fas fa-floppy-disk" aria-hidden="true"></i>Պահպանել</button>
             <span id="cpSaved" class="cp-saved" role="status"></span>
         </div>
     </form>
@@ -171,5 +173,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/routes_pay.js') }}?v=1"></script>
+<script src="{{ url_for('static', filename='js/routes_pay.js') }}?v=2"></script>
 {% endblock %}

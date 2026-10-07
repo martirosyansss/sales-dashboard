@@ -29,7 +29,9 @@
         return el;
     }
 
-    const state = { data: null, month: '', open: null, seq: 0 };
+    // paramsLoaded — форма параметров заполнена с сервера (до этого «Պահպանել» выключена); правки в форме при смене
+    // месяца не затираются: форма заполняется только при первой загрузке и после сохранения
+    const state = { data: null, month: '', open: null, seq: 0, paramsLoaded: false };
 
     function announce(text) { $('cpStatus').textContent = ''; setTimeout(() => { $('cpStatus').textContent = text; }, 30); }
     function showError(text) { $('cpAlert').hidden = !text; $('cpAlertText').textContent = text || ''; }
@@ -80,6 +82,7 @@
             state.data = data;
             state.month = data.month;
             render();
+            if (!state.paramsLoaded) fillParams(data.params);
             announce('Աշխատավարձը հաշվված է՝ ' + monthHy(data.month));
         } catch (e) {
             if (seq !== state.seq) return;
@@ -94,12 +97,7 @@
 
     function render() {
         const d = state.data;
-        $('cpMonth').replaceChildren(...d.months.map((key, i) => h('option', {
-            value: key, selected: key === d.month ? 'selected' : null,
-            text: monthHy(key) + (i === 0 ? ' (մինչև այսօր)' : ''),
-        })));
-        $('cpMonth').value = d.month;
-        $('cpCsv').href = '/api/routes/pay.csv?month=' + encodeURIComponent(d.month);
+        renderMonths(d.months, d.month);
         $('cpSub').textContent = monthHy(d.month) + (d.current ? ' (մինչև այսօր)' : '') + ' · աշխատանքային օրեր՝ ' + d.workdays;
         $('cpOldHead').textContent = 'Հին սխեմա (' + fmt(d.params.old_pct, d.params.old_pct % 1 ? 1 : 0) + '%)';
         $('cpWarn').hidden = !d.unknown_codes.length;
@@ -107,7 +105,25 @@
             ? 'ERP-ում չկան այս կոդերը՝ ' + d.unknown_codes.join(', ') + '։ Ստուգեք պարամետրերը։' : '';
         renderFormula(d.params, d.workdays);
         renderTable(d);
-        fillParams(d.params);
+        $('cpChanged').textContent = d.params_updated_at
+            ? 'Պարամետրերը փոխվել են՝ ' + dayHy(d.params_updated_at) + ' ' + d.params_updated_at.slice(11, 16)
+              + (d.params_updated_by ? ', ' + d.params_updated_by : '') + '։ Նոր պարամետրերը կիրառվում են նաև նախորդ ամիսների վրա։'
+            : 'Պարամետրերը լռելյայն են (դեռ չեն փոխվել)։';
+    }
+
+    // Месяцы: с сервера, а до первого ответа (или если ERP недоступна) — 12 последних по часам компьютера
+    function localMonths() {
+        const now = new Date();
+        return Array.from({ length: 12 }, (_, i) => {
+            const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+            return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+        });
+    }
+    function renderMonths(months, current) {
+        $('cpMonth').replaceChildren(...months.map((key, i) => h('option', {
+            value: key, text: monthHy(key) + (i === 0 ? ' (մինչև այսօր)' : ''),
+        })));
+        $('cpMonth').value = current || months[0];
     }
 
     function renderFormula(p, D) {
@@ -124,7 +140,8 @@
                 ' × (աշխատած օրեր ÷ ', n(dText), ') + վաճառքի ', n(fmt(p.old_pct, p.old_pct % 1 ? 1 : 0) + '%')),
             h('p', { class: 'note', text: 'Աշխատանքային օրեր՝ ամսվա այն օրերը, երբ որևէ առաքիչ առաքում է արել։ Կետ՝ խանութ, '
                 + 'որին այդ օրը ապրանք է հասցվել (մեկ օրում մեկ խանութին մի քանի ապրանքագիր = 1 կետ)։ Տոննա՝ ապրանքի քաշն ըստ '
-                + 'ERP-ի, վերադարձները հանված։' }),
+                + 'ERP-ի։ Վերադարձները դեռ չեն հանվում, իսկ միայն զրոյական կամ մինուսային ապրանքագրերը '
+                + 'կետ և աշխատանքային օր չեն համարվում։' }),
         );
     }
 
@@ -192,6 +209,8 @@
     function fillParams(p) {
         Object.entries(NUM_FIELDS).forEach(([k, id]) => { $(id).value = String(p[k]); });
         Object.entries(CODE_FIELDS).forEach(([k, id]) => { $(id).value = p[k].join(', '); });
+        state.paramsLoaded = true;
+        $('cpSave').disabled = false;
     }
     function fieldErrors(errors) {
         document.querySelectorAll('#cpParams .rt-ferr').forEach(el => {
@@ -215,7 +234,8 @@
         $('cpSaved').textContent = '';
         fieldErrors({});
         try {
-            await api('/api/routes/pay/params', body);
+            const saved = await api('/api/routes/pay/params', body);
+            fillParams(saved.params);
             $('cpSaved').textContent = 'Պարամետրերը պահպանվեցին';
             await load(state.month);
         } catch (e) {
@@ -224,10 +244,39 @@
             if (first && (NUM_FIELDS[first] || CODE_FIELDS[first])) $(NUM_FIELDS[first] || CODE_FIELDS[first]).focus();
             else showError(e.message);
         } finally {
-            $('cpSave').disabled = false;
+            $('cpSave').disabled = !state.paramsLoaded;
+        }
+    });
+
+    // CSV: сначала запрос, потом файл — при недоступной ERP показываем ошибку, а не скачиваем JSON
+    $('cpCsv').addEventListener('click', async () => {
+        const month = $('cpMonth').value;
+        $('cpCsv').disabled = true;
+        showError('');
+        try {
+            let resp;
+            try {
+                resp = await fetch('/api/routes/pay.csv?month=' + encodeURIComponent(month), { credentials: 'same-origin', cache: 'no-store' });
+            } catch (e) { throw new ApiError('Սերվերը հասանելի չէ։ Ստուգեք կապը և կրկնեք։'); }
+            if (!resp.ok) {
+                let body = null;
+                try { body = await resp.json(); } catch (e) { /* не JSON */ }
+                throw new ApiError(httpError(resp.status, body));
+            }
+            const url = URL.createObjectURL(await resp.blob());
+            const a = h('a', { href: url, download: 'crew-pay-' + month + '.csv' });
+            document.body.append(a);
+            a.click();
+            a.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+        } catch (e) {
+            showError(e.message);
+        } finally {
+            $('cpCsv').disabled = false;
         }
     });
 
     $('cpMonth').addEventListener('change', () => load($('cpMonth').value));
+    renderMonths(localMonths(), '');
     load('');
 })();

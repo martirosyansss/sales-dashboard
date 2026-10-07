@@ -27,6 +27,7 @@
 .cp-table .rt-badge { margin-left: 6px; vertical-align: 1px; }
 .cp-table tfoot td { font-weight: 700; border-top: 1px solid var(--rt-line); padding: 10px 12px; }
 .cp-legend { margin: 10px 0 0; }
+.cp-changed { margin: -8px 0 12px; }
 
 .cp-close { margin-left: auto; }
 
