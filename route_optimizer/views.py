@@ -26,6 +26,7 @@ from flask import (Blueprint, Response, current_app, g, has_app_context, has_req
 
 from . import actuals as ac
 from . import ai_chat
+from . import crew_kpi as ck
 from . import crew_pay as cp
 from . import dispatch as dp
 from . import evaluate, garage, learning, live, optimize
@@ -4858,6 +4859,8 @@ def api_warehouse_loaded() -> Any:
 # --- «Աշխատավարձ» (09-crew-pay.md): зарплата առաքիչ за месяц по формуле владельца, только администратору ---
 
 PAY_MONTHS = 12            # выбор месяца: этот и 11 до него
+# кэш месяцев: выбор + ещё TREND_MONTHS − 1 до самого раннего — тренд «Առաքիչների KPI» (crew_kpi) не вытесняет сам себя
+PAY_CACHE_MONTHS = PAY_MONTHS + ck.TREND_MONTHS - 1
 PAY_TTL_SECONDS = 300      # накладные месяца из ERP: CSV, правка параметров и повтор не перечитывают ERP
 PAY_FORBIDDEN = 'Доступ запрещён'
 
@@ -4892,13 +4895,14 @@ def _pay_data(state: RoutesState, since: date, until: date) -> cp.CrewData:
     key = (since, until)
     with state.crew_pay_lock:
         hit = state.crew_pay_cache.get(key)
-    if hit is not None and time.monotonic() - hit[0] < PAY_TTL_SECONDS:
-        return hit[1]
+        if hit is not None and time.monotonic() - hit[0] < PAY_TTL_SECONDS:
+            state.crew_pay_cache[key] = state.crew_pay_cache.pop(key)   # LRU: прочитанный — в конец очереди
+            return hit[1]
     data = state.crew_pay_loader(since, until)
     with state.crew_pay_lock:
         state.crew_pay_cache.pop(key, None)   # перечитанный месяц — в конец очереди: вытесняется самый давний
         state.crew_pay_cache[key] = (time.monotonic(), data)
-        while len(state.crew_pay_cache) > PAY_MONTHS:
+        while len(state.crew_pay_cache) > PAY_CACHE_MONTHS:
             state.crew_pay_cache.pop(next(iter(state.crew_pay_cache)))
     return data
 
@@ -4926,12 +4930,14 @@ PAY_CALENDAR_WARNING = ('Աշխատանքային օրացույցը (կարգա
                         'առաքման օրերով, ուստի ֆիքսը և նորմը կարող են ավելի մեծ լինել։')
 
 
-def _pay_month_result(state: RoutesState, first: date, today: date) -> _PayMonth:
+def _pay_month_result(state: RoutesState, first: date, today: date,
+                      saved: tuple[cp.Params, str | None, str | None] | None = None) -> _PayMonth:
     """Расчёт месяца first: текущий — по сегодня включительно (накладные «из будущего» не берём), фикс и норма — от
     D_month: прошедшие дни с доставкой + рабочие дни календаря с сегодня до конца месяца (начислено по сегодня);
-    прошлый — от D, как раньше. Календарь не читается — текущий месяц от D и предупреждение, а не 500."""
+    прошлый — от D, как раньше. Календарь не читается — текущий месяц от D и предупреждение, а не 500. saved —
+    уже прочитанные параметры (store.crew_pay_params), чтобы не читать их на каждый месяц."""
     until = min(_add_months(first, 1), today + timedelta(days=1))
-    params, at, by = state.store.crew_pay_params()
+    params, at, by = saved or state.store.crew_pay_params()
     rest, warning = None, None
     if first == today.replace(day=1):
         try:
@@ -5080,3 +5086,66 @@ def api_pay_params() -> Any:
     state.store.save_crew_pay_params(params, session.get('username'))
     logger.info('[Routes] Աշխատավարձ: параметры сохранены пользователем %s: %s', session.get('username'), params.json())
     return jsonify(_pay_params_body(state))
+
+
+# --- «Առաքիչների KPI» (crew_kpi): показатели առաքիչ за месяц и тренд — из тех же расчётов, что «Աշխատավարձ» ---
+
+@bp.get('/routes/araqich')
+@_admin_only
+def araqich_kpi_page() -> str:
+    return render_template('routes_araqich.html')
+
+
+def _round_or_none(x: float | None, n: int) -> float | None:
+    return None if x is None else round(x, n)
+
+
+def _kpi_stats_json(s: ck.Stats | None) -> dict[str, Any] | None:
+    if s is None:
+        return None
+    r = _round_or_none
+    return {'days': s.days, 'points': s.points, 'tonnes': round(s.tonnes, 3), 'sales': s.sales, 'pay': s.pay,
+            'attendance': r(s.attendance, 4), 'points_day': round(s.points_day, 2), 'tonnes_day': round(s.tonnes_day, 3),
+            'kg_point': r(s.kg_point, 1), 'sales_day': round(s.sales_day), 'norm': r(s.norm, 4),
+            'cost_tonne': r(s.cost_tonne, 0)}
+
+
+def _kpi_team_json(t: ck.Team | None) -> dict[str, Any] | None:
+    if t is None:
+        return None
+    r = _round_or_none
+    return {'people': t.people, 'workdays': t.workdays, 'points': t.points, 'tonnes': round(t.tonnes, 3),
+            'sales': t.sales, 'pay': t.pay, 'median_points_day': r(t.median_points_day, 2),
+            'tonnes_day': r(t.tonnes_day, 3), 'norm': r(t.norm, 4), 'cost_tonne': r(t.cost_tonne, 0)}
+
+
+@bp.get('/api/routes/araqich')
+@_admin_only
+@_api
+def api_araqich_kpi() -> Any:
+    """Месяц ?month=YYYY-MM (пусто — этот; выбор — как у «Աշխատավարձ»): люди с показателями и сравнением с прошлым
+    месяцем, команда, тренд кетов в день за TREND_MONTHS месяцев. Месяцы читаются из ERP через кэш «Աշխատավարձ»."""
+    today = _yerevan_now().date()
+    first = _pay_month(request.args.get('month', ''), today)
+    if first is None:
+        return _bad_request({'month': 'Ընտրեք ամիսը վերջին 12 ամիսներից'})
+    state = _state()
+    saved = state.store.crew_pay_params()
+    pays = [_pay_month_result(state, _add_months(first, -i), today, saved) for i in range(ck.TREND_MONTHS - 1, -1, -1)]
+    months = [ck.Month(m.first, m.params.norm_per_day, m.result) for m in pays]
+    rep = ck.report(months)
+    this = today.replace(day=1)
+    return jsonify({
+        'success': True, 'month': first.strftime('%Y-%m'), 'current': first == this,
+        'months': [_add_months(this, -i).strftime('%Y-%m') for i in range(PAY_MONTHS)],
+        'trend_months': [m.strftime('%Y-%m') for m in rep.trend_months],
+        'norm_per_day': months[-1].norm_per_day, 'min_days': ck.MIN_DAYS, 'good': ck.GOOD, 'bad': ck.BAD,
+        'calendar_warning': pays[-1].calendar_warning,   # текущий месяц от D: фикс полнее, ֏/տոննա завышен
+        'team': _kpi_team_json(rep.team), 'prev_team': _kpi_team_json(rep.prev_team),
+        'people': [{'code': p.code, 'name': p.name, 'grade': p.grade,
+                    'vs_median': _round_or_none(p.vs_median, 4),
+                    'now': _kpi_stats_json(p.now), 'prev': _kpi_stats_json(p.prev),
+                    'trend': [_round_or_none(x, 2) for x in p.trend],
+                    'by_day': [{'date': d.day.isoformat(), 'points': d.points, 'tonnes': round(d.tonnes, 3)}
+                               for d in p.by_day]}
+                   for p in rep.people]})
