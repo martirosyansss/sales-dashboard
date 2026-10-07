@@ -58,6 +58,7 @@ class CourierState:
     crew_plan: dict[str, tuple[float, Any]] = field(default_factory=dict)
     # движение тары по дням (courier.tare): дата → (отпечаток данных даты и связей тары, движения даты)
     tare_days: dict[str, tuple[Any, Any]] = field(default_factory=dict)
+    tare_lock: threading.Lock = field(default_factory=threading.Lock)   # пересчёт дней — один на процесс
 
 
 def state() -> CourierState:

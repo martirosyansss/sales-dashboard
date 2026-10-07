@@ -23,7 +23,7 @@
             </div>
             <div class="ct-tools">
                 <button type="button" class="rt-iconbtn ct-iconbtn" id="ctRefresh" aria-label="Թարմացնել" title="Թարմացնել"><i class="fas fa-rotate" aria-hidden="true"></i></button>
-                <button type="button" class="rt-btn rt-btn-ghost rt-btn-sm" id="ctImport"><i class="fas fa-file-import" aria-hidden="true"></i><span>Սկզբնական մնացորդներ ֆայլից</span></button>
+                <button type="button" class="rt-btn rt-btn-ghost rt-btn-sm" id="ctImport" title="CSV (UTF-8) կամ Excel՝ խանութի կոդ, տարա, քանակ, ամսաթիվ"><i class="fas fa-file-import" aria-hidden="true"></i><span>Սկզբնական մնացորդներ ֆայլից</span></button>
                 <a class="rt-btn rt-btn-ghost rt-btn-sm" id="ctCsv" href="/api/courier/admin/tare.csv" download><i class="fas fa-file-csv" aria-hidden="true"></i><span>CSV</span></a>
                 <input type="file" id="ctFile" accept=".csv,.xlsx,.xls,text/csv" hidden>
             </div>
@@ -73,7 +73,7 @@
                 <dt>Հետ է վերցվել</dt><dd>Վարորդի նշած տարան տերմինալում (ուղղված նշումը փոխարինում է նախորդին)։</dd>
                 <dt>Սկզբնական մնացորդ</dt><dd>Գույքագրման արդյունքը նշված օրվա վերջում։ Այդ օրը և դրանից առաջ եղածը չի հաշվվում՝ արդեն մնացորդի մեջ է։ Առանց մնացորդի՝ հաշվարկը տերմինալների առաջին օրից է։</dd>
                 <dt>≈</dt><dd>Մասնակի առաքում, երբ ERP-ի կապերը հասանելի չէին՝ հաշվված է ապրանքի քաշի համամասնությամբ։</dd>
-                <dt>Ֆայլ</dt><dd>CSV կամ Excel՝ 4 սյունակ. խանութի կոդ, տարայի տեսակ (անունը կամ erp:N), քանակ, ամսաթիվ (ՕՕ.ԱԱ.ՏՏՏՏ)։ Առաջին տողը կարող է լինել վերնագիր։ Սխալների դեպքում ոչինչ չի գրանցվում։</dd>
+                <dt>Ֆայլ</dt><dd>CSV (UTF-8) կամ Excel՝ 4 սյունակ. խանութի կոդ, տարայի տեսակ (անունը կամ erp:N), քանակ, ամսաթիվ (ՕՕ.ԱԱ.ՏՏՏՏ)։ Առաջին տողը կարող է լինել վերնագիր։ Սխալների դեպքում ոչինչ չի գրանցվում։</dd>
             </dl>
         </div>
     </details>

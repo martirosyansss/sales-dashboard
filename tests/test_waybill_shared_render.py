@@ -46,7 +46,8 @@ const wb = { rev: 7, driver: 'Արամ', helper: null, trips: [
     { id: 9, no: 2, loading_start: '12:00', depart: '12:20', stops: 1, kg: 0, orders: 1, invoiced: 0, rows: [] }] };
 process.stdout.write(JSON.stringify({ html: W.html({ car_code: 'CAR1', name: 'HOWO' }, { day: '2026-10-06', weekday: 2 }, wb),
     unknown: W.name({ unknown: true, product_id: 77 }), notes: W.notes(wb.trips[1]),
-    load: [W.loadNo(wb.trips[0].loading[0]), W.loadStore(wb.trips[0].loading[0]), W.loadNo(wb.trips[0].loading[1])] }));
+    load: [W.loadNo(wb.trips[0].loading[0]), W.loadStore(wb.trips[0].loading[0]), W.loadNo(wb.trips[0].loading[1]),
+        W.loadStore({ no: 1, stop: 4, split: false, rows: [] })] }));
 '''
 
 
@@ -68,4 +69,5 @@ def test_renderer_output():
     assert html.index('Խանութ &lt;2&gt; (C2) · կետ № 2 · մեծ պատվերի մաս') < html.index('Խանութ 1 (C1) · կետ № 1')
     assert '<b>բեռնել առաջինը</b>' in html and '<2>' not in html
     assert html.index('Բեռնման հերթականություն') < html.index('Բաց թողեց')                # до подписей листа
-    assert got['load'] == ['1 — բեռնել առաջինը', 'Խանութ <2> (C2) · կետ № 2 · մեծ պատվերի մաս', '2']
+    assert got['load'] == ['1 — բեռնել առաջինը', 'Խանութ <2> (C2) · կետ № 2 · մեծ պատվերի մաս', '2',
+                           'Կետ 4']                                         # склад: магазина нет — номер точки

@@ -54,8 +54,9 @@ window.RtWaybill = (function () {
     const LOAD_HINT = 'Վերջին խանութի ապրանքը բեռնել առաջինը՝ թափքի խորքում, առաջին խանութինը՝ վերջինը՝ դռան մոտ։';
     const kgText = (kg) => '≈' + NB + fmt(kg) + NB + 'կգ';
     const loadNo = (x) => String(x.no) + (x.no === 1 ? ' — բեռնել առաջինը' : '');
-    const loadStore = (x) => (x.name || x.code || '—') + (x.name && x.code ? ' (' + x.code + ')' : '')
-        + ' · կետ № ' + x.stop + (x.split ? ' · մեծ պատվերի մաս' : '');
+    // складу сервер магазин не отдаёт (решение владельца №87) — только «Կետ N» (номер точки в объезде)
+    const loadStore = (x) => (x.name || x.code ? (x.name || x.code) + (x.name && x.code ? ' (' + x.code + ')' : '') + ' · կետ № ' + x.stop
+        : 'Կետ ' + x.stop) + (x.split ? ' · մեծ պատվերի մաս' : '');
     function loadingHtml(tr) {
         const list = Array.isArray(tr.loading) ? tr.loading : [];
         if (!list.length) return '';

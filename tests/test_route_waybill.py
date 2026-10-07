@@ -192,7 +192,8 @@ def test_truck_waybill_loading_order_is_reverse_visit_and_sums_to_trip():
     assert [(x['no'], x['stop'], x['code'], x['name'], x['split']) for x in t1['loading']] == \
         [(1, 2, 'C102', 'Խանութ 2', False), (2, 1, 'C101', 'Խանութ <1>', True)]
     assert _qty(t1['loading'][0]) == {11: 7, 12: 3, 99: 2} and _qty(t1['loading'][1]) == {10: 18, 11: 24}
-    assert t1['loading'][0]['kg'] == round(7 * 1.65 + 3 * 0.2) and t1['loading'][1]['kg'] == round(18 * 6.03 + 24 * 1.65)
+    assert [x['kg'] for x in t1['loading']] == [12, 148]          # 12.15 и 148.14: целые, Σ = кг рейса (160)
+    assert sum(x['kg'] for x in t1['loading']) == t1['kg']
     for t in (t1, t2):
         total: dict = {}
         for x in t['loading']:
@@ -201,6 +202,12 @@ def test_truck_waybill_loading_order_is_reverse_visit_and_sums_to_trip():
         assert total == _qty(t)
     assert [(x['no'], x['stop'], x['code'], x['name']) for x in t2['loading']] == [(1, 1, '', '')]   # без кода — пусто
     assert t1['basis'] == [[101, 3, ['o1', 'o2']], [102, 1, ['o3']]]                     # порядок плана не меняется
+
+
+def test_whole_kg_sums_to_trip_by_largest_remainder():
+    assert wb._whole_kg([1.6, 1.6, 1.8], 5) == [2, 1, 2]          # округление каждого дало бы 6
+    assert wb._whole_kg([0.4, 0.4, 0.4], 1) == [1, 0, 0] and wb._whole_kg([], 0) == []
+    assert wb._whole_kg([2.0, 3.0], 5) == [2, 3]
 
 
 def test_truck_waybill_missing_truck_and_empty_lines():

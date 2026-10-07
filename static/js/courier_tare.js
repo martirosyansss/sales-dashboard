@@ -266,7 +266,21 @@
         if (file.name.toLowerCase().endsWith('.csv')) return parseCsv(await file.text());
         if (typeof window.XLSX === 'undefined') throw new Error('Excel-ի գրադարանը չբեռնվեց — պահեք ֆայլը CSV ձևաչափով');
         const book = XLSX.read(await file.arrayBuffer(), { type: 'array', cellDates: true });
-        return XLSX.utils.sheet_to_json(book.Sheets[book.SheetNames[0]], { header: 1, raw: true, defval: '' });
+        const ws = book.Sheets[book.SheetNames[0]];
+        if (!ws || !ws['!ref']) return [];
+        // по ячейкам: код (A) — текстом, как его видно в Excel (cell.w: «0123» с форматом не теряет нулей); B–D — значения
+        // (дата — Date, число — число); номер строки — как в Excel
+        const range = XLSX.utils.decode_range(ws['!ref']);
+        const table = [];
+        for (let r = 0; r <= range.e.r; r++) {
+            const row = [];
+            for (let c = 0; c < 4; c++) {
+                const cell = ws[XLSX.utils.encode_cell({ r, c })];
+                row.push(!cell ? '' : c === 0 ? (cell.w ?? String(cell.v ?? '')) : cell.v ?? '');
+            }
+            table.push(row);
+        }
+        return table;
     }
     function toRows(table) {
         const rows = [];

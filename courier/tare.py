@@ -10,7 +10,10 @@
 День — по правилу дня офиса (views.day_model, контракт §5 п. 12), как «Առաքում այսօր». По каждой показываемой точке:
 - ушло (went) — tare_expected точки (тара товаров документа: erp_day.expected_tare по PRODUCTCONTAINERS) в версии /day,
   по которой записана действующая доставка точки (та же версия, что строки правила), — по статусу правила:
-  · full — вся; covered (сестра разделённого заказа: её товар отдан по заказу) — вся;
+  · full — вся;
+  · covered — сестра разделённого заказа (заказ O: стал несколькими накладными, её товар отдан по заявлениям заказа,
+    paid_to правила): у неё самой — ничего, её строки и tare_expected считаются у владельца группы вместе с его
+    строками, по статусу и заявлениям владельца (заказ доставлен на 6 из 10 — ушла тара 6, отказ — 0);
   · partial и in_progress — по доставленному товару: у товара p доставлено d_p (Σ по заявлениям правила, строка — не
     больше своего количества в версии заявления) из q_p (строки точки), f_p = min(1, d_p / q_p); тара вида t =
     tare_expected[t] × Σ f_p·q_p·k_p(t) / Σ q_p·k_p(t), k_p(t) — тара t на единицу товара p (связи ERP). Ни один товар
@@ -37,7 +40,7 @@ from .erp_day import ContainerLink
 from .events import TARE_RE
 from .store import TareOpening
 
-FULL = ('full', 'covered')               # товар ушёл целиком
+FULL = ('full',)                         # товар ушёл целиком (covered — у владельца группы, day_moves)
 SHARE = ('partial', 'in_progress')       # ушла часть товара
 QTY_MAX = 1e6
 IMPORT_ROWS_MAX = 5000
@@ -160,12 +163,25 @@ def _move(day: str, d: Mapping[str, Any], status: str | None, went_: Mapping[str
                 str(d.get('car_code') or ''), str(d.get('doc_number') or ''), status, dict(went_), dict(returned), approx)
 
 
+def _group(owner: Mapping[str, Any], sisters: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Владелец разделённого заказа вместе с covered-сёстрами — одна «точка» для тары: строки и tare_expected всех."""
+    lines = [ln for x in (owner, *sisters) for ln in x.get('lines') or ()]
+    total: dict[str, float] = {}
+    for x in (owner, *sisters):
+        for t, q in expected(x).items():
+            total[t] = total.get(t, 0.0) + q
+    return {**owner, 'lines': lines, 'tare_expected': [{'tare_id': t, 'qty': q} for t, q in sorted(total.items())]}
+
+
 def day_moves(day: str, model: Any, marks: Mapping[str, Sequence[Mapping[str, Any]]],
               links: Mapping[int, Mapping[str, float]], foreign: Mapping[str, Mapping[str, Any]]) -> DayTare:
     """Движение тары даты day по правилу дня model (views.DayModel): marks — действующая тара показываемых точек
     (views._tare), foreign — версии точек отметок, которых нет в правиле даты (stop_id → данные точки)."""
     known = [e for e in model.inputs if e['stop_id'] in model.data]
     stated = mg.latest_by_stop(known, 'delivery')   # версия правила точки — версия её действующей доставки (day_model)
+    covered: dict[str, list[str]] = {}               # владелец → его covered-сёстры (заказ разделён на накладные)
+    for sister, owner in sorted(model.paid_to.items()):
+        covered.setdefault(owner, []).append(sister)
     names: dict[str, str] = {}
     moves: list[Move] = []
     lost = 0
@@ -173,9 +189,12 @@ def day_moves(day: str, model: Any, marks: Mapping[str, Sequence[Mapping[str, An
         d = model.data[x]
         stmt = stated.get(x)
         basis = ((model.versions.get(x) or {}).get(stmt['snapshot_id']) if stmt is not None else None) or d
-        for t in basis.get('tare_expected') or ():
-            if isinstance(t, dict) and isinstance(t.get('tare_id'), str) and t.get('name'):
-                names[t['tare_id']] = str(t['name'])
+        for s in [x, *covered.get(x, ())]:
+            for t in (basis if s == x else model.data[s]).get('tare_expected') or ():
+                if isinstance(t, dict) and isinstance(t.get('tare_id'), str) and t.get('name'):
+                    names[t['tare_id']] = str(t['name'])
+        if x in covered:   # товар covered-сестёр отдан по заявлениям заказа владельца — их тара считается здесь
+            basis = _group(basis, [model.data[s] for s in covered[x]])
         delivered = delivered_by_product(model, v.statements) if v.status in SHARE else {}
         w, approx = went(v.status, basis, delivered, links)
         r = {i['tare_id']: round(_num(i.get('qty')), 2) for i in marks.get(x, ()) if _num(i.get('qty')) > 0}
@@ -323,8 +342,9 @@ def check_import(rows: Sequence[Any], customers: Callable[[list[str]], Mapping[s
         row = raw if isinstance(raw, dict) else {}
         no = row.get('row') if isinstance(row.get('row'), int) and not isinstance(row.get('row'), bool) else i
         code = row.get('code')
-        code = str(int(code)) if isinstance(code, (int, float)) and not isinstance(code, bool) and float(code).is_integer() \
-            else code.strip() if isinstance(code, str) else ''
+        # код — как в файле (страница берёт столбец A текстом, «0123» остаётся «0123»); целое — его запись; иное — нет кода
+        code = code.strip() if isinstance(code, str) else str(code) if isinstance(code, int) and not isinstance(code, bool) \
+            else ''
         if not code or len(code) > CODE_MAX:
             errors.append({'row': no, 'field': 'code', 'error': 'Խանութի կոդը նշված չէ'})
         tare_id, err = resolve_kind(row.get('tare'), kinds)

@@ -1680,16 +1680,16 @@ class Store:
             return {d: (*ev.get(d, (0, None)), snap.get(d)) for d in days}
         return self._read(query)
 
-    def snapshot_customers(self) -> dict[str, tuple[int, str]]:
-        """Магазины снимков /day: код ERP → (customer_id, название) — импорт начальных остатков по коду магазина."""
+    def tare_superseded(self) -> dict[str, frozenset[str]]:
+        """Отметки тары, вытесненные исправлением той же точки (`supersedes`) с ЛЮБОЙ датой: дата отметки → id (нижний
+        регистр). Исправление, отправленное на другой день, иначе оставило бы прежнюю отметку в её дне — тара дважды."""
         rows = self._read(lambda c: c.execute(
-            "SELECT DISTINCT json_extract(data, '$.customer.id'), json_extract(data, '$.customer.code'), "
-            "json_extract(data, '$.customer.name') FROM stop_data").fetchall())
-        out: dict[str, tuple[int, str]] = {}
-        for cid, code, name in rows:
-            if isinstance(cid, int) and isinstance(code, str) and code.strip():
-                out[code.strip()] = (cid, name if isinstance(name, str) else '')
-        return out
+            "SELECT DISTINCT e.date, lower(e.id) FROM events e JOIN events x ON x.stop_id = e.stop_id AND x.type = 'tare' "
+            "AND lower(json_extract(x.payload, '$.supersedes')) = lower(e.id) WHERE e.type = 'tare'").fetchall())
+        out: dict[str, set[str]] = {}
+        for day, eid in rows:
+            out.setdefault(day, set()).add(eid)
+        return {d: frozenset(v) for d, v in out.items()}
 
     def reasons(self, kind: str, active_only: bool = True) -> list[dict[str, Any]]:
         rows = self._read(lambda c: c.execute(

@@ -253,8 +253,11 @@ def test_warehouse_goods_rows_of_trip(client, monkeypatch):
 
 
 def _as_warehouse(dispatch_waybill):
-    """Ответ Բեռնագիր «Развоза» глазами склада: без basis (номера заказов ERP — сверка «Развоза») и с днём недели."""
-    trips = [{k: v for k, v in tr.items() if k != 'basis'} for tr in dispatch_waybill['trips']]
+    """Ответ Բեռնագիր «Развоза» глазами склада: без basis (номера заказов ERP — сверка «Развоза»), в порядке погрузки —
+    без кода и названия магазина (решение владельца №87: складу только номер точки) и с днём недели."""
+    trips = [{**{k: v for k, v in tr.items() if k != 'basis'},
+              'loading': [{k: v for k, v in x.items() if k not in ('code', 'name')} for x in tr['loading']]}
+             for tr in dispatch_waybill['trips']]
     assert all('basis' in tr for tr in dispatch_waybill['trips'])
     return {**dispatch_waybill, 'trips': trips, 'weekday': date.fromisoformat(DAY).isoweekday()}
 
@@ -286,8 +289,14 @@ def test_warehouse_waybill_is_dispatch_waybill_of_approved_plan(client, monkeypa
     truck = next(t for t in d['plan']['trucks'] if t['car_code'] == code)
     assert (got['rev'], got['day'], [x['id'] for x in got['trips']]) == (d['rev'], DAY, [x['id'] for x in truck['trips']])
     assert got['trips'][0]['rows'] and got['trips'][0]['rows'][0]['code'] == '0101'
-    # №87 п. 4: порядок погрузки и складу — последняя точка рейса первой
+    # №87 п. 4: порядок погрузки и складу — последняя точка рейса первой, но без магазина: только номер точки
+    # (решение владельца) — ни кода, ни названия клиента в ответе складу
     assert [x['stop'] for x in got['trips'][0]['loading']] == list(range(len(truck['trips'][0]['stops']), 0, -1))
+    assert all(set(x) == {'no', 'stop', 'split', 'rows', 'kg'} for t in got['trips'] for x in t['loading'])
+    text = r.get_data(as_text=True)
+    for s in (s for tr in truck['trips'] for s in tr['stops']):
+        assert f'"{s["code"]}"' not in text and (not s['name'] or s['name'] not in text), s
+    assert all(x['name'] for t in same['trips'] for x in t['loading'])        # «Развозу» — с названиями
     asked.clear()
     orders, erp = [], state.dispatch_loader
     state.dispatch_loader = lambda *a: orders.append(a) or erp(*a)   # заказы ERP

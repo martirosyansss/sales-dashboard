@@ -322,6 +322,16 @@ def _goods(qty: Mapping[int, float], lines: Lines) -> tuple[list[dict[str, Any]]
     return rows, math.fsum(q * p.kg for p, q in items), sum(1 for p, _ in items if p.id not in lines.products)
 
 
+def _whole_kg(kgs: Sequence[float], total: int) -> list[int]:
+    """Кг магазинов целыми так, чтобы их сумма была ровно total (кг рейса на листе): вниз до целого, недостающие
+    килограммы — по одному магазинам с наибольшей дробной частью (метод наибольшего остатка)."""
+    whole = [math.floor(x) for x in kgs]
+    order = sorted(range(len(kgs)), key=lambda i: (-(kgs[i] - whole[i]), i))
+    for i in order[:max(0, min(len(kgs), total - sum(whole)))]:
+        whole[i] += 1
+    return whole
+
+
 def truck_waybill(plan: Mapping[str, Any], car_code: str, lines: Lines) -> dict[str, Any] | None:
     """Накладная (Բեռնագիր) машины car_code по плану дня plan (dispatch.plan_view): её рейсы по порядку, в каждом — товары
     рейса (по коду; товар, которого нет в ERP, — unknown, без кода), кг, сколько заказов с накладной (invoiced), с накладной
@@ -331,7 +341,9 @@ def truck_waybill(plan: Mapping[str, Any], car_code: str, lines: Lines) -> dict[
     loading — порядок погрузки рейса (ответ владельца №87 п. 4, LIFO): магазины в обратном порядке объезда — последний
     грузится в кузов первым и выгружается последним. no — номер погрузки (1 — грузить первым), stop — номер точки в
     объезде, split — магазин везут несколькими рейсами; у магазина — его доля товаров в этом рейсе (та же split_stop, из
-    которой сложены итоги рейса: Σ по магазинам = rows рейса). Только лист и экран — план не меняется."""
+    которой сложены итоги рейса: Σ по магазинам = rows рейса), kg — целые, Σ = kg рейса (_whole_kg). Складу (роль из
+интернета) views отдаёт блок без кода и названия магазина — только номер точки (решение владельца №87). Только лист и
+экран — план не меняется."""
     truck = next((t for t in plan['trucks'] if t['car_code'] == car_code), None)
     if truck is None:
         return None
@@ -359,7 +371,9 @@ def truck_waybill(plan: Mapping[str, Any], car_code: str, lines: Lines) -> dict[
         for k, (s, many, share) in enumerate(reversed(loads), 1):
             goods, stop_kg, _ = _goods(share, lines)
             loading.append({'no': k, 'stop': len(loads) - k + 1, 'code': s.get('code') or '', 'name': s.get('name') or '',
-                            'split': many, 'rows': goods, 'kg': round(stop_kg)})
+                            'split': many, 'rows': goods, 'kg': stop_kg})
+        for x, w in zip(loading, _whole_kg([x['kg'] for x in loading], round(kg))):
+            x['kg'] = w
         trips.append({'id': tr['id'], 'no': no, 'loading_start': tr['loading_start'], 'depart': tr['depart'],
                       'return': tr['return'], 'stops': len(tr['stops']), 'orders': orders, 'invoiced': invoiced,
                       'mixed': mixed, 'split': split, 'rows': rows, 'kg': round(kg), 'unknown': unknown,

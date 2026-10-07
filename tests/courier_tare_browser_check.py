@@ -12,6 +12,7 @@ F фильтр «Մենեջեր» и поиск сужают строки, сб�
 O карандаш у строки → форма в ячейке (количество, дата) → «Պահել»: начальный остаток и баланс обновились;
 S клик по магазину → диалог: баланс, история по дням, форма «Սկզբնական մնացորդ» — новый вид тары записан;
 I импорт CSV с ошибками → предпросмотр с ошибками, «Գրանցել» выключена; правильный CSV и Excel (дата-ячейка) → запись;
+  код магазина из Excel — текстом, как видно в ячейке («0012» с форматом «0000»);
 C «CSV» скачивает tara_<день>.csv с заголовком;
 P телефон 390 × 860: горизонтальной прокрутки нет, строки — карточками;
 ошибки страницы (pageerror) и консоли — провал (кроме сетевых ошибок внешних ресурсов).
@@ -203,6 +204,20 @@ def main() -> int:
             api = page.request.get(f'{BASE}/api/courier/admin/tare').json()
             r11 = next(r for r in api['rows'] if r['customer_id'] == 11 and r['tare_id'] == BOTTLE)
             check((r11['opening'], r11['as_of']) == (4.0, (today - timedelta(days=3)).isoformat()), f'I Excel applied (date cell): {r11}')
+            # код-число с форматом «0000» уходит на сервер как его видно в Excel — «0012», без потери нулей
+            wb = Workbook()
+            ws = wb.active
+            ws.append([12, 'erp:900', 1, '01.10.2026'])
+            ws['A1'].number_format = '0000'
+            buf = io.BytesIO()
+            wb.save(buf)
+            with page.expect_request(lambda q: q.url.endswith('/api/courier/admin/tare/import') and q.method == 'POST') as req:
+                page.set_input_files('#ctFile', files=[{'name': 'z.xlsx', 'buffer': buf.getvalue(),
+                                                        'mimeType': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}])
+            sent = req.value.post_data_json['rows']
+            page.wait_for_selector('#ctImportDlg[open] .ct-ferr', timeout=10000)
+            check([r['code'] for r in sent] == ['0012'], f'I Excel code column taken as text: {sent}')
+            page.click('#ctImportCancel')
 
             # C
             with page.expect_download(timeout=10000) as dl:

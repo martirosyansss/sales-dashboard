@@ -24,8 +24,8 @@ from courier import store as cstore, tare as tr  # noqa: E402
 from courier.erp_day import ContainerLink  # noqa: E402
 from courier.store import SCHEMA_VERSION, Store  # noqa: E402
 from route_optimizer.erp import ErpError  # noqa: E402
-from test_courier import (PAST, _ev, _fresh_ref_cache, _ingest, _pin_env, _uid, _who, app, client, now,  # noqa: E402,F401
-                          st)
+from test_courier import (PAST, _ev, _fresh_ref_cache, _ingest, _pin_env, _today_stops, _uid, _who, app,  # noqa: E402,F401
+                          client, now, st)
 
 DAY0 = '2026-09-30'                       # день раньше PAST (2026-10-01); «сегодня» тестов — 2026-10-02
 API = '/api/courier/admin/tare'
@@ -113,7 +113,7 @@ def test_went_rules():
              'lines': [{'product_id': WATER, 'qty': 10, 'weight_kg': 190}, {'product_id': COLA, 'qty': 12, 'weight_kg': 18},
                        {'product_id': CUP, 'qty': 20, 'weight_kg': 20}]}
     assert tr.went('full', basis, {}, links) == ({BOTTLE: 10, CRATE: 2}, False)
-    assert tr.went('covered', basis, {}, links) == ({BOTTLE: 10, CRATE: 2}, False)
+    assert tr.went('covered', basis, {}, links) == ({}, False)          # covered — у владельца группы (day_moves)
     assert tr.went('refused', basis, {WATER: 10}, links) == ({}, False)
     assert tr.went('pending', basis, {}, links) == ({}, False)
     # частично: вода 7 из 10, кола 6 из 12, стаканы — 0 (тары нет): бутыли 7, ящики 1
@@ -191,6 +191,75 @@ def test_balance_cached_until_day_changes(client, st, days, erp, monkeypatch):
     assert built == [PAST] and rows[(11, CRATE)]['balance'] == 0.0      # пересчитан только изменившийся день
 
 
+@pytest.mark.parametrize('done, went', [(6, 6.0), (0, None)])
+def test_split_order_covered_sister_counted_once_at_owner(client, st, erp, done, went):
+    """Заказ O: 10 бутылей доставлен по заказу (6 или отказ), потом стал двумя накладными S:1 (6) и S:2 (4): S:2 —
+    covered (товар отдан по заказу). Тара — один раз по группе у владельца: 6 из 10 → ушло 6 (было 6 + 4 = 10), отказ →
+    ничего (было 4 у covered-сестры)."""
+    a = _who(st, 'A', '1111')
+    o, s1, s2 = 'O:' + _uid(600), 'S:' + _uid(601), 'S:' + _uid(602)
+    st.store.save_day(PAST, 'CAR1', [_stop(o, 30, [('o1', 10, WATER, 190.0)], {BOTTLE: 10})], 'v1', PAST + 'T08:00:00+04:00')
+    _ingest(st, a, _deliver(o, [('o1', done)], '09:00:00'))
+    inv1 = {**_stop(s1, 30, [('a', 6, WATER, 114.0)], {BOTTLE: 6}), 'replaces': [o]}
+    inv2 = {**_stop(s2, 30, [('b', 4, WATER, 76.0)], {BOTTLE: 4}, seq=2), 'replaces': [o]}
+    st.store.save_day(PAST, 'CAR1', [inv1], 'v2', PAST + 'T09:10:00+04:00')
+    st.store.save_day(PAST, 'CAR1', [inv1, inv2], 'v3', PAST + 'T09:20:00+04:00')
+    stops = _today_stops(client)
+    assert (stops[s1]['status'], stops[s2]['status']) == ('partial' if done else 'refused', 'covered')
+    _, rows = _rows(client)
+    assert (rows[(30, BOTTLE)]['went'] if went else rows.get((30, BOTTLE))) == went
+
+
+def test_tare_correction_sent_on_another_day_replaces_old_mark(client, st, days):
+    """Отметка тары дня DAY0, исправленная (`supersedes`) событием с датой PAST, не считается в DAY0 — тара не дважды."""
+    first = _tare(days['s0'], [(BOTTLE, 4)], '16:00:00', DAY0)
+    _ingest(st, days['who'], first)
+    _, rows = _rows(client)
+    assert rows[(10, BOTTLE)]['returned'] == 7.0 + 4
+    _ingest(st, days['who'], _tare(days['s0'], [(BOTTLE, 1)], '08:00:00', PAST, supersedes=first['id'].upper()))
+    _, rows = _rows(client)
+    assert rows[(10, BOTTLE)]['returned'] == 7.0 + 1
+    h = client.get(f'{API}/history?customer=10').get_json()
+    assert [(d['date'], d['returned']) for d in h['days']] == [(PAST, {BOTTLE: 8.0}), (DAY0, {})]
+
+
+def test_parallel_requests_compute_each_day_once(app, days, monkeypatch):
+    """Холодный кэш (после перезапуска): два запроса одновременно — каждый день считается один раз (замок)."""
+    import threading
+    import time
+    built = []
+    real = tr.day_moves
+
+    def slow(*a):
+        built.append(a[0])
+        time.sleep(0.2)
+        return real(*a)
+    monkeypatch.setattr(tr, 'day_moves', slow)
+    out = []
+    threads = [threading.Thread(target=lambda: out.append(app.test_client().get(API).status_code)) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert out == [200, 200] and sorted(built) == [DAY0, PAST]
+
+
+def test_import_codes_kept_as_written():
+    """Код магазина — как в файле: «0123» не становится «123»; целое — его запись; дробное — не код."""
+    from datetime import date
+    asked = []
+
+    def customers(codes):
+        asked.extend(codes)
+        return {c: (1, 'X') for c in codes}
+    items, errors = tr.check_import([{'code': ' 0123 ', 'tare': BOTTLE, 'qty': 1, 'as_of': '2026-10-01'},
+                                     {'code': 456, 'tare': BOTTLE, 'qty': 1, 'as_of': '2026-10-01'},
+                                     {'code': 7.0, 'tare': BOTTLE, 'qty': 1, 'as_of': '2026-10-01'}],
+                                    customers, {BOTTLE: 'Շիշ'}, date(2026, 10, 2))
+    assert asked == ['0123', '456'] and [x.code for x in items] == ['0123']   # 456 → тот же магазин 1: повтор
+    assert [(e['row'], e['field']) for e in errors] == [(2, 'tare'), (3, 'code')]
+
+
 def test_partial_without_erp_links_is_by_weight(client, days, erp):
     def down():
         raise ErpError('нет связи')
@@ -236,6 +305,14 @@ def test_opening_bad_input(client, st, days, body, error):
     r = client.post(f'{API}/opening', json=body)
     assert r.status_code == 400 and error in r.get_json()['error']
     assert st.store.tare_openings() == []
+
+
+def test_bad_customer_ids_are_400(client, days):
+    for q in ('²', '١٢', '-1', '', 'x', '1' * 13):
+        assert client.get(f'{API}/history', query_string={'customer': q}).status_code == 400, q
+    for cid in (0, -5, 2 ** 63, 10 ** 30):
+        r = client.post(f'{API}/opening', json={'customer_id': cid, 'tare_id': BOTTLE, 'qty': None})
+        assert r.status_code == 400, cid
 
 
 def test_tare_mark_of_stop_from_other_date_counts_at_its_store(client, st, days):
@@ -294,6 +371,8 @@ def test_csv_export_escapes_formulas(client, st, days):
     first = table[1]
     assert first[0] == 'C10' and first[4] == 'Շիշ 19լ' and first[-1] == '53.0'
     assert first[1] == 'Խանութ 10'                                        # имя — из последнего дня, не из записи
+    neg = next(x for x in table if x[0] == 'C12')
+    assert neg[-1] == '-3.0' and neg[-3:-1] == ['0.0', '3.0']            # числа — без апострофа (не текст)
     st.store.save_tare_openings([cstore.TareOpening(5, BOTTLE, 1.0, DAY0, '-1', '=cmd()')], 'qa')
     table = list(csv.reader(io.StringIO(client.get(f'{API}.csv').get_data().decode('utf-8')[1:]), delimiter=';'))
     row = next(x for x in table if x[1].endswith('cmd()'))
