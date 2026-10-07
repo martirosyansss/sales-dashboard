@@ -129,13 +129,25 @@ def main() -> int:
             page.wait_for_timeout(200)
             side = rect(side_loc)
             hl, h1 = rect(heads.nth(n_trips - 1)), rect(heads.nth(0))
-            check(abs(hl[3] - side[3]) <= 12 or hl[3] <= side[3], f'B last trip bar visible at the bottom {hl} / {side}')
+            check(abs(hl[3] - side[3]) <= 2, f'B last trip bar sits at the bottom of the panel {hl} / {side}')
             first_stops_end = rect(page.locator(f'{CARD} .dp-trip').nth(0).locator('.dp-stop').last)
             check(h1[1] >= first_stops_end[3] - 1, 'B first trip bar went up with its own stops (it follows them)')
-            side_loc.evaluate('e => { e.scrollTop = e.scrollHeight; }')
+            # прокрутили за конец рейса: полоса ушла вверх со своей последней точкой, точка видна над ней, а не под ней
+            last.evaluate("t => { const p = document.getElementById('dpWsSide'), h = t.querySelector('.dp-trip-head');"
+                          " const s = [...t.querySelectorAll('.dp-stop')].pop();"
+                          " p.scrollTop += s.getBoundingClientRect().bottom - (p.getBoundingClientRect().bottom - h.offsetHeight) + 20; }")
             page.wait_for_timeout(200)
-            hl, lst = rect(heads.nth(n_trips - 1)), rect(last.locator('.dp-stop').last)
-            check(lst[3] <= hl[1] + 1, f'B at the very end the last store row is not hidden under the bar {lst} / {hl}')
+            side, hl, lst = rect(side_loc), rect(heads.nth(n_trips - 1)), rect(last.locator('.dp-stop').last)
+            check(hl[3] <= side[3] - 10 and side[1] <= lst[1] and lst[3] <= hl[1] + 1,
+                  f'B end of the last trip: its last store row is visible right above the bar {lst} / {hl} / {side}')
+            # Tab на «×» точки — кнопка не под полосой (scroll-padding-bottom)
+            side_loc.evaluate('e => { e.scrollTop = 0; }')
+            xs = page.locator(f'{CARD} .dp-trip').nth(0).locator('.dp-stop-x')
+            if xs.count():
+                xs.last.focus()
+                page.wait_for_timeout(200)
+                xr, hb = rect(xs.last), rect(heads.nth(0))
+                check(xr[3] <= hb[1] + 1, f'B focused «×» is not hidden under the bar {xr} / {hb}')
             page.screenshot(path=str(SHOTS / 'b-last.png'))
 
             # C — «Փոփոխել» в полосе
