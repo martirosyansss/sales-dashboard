@@ -4850,7 +4850,7 @@ def _pay_month_result(state: RoutesState, first: date, today: date) -> _PayMonth
     if first == today.replace(day=1):
         try:
             rest = _calendar_rest(today, state.store.load().settings)
-        except (StoreError, KeyError, TypeError, ValueError):
+        except StoreError:
             logger.exception('[Routes] Աշխատավարձ: календарь настроек не читается — текущий месяц от D')
             warning = PAY_CALENDAR_WARNING
     return _PayMonth(first, params, at, by, cp.compute(_pay_data(state, first, until), params, rest), warning)
