@@ -302,11 +302,12 @@ def test_vrp_terrain_term_picks_descending_order():
 
 
 @pytest.mark.parametrize('solver', [False, True])
-def test_route_day_descends_loaded(monkeypatch, solver):
-    """Склад наверху сетки (ряд 6), тяжёлый B — на середине склона, лёгкий A — внизу: рейс «B, затем A»; литры рейса —
-    точный route_cost с подъёмами."""
+def test_route_day_descends_loaded_when_terrain_in_plan(monkeypatch, solver):
+    """terrain.IN_PLAN включён: склад наверху сетки (ряд 6), тяжёлый B — на середине склона, лёгкий A — внизу: рейс
+    «B, затем A»; литры рейса — точный route_cost с подъёмами."""
     if solver and not vrp.available():
         pytest.skip('нет PyVRP')
+    monkeypatch.setattr(terrain, 'IN_PLAN', True)
     monkeypatch.setattr(rc, 'TERRAIN_U_BAR', 0.0)
     monkeypatch.setattr(fl, 'TERRAIN_U_BAR', 0.0)
     depot, a, b = _at(6, 3), _at(0, 0), _at(3, 0)
@@ -320,6 +321,33 @@ def test_route_day_descends_loaded(monkeypatch, solver):
     flat = fl.route_day([a, b], [200.0, 1800.0], [1.0, 1.0], depot, [PLAIN], replace(DP_NORMS, roads=rd.RoadDistances.for_graph(GRAPH)),
                         tn, overflow=False, solver=solver)
     assert flat[0].liters == pytest.approx(trips[0].km * PLAIN.l100 / 100.0)
+
+
+@pytest.mark.parametrize('solver', [False, True])
+@pytest.mark.parametrize('overflow', [False, True])
+def test_route_day_plan_is_flat_by_default(monkeypatch, solver, overflow):
+    """По умолчанию (terrain.IN_PLAN выключен, ответ владельца по №85) план с высотами — тот же, что без них: машины, состав,
+    порядок, км и минуты; рельеф только добавлен к литрам рейсов (точный route_cost с подъёмами того же порядка)."""
+    if solver and (overflow or not vrp.available()):
+        pytest.skip('решатель — только для сборки «Развоза»')
+    assert terrain.IN_PLAN is False
+    depot = _at(6, 3)
+    pts = [_at(0, 0), _at(3, 0), _at(1, 5), _at(4, 6), _at(2, 2)]
+    kgs = [200.0, 1800.0, 700.0, 400.0, 900.0]
+    tn = replace(TN, unload_min_per_stop=1.0, unload_min_per_tonne=0.0)
+    run = lambda roads: fl.route_day(pts, kgs, [1.0] * 5, depot, [PLAIN, LOADED], replace(DP_NORMS, roads=roads),   # noqa: E731
+                                     tn, overflow=overflow, solver=solver)
+    hilly, plain = run(_hilly()), run(rd.RoadDistances.for_graph(GRAPH))
+    assert [replace(t, liters=0.0) for t in hilly] == [replace(t, liters=0.0) for t in plain]
+    norms = replace(DP_NORMS, roads=_hilly())
+    for t in hilly:
+        exact = fl.trip_running_cost([pts[i] for i in t.items], [kgs[i] for i in t.items], depot, norms,
+                                     PLAIN if t.truck == 'P' else LOADED)
+        assert t.liters == pytest.approx(exact.liters) and exact.terrain_liters is not None
+        flat = fl.trip_running_cost([pts[i] for i in t.items], [kgs[i] for i in t.items], depot, norms,
+                                    PLAIN if t.truck == 'P' else LOADED, terrain_on=False)
+        assert flat.terrain_liters is None
+    assert any(abs(a.liters - b.liters) > 1e-6 for a, b in zip(hilly, plain))
 
 
 def test_plan_view_shows_climb_and_terrain_liters(monkeypatch):
@@ -340,6 +368,31 @@ def test_plan_view_shows_climb_and_terrain_liters(monkeypatch):
     assert hilly['terrain_l'] == pytest.approx(hilly['liters'] - plain['liters'], abs=0.11)
     assert hilly['terrain_l'] > 0 and hilly['km'] == plain['km']
 
+
+
+def test_dispatch_build_same_plan_and_flat_variant_costs(monkeypatch):
+    """«Развоз» с высотами: сборка — те же рейсы (машина, магазины по порядку), что без них; ֏ вариантов (_trip_amd: наборы
+    машин, новые заказы дня) — ровные; в рейсе плана — литры с рельефом. Рельеф в плане (IN_PLAN) — ֏ вариантов с ним."""
+    depot = _at(6, 3)
+    stops, _ = _dp_stops([(1, _at(0, 0), 300.0), (2, _at(3, 0), 900.0), (3, _at(1, 5), 500.0), (4, _at(4, 6), 400.0)])
+
+    def ctx(roads):
+        return dp.DayContext(DP_DAY, depot, {t.car_code: t for t in (PLAIN, LOADED)}, replace(DP_NORMS, roads=roads),
+                             TN, 9 * 60)
+
+    hilly, plain = ctx(_hilly()), ctx(rd.RoadDistances.for_graph(GRAPH))
+    a = dp.build(hilly, stops, None, ['L', 'P'], '2026-10-01T08:00:00')
+    b = dp.build(plain, stops, None, ['L', 'P'], '2026-10-01T08:00:00')
+    assert [(t.truck, t.stops) for t in a.trips] == [(t.truck, t.stops) for t in b.trips]
+    routable = {s.customer_id: s for s in stops}
+    t = a.trips[0]
+    shares = dp._shares(a.trips)
+    flat = dp._trip_amd(plain, t.stops, routable, shares, t.truck)
+    assert dp._trip_amd(hilly, t.stops, routable, shares, t.truck) == flat
+    view = dp.plan_view(hilly, stops, a, _info, explain=False)['trucks']
+    assert all('terrain_l' in tr for x in view for tr in x['trips'])
+    monkeypatch.setattr(terrain, 'IN_PLAN', True)
+    assert dp._trip_amd(hilly, t.stops, routable, shares, t.truck) != flat
 
 # ============================== «Նորմ և փաստ» ==============================
 

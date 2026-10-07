@@ -2004,9 +2004,11 @@ class _SameDayPlan:
 
 def _trip_amd(ctx: DayContext, cids: Sequence[int], routable: Mapping[int, Stop], shares: Mapping[int, int],
               code: str) -> float:
-    """Расход рейса в драмах — как operating_cost_amd плана (топливо по цене дня + износ)."""
+    """Расход рейса в драмах — как operating_cost_amd плана (топливо по цене дня + износ). Им сравниваются варианты плана
+    (наборы машин, новые заказы дня): рельеф (№85) — только при terrain.IN_PLAN, иначе ровные литры."""
     kgs = [routable[c].kg / shares.get(c, 1) for c in cids]
-    cost = fl.trip_running_cost([routable[c].point for c in cids], kgs, ctx.depot, ctx.norms, ctx.trucks[code])
+    cost = fl.trip_running_cost([routable[c].point for c in cids], kgs, ctx.depot, ctx.norms, ctx.trucks[code],
+                                fl.terrain.IN_PLAN)
     return cost.total_amd(ctx.tn.fuel_price)
 
 
