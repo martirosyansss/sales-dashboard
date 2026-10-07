@@ -3509,11 +3509,13 @@
             + (d.overtime_ok ? '․ արտաժամյա աշխատանքը թույլատրված է մինչև ' + d.overtime_end + '-ը' : '') + '։');
         const fuel = [];
         if (tr.liters !== null) {
+            const flat = num(tr.terrain_l) !== null ? tr.liters - tr.terrain_l : tr.liters;   // №85: ռելիեֆը՝ առանձին տողով
             fuel.push(tr.fuel_load_configured && x.fuel_empty_l100 !== null
-                ? '≈ ' + fmt(tr.liters, 1) + NB + 'լ՝ դատարկ մեքենան ծախսում է ' + fmt(x.fuel_empty_l100, 1) + NB + 'լ/100' + NB + 'կմ, լրիվ բեռնված՝ '
+                ? '≈ ' + fmt(flat, 1) + NB + 'լ՝ դատարկ մեքենան ծախսում է ' + fmt(x.fuel_empty_l100, 1) + NB + 'լ/100' + NB + 'կմ, լրիվ բեռնված՝ '
                     + fmt(x.fuel_full_l100, 1) + NB + 'լ/100' + NB + 'կմ, հաշվարկված է ըստ յուրաքանչյուր հատվածում մնացած բեռի։'
-                : '≈ ' + fmt(tr.liters, 1) + NB + 'լ = ' + fmt(tr.km, 1) + NB + 'կմ × ' + fmt(x.l100, 1) + NB + 'լ/100' + NB + 'կմ։');
+                : '≈ ' + fmt(flat, 1) + NB + 'լ = ' + fmt(tr.km, 1) + NB + 'կմ × ' + fmt(x.l100, 1) + NB + 'լ/100' + NB + 'կմ։');
             if (model.learned && (model.learned.fuel || []).includes(t.car_code)) fuel.push('Նորմը սովորած է այս մեքենայի լիցքավորումներից։');
+            if (num(tr.terrain_l) !== null) fuel.push('Վերելք՝ ' + fmt(tr.climb_m) + NB + 'մ · ' + (tr.terrain_l > 0 ? '+' : '') + fmt(tr.terrain_l, 1) + NB + 'լ, ընդամենը ≈ ' + fmt(tr.liters, 1) + NB + 'լ։');
         }
         const center = [];
         if (!day.zone) center.push('Փոքր կենտրոնի սահմանը կարգավորումներում նշված չէ։');

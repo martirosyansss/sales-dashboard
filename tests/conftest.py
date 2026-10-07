@@ -40,6 +40,7 @@ _isolate('ROUTES_DB_PATH', SESSION_TMP / 'route_optimizer.db')
 _isolate('COURIER_DB_PATH', SESSION_TMP / 'courier.db')
 _isolate('ROUTES_OSM_PATH', SESSION_TMP / 'no-map.osm.pbf')
 _isolate('ROUTES_VALHALLA_DIR', SESSION_TMP / 'valhalla')
+_isolate('ROUTES_DEM_DIR', SESSION_TMP / 'no-dem')   # тайлы высот (№85): тесты не зависят от тайлов на диске
 
 # ручной скрипт против боевой ERP (запуск: python tests/test_qty_consistency.py) — pytest его не собирает
 collect_ignore = ["test_qty_consistency.py"]
