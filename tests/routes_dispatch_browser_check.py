@@ -597,6 +597,34 @@ def main() -> int:
             check(ws.locator('#dpDrawer #dpStep1').is_visible() and ws.locator('#dpDrawer #dpBuild').is_visible(),
                   'Y «Մեքենաներ, պատվերներ»: steps 1–2 and rebuild in the drawer')
             ws.click('#dpDrawerClose')
+            # шапка рабочего экрана — одной строкой, статус целиком (не «Ու…»), редкие действия — в меню «⋯»
+            bar = ws.evaluate("(() => { const b = document.querySelector('#rtDispatch .dp-dayboard'), p = document.querySelector('#dpSendState .dp-sendpill');"
+                              " return [b.scrollWidth, b.clientWidth, p ? p.scrollWidth <= p.clientWidth : true]; })()")
+            check(bar[0] <= bar[1] and bar[2], f'Y toolbar fits one line, status not clipped {bar}')
+            check(ws.locator('#dpViewList').is_hidden() and ws.locator('#dpWsMore').is_visible(), 'Y «Ցուցակով» is inside the «⋯» menu')
+            ws.click('#dpWsMore')
+            check(ws.get_attribute('#dpWsMore', 'aria-expanded') == 'true' and ws.evaluate("document.activeElement.getAttribute('role')") == 'menuitem',
+                  'Y «⋯» opens the menu, focus on the first item')
+            ws.keyboard.press('Escape')
+            check(ws.locator('#dpWsMenu').is_hidden() and ws.evaluate('document.activeElement.id') == 'dpWsMore', 'Y Esc closes the menu, focus back on «⋯»')
+            # правка после отправки → «⋯ → Չեղարկել չուղարկված փոփոխությունները» (подтверждение) → правка discard
+            ws.locator('#dpBoard .dp-blabel').first.click()
+            ws.wait_for_selector('#dpWsSide:not([hidden]) .dp-tcard.is-focus', timeout=5000)
+            if ws.locator('#dpWsSide .dp-trip.is-editing').count() == 0:
+                ws.locator('#dpWsSide .dp-tcard.is-focus .dp-editbtn').first.click()
+            sel = ws.locator('#dpWsSide .dp-trip.is-editing .dp-move').first
+            opts = sel.locator('option').evaluate_all("os => os.map(o => o.value)")
+            sel.select_option(next((v for v in opts if v.startswith('t:')), None) or next(v for v in opts if v.startswith('n:')))
+            ws.wait_for_selector('#dpSendState .dp-sendpill.is-unsent', timeout=15000)
+            ws.click('#dpWsClose')
+            ws.click('#dpWsMore')
+            asked = []
+            ws.once('dialog', lambda d: (asked.append(d.message), d.accept()))
+            ws.click('#dpMenuDiscard')
+            ws.wait_for_selector('#dpSendState .dp-sendpill.is-sent', timeout=15000)
+            check(asked and any('"discard"' in (m or '') for m in moves) and ws.locator('#dpMenuDiscard').is_hidden(),
+                  f'Y «⋯» discard: confirmation, edit discard, item gone ({len(asked)} dialog)')
+            ws.click('#dpWsMore')
             ws.click('#dpViewList')
             check(ws.locator('#rtDispatch.is-ws').count() == 0 and ws.locator('.dp-split #dpTruckCards').count() == 1
                   and ws.locator('.dp-mapcol #dpMapBox').count() == 1 and ws.locator('#dpViewWs').is_visible(),

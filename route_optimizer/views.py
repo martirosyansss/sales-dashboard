@@ -5071,13 +5071,36 @@ class _PayMonth:
     params_at: str | None    # когда и кем параметры сохранены (None — значения по умолчанию)
     params_by: str | None
     result: cp.Result
+    calendar_warning: str | None = None   # календарь «Маршрутов» не прочитан: текущий месяц посчитан от D
+
+
+def _calendar_rest(today: date, settings: Mapping[str, Any]) -> frozenset[date]:
+    """Рабочие дни с today (включительно) до конца месяца по календарю «Маршрутов»: дни недели settings['workdays'] без
+    нерабочих дат (№64) — тот же dp.is_workday, что у «Развоза»."""
+    workdays, off = settings['workdays'], dp.holidays_of(settings)
+    end = _add_months(today.replace(day=1), 1)
+    return frozenset(d for d in (today + timedelta(days=i) for i in range((end - today).days))
+                     if dp.is_workday(d, workdays, off))
+
+
+PAY_CALENDAR_WARNING = ('Աշխատանքային օրացույցը (կարգավորումները) չհաջողվեց կարդալ․ ընթացիկ ամիսը հաշվված է միայն '
+                        'առաքման օրերով, ուստի ֆիքսը և նորմը կարող են ավելի մեծ լինել։')
 
 
 def _pay_month_result(state: RoutesState, first: date, today: date) -> _PayMonth:
-    """Расчёт месяца first: текущий — по сегодня включительно (накладные «из будущего» не берём)."""
+    """Расчёт месяца first: текущий — по сегодня включительно (накладные «из будущего» не берём), фикс и норма — от
+    D_month: прошедшие дни с доставкой + рабочие дни календаря с сегодня до конца месяца (начислено по сегодня);
+    прошлый — от D, как раньше. Календарь не читается — текущий месяц от D и предупреждение, а не 500."""
     until = min(_add_months(first, 1), today + timedelta(days=1))
     params, at, by = state.store.crew_pay_params()
-    return _PayMonth(first, params, at, by, cp.compute(_pay_data(state, first, until), params))
+    rest, warning = None, None
+    if first == today.replace(day=1):
+        try:
+            rest = _calendar_rest(today, state.store.load().settings)
+        except StoreError:
+            logger.exception('[Routes] Աշխատավարձ: календарь настроек не читается — текущий месяц от D')
+            warning = PAY_CALENDAR_WARNING
+    return _PayMonth(first, params, at, by, cp.compute(_pay_data(state, first, until), params, rest), warning)
 
 
 def _pay_row_json(r: cp.Row) -> dict[str, Any]:
@@ -5090,7 +5113,7 @@ def _pay_row_json(r: cp.Row) -> dict[str, Any]:
 
 def _pay_request() -> tuple[_PayMonth | None, Any]:
     """(месяц из ?month=, None) или (None, ответ 400)."""
-    today = _clock().date()
+    today = _yerevan_now().date()   # дата Еревана, а не часов сервера: месяц и «по сегодня»
     first = _pay_month(request.args.get('month', ''), today)
     if first is None:
         return None, _bad_request({'month': 'Ընտրեք ամիսը վերջին 12 ամիսներից'})
@@ -5105,14 +5128,15 @@ def api_pay() -> Any:
     m, error = _pay_request()
     if m is None:
         return error
-    this = _clock().date().replace(day=1)
+    this = _yerevan_now().date().replace(day=1)
     result = m.result
     return jsonify({'success': True, 'month': m.first.strftime('%Y-%m'), 'current': m.first == this,
                     'months': [_add_months(this, -i).strftime('%Y-%m') for i in range(PAY_MONTHS)],
                     'params': m.params.json(), 'params_updated_at': m.params_at, 'params_updated_by': m.params_by,
-                    'workdays': result.workdays, 'unknown_codes': list(result.unknown_codes),
+                    'workdays': result.workdays, 'workdays_month': result.workdays_month,
+                    'unknown_codes': list(result.unknown_codes),
                     'overlapping_codes': [list(c) for c in result.overlapping_codes],
-                    'excluded_kin': list(result.excluded_kin),
+                    'excluded_kin': list(result.excluded_kin), 'calendar_warning': m.calendar_warning,
                     'rows': [_pay_row_json(r) for r in result.rows],
                     'totals': {k: round(v, 3) if k == 'tonnes' else v for k, v in cp.totals(result.rows).items()}})
 
@@ -5150,16 +5174,20 @@ def api_pay_csv() -> Any:
     out = io.StringIO()
     w = csv.writer(out, delimiter=';', lineterminator='\r\n')
     w.writerow(['Աշխատավարձ', m.first.strftime('%Y-%m')])
-    w.writerow(['Հաշվված է', _clock().strftime('%Y-%m-%d %H:%M')])
+    w.writerow(['Հաշվված է', _yerevan_now().strftime('%Y-%m-%d %H:%M')])
     if m.params_at:
         w.writerow(['Պարամետրերը փոխվել են', m.params_at.replace('T', ' ')[:16], _csv_cell(m.params_by or '')])
     for key, label in PAY_PARAM_LABELS:
         value = getattr(params, key)
         w.writerow([label, _csv_cell(', '.join(value)) if isinstance(value, tuple) else n(value)])
+    # D_month — знаменатель фикса и нормы: у текущего месяца — рабочие дни всего месяца, в таблице «Աշխատանքային օրեր» — D
+    w.writerow(['Աշխատանքային օրեր ամսում', result.workdays_month])
     # то же, что предупреждения на странице: тёзки с общими днями и исключённые с учтённым кодом того же имени
     for codes in result.overlapping_codes:
         w.writerow(['Ստուգել', _csv_cell('Նույն անունով կոդեր, որոնցից մի քանիսը աշխատել են նույն օրերին՝ '
                                          + ', '.join(codes) + ' — հաշվված են առանձին')])
+    if m.calendar_warning:
+        w.writerow(['Ստուգել', m.calendar_warning])
     if result.excluded_kin:
         w.writerow(['Ստուգել', _csv_cell('Հաշվվում են, բայց նույն անունով կոդ կա չհաշվվողների մեջ՝ '
                                          + ', '.join(result.excluded_kin))])

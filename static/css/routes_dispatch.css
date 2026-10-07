@@ -992,10 +992,8 @@ details.dp-costnote p { margin: 6px 0 0; }
 #rtDispatch.is-ws .dp-day-main { display: contents; }
 #rtDispatch.is-ws .rt-title { order: 1; flex: none; }
 #rtDispatch.is-ws .dp-daynav { order: 2; flex: none; }
-#rtDispatch.is-ws .dp-sendstate { order: 3; flex: 0 1 auto; min-width: 0; margin: 0; }
-#rtDispatch.is-ws .dp-datenote { order: 4; flex: none; margin: 0; }
-#rtDispatch.is-ws .dp-datenote .rt-linkbtn { font-size: 0; gap: 0; }
-#rtDispatch.is-ws .dp-datenote .rt-linkbtn i { font-size: .9375rem; }
+#rtDispatch.is-ws .dp-datenote { order: 3; flex: none; margin: 0; }
+#rtDispatch.is-ws .dp-sendstate { order: 4; flex: none; flex-wrap: nowrap; gap: 8px; margin: 0; }
 #rtDispatch.is-ws .dp-wsacts { order: 5; margin-left: auto; flex-wrap: nowrap; }
 #rtDispatch.is-ws .dp-sendpill { white-space: nowrap; }
 #rtDispatch.is-ws .rt-title { font-size: 0; overflow: visible; }
@@ -1008,14 +1006,11 @@ details.dp-costnote p { margin: 6px 0 0; }
 #rtDispatch.is-ws #dpPrint span, #rtDispatch.is-ws #dpApproveBtn span { display: none; }
 #rtDispatch.is-ws #dpPrint::after { content: "Տպել"; }
 #rtDispatch.is-ws #dpApproveBtn::after { content: attr(data-short); }
-#rtDispatch.is-ws .dp-sendpill { max-width: 360px; overflow: hidden; }
-#rtDispatch.is-ws .dp-sendpill span { overflow: hidden; text-overflow: ellipsis; }
 /* подсказка — без кнопок, которые уже в шапке (утвердить, отправить) */
 #rtDispatch.is-ws .dp-todo-btns [data-ico="fa-paper-plane"] { display: none; }
 #rtDispatch.is-ws .rt-title { white-space: nowrap; max-width: 100%; }
 #rtDispatch.is-ws .dp-datenote > span { display: none; }
 #rtDispatch.is-ws #dpApprovedBadge, #rtDispatch.is-ws #dpNoDriver { display: none !important; }
-#rtDispatch.is-ws #dpUnapprove { height: 38px; }
 #rtDispatch.is-ws .dp-datenote { margin-top: 2px; font-size: .8125rem; flex-wrap: nowrap; }
 #rtDispatch.is-ws .dp-datenote > span { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 body.dp-ws-on .rt-secbar { margin-bottom: 0; }
@@ -1030,13 +1025,70 @@ body.dp-ws-on .rt-secbar .rt-tabs a { padding-top: 3px; padding-bottom: 3px; }
 /* печать и Excel — в шапке рабочего экрана, в подсказке не повторяются */
 #rtDispatch.is-ws .dp-todo-btns [data-ico="fa-print"], #rtDispatch.is-ws .dp-todo-btns [data-ico="fa-file-excel"] { display: none; }
 
-#rtDispatch.is-ws .dp-segbtn { width: 34px; height: 34px; }
-#rtDispatch.is-ws .rt-input.dp-date { height: 34px; min-width: 140px; }
+#rtDispatch.is-ws .dp-segbtn { width: 30px; height: 30px; }
+#rtDispatch.is-ws .dp-dayseg { padding: 2px; }
+#rtDispatch.is-ws .rt-input.dp-date { height: 30px; min-width: 0; width: 132px; padding: 0 4px; font-size: .875rem; }
 .dp-wsacts { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
 .dp-wsacts .dp-approve { margin: 0; display: flex; align-items: center; gap: 8px; }
 .dp-wsacts .dp-approve-note { display: none; }
 .dp-wsacts .dp-summary-cta { display: flex; gap: 8px; }
-.dp-wsacts .rt-btn { height: 38px; }
+.dp-wsacts .rt-btn { height: 36px; padding: 0 14px; font-size: .875rem; gap: 7px; }
+
+/* Панель инструментов рабочего экрана: слева — день и что у водителей, справа — работа с днём | выдать водителям | ⋯.
+   Одна высота (36 px), одна главная кнопка, редкие действия — в меню; ничего не обрезается многоточием */
+#rtDispatch.is-ws .dp-dayboard { min-height: 54px; gap: 12px; }
+#rtDispatch.is-ws .dp-datenote .rt-linkbtn {
+    width: 34px; height: 34px; justify-content: center; gap: 0; font-size: 0; border-radius: 50%;
+    border: 1px solid var(--rt-line); background: var(--rt-inset); color: var(--rt-fg-dim); text-decoration: none;
+}
+#rtDispatch.is-ws .dp-datenote .rt-linkbtn:hover { color: var(--rt-acc); border-color: var(--rt-acc-dim); text-decoration: none; }
+#rtDispatch.is-ws .dp-datenote .rt-linkbtn i { font-size: .875rem; }
+/* статус: короткая подпись целиком; полная — в подсказке (title) и для экранного диктора */
+.dp-sp-s, .dp-sp-a { display: none; }
+#rtDispatch.is-ws .dp-sp-a { display: inline; }
+#rtDispatch.is-ws :is(.dp-sp-l, .dp-sp-a),
+#rtDispatch.is-ws .dp-dayboard.tb-t1 :is(#dpExcel, #dpWsAi) span,
+#rtDispatch.is-ws .dp-dayboard.tb-t2 #dpPrepOpen span,
+#rtDispatch.is-ws .dp-dayboard.tb-t3 #dpSendBtn span {
+    position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
+}
+#rtDispatch.is-ws .dp-sp-s { display: inline-flex; align-items: center; gap: 6px; }
+#rtDispatch.is-ws .dp-sendpill { position: relative; height: 30px; min-height: 0; padding: 0 12px 0 10px; gap: 7px; font-size: .8125rem; }
+#rtDispatch.is-ws .dp-sendpill > i { font-size: .8125rem; }
+#rtDispatch.is-ws .dp-sendpill.is-unsent > i { font-size: .5rem; }
+.dp-sp-lock { font-size: .75em; opacity: .85; }
+#rtDispatch.is-ws #dpSendBtn { height: 30px; padding: 0 12px; font-size: .8125rem; }
+/* «Չեղարկել հաստատումը» и «Չեղարկել փոփոխությունները» — пунктами меню «⋯» */
+#rtDispatch.is-ws #dpUnapprove, #rtDispatch.is-ws #dpDiscardBtn { display: none; }
+#rtDispatch.is-ws .dp-approve.is-approved { display: none; }
+/* группы: [Մեքենաներ, պատվերներ][AI] | [Հաստատել][Տպել][Excel] [⋯] */
+.dp-wsacts > .dp-tbsep { width: 1px; height: 24px; margin: 0 4px; background: var(--rt-line); flex: none; }
+.dp-wsacts .rt-btn.dp-icobtn { width: 36px; padding: 0; }
+#rtDispatch.is-ws #dpExcel i { color: #34a853; }
+#rtDispatch.is-ws #dpExcel:hover i { color: inherit; }
+/* меню «⋯» */
+.dp-tbmore { position: relative; }
+.dp-menu {
+    position: absolute; right: 0; top: calc(100% + 6px); z-index: 1200; min-width: 260px; padding: 6px;
+    display: flex; flex-direction: column; gap: 2px;
+    background: var(--rt-panel); border: 1px solid var(--rt-line); border-radius: 12px; box-shadow: var(--rt-shadow), 0 12px 32px rgba(0, 0, 0, .35);
+}
+.dp-menu[hidden] { display: none; }
+.dp-menu [role="menuitem"] {
+    display: flex; align-items: center; gap: 10px; width: 100%; min-height: 38px; padding: 8px 12px; border: 0; border-radius: 8px;
+    background: transparent; color: var(--rt-fg); font: inherit; font-size: .875rem; text-align: left; cursor: pointer; white-space: nowrap;
+}
+.dp-menu [role="menuitem"][hidden] { display: none; }
+.dp-menu [role="menuitem"] > i { width: 16px; text-align: center; color: var(--rt-fg-dim); }
+.dp-menu [role="menuitem"]:hover, .dp-menu [role="menuitem"]:focus-visible { background: var(--rt-panel-2); outline: none; }
+.dp-menu [role="menuitem"]:focus-visible { box-shadow: 0 0 0 2px var(--rt-acc) inset; }
+.dp-menu [role="menuitem"]:disabled { opacity: .5; cursor: default; }
+/* не помещается в строку — fitToolbar() ступенями (tb-t1…t3) прячет подписи кнопок в подсказки: сначала второстепенные */
+#rtDispatch.is-ws .dp-dayboard.tb-t1 :is(#dpExcel, #dpWsAi),
+#rtDispatch.is-ws .dp-dayboard.tb-t2 #dpPrepOpen,
+#rtDispatch.is-ws .dp-dayboard.tb-t3 :is(#dpPrint, #dpApproveBtn, #dpSendBtn) { width: 36px; padding: 0; }
+#rtDispatch.is-ws .dp-dayboard.tb-t3 #dpSendBtn { width: 30px; }
+#rtDispatch.is-ws .dp-dayboard.tb-t3 :is(#dpPrint, #dpApproveBtn)::after { content: none; }
 
 /* «Ի՞նչ անել հիմա» — одна строка (как баннер «Routes not yet shared → Send routes» у OptimoRoute) */
 #rtDispatch.is-ws .dp-todo { margin-bottom: 8px; padding: 8px 14px; }

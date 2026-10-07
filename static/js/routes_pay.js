@@ -98,18 +98,23 @@
     function render() {
         const d = state.data;
         renderMonths(d.months, d.month);
-        $('cpSub').textContent = monthHy(d.month) + (d.current ? ' (մինչև այսօր)' : '') + ' · աշխատանքային օրեր՝ ' + d.workdays;
+        // D — дни с доставкой (в текущем месяце — по сегодня); D_month — знаменатель фикса и нормы: у прошлого месяца = D,
+        // у текущего — дни с доставкой по сегодня ∪ рабочие дни календаря с сегодня до конца месяца
+        const dm = d.workdays_month ?? d.workdays;
+        const daysText = d.current ? d.workdays + ' անցած / ' + dm + ' ամսում' : String(d.workdays);
+        $('cpSub').textContent = monthHy(d.month) + (d.current ? ' (մինչև այսօր)' : '') + ' · աշխատանքային օրեր՝ ' + daysText;
         $('cpOldHead').textContent = 'Հին սխեմա (' + fmt(d.params.old_pct, d.params.old_pct % 1 ? 1 : 0) + '%)';
         const warn = [
             d.unknown_codes.length ? 'ERP-ում չկան այս կոդերը՝ ' + d.unknown_codes.join(', ') + '։ Ստուգեք պարամետրերը։' : '',
             ...d.overlapping_codes.map(c => 'Նույն անունով կոդեր, որոնցից մի քանիսը աշխատել են նույն օրերին՝ '
                 + c.join(', ') + ' — ստուգեք։ Հաշվված են առանձին։'),
+            d.calendar_warning || '',
             d.excluded_kin.length ? 'Այս կոդերը հաշվվում են, բայց նույն անունով կոդ կա չհաշվվողների մեջ՝ '
                 + d.excluded_kin.join(', ') + ' — նշեք մարդու բոլոր կոդերը։' : '',
         ].filter(Boolean);
         $('cpWarn').hidden = !warn.length;
         $('cpWarnText').textContent = warn.join(' ');
-        renderFormula(d.params, d.workdays);
+        renderFormula(d.params, dm, d.current ? daysText : '');
         renderTable(d);
     }
 
@@ -128,7 +133,7 @@
         $('cpMonth').value = current || months[0];
     }
 
-    function renderFormula(p, D) {
+    function renderFormula(p, D, currentDays) {
         const n = (text) => h('span', { class: 'num', text });
         const dText = D ? String(D) : '—';
         $('cpFormula').replaceChildren(
@@ -140,10 +145,15 @@
                 D ? [' = ', n(fmt(p.norm_per_day * D, (p.norm_per_day * D) % 1 ? 1 : 0)), ' կետ'] : ''),
             h('p', null, h('b', { text: 'Հին սխեմա' }), ' (համեմատության համար) = ', n(amd(p.old_fix)),
                 ' × (աշխատած օրեր ÷ ', n(dText), ') + վաճառքի ', n(fmt(p.old_pct, p.old_pct % 1 ? 1 : 0) + '%')),
-            h('p', { class: 'note', text: 'Աշխատանքային օրեր՝ ամսվա այն օրերը, երբ որևէ առաքիչ առաքում է արել։ Կետ՝ խանութ, '
+            h('p', { class: 'note', text: 'Աշխատանքային օրեր՝ անցած ամսում՝ այն օրերը, երբ որևէ առաքիչ առաքում է արել, '
+                + 'իսկ ընթացիկ ամսում՝ մինչև այսօր առաքում ունեցած օրերը գումարած ամսվա մնացած աշխատանքային օրերը ըստ '
+                + 'կարգավորումների օրացույցի (աշխատանքային օրեր և ոչ աշխատանքային ամսաթվեր)։ Կետ՝ խանութ, '
                 + 'որին այդ օրը ապրանք է հասցվել (մեկ օրում մեկ խանութին մի քանի ապրանքագիր = 1 կետ)։ Տոննա՝ ապրանքի քաշն ըստ '
                 + 'ERP-ի։ Վերադարձները դեռ չեն հանվում, իսկ միայն զրոյական կամ մինուսային ապրանքագրերը '
                 + 'կետ և աշխատանքային օր չեն համարվում։' }),
+            ...(currentDays ? [h('p', { class: 'note' }, 'Ընթացիկ ամիս՝ աշխատանքային օրեր ', n(currentDays), '։ Ֆիքսը և '
+                + 'նորմը հաշվվում են ամբողջ ամսվա ', n(dText), ' աշխատանքային օրից, այնպես որ ցույց է տրված մինչև այսօր '
+                + 'հաշվեգրվածը։')] : []),
         );
     }
 
@@ -158,7 +168,7 @@
                     r.agent_ids.length > 1 ? h('span', { class: 'rt-badge b-none', text: r.agent_ids.length + ' կոդ' }) : null),
                 h('td', { class: 'txt' }, h('button', { type: 'button', class: 'rt-linkbtn', text: r.name || r.code,
                     'aria-label': (r.name || r.code) + '՝ օր առ օր' })),
-                num(r.days + '/' + d.workdays),
+                num(r.days + '/' + (d.workdays_month ?? d.workdays)),
                 num(fmt(r.points)),
                 num(fmt(r.tonnes, 1)),
                 num(fmt(r.fix)),
