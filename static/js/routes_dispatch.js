@@ -1847,11 +1847,17 @@
         t.className = 'dp-oitem-t';
         const b = document.createElement('b');
         b.textContent = o.name || o.code || ('հաճախորդ ' + o.customer_id);
+        if (o.later_to) {
+            const lt = document.createElement('span');
+            lt.className = 'rt-badge b-ok dp-later';
+            lt.textContent = 'կտանենք ' + dayHuman(o.later_to, true);
+            b.append(' ', lt);
+        }
         const s = document.createElement('span');
         s.textContent = (o.code ? o.code + ' · ' : '') + 'պատվեր ' + (o.doc_num || '') + (o.order_date ? ', ' + dateRu(o.order_date) : '')
             + ' · ' + kgText(o.kg) + ' · ' + money(o.revenue)
             + (o.deferred ? ' · կտարվի ' + dayHuman(state.data.defer_to, true) : '')
-            + (o.carried ? ' · տեղափոխված է նախորդ օրից' : '')
+            + (o.carried ? ' · տեղափոխված է ' + (o.carried_from ? dayHuman(o.carried_from, false) + ' պլանից' : 'նախորդ օրից') : '')
             + (o.agent_off ? ' · մենեջերը հանված է «Որ մենեջերների պատվերներն ենք տանում» ցուցակից' : '')
             + (o.agent_name ? ' · ' + o.agent_name : '') + (o.city ? ' · ' + o.city : '');
         t.append(b, s);
@@ -1879,7 +1885,8 @@
         return i < 0 ? '' : 'Երթ ' + (i + 1) + ' · ' + truckLabel(t);
     }
     // ещё решать: не везём сегодня, не «Չտանել» и не перенесён «Վաղը» (№25 — решён: его везут в день defer_to)
-    const blUndecided = (bl) => bl.filter(o => !o.taken && !o.dismissed && !o.deferred);
+    // «Երբ տանել» (later_to) — тоже решён: его везут в тот день
+    const blUndecided = (bl) => bl.filter(o => !o.taken && !o.dismissed && !o.deferred && !o.later_to);
     // напоминаем и берём «Տանել բոլորը» — только заказы менеджеров, которых везём: снятого фильтром — по одному, явно
     const blTodo = (bl) => blUndecided(bl).filter(o => !o.agent_off);
     async function takeBacklog(isns) {
@@ -1929,7 +1936,7 @@
             btn('Հանել', 'rt-btn-ghost', () => { if (needPlan()) edit({ action: 'exclude', order: o.isn }, 'Պատվերը հանվեց այսօրվա առաքումից'); });
         } else {
             btn('Տանել այսօր', 'rt-btn-primary', () => takeBacklog([o.isn]));
-            if (!o.dismissed && !o.deferred) btn('Չտանել', 'rt-btn-ghost', () => { if (needPlan()) edit({ action: 'exclude', order: o.isn }, 'Պատվերն այսօր չենք տանում'); });
+            if (!o.dismissed && !o.deferred && !o.later_to) btn('Չտանել', 'rt-btn-ghost', () => { if (needPlan()) edit({ action: 'exclude', order: o.isn }, 'Պատվերն այսօր չենք տանում'); });
         }
         act.querySelectorAll('button').forEach(b => b.setAttribute('aria-label', b.textContent + ' — ' + label));
         li.append(age, main, kg, sum, act);
@@ -1939,9 +1946,10 @@
         if (o.taken && tt) [tone, icon, text] = ['is-ok', 'fa-check', 'Տանում ենք այսօր՝ ' + tt];
         else if (o.taken) [tone, icon, text] = ['is-warn', 'fa-triangle-exclamation', 'Ավելացված է, բայց երթերում տեղ չկա՝ տեսեք «Դեռ երթերում չեն»'];
         else if (o.deferred) [tone, icon, text] = ['', 'fa-calendar-day', 'Տեղափոխված է հաջորդ օրվան՝ կտարվի ' + dayHuman(state.data.defer_to, true)];
+        else if (o.later_to) [tone, icon, text] = ['', 'fa-calendar-day', 'Խանութն այսօր չի ընդունում՝ կտանենք ' + dayHuman(o.later_to, true)];
         else if (o.agent_off) [tone, icon, text] = ['', 'fa-user-slash', 'Մենեջերը հանված է «Մենեջերներ» ֆիլտրից։ «Տանել այսօր»-ով կտանենք միայն այս պատվերը'];
         else if (tt) [tone, icon, text] = ['', 'fa-route', 'Խանութն այսօր արդեն երթում է այլ պատվերով՝ ' + tt];
-        if (o.taken && o.carried) text += ' · տեղափոխված է նախորդ օրից';
+        if (o.taken && o.carried) text += ' · տեղափոխված է ' + (o.carried_from ? dayHuman(o.carried_from, false) + ' պլանից' : 'նախորդ օրից');
         if (text) {
             const st = cell('dp-bl-st' + (tone ? ' ' + tone : ''));
             st.innerHTML = '<i class="fas ' + icon + '" aria-hidden="true"></i>';
@@ -1954,7 +1962,7 @@
         const bl = state.data.backlog || [];
         const hasPlan = !!state.data.plan;
         $('dpBacklog').hidden = !bl.length;
-        const open = blUndecided(bl), todo = blTodo(bl), taken = bl.filter(o => o.taken || (o.deferred && !o.dismissed)),
+        const open = blUndecided(bl), todo = blTodo(bl), taken = bl.filter(o => o.taken || ((o.deferred || o.later_to) && !o.dismissed)),
             off = bl.filter(o => !o.taken && o.dismissed);
         $('dpBacklogNote').textContent = !bl.length ? ''
             : [pl(bl.length, 'պատվեր'), bl.some(o => o.taken) ? bl.filter(o => o.taken).length + '-ը տանում ենք' : '', todo.length ? todo.length + '-ը չորոշված' : ''].filter(Boolean).join(' · ');
@@ -2575,10 +2583,11 @@
 
     // «Ինչու՞» (владелец 07.10: «обязательно с объяснением… чтобы фильтры всегда работали»): причина обязательна;
     // «միշտ» — правило на все дни: машине нельзя (deny_truck), только эти машины (only_trucks), машины не везут (never) —
-    // правка stop_rule; «միայն այսօր» — trip_stops (с «Չեղարկել»), «այսօր չենք տանում» — exclude заказов магазина
+    // правка stop_rule; «միայն այսօր» — trip_stops (с «Չեղարկել»), «այսօր չենք տանում» — defer_store магазина с днём, когда
+    // везти («Երբ տանել», владелец 08.10: тот день возьмёт заказы сам) или «Չգիտեմ»
     const WHY = [
         { key: 'today', title: 'Միայն այսօր', text: 'Խանութը կմնա «Դեռ երթերում չեն» ցուցակում՝ կդնեք այլ երթ։ Կանոն չի պահվում։' },
-        { key: 'not_today', title: 'Այսօր չենք տանում', text: 'Խանութը փակ է, այսօր չի ընդունում և այլն․ նրա պատվերներն այսօր չեն գնում։' },
+        { key: 'not_today', title: 'Այսօր չենք տանում', text: 'Խանութը փակ է, այսօր չի ընդունում և այլն։ Ընտրեք՝ երբ տանել — այդ օրը պատվերներն ինքնուրույն կմտնեն պլանի մեջ։' },
         { key: 'deny_truck', always: true, title: 'Այս մեքենան չի կարող տանել այս խանութը', text: '' },
         { key: 'only_trucks', always: true, title: 'Այս խանութը տանել միայն ընտրված մեքենաներով', text: 'Մյուս մեքենաներին այն այլևս չի նշանակվի։' },
         { key: 'never', always: true, title: 'Երբեք չտանել մեր մեքենաներով',
@@ -2624,6 +2633,7 @@
             lab.append(rb, body);
             row.appendChild(lab);
             if (o.key === 'only_trucks') row.appendChild(whyTrucks(t.car_code, rule));
+            if (o.key === 'not_today') { const days = whyDays(); if (days) row.appendChild(days); }
             box.appendChild(row);
         });
         $('dpWhyErr').textContent = '';
@@ -2655,21 +2665,67 @@
         });
         return list;
     }
+    // «Երբ տանել»: дни defer_days (первый — по умолчанию; он же «Վաղը», если это следующий календарный день) и «Չգիտեմ» —
+    // заказы остаются в «Նախորդ օրերից». Прошедший день — переносить некуда: без выбора, как «Չգիտեմ»
+    function whyDays() {
+        const days = state.data.defer_days || [];
+        if (!days.length) return null;
+        const wrap = document.createElement('div');
+        wrap.className = 'dp-why-days';
+        const cap = document.createElement('span');
+        cap.className = 'dp-why-days-t';
+        cap.textContent = 'Երբ տանել՝';
+        const group = document.createElement('div');
+        group.className = 'dp-why-chips';
+        group.setAttribute('role', 'radiogroup');
+        group.setAttribute('aria-label', 'Երբ տանել');
+        const next = shiftDay(state.data.day, 1);
+        [...days, ''].forEach((d, i) => {
+            const lab = document.createElement('label');
+            lab.className = 'dp-why-chip';
+            const rb = document.createElement('input');
+            rb.type = 'radio';
+            rb.name = 'dpWhyDay';
+            rb.value = d;
+            rb.checked = i === 0;
+            rb.addEventListener('change', () => {
+                const r = $('dpWhyOpts').querySelector('input[value="not_today"]');
+                if (rb.checked && !r.checked) r.checked = true;
+                whyState();
+            });
+            lab.append(rb, document.createTextNode(d ? (i === 0 && d === next ? 'Վաղը, ' : '') + dayHuman(d, true) : 'Չգիտեմ'));
+            group.appendChild(lab);
+        });
+        const hint = document.createElement('span');
+        hint.className = 'dp-why-days-hint';
+        hint.id = 'dpWhyDaysHint';
+        wrap.append(cap, group, hint);
+        return wrap;
+    }
+    const whyDayPicked = () => { const r = $('dpWhyOpts').querySelector('input[name="dpWhyDay"]:checked'); return r && r.value ? r.value : null; };
     const whyPicked = () => { const r = $('dpWhyOpts').querySelector('input[name="dpWhy"]:checked'); return r ? r.value : null; };
     const whyTrucksPicked = () => [...$('dpWhyOpts').querySelectorAll('.dp-why-trucks input:checked')].map(x => x.value);
     function whyState() {
         const k = whyPicked();
         $('dpWhySave').disabled = state.busy || !k || (k === 'only_trucks' && !whyTrucksPicked().length);
         $('dpWhyOpts').querySelectorAll('.dp-why-opt').forEach(r => r.classList.toggle('is-on', !!r.querySelector('input[name="dpWhy"]:checked')));
+        const hint = $('dpWhyDaysHint');
+        if (hint) {
+            const d = whyDayPicked();
+            hint.textContent = d ? 'Պատվերները կմտնեն ' + dayHuman(d, false) + ' պլանի մեջ։' : 'Պատվերները կմնան «Նախորդ օրերից» ցուցակում՝ կորոշեք հետո։';
+        }
     }
     async function saveWhy() {
         const w = state.why, k = whyPicked();
         if (!w || !k || state.busy) return;
         const name = '«' + (w.stop.name || w.stop.code) + '»';
-        if (k === 'not_today') { $('dpWhyDlg').close(); excludeStop(w.stop); return; }
         $('dpWhySave').disabled = $('dpWhyCancel').disabled = true;
         let ok;
-        if (k === 'today') ok = await tripStops({ trip: w.tripId, remove: [w.stop.customer_id], reason: 'today' }, name + ' հանվեց երթից՝ այն «Դեռ երթերում չեն» ցուցակում է');
+        if (k === 'not_today') {
+            const to = whyDayPicked();
+            ok = !!(await edit({ action: 'defer_store', customer_id: w.stop.customer_id, to }, null));
+            if (ok) toast(name + ' այսօր չենք տանում — ' + (to ? 'կտանենք ' + dayHuman(to, true) + '։' : 'այն «Նախորդ օրերից» ցուցակում կլինի։'));
+        } else if (k === 'today') ok = await tripStops({ trip: w.tripId, remove: [w.stop.customer_id], reason: 'today' }, name + ' հանվեց երթից՝ այն «Դեռ երթերում չեն» ցուցակում է');
         else {
             const trucks = whyTrucksPicked();
             const body = { action: 'stop_rule', trip: w.tripId, customer_id: w.stop.customer_id, rule: k };

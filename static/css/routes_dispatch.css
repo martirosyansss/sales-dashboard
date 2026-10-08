@@ -1293,6 +1293,18 @@ body.dp-ws-on .rt-secbar .rt-tabs a { padding-top: 3px; padding-bottom: 3px; }
 .dp-why-trucks label { display: inline-flex; align-items: center; gap: 6px; font-size: .875rem; cursor: pointer; }
 .dp-why-trucks input { width: 16px; height: 16px; accent-color: var(--rt-acc); }
 .dp-why-trucks label:has(input:disabled) { color: var(--rt-fg-mute); cursor: default; }
+/* «Երբ տանել» (владелец 08.10): день, когда заказы магазина сами войдут в план, — чипы под «Այսօր չենք տանում» */
+.dp-why-days { display: grid; gap: 6px; margin: 8px 0 0 32px; min-width: 0; }
+.dp-why-days-t { font-size: .8125rem; font-weight: 700; color: var(--rt-fg-dim); }
+.dp-why-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.dp-why-chip { position: relative; display: inline-flex; align-items: center; min-height: 32px; padding: 4px 12px; border: 1px solid var(--rt-line); border-radius: 999px; background: var(--rt-panel); color: var(--rt-fg); font-size: .8125rem; cursor: pointer; white-space: nowrap; }
+.dp-why-chip input { position: absolute; width: 1px; height: 1px; margin: 0; opacity: 0; pointer-events: none; }
+.dp-why-chip:hover { border-color: var(--rt-acc-dim); }
+.dp-why-chip:has(input:checked) { border-color: var(--rt-acc); background: var(--rt-acc-glow); color: var(--rt-acc); font-weight: 600; }
+.dp-why-chip:has(input:focus-visible) { outline: 2px solid var(--rt-acc); outline-offset: 2px; }
+.dp-why-days-hint { font-size: .75rem; color: var(--rt-fg-mute); line-height: 1.4; }
+.dp-oitem-t .dp-later { margin-left: 6px; font-size: .6875rem; padding: 0 7px; vertical-align: 1px; font-weight: 600; }
+@media (max-width: 640px) { .dp-why-days { margin-left: 0; } .dp-why-chip { white-space: normal; } }
 .dp-add-row.is-off { cursor: default; }
 .dp-add-row.is-off:hover { background: transparent; }
 .dp-add-row.is-off > i { margin-top: 3px; color: var(--rt-fg-mute); text-align: center; }

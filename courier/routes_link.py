@@ -46,7 +46,8 @@ class RoutesView:
     trips: tuple[tuple[str, tuple[int, ...]], ...] = ()    # (машина, клиенты по порядку) в порядке черновика
     excluded: frozenset[str] = frozenset()                 # заказы «не везём сегодня»
     added: frozenset[str] = frozenset()                    # заказы прошлых дней, добавленные логистом
-    carried: frozenset[str] = frozenset()                  # «Везти завтра» прошлых дней
+    carried: frozenset[str] = frozenset()                  # «Везти завтра» прошлых дней и «Երբ տանել» на дату
+    carried_since: date | None = None                      # самая ранняя дата заказа «Երբ տանել» на дату (orders_window)
     dropped: frozenset[str] = frozenset()                  # перенесённые сюда, но убранные логистом
     agents_off: frozenset[int] = frozenset()               # менеджеры, чьи заказы не везём (фильтр «Մենեջերներ»)
     same_day: frozenset[str] = frozenset()                 # заказы с датой дня, взятые в его развоз (№72)
@@ -94,14 +95,17 @@ def routes_view(state: Any, day: date) -> RoutesView:
     base = RoutesView(depot=bundle.depot, geo_overrides=dict(bundle.geo_overrides), workdays=workdays,
                       holidays=holidays, fleet=dp.FleetRule.from_settings(bundle.settings), roads=roads)
     stored = state.store.load_dispatch(day.isoformat())   # RoutesStoreError — наружу (№80): не «плана нет»
-    carried = _carried(state, day, workdays, holidays)
+    later = _later(state, day)
+    carried = _carried(state, day, workdays, holidays) | set(later)
+    carried_since = min(later.values(), default=None)
     taken = _taken(state, day, workdays, holidays)
     prev = state.store.load_dispatch(dp.previous_workday(day, workdays, holidays).isoformat())
     seen = dp.PlanSeen.of(dp.Draft.from_json(prev[0]).for_drivers() if prev is not None else None)   # №81
     if stored is None:
         # плана нет — менеджеры, чьи заказы не везём, по правилу настроек «Развоза» (№69)
         return RoutesView(depot=base.depot, geo_overrides=base.geo_overrides, workdays=workdays, holidays=holidays,
-                          carried=frozenset(carried), agents_off=frozenset(dp.agents_off_of(None, bundle.settings)),
+                          carried=frozenset(carried), carried_since=carried_since,
+                          agents_off=frozenset(dp.agents_off_of(None, bundle.settings)),
                           taken=frozenset(taken), fleet=base.fleet, roads=roads, seen=seen)
     # водителям — отправленный план (№81, Draft.for_drivers), не черновик с неотправленными правками; правило №74 — то, с
     # которым день собран: заказы рейсов не пропадут
@@ -110,7 +114,7 @@ def routes_view(state: Any, day: date) -> RoutesView:
                       plan_exists=bool(draft.trips), released=bool(draft.trips) and draft.released is not None,
                       trips=tuple((t.truck, tuple(t.stops)) for t in draft.trips),
                       excluded=frozenset(draft.excluded), added=frozenset(draft.added),
-                      carried=frozenset(carried), dropped=frozenset(draft.dropped),
+                      carried=frozenset(carried), carried_since=carried_since, dropped=frozenset(draft.dropped),
                       agents_off=frozenset(dp.agents_off_of(draft, bundle.settings)), same_day=frozenset(draft.same_day),
                       taken=frozenset(taken), fleet=dp.fleet_rule_of(draft, bundle.settings), roads=roads, seen=seen)
 
@@ -200,6 +204,19 @@ def _carried(state: Any, day: date, workdays: Sequence[int], holidays: Collectio
     return out
 
 
+def _later(state: Any, day: date) -> dict[str, date]:
+    """«Երբ տանել» на дату из планов LATER_MAX_DAYS дней до неё (dp.later_carried, как views._later_scan «Маршрутов»):
+    isn → дата заказа."""
+    plans: list[tuple[date, dp.Draft]] = []
+    d = day - timedelta(days=dp.LATER_MAX_DAYS)
+    while d < day:
+        stored = state.store.load_dispatch(d.isoformat())
+        if stored is not None:
+            plans.append((d, dp.Draft.from_json(stored[0]).for_drivers()))   # №81: отправленное водителям
+        d += timedelta(days=1)
+    return {isn: od for isn, (to, od, _) in dp.later_carried(plans, day).items() if to == day}
+
+
 def _taken(state: Any, day: date, workdays: Sequence[int], holidays: Collection[date] = ()) -> set[str]:
     """Взятые в развоз дня их приёма (№72) в планах с прошлого рабочего дня по вчера (как views._same_day_taken)."""
     out: set[str] = set()
@@ -213,10 +230,12 @@ def _taken(state: Any, day: date, workdays: Sequence[int], holidays: Collection[
 
 
 def orders_window(day: date, view: RoutesView) -> tuple[date, date]:
-    """Даты заказов, которые смотрит «Развоз» для дня (с «не отгружены с прошлых дней») и сам день: заказы, заведённые
-    заранее на него (№79), и заказы дня, взятые логистом в его развоз (№72)."""
+    """Даты заказов, которые смотрит «Развоз» для дня (с «не отгружены с прошлых дней», и с даты самого раннего заказа
+    «Երբ տանել» на день — carried_since) и сам день: заказы, заведённые заранее на него (№79), и заказы дня, взятые
+    логистом в его развоз (№72). Лишние старые заказы pick_orders не берёт: заказ прошлых дней — только в развозе дня."""
     since, until = dp.order_window(day, view.workdays, view.holidays)
-    return dp.backlog_since(since, view.workdays, holidays=view.holidays), until + timedelta(days=1)
+    first = dp.backlog_since(since, view.workdays, holidays=view.holidays)
+    return min(first, view.carried_since) if view.carried_since is not None else first, until + timedelta(days=1)
 
 
 def pick_orders(orders: Sequence[DispatchOrder], day: date, view: RoutesView, car_code: str,
