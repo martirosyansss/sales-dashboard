@@ -2019,10 +2019,11 @@ def test_plan_geometry_marks_long_straight_leg_inside_road_line():
 def test_route_geometry_index_and_map_lines_built_once(monkeypatch):
     geo = live.RouteGeometry(PLAN_LINE, PLAN_LINE)
     calls = []
-    real = ac.simplify
-    monkeypatch.setattr(ac, 'simplify', lambda *a, **k: calls.append(1) or real(*a, **k))
+    from route_optimizer import track_line as tl
+    real = tl._fit   # упрощение линий для карты — с обязательными концами участков (shown_cuts)
+    monkeypatch.setattr(tl, '_fit', lambda *a, **k: calls.append(1) or real(*a, **k))
     assert geo.index(300.0) is geo.index(300.0) and geo.index(100.0) is not geo.index(300.0)
-    assert geo.shown() is geo.shown() and len(calls) == 1
+    assert geo.shown() is geo.shown() and geo.shown_cuts() is geo.shown_cuts() and len(calls) == 1
     tr = _detour_track(1500.0)
     route = live.PlanRoute(geo, ((7, A), (8, B)))
     first = _route_view(tr, tr.t, route)
@@ -2371,3 +2372,74 @@ def test_api_live_truck_hover_arrays_and_radii(client, live_app, monkeypatch):
     assert truck['route']['trip_nos'] == [[1, 2]] and truck['track_dev_m'] == []
     fleet = client.get('/api/routes/live', base_url=LAN).get_json()['trucks']
     assert all('track_v' not in t and 'track_km' not in t for t in fleet)      # флот — без трека и подсказки
+
+
+class _FixedLines:
+    """Кэш плановых линий, который отдаёт заданные линии (как прежние, пока новые строятся)."""
+
+    def __init__(self, geo):
+        self.geo = geo
+
+    def get(self, day, wanted, build):
+        return {car: self.geo for car in wanted}
+
+
+def test_api_live_stale_plan_lines_have_no_leg_stores(client, live_app, monkeypatch):
+    """План поменяли, линии по дорогам ещё строятся — отдаются прежние (другого порядка магазинов): участки «A → B» по
+    новому плану к ним не приписываются (trip_nos пусто, подсказка — только «Երթ N»); линии того же плана — с ними."""
+    from route_optimizer import dispatch as dp
+    from route_optimizer import views
+    state, roads, _ = _lines_app(live_app, monkeypatch)
+    _send_plan(state, km=21.4)
+    old = views._plan_geometry(roads, {'CAR1': (((DEPOT, A, B, DEPOT),), (), 'map-1')})['CAR1']
+    assert old.source == ((DEPOT, A, B, DEPOT),)
+    draft = dp.Draft.from_json(state.store.load_dispatch('2026-10-03')[0])
+    draft.trips[0].stops = [8, 7]                      # логист поменял порядок: новые линии — B, затем A
+    draft.sent = None
+    state.store.save_dispatch('2026-10-03', draft.to_json(), 'qa')
+    monkeypatch.setattr(state, 'live_lines', _FixedLines(old))
+    _session_as(client, 'boss', base=LAN)
+    route = client.get('/api/routes/live/truck?car=CAR1', base_url=LAN).get_json()['truck']['route']
+    assert route['road'] is True and route['trip_nos'] == [] and len(route['trip_cuts']) == len(route['lines']) == 1
+    fresh = views._plan_geometry(roads, {'CAR1': (((DEPOT, B, A, DEPOT),), (), 'map-1')})['CAR1']
+    monkeypatch.setattr(state, 'live_lines', _FixedLines(fresh))
+    state.live_facts.data['2026-10-03'] = dict(state.live_facts.data['2026-10-03'])   # без кэша карточек
+    route = client.get('/api/routes/live/truck?car=CAR1', base_url=LAN).get_json()['truck']['route']
+    assert route['trip_nos'] == [[1, 2]] and [p['customer_id'] for p in route['points']] == [8, 7]
+
+
+class _DenseRoads(FakeLineRoads):
+    """Участок «по дорогам» — 60 точек на прямой: упрощение для карты оставило бы от рейса два конца."""
+
+    def leg_lines(self, legs):
+        return [([(a[0] + (b[0] - a[0]) * k / 59, a[1] + (b[1] - a[1]) * k / 59) for k in range(60)], True)
+                for a, b in legs]
+
+
+def test_plan_geometry_cuts_survive_simplification(monkeypatch):
+    """Концы участков (склад, магазины, склад) — обязательные точки линии для карты: trip_cuts указывает ровно на них,
+    даже когда магазин лежит на прямой между соседями и упрощение его бы выбросило."""
+    from route_optimizer import views
+    monkeypatch.setattr(live, 'PLAN_LINE_POINTS', 10)
+    mid = ((A[0] + B[0]) / 2, (A[1] + B[1]) / 2)              # магазин на прямой A–B
+    lines = ((DEPOT, A, mid, B, DEPOT), (DEPOT, C, DEPOT))
+    geo = views._plan_geometry(_DenseRoads(), {'CAR1': (lines, (), 'map-1')})['CAR1']
+    assert geo.source == lines and [len(c) for c in geo.cuts] == [5, 3] and len(geo.trips[0]) == 4 * 59 + 1
+    shown, cuts = geo.shown(), geo.shown_cuts()
+    assert len(shown) == len(cuts) == 2 and sum(len(x) for x in shown) <= 10 + 2 * 5
+    for line, cut, want in zip(shown, cuts, lines):
+        assert cut == sorted(cut) and [line[i] for i in cut] == [[round(p[0], 6), round(p[1], 6)] for p in want]
+    straight = live.RouteGeometry(lines, (), (), lines)       # по прямой — каждая точка конец участка
+    assert straight.shown_cuts() == [[0, 1, 2, 3, 4], [0, 1, 2]]
+
+
+def test_track_hover_distance_index_cell_not_below_500(monkeypatch):
+    """Порог отклонения 100 м: расстояние до плана для подсказки — по своему индексу с ячейкой 500 м (поиск до 5 км не
+    перебирает тысячи ячеек на точку); отклонение — по индексу порога."""
+    tr = _detour_track(1500.0)
+    route = _route()
+    rules = replace(RULES, deviation_m=100.0)
+    card = _route_view(tr, tr.t, route, rules)
+    assert set(route.geo._index) == {100.0, live.HOVER_DEV_CELL_M} and card['track_dev_m']
+    for i, m in card['track_dev_m']:
+        assert m == pytest.approx(min(live.polyline_m(tuple(card['track'][i]), x) for x in PLAN_LINE), abs=2)

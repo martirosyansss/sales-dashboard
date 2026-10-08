@@ -150,7 +150,8 @@ M_PER_DEG_LAT = 110540.0            # равнопромежуточная пр�
 M_PER_DEG_LON = 111320.0            # …и долготы на экваторе (× cos широты)
 HOVER_SPEED_S = 60.0                # подсказка линии трека: скорость терминала ближайшей по времени точки не дальше 60 с…
 HOVER_STEP_S = 120.0                # …нет — смещение между соседними точками трека не дольше 2 мин
-HOVER_DEV_MAX_M = 5000.0            # расстояние до плановой линии ищется до 5 км (дальше — -1: «больше 5 км»)
+HOVER_DEV_MAX_M = 5000.0            # расстояние до плановой линии ищется до 5 км (дальше — -1: «больше 5 км»)…
+HOVER_DEV_CELL_M = 500.0            # …по индексу плана с ячейкой не меньше 500 м (свой, помнится в RouteGeometry)
 
 
 
@@ -747,16 +748,23 @@ class RouteGeometry:
     straight — участки (a, b), для которых дороги не нашлось (точка дальше roads.SNAP_MAX_KM от дороги, пути нет) — на
     карте по прямой, а вдоль них отклонение не считается (_along: машина между a и b едет не по прямой). road — есть хоть
     один участок по дорогам (нет — отклонение не считается вовсе). Индекс отклонения (на порог) и линии для карты
-    (actuals.simplify) считаются один раз и помнятся — не на каждом пересчёте карточки."""
+    (actuals.simplify) считаются один раз и помнятся — не на каждом пересчёте карточки. source — линии по прямой
+    (склад → магазины → склад), из которых построены trips: пока линии перестраиваются, views отдаёт прежние — по source
+    видно, того ли они плана. cuts — индексы концов участков (склад, магазины по порядку, склад) в каждой из trips; None —
+    каждая точка trips — конец участка (линии по прямой)."""
 
     def __init__(self, trips: Sequence[Sequence[Point]], road_parts: Sequence[Sequence[Point]] = (),
-                 straight: Sequence[tuple[Point, Point]] = ()):
+                 straight: Sequence[tuple[Point, Point]] = (), source: Sequence[Sequence[Point]] = (),
+                 cuts: Sequence[Sequence[int]] | None = None):
         self.trips = tuple(tuple(t) for t in trips)
         self.road_parts = tuple(tuple(x) for x in road_parts)
         self.straight = tuple(straight)
+        self.source = tuple(tuple(x) for x in source)
+        self.cuts = (tuple(tuple(c) for c in cuts) if cuts is not None
+                     else tuple(tuple(range(len(t))) for t in self.trips))
         self._lock = threading.Lock()
         self._index: dict[float, RouteIndex] = {}
-        self._shown: list[list[list[float]]] | None = None
+        self._shown: tuple[list[list[list[float]]], list[list[int]]] | None = None
 
     @property
     def road(self) -> bool:
@@ -776,11 +784,26 @@ class RouteGeometry:
             return self._index[cell_m]
 
     def shown(self) -> list[list[list[float]]]:
-        """Линии рейсов для карты: не больше PLAN_LINE_POINTS точек на все рейсы."""
+        """Линии рейсов для карты: не больше PLAN_LINE_POINTS точек на все рейсы (концы участков остаются всегда)."""
+        return self._map()[0]
+
+    def shown_cuts(self) -> list[list[int]]:
+        """Индексы концов участков (склад, магазины, склад) в линиях shown() — подсказка участка «A → B» на карте."""
+        return self._map()[1]
+
+    def _map(self) -> tuple[list[list[list[float]]], list[list[int]]]:
         with self._lock:
             if self._shown is None:
                 per = max(2, PLAN_LINE_POINTS // max(1, len(self.trips)))
-                self._shown = [[[round(p[0], 6), round(p[1], 6)] for p in ac.simplify(list(t), per)] for t in self.trips]
+                lines, cuts = [], []
+                for t, cut in zip(self.trips, self.cuts):
+                    keep = {c for c in cut if 0 <= c < len(t)}
+                    # Дуглас — Пекер track_line._fit с обязательными точками; третье поле — индекс точки в t
+                    fit = tl._fit([(p[0], p[1], float(i)) for i, p in enumerate(t)], keep, per)
+                    where = {int(p[2]): k for k, p in enumerate(fit)}
+                    lines.append([[round(p[0], 6), round(p[1], 6)] for p in fit])
+                    cuts.append([where[c] for c in sorted(keep)])
+                self._shown = (lines, cuts)
             return self._shown
 
 
@@ -947,7 +970,10 @@ def track_hover(line: Sequence[tl.TPoint], parts: Sequence[tl.Chunk], pts: Seque
             if any(a <= p[2] <= b for a, b in spans):
                 d = index.distance((p[0], p[1]), HOVER_DEV_MAX_M)
                 dev.append([i, round(d) if d is not None else -1])
-    return {'track_v': [speed(p) for p in line], 'track_km': [round(km_at(p[2]), 1) for p in line], 'track_dev_m': dev}
+    km = [round(km_at(p[2]), 1) for p in line]
+    if km and cum:
+        km[-1] = round(cum[-1], 1)   # последняя вершина — км карточки (стоянка в конце дня может кончиться раньше сегмента)
+    return {'track_v': [speed(p) for p in line], 'track_km': km, 'track_dev_m': dev}
 
 
 # --- карточка машины ---
@@ -1432,7 +1458,9 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
                       for c, p in where.items()],
             # номера магазинов каждой линии рейса по порядку (подсказка участка плана); не сходится с линиями — пусто
             'trip_nos': ([[nos[c] for c in t if c in nos] for t in route.trip_stops]
-                         if len(route.trip_stops) == len(route.geo.trips) else [])})
+                         if len(route.trip_stops) == len(route.geo.trips) else []),
+            # индексы концов участков (склад, магазины по порядку, склад) в каждой из lines — 1:1 с ними
+            'trip_cuts': route.geo.shown_cuts()})
     if detail and index is not None:
         out['deviation']['runs'] = [
             {'from': a['from'], 'to': a['to'], 'km': a['km'], 'active': a['active'],
@@ -1447,7 +1475,11 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
         out.update({
             'track': [[round(p[0], 6), round(p[1], 6)] for p in line],
             'track_t': [round(p[2]) for p in line],
-            **track_hover(line, parts, pts, moving, index, runs),   # подсказка точки линии (track_v, track_km, track_dev_m)
+            # подсказка точки линии (track_v, track_km, track_dev_m); расстояние до плана — по своему индексу с ячейкой не
+            # меньше HOVER_DEV_CELL_M (порог 100 м — ячейки 100 м: поиск до 5 км шёл бы по 10 тыс. ячеек на точку)
+            **track_hover(line, parts, pts, moving,
+                          geo.index(max(rules.deviation_m, HOVER_DEV_CELL_M)) if geo is not None and index is not None else None,
+                          runs),
             'stops': [{'stop_id': s['stop_id'], 'customer_id': s.get('customer_id'), 'name': s.get('name'),
                        'lat': s.get('lat'), 'lon': s.get('lon'),
                        'status': s.get('status'), 'seq': s.get('seq'), 'trip': trips[s['stop_id']] + 1,

@@ -4414,7 +4414,8 @@ def _plan_geometry(roads: Any, todo: Mapping[str, Any]) -> dict[str, live.RouteG
     """Линии рейсов машин todo (машина → ключ _LivePlanLines: (линии по прямой, граница центра, версия карты)) по дорогам
     одним построением: каждый участок (магазин → магазин) — своей линией roads.leg_lines, с отметкой, нашёлся ли путь по
     дорогам (RoadNetwork.paths). Участок без пути (точка дальше roads.SNAP_MAX_KM от дороги, пути нет) — по прямой
-    (RouteGeometry.straight); прямая дорога, упрощённая до двух точек, — по дорогам. Дороги не построились — машине None."""
+    (RouteGeometry.straight); прямая дорога, упрощённая до двух точек, — по дорогам. Дороги не построились — машине None.
+    У линий — их линии по прямой (source) и индексы концов участков в каждой (cuts: подсказка участка на карте)."""
     legs = list(dict.fromkeys((a, b) for key in todo.values() for line in key[0] for a, b in zip(line, line[1:])
                               if a != b))
     got = roads.leg_lines(legs) if legs else []
@@ -4427,8 +4428,10 @@ def _plan_geometry(roads: Any, todo: Mapping[str, Any]) -> dict[str, live.RouteG
         trips: list[tuple[Point, ...]] = []
         parts: list[tuple[Point, ...]] = []
         straight: list[tuple[Point, Point]] = []
+        cuts: list[list[int]] = []
         for line in key[0]:
             pts: list[Point] = [line[0]]
+            cut = [0]
             for a, b in zip(line, line[1:]):
                 road, found = drawn.get((a, b), (None, False)) if a != b else (None, False)
                 if road is not None and found and len(road) > 1:
@@ -4438,8 +4441,10 @@ def _plan_geometry(roads: Any, todo: Mapping[str, Any]) -> dict[str, live.RouteG
                     if a != b:
                         straight.append((a, b))
                     pts.append(b)
+                cut.append(len(pts) - 1)
             trips.append(tuple(pts))
-        out[car] = live.RouteGeometry(trips, parts, straight)
+            cuts.append(cut)
+        out[car] = live.RouteGeometry(trips, parts, straight, key[0], cuts)
     return out
 
 
@@ -4641,13 +4646,16 @@ def _live_plan_routes(state: RoutesState, bundle: Bundle, snap: Any, day: date, 
     pred = (draft.prediction or {}).get('trucks') or {}
     out: dict[str, live.PlanRoute] = {}
     for car, lines in straight.items():
-        geo = drawn.get(car) or live.RouteGeometry(lines, (), [(a, b) for line in lines for a, b in zip(line, line[1:])])
+        geo = drawn.get(car) or live.RouteGeometry(lines, (), [(a, b) for line in lines for a, b in zip(line, line[1:])],
+                                                   lines)
         p = pred.get(car) if isinstance(pred.get(car), Mapping) else {}
         same = [[c[0] for c in tr.get('stops') or () if isinstance(c, list) and c]
                 for tr in p.get('trips') or () if isinstance(tr, Mapping)] == trips[car]
         km = p.get('km') if same and isinstance(p.get('km'), (int, float)) and not isinstance(p.get('km'), bool) else None
         km = float(km) if km is not None else geo.km
-        out[car] = live.PlanRoute(geo, tuple(stops[car]), km, tuple(legs[car]))
+        # прежние линии (план поменяли, новые ещё строятся) — магазины участков неизвестны: подсказка без «A → B»
+        same_lines = geo.source == tuple(tuple(x) for x in lines)
+        out[car] = live.PlanRoute(geo, tuple(stops[car]), km, tuple(legs[car]) if same_lines else ())
     return out
 
 
