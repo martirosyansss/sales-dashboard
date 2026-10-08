@@ -478,25 +478,28 @@ def test_alert_kinds_of_old_database_get_late(tmp_path):
     """База до №87 хранит список видов без late (сохранение пишет все ключи): late добавляется включённым — владелец
     просил тревогу в Telegram; выключенное после №87 — остаётся выключенным; пустой список («ничего не слать») — пустым."""
     old = ['speed', 'stop', 'no_contact', 'gps']                     # «центр» владелец снял до №87
-    # и deviation (08.10) — его не знала ни программа до №87, ни №87
-    assert _kinds_db(tmp_path, old).load().settings['live_alert_kinds'] == old + ['late', 'deviation']
+    # deviation (08.10) — не включается сам (LIVE_KINDS_OPT_IN): его включает владелец
+    assert _kinds_db(tmp_path, old).load().settings['live_alert_kinds'] == old + ['late']
     assert _kinds_db(tmp_path, old, list(st.LIVE_ALERT_KINDS)).load().settings['live_alert_kinds'] == old
     assert _kinds_db(tmp_path, []).load().settings['live_alert_kinds'] == []
-    assert _kinds_db(tmp_path, old, 'garbage').load().settings['live_alert_kinds'] == old + ['late', 'deviation']   # битая отметка
+    assert _kinds_db(tmp_path, old, 'garbage').load().settings['live_alert_kinds'] == old + ['late']   # битая отметка
 
 
-def test_alert_kinds_saved_by_87_get_deviation(tmp_path):
-    """Список, сохранённый программой №87 (знала шесть видов), получает отклонение от плановой линии (08.10) включённым;
-    снятое после 08.10 — остаётся снятым."""
+def test_deviation_kind_is_not_auto_enabled_in_telegram(tmp_path):
+    """Отклонение от плановой линии (08.10) в Telegram включает только владелец: ни база №87, ни база до №87, ни новая
+    база его сами не включают; отмеченное владельцем — остаётся."""
     known_87 = ['speed', 'stop', 'no_contact', 'gps', 'center', 'late']
-    assert _kinds_db(tmp_path, ['speed'], known_87).load().settings['live_alert_kinds'] == ['speed', 'deviation']
-    assert _kinds_db(tmp_path, ['speed'], list(st.LIVE_ALERT_KINDS)).load().settings['live_alert_kinds'] == ['speed']
+    assert _kinds_db(tmp_path, ['speed'], known_87).load().settings['live_alert_kinds'] == ['speed']
+    assert _kinds_db(tmp_path, ['speed']).load().settings['live_alert_kinds'] == ['speed', 'late']
+    assert 'deviation' not in st.DEFAULT_SETTINGS['live_alert_kinds']
+    assert _kinds_db(tmp_path, ['speed', 'deviation'], list(st.LIVE_ALERT_KINDS)).load().settings['live_alert_kinds']         == ['speed', 'deviation']
+    assert st.validate_settings({**st.DEFAULT_SETTINGS, 'live_alert_kinds': ['deviation']}, None)[0]['live_alert_kinds']         == ['deviation']
 
 
 def test_saving_kinds_writes_known_marker(tmp_path):
     store = _kinds_db(tmp_path, ['speed'])
     b = store.load()
-    assert b.settings['live_alert_kinds'] == ['speed', 'late', 'deviation']
+    assert b.settings['live_alert_kinds'] == ['speed', 'late']
     store.save(st.Changes({**b.settings, 'live_alert_kinds': ['speed']}, False, None, (), ()), 'qa')   # late сняли
     with closing(sqlite3.connect(store.path)) as conn:
         marker = conn.execute('SELECT value FROM settings WHERE key = ?', (st.LIVE_KINDS_KNOWN_KEY,)).fetchone()

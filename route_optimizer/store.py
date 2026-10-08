@@ -35,6 +35,9 @@ CREW_PAY_KEY = 'crew_pay'   # строка settings с параметрами «
 # DEFAULT_SETTINGS — прежние версии её не читают. Нет строки — список сохранён до №87 (знали LIVE_ALERT_KINDS_V1)
 LIVE_KINDS_KNOWN_KEY = 'live_alert_kinds_known'
 LIVE_ALERT_KINDS_V1 = ('speed', 'stop', 'no_contact', 'gps', 'center')
+# виды тревог, которые в Telegram включает только владелец (галочкой в настройках): база, сохранённая до них, получает их
+# выключенными — отклонение от плановой линии (08.10) ещё не измерено на настоящих днях, рассылка не должна начаться сама
+LIVE_KINDS_OPT_IN = ('deviation',)
 COST_MARGIN_KEY = 'cts_margin_pct'   # средняя наценка «Առաքման արժեք», % (Store.cost_margin) — как CREW_PAY_KEY
 
 # manager_profile.included: 1/0 — выбор владельца, NULL — «авто» (в расчёте, если есть работа за 8 недель)
@@ -553,7 +556,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     'live_deviation_m': 300,
     # тревоги карты в Telegram-группу (этап 2): какие слать, тихие часы (с — до, по Еревану; одинаковые — без тихих
     # часов), не чаще раза в столько минут на тревогу того же вида у машины
-    'live_alert_kinds': ['speed', 'stop', 'no_contact', 'gps', 'center', 'late', 'deviation'],
+    'live_alert_kinds': ['speed', 'stop', 'no_contact', 'gps', 'center', 'late'],   # deviation — LIVE_KINDS_OPT_IN
     'live_quiet_from': '20:00',
     'live_quiet_to': '08:00',
     'live_repeat_min': 30,
@@ -1478,7 +1481,8 @@ def validate_settings(values: Mapping[str, Any],
 def _loaded_alert_kinds(kinds: Any, known_raw: str | None) -> Any:
     """Виды тревог карты из базы (№87). Вид, которого эта версия не знает (база после более новой), — молча мимо, а не
     «база повреждена»; виды этой версии, которых не знала сохранившая список программа (LIVE_KINDS_KNOWN_KEY, нет
-    строки — LIVE_ALERT_KINDS_V1), — добавляются включёнными: по умолчанию слать всё. Пустой список («ничего не слать»)
+    строки — LIVE_ALERT_KINDS_V1), — добавляются включёнными: по умолчанию слать всё (кроме LIVE_KINDS_OPT_IN — их
+    включает владелец). Пустой список («ничего не слать»)
     — как есть.
     Не список строк — без изменений (ошибку покажет validate_settings)."""
     if not isinstance(kinds, list) or not all(isinstance(k, str) for k in kinds) or not kinds:
@@ -1490,7 +1494,7 @@ def _loaded_alert_kinds(kinds: Any, known_raw: str | None) -> Any:
     if not isinstance(known, list) or not all(isinstance(k, str) for k in known):
         known = LIVE_ALERT_KINDS_V1
     have = [k for k in kinds if k in LIVE_ALERT_KINDS]
-    return have + [k for k in LIVE_ALERT_KINDS if k not in known and k not in have]
+    return have + [k for k in LIVE_ALERT_KINDS if k not in known and k not in have and k not in LIVE_KINDS_OPT_IN]
 
 
 def _check_point(lat: Any, lon: Any) -> tuple[Point | None, str | None]:

@@ -1493,7 +1493,7 @@
     const LIVE_KINDS = [['speed', 'Արագության գերազանցում'], ['stop', 'Երկար կանգառ ոչ խանութում'],
         ['no_contact', 'Կապ չկա («Առաքիչ» 2.2.0 և ավելի նոր)'], ['gps', 'GPS-ն անջատված է'],
         ['center', 'Փոքր կենտրոնում (մուտքը թույլատրված չէ)'], ['late', 'Չի հասցնում ժամանակին (կանխատեսում)'],
-        ['deviation', 'Շեղում երթուղուց']];
+        ['deviation', 'Շեղում երթուղուց (լռելյայն՝ չի ուղարկվում)']];
     function kindsField(it, s, err) {
         const on = new Set(Array.isArray(s[it.key]) ? s[it.key] : LIVE_KINDS.map(k => k[0]));
         const box = h('div', { class: 'rt-wd rs-livekinds', role: 'group', 'aria-labelledby': 'rsLiveKindsLabel', id: 'rsN_' + it.key });

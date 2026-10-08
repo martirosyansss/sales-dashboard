@@ -35,7 +35,7 @@ from werkzeug.serving import make_server  # noqa: E402
 PORT = 8772
 BASE = f'http://127.0.0.1:{PORT}'
 SHOTS = Path(tempfile.gettempdir()) / 'live-alerts-settings-check'
-KINDS = ['speed', 'stop', 'no_contact', 'gps', 'center', 'late', 'deviation']
+KINDS = ['speed', 'stop', 'no_contact', 'gps', 'center', 'late']   # deviation (08.10) — по умолчанию выключен
 NO_CENTER = [k for k in KINDS if k != 'center']
 
 
@@ -69,7 +69,7 @@ def main() -> int:
             page.wait_for_selector('#rsN_live_alert_kinds', state='attached', timeout=30000)
             page.locator('details:has(#rsNorms) > summary').click()   # нормы и правила свёрнуты — как и пороги тревог
             page.locator('#rsN_live_alert_kinds').scroll_into_view_if_needed()
-            check(kinds() == KINDS, f'S1 all kinds checked by default: {kinds()}')
+            check(kinds() == KINDS, f'S1 all kinds except deviation checked by default: {kinds()}')
             q = lambda key: page.locator(f'[data-norm="{key}"]').input_value()  # noqa: E731
             check((q('live_quiet_from'), q('live_quiet_to'), q('live_repeat_min'), q('late_nowin_min')) == ('20:00', '08:00', '30', '30'),
                   'S1 quiet 20:00–08:00, repeat 30, late without window 30')

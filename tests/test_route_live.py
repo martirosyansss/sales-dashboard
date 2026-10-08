@@ -1704,7 +1704,7 @@ def test_live_deviation_setting():
     from route_optimizer import store as st
     vals = dict(st.DEFAULT_SETTINGS)
     out, errors = st.validate_settings(vals, None)
-    assert not errors and out['live_deviation_m'] == 300 and 'deviation' in out['live_alert_kinds']
+    assert not errors and out['live_deviation_m'] == 300 and 'deviation' not in out['live_alert_kinds']
     for bad in (99, 2001, None, True, '300'):
         _, errors = st.validate_settings({**vals, 'live_deviation_m': bad}, None)
         assert 'live_deviation_m' in errors, bad
