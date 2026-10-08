@@ -7,6 +7,7 @@
 Синтетические данные, без ERP; базы — временные. Запуск из корня проекта:  python -m pytest tests/test_route_live.py -q
 """
 import math
+import re
 import sqlite3
 import sys
 import threading
@@ -1625,7 +1626,8 @@ def test_live_page_refetches_card_while_track_pending():
     (прошлый день не опрашивается). ?v= поднят."""
     js = (ROOT / 'static' / 'js' / 'routes_live.js').read_text(encoding='utf-8')
     assert 'retrack(one.truck)' in js and 't.track_pending' in js and 'r.tries >= 2' in js and '!state.replay.on' in js
-    assert "js/routes_live.js') }}?v=14" in (ROOT / 'templates' / 'routes_live.html').read_text(encoding='utf-8')
+    v = re.search(r"js/routes_live\.js'\) }}\?v=(\d+)", (ROOT / 'templates' / 'routes_live.html').read_text(encoding='utf-8'))
+    assert v and int(v.group(1)) >= 14   # не ниже версии с track_pending: следующие поднимают его дальше
 
 
 # ============================== плановая линия, отклонение от неё, показатели дня (владелец 08.10) ==============================
