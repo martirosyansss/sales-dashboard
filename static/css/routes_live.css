@@ -176,6 +176,17 @@ button.lv-prob:focus-visible { outline: 2px solid var(--rt-acc); outline-offset:
     background: var(--rt-danger-bg); border: 1px solid var(--rt-danger-line);
 }
 .lv-active i { color: var(--lv-alert); margin-top: 3px; }
+/* «не успеет» по магазинам — одной строкой, список по кнопке */
+.lv-active > div.lv-active-late { flex-wrap: wrap; align-items: center; }
+.lv-active-late > span { flex: 1 1 auto; min-width: 0; }
+.lv-active-more {
+    min-height: 30px; padding: 2px 12px; border-radius: 999px; cursor: pointer;
+    background: transparent; border: 1px solid var(--rt-danger-line); color: var(--rt-fg); font: inherit; font-size: .8125rem;
+}
+.lv-active-more:hover { border-color: var(--rt-danger); }
+.lv-active-more:focus-visible { outline: 2px solid var(--rt-acc); outline-offset: 1px; }
+.lv-late-list { flex-basis: 100%; margin: 4px 0 0 22px; padding: 0 0 0 14px; font-size: .875rem; color: var(--rt-fg-dim); }
+.lv-late-list li + li { margin-top: 2px; }
 .lv-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 16px; margin: 0; }
 .lv-grid > div { min-width: 0; padding: 10px 12px; border-radius: 10px; background: var(--rt-inset); border: 1px solid var(--rt-line-soft); }
 .lv-grid > div.is-wide { grid-column: 1 / -1; }

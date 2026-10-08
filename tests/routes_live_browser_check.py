@@ -17,7 +17,8 @@
 
 Как телематика (08.10): блок «Խնդիրներ հիմա» (строка — кнопка выбора машины), у машины 3 без связи — «կապ չկա N րոպե»
 вместо опоздания и полупрозрачный маркер с «վերջինը՝ HH:MM», таблица «план — факт» магазинов, воспроизведение дня
-(ползунок времени, «Փակել»).
+(ползунок времени, шаг 1 мин, «Փակել»). Машина 4 вышла позже плана — «не успеет» к трём магазинам: в карточке одна
+строка «3 խանութ ուշանում է…» с кнопкой «Ցույց տալ» (aria-expanded), а не три красные.
 
 Проверяется: список и маркеры всех машин, состояние и счётчик тревог, карточка выбранной машины (поля №76), путь и
 магазины на карте, нет горизонтальной прокрутки на телефоне, опрос раз в 15 с, нет ошибок страницы и консоли (кроме сетевых
@@ -278,7 +279,8 @@ def main() -> int:
                 check(page.locator('#lvStops tr.is-late').count() == 1, '№87: опаздывающий магазин отмечен в списке точек')
                 check(page.locator('#lvStops tr').count() == 3 and 'ժամանում' in page.inner_text('#lvStops'),
                       'план — факт: 3 строки, у посещённых — прибытие и отъезд по GPS')
-                check(page.is_visible('#lvReplay'), 'воспроизведение дня: есть у выбранной машины')
+                check(page.is_visible('#lvReplay') and page.get_attribute('#lvReplayRange', 'step') == '60',
+                      'воспроизведение дня: есть у выбранной машины, шаг ползунка — минута')
                 page.eval_on_selector('#lvReplayRange', "r => { r.value = String((Number(r.min) + Number(r.max)) / 2); "
                                                         "r.dispatchEvent(new Event('input')); }")
                 page.wait_for_timeout(300)
@@ -309,6 +311,16 @@ def main() -> int:
                     check(page.locator('.lv-marker.is-stale .lv-marker-last').count() >= 1,
                           'машина 3: маркер полупрозрачный, «վերջինը՝ HH:MM»')
                     check('Վերջին հայտնի դիրքը' in page.inner_text('#lvGrid'), 'машина 3: «Վերջին հայտնի դիրքը» в карточке')
+                page.locator(f'.lv-item[data-car="{cars[3]}"]').click()
+                page.wait_for_timeout(1200)
+                grp = page.locator('#lvActive .lv-active-late')
+                more = page.locator('#lvActive .lv-active-more')
+                check(grp.count() == 1 and '3 խանութ ուշանում է' in grp.inner_text()
+                      and 'Կուշանա' not in page.inner_text('#lvActive') and more.get_attribute('aria-expanded') == 'false',
+                      f'машина 4: «не успеет» одной строкой ({page.inner_text("#lvActive")!r})')
+                more.click()
+                check(more.get_attribute('aria-expanded') == 'true' and page.locator('#lvLateList li').count() == 3
+                      and page.is_visible('#lvLateList'), 'машина 4: «Ցույց տալ» раскрывает 3 магазина')
                 n = len(polls)
                 page.wait_for_timeout(16000)
                 check(len(polls) > n, f'опрос раз в 15 с ({n} → {len(polls)})')

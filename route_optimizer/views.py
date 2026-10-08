@@ -4297,7 +4297,8 @@ def _live_head(ctx: _LiveContext, day: date, now: datetime) -> dict[str, Any]:
     return {'success': True, 'date': day.isoformat(), 'now': now.isoformat(timespec='seconds'),
             'depot': list(ctx.depot) if ctx.depot else None,
             'thresholds': {'speed_kmh': r.speed_kmh, 'speed_sec': r.speed_sec, 'stop_min': r.stop_min,
-                           'no_contact_min': r.no_contact_min, 'stale_s': live.STALE_S},
+                           'no_contact_min': r.no_contact_min, 'stale_s': live.STALE_S,
+                           'old_apk_silent_min': live.OLD_APK_SILENT_MIN},
             'center_zone': [list(p) for p in r.center_zone]}
 
 
