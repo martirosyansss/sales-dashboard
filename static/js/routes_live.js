@@ -6,7 +6,7 @@
    Как телематика (08.10): нет связи — последнее известное положение без прогноза (t.forecast false, next.eta_unknown) и
    «данные до HH:MM»; GPS-визиты магазинов (s.gps, s.unmarked — был по GPS, водитель не отметил); «Խնդիրներ հիմա» —
    только то, что требует внимания; воспроизведение дня по t.track_t (своя отрисовка, опрос её не трогает).
-   Плановая линия и отклонение (владелец 08.10): t.route — что водитель получил (отправленный план «Развоза»), пунктиром,
+   Плановая линия и отклонение (владелец 08.10): t.route — что водитель получил (отправленный план «Развоза»), коридором,
    номера магазинов — место в плане (s.plan_no, route.points); t.deviation.runs — отклонения дальше порога (красным);
    «Օրվա ցուցանիշներ» — t.stats (максимальная скорость — кнопка к точке на карте). Нет данных — «տվյալ չկա», не нули.
    «Профессионально» (владелец 08.10): t.sequence — пропущенные магазины рейса (тревога sequence), t.detour — перепробег
@@ -62,7 +62,7 @@
     const GPS = { on: 'միացված', off: 'անջատված', no_permission: 'թույլտվություն չկա' };
 
     const state = { date: '', data: null, detail: null, selected: null, timer: null, busy: false, again: false, fitted: false,
-        map: null, markers: new Map(), layer: null, zone: null, lateOpen: false, pin: null, showPlan: loadPlanToggle(),
+        map: null, markers: new Map(), layer: null, arrows: null, arrowLine: null, zone: null, lateOpen: false, pin: null, showPlan: loadPlanToggle(),
         // воспроизведение дня: снимок машины на начало (опрос его не меняет), момент t (секунды эпохи), слои
         replay: { on: false, playing: false, t: 0, raf: 0, last: 0, truck: null, prefix: null, ghost: null, stops: [] },
         // подсказка точки линии: подсказка и точка на карте; at/car — где курсор (координаты: после опроса — снова), fns — линии
@@ -256,6 +256,9 @@
         RoutesBasemap.add(state.map);
         state.map.setView(YEREVAN, 11);
         state.layer = L.layerGroup().addTo(state.map);
+        state.map.createPane('lvArrows').style.zIndex = 590;   // стрелки пути: над линиями (400), под значками (600)
+        state.arrows = L.layerGroup().addTo(state.map);
+        state.map.on('zoomend', drawArrows);
         state.map.on('click', forgetHover);   // касание мимо линии на телефоне — подсказку убрать
         state.map.on('mouseout', forgetHover);   // курсор ушёл с карты (линию перерисовал опрос — её mouseout не придёт)
     }
@@ -484,13 +487,64 @@
             .addTo(layer);
     }
 
-    // плановая линия (что водитель получил): пунктир по рейсам — под фактическим путём
+    // ---------- линии на карте (владелец 08.10: «не информативные и не красивые, как делают гиганты») ----------
+    // Подложка — светлый Яндекс (тёмный фильтр — только у запасного OSM): у линий белая обводка (casing), как у
+    // навигаторов, — читаются на любой подложке. План — широкий полупрозрачный «коридор», факт — насыщенная линия со
+    // стрелками направления поверх; отклонение — тот же факт другим цветом (не толще), чтобы день не тонул в красном.
+    const LN = { track: '#1a73e8', plan: '#7c4dff', dev: '#d93025', minor: '#f57c00', explained: '#80868b',
+        over: '#d93025', casing: '#ffffff' };   // ореол перепробега — не жёлтый: жёлтые у Яндекса трассы
+    const LINE_W = 5;      // факт и отклонения; обводка — на 4 px шире
+    const ARROW_PX = 90;   // шаг стрелок направления на экране
+
+    // линия с белой обводкой: обводка не ловит мышь, cls — у цветной линии (её ищет проверка в браузере)
+    function cased(line, color, cls, layer, opts) {
+        const casing = L.polyline(line, { color: LN.casing, weight: LINE_W + 4, opacity: 1, interactive: false, className: 'lv-l-casing' }).addTo(layer);
+        return Object.assign(L.polyline(line, { color, weight: LINE_W, opacity: 1, className: cls, ...opts }).addTo(layer), { casing });
+    }
+
+    // стрелки направления по фактическому пути: каждые ARROW_PX на экране, пересчёт при смене масштаба; своя панель
+    // под значками магазинов, без мыши (подсказка точки линии — по линии под ними)
+    function setArrows(line) {
+        state.arrowLine = Array.isArray(line) && line.length > 1 ? line : null;
+        drawArrows();
+    }
+
+    function drawArrows() {
+        const g = state.arrows, line = state.arrowLine;
+        if (!g) return;
+        g.clearLayers();
+        if (!line) return;
+        const m = state.map;
+        let prev = m.latLngToLayerPoint(line[0]), acc = ARROW_PX / 2, n = 0;
+        for (let i = 1; i < line.length && n < 400; i++) {
+            const cur = m.latLngToLayerPoint(line[i]), dx = cur.x - prev.x, dy = cur.y - prev.y, len = Math.hypot(dx, dy);
+            for (; acc <= len && n < 400; acc += ARROW_PX, n++) {
+                const at = m.layerPointToLatLng(L.point(prev.x + dx * acc / len, prev.y + dy * acc / len));
+                const el = h('span', { class: 'lv-arrow' });
+                el.style.transform = 'rotate(' + Math.round(Math.atan2(dy, dx) * 180 / Math.PI) + 'deg)';
+                L.marker(at, { icon: L.divIcon({ html: el.outerHTML, className: '', iconSize: [14, 14], iconAnchor: [7, 7] }),
+                    pane: 'lvArrows', interactive: false, keyboard: false }).addTo(g);
+            }
+            acc -= len;
+            prev = cur;
+        }
+    }
+
+    // начало пути за день: белая точка с обводкой цвета пути и временем выезда
+    function drawStart(t, layer) {
+        if (!t.track || t.track.length < 2) return;
+        const at = Array.isArray(t.track_t) && t.track_t.length ? ' · ' + clockOf(t.track_t[0]).slice(0, 5) : '';
+        L.circleMarker(t.track[0], { radius: 6, color: LN.track, weight: 3, fillColor: '#ffffff', fillOpacity: 1, className: 'lv-l-start' })
+            .bindTooltip(tip('Ճանապարհի սկիզբը' + at)).addTo(layer);
+    }
+
+    // плановая линия (что водитель получил): широкий полупрозрачный коридор по рейсам — под фактическим путём
     function drawPlan(t, layer) {
         const r = t.route;
         if (!state.showPlan || !r || !Array.isArray(r.lines)) return;
         r.lines.forEach((line, i) => {
             if (line.length < 2) return;
-            L.polyline(line, { color: '#e8edf4', weight: 3, opacity: 0.7, dashArray: '8 8', interactive: false }).addTo(layer);
+            L.polyline(line, { color: LN.plan, weight: 12, opacity: 0.3, interactive: false, className: 'lv-l-plan' }).addTo(layer);
             hoverable(line, 'is-plan', planHover(t, i), layer);
         });
     }
@@ -499,31 +553,29 @@
         if (!state.layer || state.replay.on) return;   // воспроизведение рисует своё — опрос его не стирает
         state.layer.clearLayers();   // подсказка точки — на карте, не в слое: ниже обновится по новым данным или уйдёт
         state.hover.fns = [];
-        if (!t) { forgetHover(); return; }
-        drawPlan(t, state.layer);
-        // участки с перепробегом — широкой оранжевой подложкой под путём
+        if (!t) { setArrows(null); forgetHover(); return; }
+        // участки с перепробегом — широким бледно-красным ореолом под всем (весь участок, где потеряны км)
         for (const x of (t.detour && t.detour.items) || []) {
             if (!x.over || !Array.isArray(x.line) || x.line.length < 2) continue;
-            L.polyline(x.line, { color: '#ffb547', weight: 12, opacity: 0.35 })
+            L.polyline(x.line, { color: LN.over, weight: 22, opacity: 0.16, className: 'lv-l-over' })
                 .bindTooltip(tip('Ավելորդ վազք՝ ' + legExcess(x) + ' կմ · ' + legName(x))).addTo(state.layer);
         }
-        if (t.track && t.track.length > 1) {
-            L.polyline(t.track, { color: '#38bdf8', weight: 4, opacity: 0.85, interactive: false }).addTo(state.layer);
-        }
-        // отклонения от плановой линии — красным поверх пути (км и время — и в подсказке точки пути); «փոքր շեղում» —
-        // тонкой линией, объяснённое — серым
+        drawPlan(t, state.layer);
+        if (t.track && t.track.length > 1) cased(t.track, LN.track, 'lv-l-track', state.layer, { interactive: false });
+        // отклонения от плановой линии — участок пути красным (км и время — и в подсказке точки пути); «փոքր շեղում» —
+        // оранжевым, объяснённое — серым; ширина та же, что у пути
         for (const r of (t.deviation && t.deviation.runs) || []) {
             if (!Array.isArray(r.line) || r.line.length < 2) continue;
-            const style = r.explained ? { color: '#8693a5', weight: 4, opacity: 0.9 }
-                : r.minor ? { color: '#ff6b79', weight: 3, opacity: 0.7, dashArray: '2 6' } : { color: '#ff6b79', weight: 6, opacity: 0.95 };
-            L.polyline(r.line, style)
+            const [color, cls] = r.explained ? [LN.explained, 'lv-l-explained'] : r.minor ? [LN.minor, 'lv-l-minor'] : [LN.dev, 'lv-l-dev'];
+            cased(r.line, color, cls, state.layer)
                 .bindTooltip(tip((r.minor ? 'Փոքր շեղում՝ ' : 'Շեղում երթուղուց՝ ') + fmt(r.km, 1) + ' կմ · ' + hm(r.from)
-                    + (r.to ? '–' + hm(r.to) : ' — հիմա') + (r.explained ? ' · բացատրված՝ ' + (REASON[r.explained.reason] || '') : '')))
-                .addTo(state.layer);
+                    + (r.to ? '–' + hm(r.to) : ' — հիմա') + (r.explained ? ' · բացատրված՝ ' + (REASON[r.explained.reason] || '') : '')));
         }
+        setArrows(t.track);
+        drawStart(t, state.layer);
         if (canReplay(t)) hoverable(t.track, 'is-track', trackHover(t), state.layer);   // поверх пути и отклонений
         if (state.data.depot) {   // склад — поверх линии подсказки (своя подсказка «Պահեստ»)
-            L.circleMarker(state.data.depot, { radius: 8, color: '#e8edf4', weight: 2, fillColor: '#38bdf8', fillOpacity: 1 })
+            L.circleMarker(state.data.depot, { radius: 8, color: '#ffffff', weight: 3, fillColor: '#0b57d0', fillOpacity: 1 })
                 .bindTooltip(tip('Պահեստ')).addTo(state.layer);
         }
         const hv = state.hover;
@@ -953,12 +1005,13 @@
         state.hover.fns = [];   // при воспроизведении — подсказка только плановой линии
         state.layer.clearLayers();
         if (state.data.depot) {
-            L.circleMarker(state.data.depot, { radius: 8, color: '#e8edf4', weight: 2, fillColor: '#38bdf8', fillOpacity: 1 })
+            L.circleMarker(state.data.depot, { radius: 8, color: '#ffffff', weight: 3, fillColor: '#0b57d0', fillOpacity: 1 })
                 .bindTooltip(tip('Պահեստ')).addTo(state.layer);
         }
         drawPlan(t, state.layer);   // плановая линия — и при воспроизведении (сравнить путь с планом)
-        L.polyline(t.track, { color: '#38bdf8', weight: 4, opacity: 0.25, interactive: false }).addTo(state.layer);   // весь день — тускло
-        rp.prefix = L.polyline([], { color: '#38bdf8', weight: 5, opacity: 0.95, interactive: false }).addTo(state.layer);
+        L.polyline(t.track, { color: LN.track, weight: LINE_W, opacity: 0.3, interactive: false }).addTo(state.layer);   // весь день — тускло
+        rp.prefix = cased([], LN.track, 'lv-l-track', state.layer, { interactive: false });   // пройденное — с обводкой
+        setArrows(t.track);
         rp.stops = (t.stops || []).filter(s => num(s.lat) !== null && num(s.lon) !== null).map(s => [s,
             L.circleMarker([s.lat, s.lon], { radius: 7, color: '#0e1116', weight: 2, fillColor: STORE.pending[1], fillOpacity: 1 })
                 .bindTooltip(tip(s.name || s.stop_id)).addTo(state.layer)]);
@@ -975,6 +1028,7 @@
         rp.t = Math.min(Math.max(x, tt[0]), tt[tt.length - 1]);
         const [p, i] = replayAt(rp.t);
         rp.prefix.setLatLngs([...rp.truck.track.slice(0, i + 1), p]);
+        rp.prefix.casing.setLatLngs(rp.prefix.getLatLngs());
         rp.ghost.setLatLng(p);
         for (const [s, m] of rp.stops) m.setStyle({ fillColor: storeAt(s, rp.t)[1] });
         $('lvReplayRange').value = String(Math.round(rp.t));

@@ -1051,7 +1051,9 @@ def test_live_access_garage_user_anonymous(client, live_app, monkeypatch):
     assert client.get('/routes/livex', base_url=LAN).status_code == 302
 
 
-def test_live_from_internet_only_garage(client, live_app):
+def test_live_from_internet_only_garage(client, live_app, monkeypatch):
+    for env in ('ROUTES_YANDEX_TILES_KEY', 'ROUTES_YANDEX_LIVE_KEY'):   # ключи из .env ПК — проверка «без ключа»
+        monkeypatch.delenv(env, raising=False)
     assert live_app._public_path_allowed('/routes/live', 'GET') is True
     assert live_app._public_path_allowed('/api/routes/live/truck', 'GET') is True
     for path in ('/routes/live/', '/routes/live-x', '/api/routes/live-x', '/api/routes/live/../garage',

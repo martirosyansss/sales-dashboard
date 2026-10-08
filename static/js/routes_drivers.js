@@ -1,6 +1,7 @@
 /* «Վարորդներ» /routes/drivers — показатели водителей за период (как driver analytics Omnitracs / Routific; №83, №87).
    API: GET /api/routes/drivers/scorecard?from=&to= (расчёт — route_optimizer/scorecard.py; здесь только показ).
-   Сортировка по любому столбцу, строка водителя раскрывает разбивку балла и по дням (опоздавшие магазины).
+   Сортировка по любому столбцу; строка водителя раскрывает разбивку балла, строки по дням (в тех же столбцах таблицы)
+   и опоздавшие магазины. Водители и առաքիչ — двумя группами (их баллы считаются по разным показателям).
    «Гараж» видит страницу без столбца «Կանխիկ»: сервер не присылает денег (d.cash = false), столбца нет и в разметке.
    Всё, что пришло с сервера (имена, магазины, машины), выводится только через textContent. */
 (function () {
@@ -22,7 +23,8 @@
 
     const state = { data: null, sort: { key: 'score', dir: -1 }, open: new Set(), seq: 0, today: null,
         cash: $('drPage').dataset.cash === '1' };
-    const cols = () => (state.cash ? 14 : 13);
+    const cols = () => (state.cash ? 13 : 12);
+    const WEEKDAY = ['Կիր', 'Երկ', 'Երք', 'Չրք', 'Հնգ', 'Ուրբ', 'Շբթ'];
 
     function h(tag, props, ...kids) {
         const el = document.createElement(tag);
@@ -69,17 +71,18 @@
         return [iso(from), iso(to)];
     }
 
-    // --- показ значений ---
+    // --- показ значений: значение крупно, под ним — пояснение мелко ---
     function pctClass(p) { return p === null ? 'is-mute' : p >= 90 ? 'is-good' : p >= 75 ? 'is-warn' : 'is-bad'; }
     function scoreClass(s) { return s === null ? 'is-mute' : s >= 80 ? 'is-good' : s >= 60 ? 'is-warn' : 'is-bad'; }
     function money(v) { const n = num(v); return n === null ? '—' : fmt(Math.round(n)) + ' ֏'; }
-    const mute = (td) => { td.classList.add('is-mute'); return td; };
+    const dash = () => h('td', { class: 'num is-mute', text: '—' });
+    const val = (cls, text) => h('span', { class: 'v' + (cls ? ' ' + cls : ''), text });
+    const sub = (text) => (text ? h('small', { text }) : null);
     function cashCell(c) {
-        const td = h('td', { class: 'num' });
-        if (!c) { td.textContent = '—'; return mute(td); }
+        if (!c) return dash();
         const short = num(c.short) || 0;
-        td.append(h('span', { class: short > 0.5 ? 'is-bad' : (short < -0.5 ? 'is-warn' : ''), text: money(short) }));
-        td.append(h('small', { text: 'վերցրել է՝ ' + money(c.collected) }));
+        const td = h('td', { class: 'num' }, val(short > 0.5 ? 'is-bad' : (short < -0.5 ? 'is-warn' : ''), money(short)),
+            sub('վերցրել է՝ ' + money(c.collected)));
         if (c.diff !== null && c.diff !== undefined) {
             const d = num(c.diff) || 0;
             td.append(h('small', { class: Math.abs(d) > 0.5 ? 'is-bad' : '', text: 'հանձնել − վերցրել՝ ' + (d > 0 ? '+' : '') + money(d) }));
@@ -87,44 +90,44 @@
         td.title = 'Պետք էր վերցնել կանխիկ՝ ' + money(c.expected) + ', չի վերցվել՝ ' + money(short);
         return td;
     }
-    function onTimeCell(pct, ok, rated) {
-        const p = num(pct);
-        return h('td', { class: 'num' }, h('span', { class: pctClass(p), text: p === null ? '—' : fmt(p) + '%' }),
-            h('small', { text: rated ? fmt(ok) + '/' + fmt(rated) : 'գնահատված չէ' }));
+    // «Ժամանակին» и под ним — сколько оценено и средняя задержка опоздавших
+    function onTimeCell(pct, ok, rated, lateMean) {
+        const p = num(pct), m = num(lateMean);
+        if (!rated) return h('td', { class: 'num is-mute' }, val('', '—'), sub('գնահատված չէ'));
+        return h('td', { class: 'num' }, val(pctClass(p), p === null ? '—' : fmt(p) + '%'),
+            sub(fmt(ok) + '/' + fmt(rated) + (m !== null && m > 0 ? ' · ուշ +' + fmt(m) + ' ր' : '')));
     }
-    function lateCell(mean, n) {
-        const m = num(mean);
-        return h('td', { class: 'num' }, h('span', { class: m === null ? 'is-mute' : '', text: m === null ? '—' : fmt(m) + ' ր' }),
-            n ? h('small', { text: fmt(n) + ' խանութ' }) : null);
-    }
-    function orderCell(pct, ordered) {
+    function pctCell(pct, note) {
         const p = num(pct);
-        return h('td', { class: 'num' }, h('span', { class: pctClass(p), text: p === null ? '—' : fmt(p) + '%' }),
-            ordered ? h('small', { text: fmt(ordered) + ' խանութից' }) : null);
+        if (p === null) return dash();
+        return h('td', { class: 'num' }, val(pctClass(p), fmt(p, p % 1 ? 1 : 0) + '%'), sub(note));
     }
     function speedCell(events, per100) {
         const n = num(events);
-        if (n === null) return mute(h('td', { class: 'num', text: '—' }));
-        return h('td', { class: 'num' }, h('span', { class: n > 0 ? 'is-bad' : 'is-good', text: fmt(n) + ' անգամ' }),
-            num(per100) !== null ? h('small', { text: fmt(per100, 2) + ' / 100 կմ' }) : null);
+        if (n === null) return dash();
+        return h('td', { class: 'num' }, val(n > 0 ? 'is-bad' : 'is-good', fmt(n) + ' անգամ'),
+            num(per100) !== null ? sub(fmt(per100, 2) + ' / 100 կմ') : null);
     }
     function stopCell(min, perDay) {
         const m = num(min);
-        if (m === null) return mute(h('td', { class: 'num', text: '—' }));
-        return h('td', { class: 'num' }, h('span', { class: m > 0 ? 'is-warn' : 'is-good', text: fmt(m) + ' ր' }),
-            num(perDay) !== null ? h('small', { text: 'միջինում ' + fmt(perDay) + ' ր/օր' }) : null);
+        if (m === null) return dash();
+        return h('td', { class: 'num' }, val(m > 0 ? 'is-warn' : 'is-good', fmt(m) + ' ր'),
+            num(perDay) !== null ? sub(fmt(perDay) + ' ր/օր') : null);
     }
     function fuelCell(pct, fact, norm) {
         const p = num(pct);
-        if (p === null) return mute(h('td', { class: 'num', text: '—' }));
-        return h('td', { class: 'num' }, h('span', { class: p > 10 ? 'is-bad' : p > 5 ? 'is-warn' : 'is-good', text: signed(p, 1) + '%' }),
-            num(norm) !== null ? h('small', { text: fmt(fact) + ' լ / նորմ ' + fmt(norm) + ' լ' }) : null);
+        if (p === null) return dash();
+        return h('td', { class: 'num' }, val(p > 10 ? 'is-bad' : p > 5 ? 'is-warn' : 'is-good', signed(p, 1) + '%'),
+            num(norm) !== null ? sub(fmt(fact) + ' / ' + fmt(norm) + ' լ') : null);
     }
-    const prCell = (p, r) => h('td', { class: 'num' }, h('span', { class: p + r ? '' : 'is-mute', text: fmt(p) + ' / ' + fmt(r) }));
+    const prCell = (p, r) => h('td', { class: 'num' + (p + r ? '' : ' is-mute') }, val(p + r ? 'is-warn' : '', fmt(p) + ' / ' + fmt(r)));
+    const kmCell = (km) => (num(km) === null ? dash() : h('td', { class: 'num' }, val('', fmt(km))));
+    const plainCell = (v, note) => h('td', { class: 'num' }, val('', fmt(v)), sub(note));
     // место по-армянски: 1-ին, 2-րդ, 3-րդ … — среди своей роли (водители и առաքիչ — раздельно)
     const place = (n, role) => fmt(n) + (num(n) === 1 ? '-ին' : '-րդ') + ' '
         + fmt(role === 'helper' ? state.data.ranked_helpers : state.data.ranked) + '-ից';
-    const kmCell = (km) => h('td', { class: 'num' + (num(km) === null ? ' is-mute' : ''), text: num(km) === null ? '—' : fmt(km) });
+    // инициалы для кружка у имени: «Հարությունյան Արմեն» → «ՀԱ»
+    const initials = (name) => String(name || '?').trim().split(/\s+/).slice(0, 2).map(w => w[0]).join('').toUpperCase();
 
     // разбивка балла: «Ժամանակին 82% → 71 × 41%» для подсказки и раскрытой строки
     function partLine(key, p) {
@@ -143,8 +146,9 @@
     function scoreCell(r) {
         const s = num(r.score);
         const td = h('td', { class: 'num dr-score', title: scoreTitle(r) });
-        if (!r.enough_data) { td.append(h('span', { class: 'is-mute dr-few', text: 'քիչ տվյալ' })); return td; }
+        if (!r.enough_data) { td.append(h('span', { class: 'dr-few', text: 'քիչ տվյալ' })); return td; }
         td.append(h('span', { class: 'dr-score-val ' + scoreClass(s), text: s === null ? '—' : fmt(s) }));
+        if (s !== null) td.append(h('span', { class: 'dr-meter', 'aria-hidden': 'true' }, bar(s)));
         if (num(r.rank) !== null) td.append(h('small', { text: place(r.rank, r.role) }));
         return td;
     }
@@ -170,21 +174,13 @@
         });
     }
     function markSort() {
-        document.querySelectorAll('#drTable thead th').forEach(th => {
+        document.querySelectorAll('#drTable thead th[data-key]').forEach(th => {
             if (th.dataset.key === state.sort.key) th.setAttribute('aria-sort', state.sort.dir > 0 ? 'ascending' : 'descending');
             else th.removeAttribute('aria-sort');
         });
     }
 
-    // --- раскрытая строка: балл и дни ---
-    function lateList(items) {
-        if (!items || !items.length) return h('span', { class: 'is-mute', text: '—' });
-        return h('ul', { class: 'dr-late' }, items.map(x => h('li', {},
-            h('span', { class: 'n', text: x.name || 'Խանութ' }),
-            h('span', { class: 't', text: 'պլան ' + (x.planned || '—') + ' → փաստ ' + (x.arrive || '—') }),
-            h('span', { class: 'd' + (x.reason === 'early' ? ' is-early' : ''),
-                text: (x.reason === 'early' ? '' : '+' + fmt(x.delay_min) + ' ր, ') + (REASON[x.reason] || '') }))));
-    }
+    // --- раскрытая строка: балл, дни (строками той же таблицы), опоздавшие магазины ---
     function bar(score) {
         const i = h('i', { class: scoreClass(score) });
         i.style.width = Math.max(0, Math.min(100, score || 0)) + '%';
@@ -193,40 +189,56 @@
     function partsBlock(r) {
         const items = Object.entries(r.parts || {});
         const head = !r.enough_data ? scoreTitle(r) + '։ Ցուցանիշները՝ տեղեկության համար։'
-            : 'Միավոր՝ ' + fmt(r.score) + (num(r.rank) !== null ? ' (' + place(r.rank, r.role) + ')' : '');
+            : 'Միավորի բաղադրիչները՝ ' + fmt(r.score) + (num(r.rank) !== null ? ' (' + place(r.rank, r.role) + ')' : '');
         // «Երթուղի» (08.10) — в балле (scorecard.WEIGHTS): здесь — по скольким дням и км он посчитан
-        const route = num(r.route_pct) === null ? null : h('p', { class: 'dr-parts-head', text: 'Երթուղուն հետևում՝ '
+        const route = num(r.route_pct) === null ? null : h('p', { class: 'dr-parts-note', text: 'Երթուղուն հետևում՝ '
             + fmt(r.route_pct, 1) + '% (' + fmt(r.route_days) + ' օր, ' + fmt(r.route_km) + ' կմ)' });
-        return h('div', { class: 'dr-parts' }, h('p', { class: 'dr-parts-head', text: head }), route,
+        return h('div', { class: 'dr-parts' }, h('p', { class: 'dr-parts-head', text: head }),
             items.length ? h('ul', {}, items.map(([k, p]) => h('li', {},
                 h('span', { class: 'l', text: (PART[k] || [k])[0] }),
                 h('span', { class: 'v', text: fmt(p.value, k === 'speed' ? 2 : 1) + (PART[k] || ['', ''])[1] }),
                 h('span', { class: 'bar', 'aria-hidden': 'true' }, bar(num(p.score))),
-                h('span', { class: 's', text: fmt(p.score) + ' × ' + fmt(p.share, 1) + '%' }))))
-                : h('p', { class: 'is-mute', text: 'Ցուցանիշների տվյալ չկա (GPS և պլան չկան)։' }));
+                h('span', { class: 's', text: fmt(p.score) + ' միավոր × ' + fmt(p.share, 1) + '%' }))))
+                : h('p', { class: 'is-mute', text: 'Ցուցանիշների տվյալ չկա (GPS և պլան չկան)։' }), route);
     }
-    function detailTable(r) {
-        const head = ['Ամսաթիվ', 'Մեքենա', 'Խանութներ', 'Ժամանակին', 'Միջին ուշացում', 'Հերթականություն', 'Արագություն',
-            'Կանգառ խանութից դուրս', 'Վառելիք՝ նորմից', 'Երթուղուն հետևում', 'Մասնակի / Հրաժարում', 'Կմ'].concat(state.cash ? ['Կանխիկ'] : [], ['Տարա', 'Ուշացած խանութներ']);
-        return h('table', { class: 'dr-days' },
-            h('caption', { text: r.name + ' — ըստ օրերի' }),
-            h('thead', {}, h('tr', {}, head.map((t, i) => h('th', { scope: 'col', class: i >= 2 && i < head.length - 1 ? 'num' : null, text: t })))),
-            h('tbody', {}, r.detail.map(d => h('tr', {},
-                h('td', { text: dmy(d.date) }),
-                h('td', { text: (d.cars || []).join(', ') || '—' }),
-                h('td', { class: 'num', text: fmt(d.stops) }),
-                onTimeCell(d.on_time_pct, d.on_time, d.rated),
-                lateCell(d.late_mean_min, 0),
-                orderCell(d.order_pct, d.ordered),
-                speedCell(d.speed_events, null),
-                stopCell(d.offroute_min, null),
-                fuelCell(d.liters_vs_norm_pct, d.fuel_fact_l, d.fuel_norm_l),
-                h('td', { class: 'num' + (num(d.route_pct) === null ? ' is-mute' : ''), text: num(d.route_pct) === null ? '—' : fmt(d.route_pct, 1) + '%' }),
-                prCell(d.partial, d.refused),
-                kmCell(d.km),
-                state.cash ? cashCell(d.cash) : null,
-                h('td', { class: 'num', text: fmt(d.tare) }),
-                h('td', {}, lateList(d.late))))));
+    function dayLabel(ds) {
+        if (typeof ds !== 'string' || ds.length !== 10) return '—';
+        return WEEKDAY[parseIso(ds).getDay()] + ' ' + ds.slice(8, 10) + '.' + ds.slice(5, 7);
+    }
+    // день — строка в тех же столбцах, что и водитель (балл за день не считается)
+    function dayRow(d, owner) {
+        return h('tr', { class: 'dr-day', 'data-owner': owner },
+            h('th', { scope: 'row', class: 'dr-day-name' }, h('span', { class: 'dr-day-date', text: dayLabel(d.date) }),
+                h('span', { class: 'dr-day-car', text: (d.cars || []).join(', ') || '—' })),
+            h('td', { class: 'num' }),
+            plainCell(d.stops),
+            onTimeCell(d.on_time_pct, d.on_time, d.rated, d.late_mean_min),
+            pctCell(d.order_pct, d.ordered ? fmt(d.ordered) + ' խանութից' : null),
+            pctCell(d.route_pct, null),
+            kmCell(d.km),
+            speedCell(d.speed_events, null),
+            stopCell(d.offroute_min, null),
+            fuelCell(d.liters_vs_norm_pct, d.fuel_fact_l, d.fuel_norm_l),
+            prCell(d.partial, d.refused),
+            state.cash ? cashCell(d.cash) : null,
+            plainCell(d.tare));
+    }
+    function lateBlock(r) {
+        const days = r.detail.filter(d => d.late && d.late.length);
+        if (!days.length) return null;
+        const total = days.reduce((n, d) => n + d.late.length, 0);
+        const list = h('div', { class: 'dr-late-days' }, days.map(d => h('section', { class: 'dr-late-day' },
+            h('h4', { text: dayLabel(d.date) + ' · ' + ((d.cars || []).join(', ') || '—') }),
+            h('ul', { class: 'dr-late' }, d.late.map(x => h('li', {},
+                h('span', { class: 'n', text: x.name || 'Խանութ' }),
+                h('span', { class: 't', text: (x.planned || '—') + ' → ' + (x.arrive || '—') }),
+                h('span', { class: 'd' + (x.reason === 'early' ? ' is-early' : ''),
+                    text: (x.reason === 'early' ? '' : '+' + fmt(x.delay_min) + ' ր, ') + (REASON[x.reason] || '') })))))));
+        // длинный список — свёрнут, короткий — сразу виден
+        const box = h('details', { class: 'dr-late-box' }, h('summary', {},
+            icon('fa-clock'), h('span', { text: 'Ուշացած խանութներ՝ ' + fmt(total) + ' (' + fmt(days.length) + ' օր)' })), list);
+        box.open = total <= 12;
+        return box;
     }
 
     function toggle(key) {
@@ -236,10 +248,14 @@
         const open = state.open.has(key);
         row.classList.toggle('is-open', open);
         row.querySelector('.dr-name').setAttribute('aria-expanded', String(open));
-        row.nextElementSibling.hidden = !open;
+        document.querySelectorAll('#drRows [data-owner="' + CSS.escape(key) + '"]').forEach(x => { x.hidden = !open; });
     }
 
     // --- таблица ---
+    function groupRow(text, n) {
+        return h('tr', { class: 'dr-group' }, h('th', { scope: 'rowgroup', colspan: cols() },
+            h('span', { text }), h('span', { class: 'dr-group-n', text: fmt(n) })));
+    }
     function renderRows() {
         const body = $('drRows');
         const rows = state.data ? state.data.drivers : [];
@@ -249,36 +265,45 @@
             return;
         }
         const out = [];
-        sorted(rows).forEach((r, i) => {
+        const list = sorted(rows);
+        const helpers = list.filter(r => r.role === 'helper').length;
+        if (helpers) out.push(groupRow('Վարորդներ', list.length - helpers));
+        list.forEach((r, i) => {
+            if (helpers && r.role === 'helper' && (i === 0 || list[i - 1].role !== 'helper')) out.push(groupRow('Առաքիչներ', helpers));
             const open = state.open.has(r.key);
             const id = 'drDetail' + i;
             const name = h('button', { type: 'button', class: 'dr-name', 'aria-expanded': String(open), 'aria-controls': id },
-                icon('fa-chevron-right'), h('span', { text: r.name }),
-                ROLE[r.role] ? h('span', { class: 'rt-badge b-manual', text: ROLE[r.role] }) : null);
-            const tr = h('tr', { class: 'dr-row' + (open ? ' is-open' : ''), 'data-key': r.key },
+                icon('fa-chevron-right'),
+                h('i', { class: 'dr-ava ' + (r.enough_data ? scoreClass(num(r.score)) : 'is-mute'), 'aria-hidden': 'true', text: initials(r.name) }),
+                h('b', { class: 'dr-who' }, h('span', { text: r.name }),
+                    ROLE[r.role] ? h('em', { class: 'rt-badge b-manual', text: ROLE[r.role] }) : null));
+            const tr = h('tr', { class: 'dr-row' + (open ? ' is-open' : '') + (num(r.stops) ? '' : ' is-idle'), 'data-key': r.key },
                 h('th', { scope: 'row', class: 'dr-cell-name' }, name),
                 scoreCell(r),
-                h('td', { class: 'num', text: fmt(r.days) }),
-                h('td', { class: 'num', text: fmt(r.stops) }),
-                onTimeCell(r.on_time_pct, r.on_time, r.rated),
-                lateCell(r.late_mean_min, r.late),
-                orderCell(r.order_pct, r.ordered),
+                plainCell(r.stops, fmt(r.days) + ' օր'),
+                onTimeCell(r.on_time_pct, r.on_time, r.rated, r.late_mean_min),
+                pctCell(r.order_pct, r.ordered ? fmt(r.ordered) + ' խանութից' : null),
+                pctCell(r.route_pct, num(r.route_days) ? fmt(r.route_days) + ' օր' : null),
+                kmCell(r.km),
                 speedCell(r.speed_events, r.speed_per_100km),
                 stopCell(r.offroute_min, r.offroute_min_per_day),
                 fuelCell(r.liters_vs_norm_pct, r.fuel_fact_l, r.fuel_norm_l),
                 prCell(r.partial, r.refused),
-                kmCell(r.km),
                 state.cash ? cashCell(r.cash) : null,
-                h('td', { class: 'num', text: fmt(r.tare) }));
-            const detail = h('tr', { class: 'dr-detail', id }, h('td', { colspan: cols() }, partsBlock(r), detailTable(r)));
-            detail.hidden = !open;
-            out.push(tr, detail);
+                plainCell(r.tare));
+            const detail = h('tr', { class: 'dr-detail', id, 'data-owner': r.key }, h('td', { colspan: cols() }, partsBlock(r)));
+            const days = r.detail.length ? [h('tr', { class: 'dr-day-head', 'data-owner': r.key },
+                h('td', { colspan: cols(), text: 'Ըստ օրերի՝ ' + fmt(r.detail.length) }))].concat(r.detail.map(d => dayRow(d, r.key))) : [];
+            const late = lateBlock(r);
+            const extra = late ? [h('tr', { class: 'dr-extra', 'data-owner': r.key }, h('td', { colspan: cols() }, late))] : [];
+            [detail, ...days, ...extra].forEach(x => { x.hidden = !open; });
+            out.push(tr, detail, ...days, ...extra);
         });
         body.replaceChildren(...out);
     }
 
     const kpi = (label, val, sub) => h('div', { class: 'dr-kpi' }, h('div', { class: 'dr-kpi-label', text: label }),
-        h('div', { class: 'dr-kpi-val' }, val, sub ? h('small', { text: sub }) : null));
+        h('div', { class: 'dr-kpi-val' }, val), sub ? h('div', { class: 'dr-kpi-sub', text: sub }) : null);
 
     function renderEta(e) {
         const ok = num(e && e.ok_min);
@@ -289,7 +314,7 @@
         }
         const within = num(e.within_pct);
         $('drEta').replaceChildren(
-            kpi('±' + fmt(ok) + ' րոպեի ընթացքում', h('span', { class: pctClass(within), text: fmt(within, 1) + '%' }),
+            kpi('Պլանի ժամին ±' + fmt(ok) + ' ր', h('span', { class: pctClass(within), text: fmt(within, 1) + '%' }),
                 fmt(e.within_n) + '/' + fmt(e.n) + ' խանութ'),
             kpi('Շեղման մեդիան', fmt(e.median_abs_min, 1) + ' ր', 'կեսը՝ ավելի քիչ'),
             kpi('Շեղում P80', fmt(e.p80_abs_min, 1) + ' ր', '10-ից 8-ը՝ ավելի քիչ'),
@@ -307,7 +332,7 @@
             kpi('Վարորդներ', fmt(drivers.length), d.ranked ? fmt(d.ranked) + '-ը՝ միավորով' : null),
             kpi('Փակված խանութներ', fmt(sum('stops'))),
             kpi('Ժամանակին', h('span', { class: pctClass(pct), text: pct === null ? '—' : fmt(pct, 1) + '%' }),
-                rated ? fmt(ok) + '/' + fmt(rated) : null),
+                rated ? fmt(ok) + '/' + fmt(rated) + ' խանութ' : null),
             kpi('Կմ (GPS)', kmKnown ? fmt(sum('km')) : '—'));
         $('drKpis').hidden = false;
         renderEta(d.eta);
@@ -345,7 +370,7 @@
             $('drScale').textContent = Object.entries(r.scale).map(([k, [full, zero]]) => (PART[k] || [k])[0].toLowerCase() + '՝ '
                 + fmt(full) + (PART[k] || ['', ''])[1] + ' → 100, ' + fmt(zero) + (PART[k] || ['', ''])[1] + ' → 0').join('; ');
         }
-        $('drTableTitleText').textContent = 'Վարորդներ՝ ' + dmy(d.from) + ' – ' + dmy(d.to);
+        $('drTableTitleText').textContent = 'Վարկանիշ՝ ' + dmy(d.from) + ' – ' + dmy(d.to);
     }
 
     async function load(from, to) {
@@ -397,7 +422,7 @@
             checkedSpan(['7', '30', '90'].find(v => [from, to].join() === spanRange(Number(v)).join()) || '');
             load(from, to);
         });
-        document.querySelectorAll('#drTable thead th').forEach(th => th.querySelector('.dr-sort').addEventListener('click', () => {
+        document.querySelectorAll('#drTable thead th[data-key]').forEach(th => th.querySelector('.dr-sort').addEventListener('click', () => {
             const key = th.dataset.key;
             // по умолчанию — «лучше сверху»: меньше опозданий, превышений, стоянок и перерасхода
             const asc = ['name', 'late_mean_min', 'speed_per_100km', 'offroute_min', 'liters_vs_norm_pct'].includes(key);
@@ -405,6 +430,11 @@
             renderRows();
         }));
         // строка целиком раскрывает разбивку (кнопка имени — для клавиатуры и экранного диктора)
+        // раскрытые блоки (разбивка балла, опоздания) — шириной с видимую часть таблицы, а не с всю таблицу
+        const scroll = document.querySelector('.dr-scroll');
+        const fit = () => $('drTable').style.setProperty('--dr-vw', scroll.clientWidth + 'px');
+        if (window.ResizeObserver) new ResizeObserver(fit).observe(scroll);
+        fit();
         $('drRows').addEventListener('click', (ev) => {
             const row = ev.target.closest('.dr-row');
             if (row) toggle(row.dataset.key);

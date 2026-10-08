@@ -403,8 +403,13 @@ def main() -> int:
                 check(left.count() == 0, f'курсор ушёл с линии — подсказки нет ({left.count()}: '
                       f'{left.first.inner_text() if left.count() else ""!r})')
                 check(page.locator('.leaflet-overlay-pane path').count() >= 4, 'путь и магазины выбранной машины на карте')
-                dashed = '.leaflet-overlay-pane path[stroke-dasharray="8 8"]'
-                check(page.locator(dashed).count() == 1, f'плановая линия пунктиром ({page.locator(dashed).count()})')
+                dashed = '.leaflet-overlay-pane path.lv-l-plan'   # 08.10 «как гиганты»: план — коридор, не пунктир
+                check(page.locator(dashed).count() == 1, f'плановая линия коридором ({page.locator(dashed).count()})')
+                check(page.locator('.leaflet-overlay-pane path.lv-l-track').count() == 1
+                      and page.locator('.leaflet-overlay-pane path.lv-l-casing').count() >= 2,
+                      'путь машины — с белой обводкой (и отклонения тоже)')
+                check(page.locator('.leaflet-lvArrows-pane .lv-arrow').count() >= 1, 'стрелки направления на пути')
+                check(page.locator('.leaflet-overlay-pane path.lv-l-start').count() == 1, 'начало пути за день — точкой')
                 pins = page.eval_on_selector_all('.lv-npin', 'els => els.map(e => e.textContent)')
                 check(sorted(pins) == ['1', '2', '3'], f'номера магазинов по плану: {pins}')
                 stats = page.eval_on_selector_all('#lvStats dt', 'els => els.map(e => e.textContent)')
@@ -417,8 +422,8 @@ def main() -> int:
                 for need in ('Երթուղուն հետևում', 'Ավելորդ վազք', 'Հերթականություն'):
                     check(need in stats, f'08.10: «Օրվա ցուցանիշներ» — «{need}»')
                 check('Ըստ պլանի' in st_text and '%' in st_text, '08.10: машина 1 — порядок по плану, следование плану в %')
-                check(page.locator('.leaflet-overlay-pane path[stroke-dasharray="2 6"]').count() == 1,
-                      '08.10: «փոքր շեղում» на карте — тонкой пунктирной линией')
+                check(page.locator('.leaflet-overlay-pane path.lv-l-minor').count() == 1,
+                      '08.10: «փոքր շեղում» на карте — оранжевым участком пути')
                 check(f'{cars[0]} · Շեղում' not in page.inner_text('#lvProbList'),
                       '08.10: «փոքր շեղում» машины 1 — не в «Խնդիրներ հիմա»')
                 page.locator('#lvStats .lv-linkbtn').click()
@@ -427,7 +432,7 @@ def main() -> int:
                       'максимальная скорость: кнопка показывает точку на карте')
                 page.locator('#lvPlanToggle').uncheck()
                 page.wait_for_timeout(200)
-                check(page.locator(dashed).count() == 0, '«Պլանային երթուղի» выключен — пунктира нет')
+                check(page.locator(dashed).count() == 0, '«Պլանային երթուղի» выключен — коридора нет')
                 page.locator('#lvPlanToggle').check()
                 page.wait_for_timeout(200)
                 check(page.locator(dashed).count() == 1, '«Պլանային երթուղի» включён снова')
@@ -442,7 +447,7 @@ def main() -> int:
                 check('Երկար կանգառ' in page.inner_text('#lvActive'), 'машина 2: активная тревога «долгая стоянка»')
                 check('Շեղում երթուղուց' in page.inner_text('#lvActive'), 'машина 2: активная тревога «Շեղում երթուղուց»')
                 check('Շեղում երթուղուց' in page.inner_text('#lvProbList'), '«Խնդիրներ հիմա»: отклонение машины 2')
-                check(page.locator('.leaflet-overlay-pane path[stroke="#ff6b79"][stroke-width="6"]').count() >= 1,
+                check(page.locator('.leaflet-overlay-pane path.lv-l-dev').count() >= 1,
                       'машина 2: линия отклонения красным')
                 check('հիմա երթուղուց դուրս է' in page.inner_text('#lvStats'), 'машина 2: «հիմա երթուղուց դուրս է»')
                 fit_track(page)
@@ -463,8 +468,8 @@ def main() -> int:
                 page.locator('#lvDetourBox summary').click()
                 legs = page.inner_text('#lvDetour')
                 check('ընթացքում' in legs and '+' in legs, f'08.10: таблица перепробега — идущий участок ({legs[:120]!r})')
-                check(page.locator('.leaflet-overlay-pane path[stroke="#ffb547"]').count() >= 1,
-                      '08.10: участок с перепробегом — оранжевым на карте')
+                check(page.locator('.leaflet-overlay-pane path.lv-l-over').count() >= 1,
+                      '08.10: участок с перепробегом — ореолом на карте')
                 page.screenshot(path=str(SHOTS / 'live_desktop_stop.png'))
                 # «Բացատրել» из «Խնդիրներ հիմա»: диалог, клавиатура, сохранение, «Չեղարկել»
                 row = page.locator('#lvProbList li.lv-prob-row', has_text='Խանութներ բաց են թողնված')

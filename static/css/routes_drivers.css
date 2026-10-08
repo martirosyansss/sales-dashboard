@@ -1,114 +1,223 @@
-/* «Վարորդներ» /routes/drivers — показатели водителей за период (№83, №87). Тема и токены — routes.css (.rt-page); свои классы .dr-*. */
+/* «Վարորդներ» /routes/drivers — показатели водителей за период (№83, №87). Тема и токены — routes.css (.rt-page); свои классы .dr-*.
+   Вид — как driver scorecard в Samsara / Motive: шапка с периодом, одна полоса итогов, таблица-рейтинг с группами столбцов,
+   разбивка водителя по дням — строками в тех же столбцах. Числа — тем же шрифтом, что и текст (tabular-nums), без моноширинного. */
 
-#drPage { max-width: 1640px; margin: 0 auto; padding-bottom: 48px; }
-.dr-title-ico { color: var(--rt-acc); font-size: .8em; margin-right: 12px; }
+#drPage { max-width: 1640px; margin: 0 auto; padding-bottom: 48px; font-variant-numeric: tabular-nums; }
 
-/* Период: быстрый выбор и свои даты одной строкой */
-.dr-period { display: flex; flex-wrap: wrap; align-items: end; gap: 12px 20px; padding: 14px 18px; }
+/* Шапка: название слева, период справа */
+.dr-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 14px 24px; padding: 16px 20px; margin-bottom: 12px; }
+.dr-head-main { flex: 1 1 380px; display: flex; align-items: center; gap: 14px; min-width: 0; }
+.dr-head-ico {
+    flex: 0 0 auto; display: grid; place-items: center; width: 44px; height: 44px; border-radius: 12px;
+    background: var(--rt-acc-glow); color: var(--rt-acc); box-shadow: inset 0 0 0 1px var(--rt-acc-dim); font-size: 1.125rem;
+}
+.dr-head-text { min-width: 0; }
+#drPage .dr-head .rt-title { font-size: 1.625rem; }
+.dr-head-sub { margin: 2px 0 0; font-size: .9375rem; color: var(--rt-fg-dim); line-height: 1.4; }
+.dr-garage { margin-left: 8px; }
+
+.dr-period { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; margin: 0; }
 .dr-quick { border: 0; margin: 0; padding: 0; min-width: 0; }
-.dr-dates { display: flex; flex-wrap: wrap; align-items: end; gap: 10px 12px; }
+.dr-dates { display: flex; flex-wrap: nowrap; align-items: center; gap: 8px; }
 .dr-field { margin: 0; }
-.dr-field .rt-field-label { font-size: .8125rem; color: var(--rt-fg-dim); }
-.dr-field .rt-input { width: 168px; }
+.dr-field .rt-input { width: 152px; height: 38px; padding-top: 0; padding-bottom: 0; }
+.dr-dash { color: var(--rt-fg-mute); }
+#drApply { height: 38px; }
 
-/* Итог периода */
-.dr-kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 12px; }
-.dr-kpi { background: var(--rt-panel); border: 1px solid var(--rt-line); border-radius: var(--rt-radius); padding: 14px 16px; min-width: 0; }
-.dr-kpi-label { font-size: .875rem; color: var(--rt-fg-dim); }
-.dr-kpi-val { font-size: 1.75rem; font-weight: 700; letter-spacing: -.02em; line-height: 1.2; margin-top: 2px; }
-.dr-kpi-val small { font-size: .9375rem; font-weight: 600; color: var(--rt-fg-dim); margin-left: 6px; letter-spacing: 0; }
-
-/* Точность ETA парка (№87 п. 7): подпись и тот же ряд плиток */
-.dr-eta { margin-bottom: 12px; }
-.dr-eta-title { font-size: .9375rem; font-weight: 600; color: var(--rt-fg-dim); margin: 0 0 8px; }
-.dr-eta .dr-kpis { margin-bottom: 0; }
-.dr-eta .dr-kpi-val { font-size: 1.5rem; }
-
-/* Таблица водителей */
-.dr-scroll { overflow-x: auto; border: 1px solid var(--rt-line); border-radius: var(--rt-radius-sm); }
-.dr-table { width: 100%; min-width: 1360px; border-collapse: separate; border-spacing: 0; }
-.dr-table thead th {
-    position: sticky; top: 0; z-index: 1; background: var(--rt-panel-2); border-bottom: 1px solid var(--rt-line);
-    padding: 0; font-size: .8125rem; font-weight: 600; color: var(--rt-fg-dim); text-align: left; vertical-align: bottom;
+/* Итоги периода: парк и точность ETA — одна панель, плитки через тонкие разделители */
+.dr-summary {
+    display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); margin-bottom: 12px;
+    background: var(--rt-panel); border: 1px solid var(--rt-line); border-radius: var(--rt-radius); overflow: hidden;
 }
-.dr-table thead th.num { text-align: right; }
-.dr-sort {
-    display: inline-flex; align-items: center; gap: 6px; width: 100%; min-height: 44px; padding: 8px 12px; border: 0;
-    background: none; color: inherit; font: inherit; text-align: inherit; cursor: pointer; line-height: 1.3;
+.dr-sum-group { min-width: 0; padding: 12px 0 14px; }
+.dr-sum-group + .dr-sum-group { border-left: 1px solid var(--rt-line); }
+.dr-sum-group[hidden] { display: none; }
+.dr-summary:has(#drEtaBox[hidden]) { grid-template-columns: minmax(0, 1fr); }
+#drPage .dr-sum-title {
+    margin: 0 0 6px; padding: 0 18px; font-size: .75rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+    color: var(--rt-fg-mute);
 }
-.num .dr-sort { justify-content: flex-end; }
-.dr-sort:hover { color: var(--rt-fg); }
-.dr-sort::after { content: "\2195"; font-size: .85em; opacity: .35; }
-th[aria-sort="ascending"] .dr-sort, th[aria-sort="descending"] .dr-sort { color: var(--rt-acc); }
-th[aria-sort="ascending"] .dr-sort::after { content: "\2191"; opacity: 1; }
-th[aria-sort="descending"] .dr-sort::after { content: "\2193"; opacity: 1; }
+.dr-kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.dr-kpis[hidden] { display: none; }
+.dr-kpi { min-width: 0; padding: 4px 18px; }
+.dr-kpi + .dr-kpi { border-left: 1px solid var(--rt-line-soft); }
+.dr-kpi-label { font-size: .8125rem; color: var(--rt-fg-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dr-kpi-val { font-size: 1.625rem; font-weight: 700; letter-spacing: -.02em; line-height: 1.25; color: var(--rt-fg); white-space: nowrap; }
+.dr-kpi-sub { font-size: .8125rem; color: var(--rt-fg-mute); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-.dr-table tbody td, .dr-table tbody th { padding: 11px 12px; border-bottom: 1px solid var(--rt-line-soft); font-size: .9375rem; vertical-align: middle; }
-.dr-table tbody th { text-align: left; font-weight: 600; }
-.dr-table td.num { font-family: var(--rt-mono); text-align: right; white-space: nowrap; }
-.dr-table td.num small { display: block; font-size: .75rem; color: var(--rt-fg-mute); }
-.dr-row { cursor: pointer; transition: background .12s; }
-.dr-row:hover > * { background: var(--rt-panel-2); }
-.dr-row.is-open > * { background: var(--rt-panel-2); border-bottom-color: transparent; }
-.dr-name { display: inline-flex; align-items: center; gap: 10px; border: 0; background: none; color: var(--rt-fg); font: inherit;
-    font-weight: 600; padding: 0; cursor: pointer; text-align: left; }
-.dr-name i { color: var(--rt-fg-mute); transition: transform .15s; width: 12px; }
-.dr-row.is-open .dr-name i { transform: rotate(90deg); color: var(--rt-acc); }
-.dr-name .rt-badge { font-weight: 600; }
+/* Карточка рейтинга */
+.dr-card { padding: 0; overflow: hidden; }
+.dr-card-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 16px; padding: 14px 18px 12px; }
+.dr-card-hint { margin: 0; font-size: .8125rem; color: var(--rt-fg-mute); }
+.dr-card-hint i { margin-right: 6px; }
+
 #drPage .is-good { color: var(--rt-ok); }
 #drPage .is-warn { color: var(--rt-warn); }
 #drPage .is-bad { color: var(--rt-danger); }
 #drPage .is-mute { color: var(--rt-fg-mute); }
 
-/* Балл и место; «քիչ տվյալ» — без балла */
-.dr-table td.dr-score .dr-score-val { font-size: 1.125rem; font-weight: 700; }
-.dr-table td.dr-score .dr-few { font-family: inherit; font-size: .8125rem; }
+/* Таблица: шапка в две строки (группы столбцов + столбцы), первый столбец закреплён при прокрутке вбок */
+.dr-scroll { overflow-x: auto; border-top: 1px solid var(--rt-line); }
+.dr-table { width: 100%; min-width: 1240px; border-collapse: separate; border-spacing: 0; }
+.dr-table .c-name { width: 210px; }
+.dr-table th, .dr-table td { background: var(--rt-panel); }
 
-/* Разбивка балла в раскрытой строке: показатель, значение, полоска подоценки, подоценка × доля */
-.dr-parts { padding: 4px 0 12px; max-width: 760px; }
-.dr-parts-head { margin: 0 0 8px; font-size: .875rem; font-weight: 600; color: var(--rt-fg); }
-.dr-parts ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
-.dr-parts li { display: grid; grid-template-columns: minmax(150px, 1.4fr) minmax(80px, .8fr) minmax(90px, 1.2fr) minmax(100px, .9fr);
-    align-items: center; gap: 4px 12px; font-size: .8125rem; color: var(--rt-fg-dim); }
-.dr-parts .v, .dr-parts .s { font-family: var(--rt-mono); white-space: nowrap; }
-.dr-parts .s { text-align: right; }
-.dr-parts .bar { display: block; height: 6px; border-radius: 3px; background: var(--rt-line); overflow: hidden; }
-.dr-parts .bar i { display: block; height: 100%; border-radius: 3px; background: currentColor; }
+.dr-table thead th, .dr-table thead td { background: var(--rt-panel-2); }
+.dr-groups > * { padding: 8px 10px 0; border: 0; }
+.dr-groups th { text-align: center; font-size: .6875rem; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--rt-fg-mute); }
+.dr-groups th span { display: block; padding-bottom: 6px; border-bottom: 1px solid var(--rt-line); white-space: nowrap; }
+.dr-table thead tr:last-child th {
+    padding: 0; border-bottom: 1px solid var(--rt-line); font-size: .75rem; font-weight: 600; color: var(--rt-fg-dim);
+    text-align: left; vertical-align: bottom;
+}
+.dr-table thead th.num { text-align: right; }
+.dr-sort {
+    display: inline-flex; align-items: flex-end; gap: 4px; width: 100%; min-height: 44px; padding: 6px 10px 8px; border: 0;
+    background: none; color: inherit; font: inherit; text-align: inherit; cursor: pointer; line-height: 1.25;
+}
+.num .dr-sort { justify-content: flex-end; }
+.dr-sort:hover { color: var(--rt-fg); }
+.dr-sort::after { content: "\2195"; font-size: .9em; opacity: .3; flex: 0 0 auto; }
+th[aria-sort="ascending"] .dr-sort, th[aria-sort="descending"] .dr-sort { color: var(--rt-acc); }
+th[aria-sort="ascending"] .dr-sort::after { content: "\2191"; opacity: 1; }
+th[aria-sort="descending"] .dr-sort::after { content: "\2193"; opacity: 1; }
 
-/* Разбивка по дням под строкой водителя */
-.dr-table tbody .dr-detail > td { padding: 0 12px 16px 34px; background: var(--rt-panel-2); }
-.dr-days { width: 100%; border-collapse: collapse; background: var(--rt-inset); border: 1px solid var(--rt-line); border-radius: var(--rt-radius-sm); overflow: hidden; }
-.dr-days caption { caption-side: top; text-align: left; font-size: .8125rem; color: var(--rt-fg-dim); padding: 4px 0 8px; }
-.dr-days th { font-size: .75rem; font-weight: 600; color: var(--rt-fg-mute); text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--rt-line); white-space: nowrap; }
-.dr-days th.num { text-align: right; }
-.dr-days td { padding: 8px 10px; border-bottom: 1px solid var(--rt-line-soft); font-size: .875rem; vertical-align: top; }
-.dr-days td.num { font-family: var(--rt-mono); text-align: right; white-space: nowrap; }
-.dr-days tr:last-child td { border-bottom: 0; }
-.dr-late { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; }
-.dr-late li { display: flex; flex-wrap: wrap; gap: 2px 10px; font-size: .8125rem; color: var(--rt-fg-dim); }
-.dr-late .n { color: var(--rt-fg); overflow-wrap: anywhere; }
-.dr-late .t { font-family: var(--rt-mono); white-space: nowrap; }
-.dr-late .d { font-family: var(--rt-mono); white-space: nowrap; color: var(--rt-danger); }
+/* Разделители групп: перед «Ժամանակին», «Կմ», «Մասնակի» (4-й, 7-й, 11-й столбцы) */
+.dr-table thead tr:last-child > :is(:nth-child(4), :nth-child(7), :nth-child(11)),
+.dr-table tbody tr:is(.dr-row, .dr-day) > :is(:nth-child(4), :nth-child(7), :nth-child(11)) { box-shadow: inset 1px 0 0 var(--rt-line-soft); }
+.dr-groups th { box-shadow: none; }
+
+.dr-table thead tr:last-child > :first-child, .dr-groups > :first-child,
+.dr-table tbody tr:is(.dr-row, .dr-day) > :first-child { position: sticky; left: 0; z-index: 1; }
+.dr-table tbody tr:is(.dr-row, .dr-day) > :first-child { box-shadow: inset -1px 0 0 var(--rt-line-soft); }
+
+.dr-table tbody td, .dr-table tbody th { padding: 10px 10px; border-bottom: 1px solid var(--rt-line-soft); font-size: .9375rem; vertical-align: middle; }
+.dr-table tbody th { text-align: left; font-weight: 600; }
+.dr-table td.num { text-align: right; white-space: nowrap; }
+.dr-table td .v { font-weight: 600; }
+.dr-table td small { display: block; margin-top: 1px; font-size: .75rem; font-weight: 400; color: var(--rt-fg-mute); }
+.dr-table td small.is-bad { color: var(--rt-danger); }
+
+/* Строка водителя */
+.dr-row { cursor: pointer; }
+.dr-row > * { transition: background-color .12s; }
+.dr-row:hover > *, .dr-row.is-open > * { background: var(--rt-panel-2); }
+.dr-row.is-open > * { border-bottom-color: transparent; }
+.dr-row.is-idle > :not(:first-child) { opacity: .55; }
+.dr-name {
+    display: inline-flex; align-items: center; gap: 10px; max-width: 100%; border: 0; background: none; color: var(--rt-fg);
+    font: inherit; font-weight: 600; padding: 0; cursor: pointer; text-align: left;
+}
+.dr-name > .fa-chevron-right { flex: 0 0 auto; width: 10px; font-size: .75rem; color: var(--rt-fg-mute); transition: transform .15s; }
+.dr-row.is-open .dr-name > .fa-chevron-right { transform: rotate(90deg); color: var(--rt-acc); }
+.dr-table th.dr-cell-name { min-width: 196px; }
+.dr-who { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; min-width: 0; font-weight: inherit; }
+.dr-who > span { line-height: 1.3; overflow-wrap: normal; }
+.dr-ava {
+    flex: 0 0 auto; display: grid; place-items: center; width: 34px; height: 34px; border-radius: 50%;
+    font-style: normal; font-size: .8125rem; font-weight: 700; letter-spacing: .02em;
+    background: color-mix(in srgb, currentColor 14%, transparent); box-shadow: inset 0 0 0 1.5px color-mix(in srgb, currentColor 55%, transparent);
+}
+.dr-name .rt-badge { font-style: normal; font-size: .6875rem; font-weight: 600; padding: 1px 7px; flex: 0 0 auto; }
+
+/* Балл: число, шкала 0–100, место */
+.dr-table td.dr-score { padding-top: 8px; padding-bottom: 8px; }
+.dr-score-val { font-size: 1.25rem; font-weight: 700; letter-spacing: -.01em; line-height: 1.2; }
+.dr-meter { display: block; width: 64px; height: 4px; margin: 4px 0 0 auto; border-radius: 2px; background: var(--rt-line); overflow: hidden; }
+.dr-meter i { display: block; height: 100%; border-radius: 2px; background: currentColor; }
+.dr-few {
+    display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: .75rem; font-weight: 500; color: var(--rt-fg-mute);
+    border: 1px dashed var(--rt-line);
+}
+
+/* Группы строк: водители и առաքիչ */
+.dr-group > th {
+    padding: 8px 12px; border-bottom: 1px solid var(--rt-line-soft); background: var(--rt-inset); font-size: .75rem; font-weight: 600;
+    letter-spacing: .04em; text-transform: uppercase; color: var(--rt-fg-mute);
+}
+.dr-group-n { display: inline-block; margin-left: 8px; padding: 0 7px; border-radius: 999px; background: var(--rt-panel-2); color: var(--rt-fg-dim); letter-spacing: 0; }
+
+/* Раскрытый водитель: составляющие балла */
+.dr-table tbody .dr-detail > td { padding: 4px 18px 14px 54px; background: var(--rt-panel-2); }
+.dr-parts-head { margin: 0 0 10px; font-size: .8125rem; font-weight: 600; color: var(--rt-fg-dim); }
+.dr-parts ul { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 8px; }
+.dr-parts li {
+    display: grid; grid-template-columns: minmax(0, 1fr); grid-template-areas: "l" "v" "bar" "s"; align-items: baseline;
+    gap: 4px 10px; padding: 10px 12px; border: 1px solid var(--rt-line); border-radius: var(--rt-radius-sm); background: var(--rt-inset);
+}
+.dr-parts .l { grid-area: l; font-size: .8125rem; color: var(--rt-fg-dim); line-height: 1.3; }
+.dr-parts .v { grid-area: v; font-size: 1.0625rem; font-weight: 700; color: var(--rt-fg); white-space: nowrap; }
+.dr-parts .s { grid-area: s; font-size: .75rem; color: var(--rt-fg-mute); white-space: nowrap; }
+.dr-parts .bar { grid-area: bar; display: block; height: 4px; border-radius: 2px; background: var(--rt-line); overflow: hidden; }
+.dr-parts .bar i { display: block; height: 100%; border-radius: 2px; background: currentColor; }
+.dr-parts-note { margin: 10px 0 0; font-size: .8125rem; color: var(--rt-fg-mute); }
+
+/* Блоки раскрытого водителя не шире видимой части таблицы (--dr-vw ставит JS) и не уезжают при прокрутке вбок */
+.dr-detail > td > .dr-parts, .dr-extra > td > .dr-late-box {
+    position: sticky; left: 16px; max-width: calc(var(--dr-vw, 100vw) - 72px);
+}
+
+/* Раскрытый водитель: дни — строки в столбцах таблицы */
+.dr-table tbody .dr-day-head > td {
+    padding: 8px 12px 6px 54px; background: var(--rt-inset); border-bottom: 1px solid var(--rt-line-soft);
+    font-size: .6875rem; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--rt-fg-mute);
+}
+.dr-table tbody .dr-day > * { background: var(--rt-inset); padding-top: 7px; padding-bottom: 7px; font-size: .875rem; }
+.dr-table tbody .dr-day > .dr-day-name { padding-left: 54px; font-weight: 500; }
+.dr-day-date { display: block; color: var(--rt-fg); font-weight: 600; white-space: nowrap; }
+.dr-day-car { display: block; font-size: .75rem; color: var(--rt-fg-mute); overflow-wrap: anywhere; }
+.dr-table .dr-day td .v { font-weight: 500; }
+
+/* Раскрытый водитель: опоздавшие магазины по дням */
+.dr-table tbody .dr-extra > td { padding: 10px 18px 14px 54px; background: var(--rt-inset); }
+.dr-late-box > summary {
+    display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-size: .875rem; font-weight: 600; color: var(--rt-fg-dim);
+    list-style: none; min-height: 32px;
+}
+.dr-late-box > summary::-webkit-details-marker { display: none; }
+.dr-late-box > summary i { color: var(--rt-danger); }
+.dr-late-box > summary:hover { color: var(--rt-fg); }
+.dr-late-days { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 10px 18px; margin-top: 8px; }
+.dr-late-day h4 { margin: 0 0 4px; font-size: .8125rem; font-weight: 600; color: var(--rt-fg); }
+.dr-late { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.dr-late li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 2px 10px; font-size: .8125rem; color: var(--rt-fg-dim); }
+.dr-late .n { color: var(--rt-fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dr-late .t, .dr-late .d { white-space: nowrap; }
+.dr-late .d { color: var(--rt-danger); }
 .dr-late .d.is-early { color: var(--rt-warn); }
 
-.dr-coverage { font-size: .875rem; color: var(--rt-fg-dim); margin: 12px 0 10px; max-width: 110ch; line-height: 1.5; }
-.dr-help { margin-top: 4px; }
+/* Низ карточки: охват данных и «как считается» */
+.dr-coverage { font-size: .8125rem; color: var(--rt-fg-mute); margin: 0; padding: 12px 18px; line-height: 1.5; border-top: 1px solid var(--rt-line-soft); }
+.dr-coverage:empty { display: none; }
+.dr-help { margin: 0 18px 18px; }
 .dr-rules { margin: 0; padding-left: 18px; display: grid; gap: 6px; font-size: .9rem; color: var(--rt-fg-dim); max-width: 110ch; }
 .dr-rules b { color: var(--rt-fg); }
 
-@media (max-width: 991px) {
-    .dr-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (max-width: 1199px) {
+    .dr-summary { grid-template-columns: minmax(0, 1fr); }
+    .dr-sum-group + .dr-sum-group { border-left: 0; border-top: 1px solid var(--rt-line); }
+}
+@media (max-width: 767px) {
+    .dr-head { padding: 14px 16px; }
+    .dr-period { width: 100%; }
+    .dr-dates { flex-wrap: wrap; }
+    .dr-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 10px; }
+    .dr-kpi:nth-child(odd) { border-left: 0; }
+    .dr-kpi-val { font-size: 1.375rem; }
+    .dr-table .c-name { width: 170px; }
+    .dr-table th.dr-cell-name { min-width: 160px; }
+    .dr-detail > td > .dr-parts, .dr-extra > td > .dr-late-box { max-width: calc(var(--dr-vw, 100vw) - 32px); }
+    .dr-ava { display: none; }
+    .dr-table tbody .dr-detail > td, .dr-table tbody .dr-extra > td { padding-left: 16px; padding-right: 16px; }
+    .dr-table tbody .dr-day > .dr-day-name, .dr-table tbody .dr-day-head > td { padding-left: 30px; }
+    .dr-card-head { padding: 12px 16px 10px; }
 }
 @media (max-width: 575px) {
-    .dr-parts li { grid-template-columns: minmax(0, 1fr) auto; }
-    .dr-parts .bar { grid-column: 1 / -1; }
-    .dr-period { padding: 12px 14px; }
-    .dr-field .rt-input { width: 148px; }
-    .dr-kpi-val { font-size: 1.375rem; }
-    .dr-kpi-val small { display: block; margin-left: 0; }
-    .dr-eta .dr-kpi-val { font-size: 1.25rem; }
-    .dr-table tbody .dr-detail > td { padding-left: 12px; }
+    #drPage .dr-head .rt-title { font-size: 1.375rem; }
+    .dr-head-ico { width: 38px; height: 38px; }
+    .dr-field .rt-input { width: 140px; }
+    .dr-late-days { grid-template-columns: minmax(0, 1fr); }
 }
 @media (prefers-reduced-motion: reduce) {
-    .dr-row, .dr-name i { transition: none; }
+    .dr-row > *, .dr-name > .fa-chevron-right { transition: none; }
 }
