@@ -2285,13 +2285,10 @@
         $('dpBoard').querySelectorAll('.dp-bar').forEach(b => b.setAttribute('aria-pressed', String(!!f && f.trip != null && String(f.trip) === b.dataset.trip)));
         $('dpTruckCards').querySelectorAll('.dp-tcard').forEach(c => c.classList.toggle('is-focus', !!f && f.truck === c.dataset.truck));
         if ($('rtDispatch').classList.contains('is-ws')) {
-            const was = $('dpWs').classList.contains('has-side');
+            // карточка машины — под рабочим экраном (№89): карта и шкала своего размера не меняют
             $('dpWsSide').hidden = !f;
             $('dpWs').classList.toggle('has-side', !!f);
-            // карточка машины внизу: низ выше, карта ниже — Leaflet пересчитывает размер сразу, до вписывания точек
-            if (was !== !!f && state.map) state.map.invalidateSize({ pan: false });
         }
-        renderSideBar('redraw');
     }
 
     // Нажали машину или рейс на шкале: он же на карте, карточка машины раскрыта и видна рядом с картой
@@ -2303,10 +2300,8 @@
         // к карточке (и рейсу): рядом закреплена карта, а на узком экране карта ниже рейсов — к ней ведёт «Քարտեզում»
         const card = [...$('dpTruckCards').querySelectorAll('.dp-tcard')].find(c => c.dataset.truck === t.car_code);
         const target = tr && card ? card.querySelector('.dp-trip[data-trip="' + tr.id + '"]') || card : card;
-        if (target && $('rtDispatch').classList.contains('is-ws')) {   // №82: прокручивается только панель машины, не страница
-            const side = $('dpWsSide');
-            side.scrollTo({ top: target.getBoundingClientRect().top - side.getBoundingClientRect().top + side.scrollTop - 8, behavior: calm() ? 'auto' : 'smooth' });
-        } else if (target) target.scrollIntoView({ behavior: calm() ? 'auto' : 'smooth', block: 'start' });
+        // рабочий экран: карточка — под ним, внизу страницы (№89); страницу не дёргаем — логист прокрутит сам
+        if (target && !$('rtDispatch').classList.contains('is-ws')) target.scrollIntoView({ behavior: calm() ? 'auto' : 'smooth', block: 'start' });
     }
 
     // Совет «как поместить» (ответ владельца №54; plan.advice — dispatch._advice): отмеченные машины без рейсов — пересобрать;
@@ -2608,7 +2603,7 @@
     function focusAfterQuick(tripId, idx) {
         const trip = $('dpTruckCards').querySelector('.dp-trip[data-trip="' + tripId + '"]');
         const xs = trip ? [...trip.querySelectorAll('.dp-stop-x')] : [];
-        const el = xs.length ? xs[Math.min(idx, xs.length - 1)] : (trip && tripBtn(tripId, '.dp-addbtn')) || document.querySelector('#dpToast .dp-toast-act');
+        const el = xs.length ? xs[Math.min(idx, xs.length - 1)] : (trip && trip.querySelector('.dp-addbtn')) || document.querySelector('#dpToast .dp-toast-act');
         if (el) el.focus();
     }
 
@@ -2785,7 +2780,7 @@
         $('dpAddCancel').disabled = false;
         if (ok) {
             $('dpAddDlg').close();
-            const back = tripBtn(a.trip, '.dp-addbtn');
+            const back = $('dpTruckCards').querySelector('.dp-trip[data-trip="' + a.trip + '"] .dp-addbtn');
             if (back) back.focus();
         } else if ($('dpAddDlg').open) {
             // план изменён в другой вкладке (409) — «Թարմացնել» под окном: закрываем окно, чтобы до неё дотянуться
@@ -3241,15 +3236,6 @@
         const div = document.createElement('div');
         div.className = 'dp-trip' + (tr.over_time || tr.over_capacity || tr.vehicle_miss ? ' is-bad' : '') + (editing ? ' is-editing' : '');
         div.dataset.trip = String(tr.id);
-        div.appendChild(tripHead(t, tr, i, editing));
-        if (tr.poor && !state.data.is_past) div.appendChild(poorNote(tr));
-        if (editing) div.appendChild(tripTools(t, tr, i));
-        div.appendChild(stopList(tr.stops, tr.id, editing, tr.lunch));
-        return div;
-    }
-
-    // шапка рейса: «Երթ N», время, кнопки, загрузка и пометки; на рабочем экране она же — полоса внизу панели машины (№89)
-    function tripHead(t, tr, i, editing) {
         const head = document.createElement('div');
         head.className = 'dp-trip-head';
         const title = document.createElement('h4');
@@ -3335,73 +3321,11 @@
             + ((state.data.loaded_by || {})[tr.id] ? ' (' + esc(state.data.loaded_by[tr.id]) + ')' : '') + '</span>');   // №78
         line.append(load, meta, flags);
         head.append(title, time, acts, line);
-        return head;
-    }
-
-    // №89: на рабочем экране шапка рейса выбранной машины — одной полосой внизу панели, у нижнего края при любой прокрутке
-    // (sticky у последнего блока панели: держится за всю панель, а не за свой рейс, поэтому видна и когда сверху шапка
-    // машины). Показывает рейс вверху видимой части панели; выбранный на шкале — пока он виден. В списке над точками —
-    // только «Երթ N · время» (кнопки и загрузку скрывает CSS).
-    function sideTripId(trips, prev) {
-        const box = $('dpWsSide').getBoundingClientRect(), bar = $('dpWsTripBar');
-        const top = box.top + 48, bottom = box.bottom - (bar && !bar.hidden ? bar.offsetHeight : 0);   // 48 — под крестиком
-        // рейс, выбранный на шкале, держим, пока его видно: короткий последний рейс до верха панели не докрутится
-        const held = prev !== null && prev === state.sideSel ? trips.find(el => el.dataset.trip === prev) : null;
-        if (held) { const r = held.getBoundingClientRect(); if (r.bottom > top && r.top < bottom) return prev; }
-        let id = trips[0].dataset.trip;
-        trips.forEach(el => { if (el.getBoundingClientRect().top <= top) id = el.dataset.trip; });
-        return id;
-    }
-    function renderSideBar(mode) {
-        const side = $('dpWsSide'), f = state.mapFocus;
-        const t = $('rtDispatch').classList.contains('is-ws') && f && state.data && state.data.plan
-            ? state.data.plan.trucks.find(x => x.car_code === f.truck) : null;
-        const card = t ? [...$('dpTruckCards').querySelectorAll('.dp-tcard')].find(c => c.dataset.truck === t.car_code) : null;
-        const trips = card ? [...card.querySelectorAll('.dp-trip[data-trip]')] : [];
-        let bar = $('dpWsTripBar');
-        if (!trips.length) { if (bar) { bar.hidden = true; bar.textContent = ''; bar.dataset.trip = ''; } return; }
-        if (!bar) {
-            bar = document.createElement('div');
-            bar.id = 'dpWsTripBar';
-            bar.className = 'dp-ws-tripbar';
-            bar.setAttribute('role', 'group');
-        }
-        // в DOM — сразу после крестика (Tab: сначала действия рейса, потом точки), на экране — последним (CSS order)
-        const close = $('dpWsClose');
-        if (close.nextElementSibling !== bar) close.after(bar);
-        const prev = bar.hidden ? null : bar.dataset.trip, has = prev !== null && trips.some(el => el.dataset.trip === prev);
-        const sel = f.trip != null && trips.some(el => el.dataset.trip === String(f.trip)) ? String(f.trip) : null;
-        let id;
-        if (sel !== null && sel !== state.sideSel) id = sel;          // новый выбор на шкале или карте
-        else if (mode !== 'scroll' && has) id = prev;                  // перерисовка карточек (правка, «Պատրաստ է») — тот же рейс
-        else id = sideTripId(trips, has ? prev : null);                // прокрутка — рейс вверху панели
-        state.sideSel = sel;
-        const i = t.trips.findIndex(x => String(x.id) === id);
-        // прокрутка Tab-ом внутри полосы — не перерисовывать под фокусом
-        if (i < 0 || (mode === 'scroll' && (id === prev || bar.contains(document.activeElement)))) return;
-        const tr = t.trips[i];
-        bar.hidden = false;
-        bar.dataset.trip = id;
-        bar.classList.toggle('is-bad', !!(tr.over_time || tr.over_capacity || tr.vehicle_miss));
-        bar.style.setProperty('--dp-c', truckColor(t.car_code));
-        bar.setAttribute('aria-label', 'Երթ ' + (i + 1) + '՝ ' + truckLabel(t));
-        // перерисовка с клавиатуры («Քարտեզում» перерисовывает карту и полосу) — фокус на ту же кнопку новой полосы
-        const had = bar.contains(document.activeElement) && prev === id
-            ? ['dp-mapbtn', 'dp-addbtn', 'dp-editbtn', 'dp-loadbtn'].find(c => document.activeElement.classList.contains(c)) : null;
-        bar.textContent = '';
-        const head = tripHead(t, tr, i, state.editing.has(tr.id));
-        head.querySelector('.dp-trip-t').setAttribute('aria-hidden', 'true');   // рейс назван в aria-label полосы; заголовок — в списке
-        bar.appendChild(head);
-        side.style.scrollPaddingBottom = (bar.offsetHeight + 8) + 'px';   // Tab по «×» — не под полосой
-        const back = had && bar.querySelector('.' + had);
-        if (back) back.focus({ preventScroll: true });
-    }
-    // кнопка рейса: на рабочем экране — в полосе внизу панели (в списке над точками её не видно), иначе — в шапке рейса
-    function tripBtn(tripId, cls) {
-        const bar = $('dpWsTripBar');
-        const b = bar && !bar.hidden && bar.dataset.trip === String(tripId) ? bar.querySelector(cls) : null;
-        const el = b || $('dpTruckCards').querySelector('.dp-trip[data-trip="' + tripId + '"] ' + cls);
-        return el && el.getClientRects().length ? el : null;   // скрытая кнопка списка (рейс не в полосе) — фокус не возьмёт
+        div.appendChild(head);
+        if (tr.poor && !state.data.is_past) div.appendChild(poorNote(tr));
+        if (editing) div.appendChild(tripTools(t, tr, i));
+        div.appendChild(stopList(tr.stops, tr.id, editing, tr.lunch));
+        return div;
     }
 
     // Рейс дешевле порога (ответ владельца №25): везти сейчас или завтра — решает логист
@@ -3468,7 +3392,7 @@
         const t = state.data.plan.trucks.find(x => x.trips.some(tr => tr.id === tripId));
         if (t) state.open.add(t.car_code);      // правка — внутри раскрытой карточки; «Պատրաստ է» её не сворачивает
         renderTruckCards(state.data.plan);
-        const b = tripBtn(tripId, '.dp-editbtn');
+        const b = $('dpTruckCards').querySelector('.dp-editbtn[data-trip="' + tripId + '"]');
         if (b) b.focus();
     }
 
@@ -4078,9 +4002,6 @@
     function flashStop(tripId, cid) {
         const row = $('dpTruckCards').querySelector('.dp-trip[data-trip="' + tripId + '"] .dp-stop[data-cid="' + cid + '"]');
         if (!row) return;
-        const side = $('dpWsSide');
-        if (side.contains(row)) side.scrollTo({ top: row.getBoundingClientRect().top - side.getBoundingClientRect().top + side.scrollTop - side.clientHeight / 3,
-                                                behavior: calm() ? 'auto' : 'smooth' });
         clearTimeout(row.dpFlash);
         row.classList.remove('is-flash');
         void row.offsetWidth;   // повторное нажатие — подсветка заново
@@ -4638,10 +4559,6 @@
             if (lab) lab.focus({ preventScroll: true });
         };
         $('dpWsClose').addEventListener('click', closeSide);
-        $('dpWsSide').addEventListener('scroll', () => {   // №89: полоса внизу — рейс, который сейчас вверху панели
-            if (state.sideRaf) return;
-            state.sideRaf = requestAnimationFrame(() => { state.sideRaf = 0; renderSideBar('scroll'); });
-        }, { passive: true });
         $('dpWsSide').addEventListener('keydown', (e) => { if (e.key === 'Escape' && !e.target.closest('select')) closeSide(); });
         $('dpWsAi').addEventListener('click', () => { const fab = $('dpAiOpen'); if (fab) fab.click(); });
         $('dpViewList').addEventListener('click', () => { openMenu(false); setView('list'); });

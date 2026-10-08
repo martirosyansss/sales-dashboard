@@ -583,7 +583,7 @@ def main() -> int:
                 check(any('"move"' in (m or '') for m in map_moves), f'Y drag a map point onto another trip line → move ({len(map_moves)} edit)')
             ws.locator('#dpBoard .dp-blabel').first.click()
             ws.wait_for_selector('#dpWsSide:not([hidden]) .dp-tcard.is-focus', timeout=5000)
-            check(ws.locator('#dpWsTripBar .dp-editbtn').is_visible(), 'Y truck click → its card on the right, «Փոփոխել» in the trip bar (№89)')
+            check(ws.locator('#dpWsSide .dp-tcard.is-focus .dp-editbtn').first.is_visible(), 'Y truck click → its card on the right with «Փոփոխել»')
             src = ws.locator('#dpWsSide .dp-tcard.is-focus .dp-trip .dp-stop[draggable="true"]').first
             own = ws.evaluate("(document.querySelector('#dpWsSide .dp-tcard.is-focus .dp-trip') || {}).dataset?.trip || ''")
             tgt = ws.locator(f'#dpBoard .dp-bar:not([data-trip="{own}"])').first
@@ -615,7 +615,7 @@ def main() -> int:
             ws.locator('#dpBoard .dp-blabel').first.click()
             ws.wait_for_selector('#dpWsSide:not([hidden]) .dp-tcard.is-focus', timeout=5000)
             if ws.locator('#dpWsSide .dp-trip.is-editing').count() == 0:
-                ws.locator('#dpWsTripBar .dp-editbtn').click()
+                ws.locator('#dpWsSide .dp-tcard.is-focus .dp-editbtn').first.click()
             sel = ws.locator('#dpWsSide .dp-trip.is-editing .dp-move').first
             opts = sel.locator('option').evaluate_all("os => os.map(o => o.value)")
             sel.select_option(next((v for v in opts if v.startswith('t:')), None) or next(v for v in opts if v.startswith('n:')))

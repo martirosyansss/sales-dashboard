@@ -7,7 +7,7 @@
 как в tests/routes_dispatch_browser_check.py; порт 8774 на 127.0.0.1.
 
 A рабочий экран, рейсы собраны: карточки машины нет, карта на всю ширину;
-B нажали машину на шкале: карточка — в нижней полосе справа от шкалы, не пересекает карту; карта стала ниже, но видна;
+B нажали машину на шкале: карточка — под рабочим экраном на всю ширину (№89), карта своего размера не меняет;
 C нажали точку на карте: строка магазина в карточке подсвечена, у точки — карточка магазина (название, машина, заказы)
   с «Հանել երթից»;
 D «Հանել երթից» → карточка магазина закрыта, окно «Ինչու՞» (причина обязательна, ничего не отправлено); «Միայն այսօր»
@@ -97,16 +97,21 @@ def main() -> int:
             page.locator('#dpBoard .dp-blabel').first.click()
             page.wait_for_selector('#dpWsSide:not([hidden]) .dp-tcard.is-focus', timeout=5000)
             page.wait_for_timeout(500)
-            side, mp, low, bottom = rect('#dpWsSide'), rect('#dpWsMap'), rect('.dp-ws-low'), rect('#dpWsBottom')
-            check(page.locator('.dp-ws-low > #dpWsSide').count() == 1 and page.locator('.dp-ws-main #dpWsSide').count() == 0,
-                  'B truck card lives in the bottom strip, not in the map block')
-            check(side[1] >= mp[3] - 1, f'B card is below the map (card top {side[1]:.0f} ≥ map bottom {mp[3]:.0f})')
-            check(side[0] >= bottom[2] - 1 and abs(side[2] - low[2]) < 2, f'B card is to the right of the day board {side} / {bottom}')
-            check(mp[3] - mp[1] >= 300 and mp[3] - mp[1] < map0[3] - map0[1], f'B map is lower but still big ({mp[3] - mp[1]:.0f} px)')
+            side, mp, ws1 = rect('#dpWsSide'), rect('#dpWsMap'), rect('#dpWs')
+            # №89 (владелец 07.10 «в самый низ страницы»): карточка — под рабочим экраном, на всю ширину; карта не меньше
+            check(page.locator('#dpWs #dpWsSide').count() == 0 and page.evaluate("document.getElementById('dpWs').nextElementSibling.id") == 'dpWsSide',
+                  'B truck card is below the work screen, not inside it')
+            check(side[1] >= ws1[3] - 1 and abs(side[0] - ws1[0]) < 3 and abs(side[2] - ws1[2]) < 3,
+                  f'B card spans the full width under the work screen {side} / {ws1}')
+            check(abs((mp[3] - mp[1]) - (map0[3] - map0[1])) < 3, f'B map keeps its size ({mp[3] - mp[1]:.0f} px, was {map0[3] - map0[1]:.0f})')
             size = page.evaluate("(() => { const m = document.getElementById('dpMap'); return [m.clientWidth, m.clientHeight]; })()")
             check(abs(size[1] - (mp[3] - mp[1])) < 3, f'B Leaflet container follows the new map height {size}')
             check(page.locator('#dpWsSide .dp-tcard.is-focus .dp-stop').first.is_visible(), 'B store rows visible in the card')
-            page.screenshot(path=str(SHOTS / 'b-truck.png'))
+            hd = rect('#dpWsSide .dp-tcard.is-focus .dp-trip-head')
+            st = rect('#dpWsSide .dp-tcard.is-focus .dp-stop')
+            check(page.locator('#dpWsSide .dp-tcard.is-focus .dp-trip-head .dp-editbtn').first.is_visible() and hd[3] <= st[1] + 1,
+                  'B card: trip head with its buttons above the stores, as in the list')
+            page.screenshot(path=str(SHOTS / 'b-truck.png'), full_page=True)
 
             # C — точка на карте: строка подсвечена, карточка магазина у точки
             pin = page.locator('.dp-ws-map .dp-npin').first
