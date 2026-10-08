@@ -40,13 +40,17 @@
 возвращает фокус), объяснённая тревога — серой с причиной в журнале и уходит из «Խնդիրներ հիմա», «Չեղարկել» её
 возвращает. Администратор — g.user_role (гейта app_v2 в проверке нет).
 
-Тревоги (08.10, «диспетчер сразу видит проблемы»): машина 1 сейчас превышает скорость (последние 45 с терминал сообщает
-97 км/ч) — красная «новая» проблема; баннер «N նոր խնդիր» мигает, «(N) ⚠» в заголовке вкладки, строка списка и маркер —
-классы важности и новой, у маркера машины 1 — пульсирующее красное кольцо; «нет связи» машины 3 — жёлтая, не красная;
-«Տեսա» у одной строки — строка ровная, в баннере на одну меньше; «Տեսա բոլորը» — баннера и счётчика во вкладке нет,
-отметки переживают перезагрузку; у машины 2 после «Բացատրել» пропущенного магазина остались только жёлтые — корпус маркера
-жёлтый; prefers-reduced-motion: reduce — ни одной анимации, метка «ՆՈՐ» и обводка; телефон 390 px с баннером — без
-горизонтальной прокрутки. Снимки: live_alarm_desktop.png, live_alarm_acked.png, live_alarm_phone.png.
+Тревоги (08.10, «диспетчер сразу видит проблемы»): машина 5 сейчас превышает скорость (едет с выезда, терминал
+сообщает 97 км/ч; машина 1 по-прежнему «ընթացքի մեջ»), проверка «speed» — если порог копии ниже 95 км/ч; баннер
+«N նոր խնդիր» мигает, «(N) ⚠» в заголовке вкладки, строка списка и маркер — классы важности и новой, у маркера красной
+машины — пульсирующее кольцо; «нет связи» машины 3 — жёлтая, не красная; «Տեսա» у одной строки — строка ровная, в баннере
+на одну меньше; «Տեսա բոլորը» — баннера и счётчика во вкладке нет, отметки переживают перезагрузку; ответ за прошлый день,
+пришедший после «Այսօր», не показывается и отметок не трогает; ответы API флота подменяются (page.route): начало той же
+тревоги сдвинулось (дребезг) — отметка держится, новое начало после 10 мин без проблемы — снова мигает; «не успеет» к окну →
+к плану — не новая, к плану → к окну — новая; звук, включённый до перезагрузки, ждёт касания страницы (подсказка на кнопке);
+у машины 2 после «Բացատրել» пропущенного магазина остались только жёлтые — корпус маркера жёлтый; prefers-reduced-motion:
+reduce — ни одной анимации, метка «ՆՈՐ» и обводка; телефон 390 px с баннером — без горизонтальной прокрутки. Снимки:
+live_alarm_desktop.png, live_alarm_acked.png, live_alarm_phone.png.
 
 Проверяется: список и маркеры всех машин, состояние и счётчик тревог, карточка выбранной машины (поля №76), путь и
 магазины на карте, нет горизонтальной прокрутки на телефоне, опрос раз в 15 с, нет ошибок страницы и консоли (кроме сетевых
@@ -63,7 +67,7 @@ import sys
 import tempfile
 import threading
 import uuid
-from datetime import timedelta
+from datetime import date, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -139,8 +143,8 @@ def seed(app: Flask) -> list[str]:
     depot = bundle.depot or (40.1360, 44.4710)
     if bundle.depot is None:   # пустая копия: склад нужен линии плана (рейс — склад → магазины → склад) и тревогам
         rs.save(st.Changes(dict(bundle.settings), True, depot, (), ()), 'live-check')
-    cars = [c for c, t in sorted(bundle.trucks.items()) if t.capacity_kg and t.fuel_l_per_100km][:4]
-    while len(cars) < 4:
+    cars = [c for c, t in sorted(bundle.trucks.items()) if t.capacity_kg and t.fuel_l_per_100km][:5]
+    while len(cars) < 5:
         cars.append(f'TEST{len(cars) + 1}')
     now = clock.now()
     day = now.date().isoformat()
@@ -232,8 +236,6 @@ def seed(app: Flask) -> list[str]:
     mid = ((s[1]['lat'] + s[2]['lat']) / 2, (s[1]['lon'] + s[2]['lon']) / 2)
     f, t = path([(s[1]['lat'], s[1]['lon']), mid], now - timedelta(minutes=4))
     f = [x for x in f if x[0] <= now]
-    # тревоги (08.10): сейчас превышает скорость — последние 45 с терминал сообщает 97 км/ч (тревога speed активна)
-    f = f[:-4] + [(x[0], x[1], x[2], 27.0, x[4]) for x in f[-4:]]
     extra = [delivery(s[0]['stop_id'], t_a - timedelta(minutes=2)), delivery(s[1]['stop_id'], t_b - timedelta(minutes=2), 0.5),
              # этап 2: возврат 3 пачек товара 1 в магазине 2 и две заправки «до полного бака» (400 км по одометру, 80 л)
              {'id': str(uuid.uuid4()), 'type': 'return', 'stop_id': s[1]['stop_id'], 'date': day,
@@ -268,6 +270,11 @@ def seed(app: Flask) -> list[str]:
     # 4) на складе, загрузка
     a, t = park(depot, now - timedelta(minutes=25), 24)
     send(cars[3], a, (), {**dev, 'charging': True, 'net': 'wifi'})
+    # 5) тревоги (08.10): с выезда со склада едет 97 км/ч и едет сейчас (тревога speed активна), не к магазинам машины 1
+    b, _ = path([depot, (40.2250, 44.4400)], now, speed=27.0)
+    b = [(t - (b[-1][0] - now), la, lo, sp, br) for t, la, lo, sp, br in b]   # конец пути — сейчас
+    a, _ = park(depot, b[0][0] - timedelta(minutes=6), 5)
+    send(cars[4], a + b, (), dev)
     return cars
 
 
@@ -282,6 +289,7 @@ MARK_JS = """car => { const m = [...document.querySelectorAll('.lv-marker')].fin
 # анимации тревог на странице: баннер, строки, машины, маркеры, сводка
 ALARM_ANIMS_JS = """() => [...document.querySelectorAll('#lvAlarm, .lv-prob, .lv-item, .lv-marker, .lv-sum')]
     .reduce((n, e) => n + e.getAnimations({ subtree: true }).length, 0)"""
+FLEET_RE = re.compile(r'/api/routes/live$')   # API флота за сегодня (без ?date=)
 NO_SCROLL_JS = 'document.documentElement.scrollWidth <= window.innerWidth + 1'
 TRACK_HIT = '.leaflet-overlay-pane path.lv-hit.is-track'
 PLAN_HIT = '.leaflet-overlay-pane path.lv-hit.is-plan'
@@ -313,7 +321,8 @@ def fit_track(page) -> None:
 
 
 def alarm_checks(page, cars, check) -> None:
-    """Тревоги (08.10): важность, новые мигают, «Տեսա» строки и «Տեսա բոլորը», заголовок вкладки, отметки после перезагрузки."""
+    """Тревоги (08.10): важность, новые мигают, «Տեսա» строки и «Տեսա բոլորը», заголовок вкладки, отметки после перезагрузки,
+    устаревший ответ при смене даты, случай тревоги (since) и дребезг, ослабление / усиление «не успеет», звук до касания."""
     def count() -> int:
         m = re.search(r'(\d+) նոր խնդիր', page.inner_text('#lvAlarmCount')) if page.is_visible('#lvAlarm') else None
         return int(m.group(1)) if m else 0
@@ -324,56 +333,147 @@ def alarm_checks(page, cars, check) -> None:
     def cls(loc) -> str:
         return (loc.get_attribute('class') or '') if loc.count() == 1 else ''
 
+    def prob(car, kind) -> str:
+        return cls(row(car, kind).locator('button.lv-prob'))
+
+    def fleet(fn) -> None:
+        """Ответ API флота за сегодня — через fn(машина) (синтетика тревог); None — настоящий."""
+        page.unroute(FLEET_RE)
+        if fn:
+            def handle(route):
+                resp = route.fetch()
+                body = resp.json()
+                for t in body['trucks']:
+                    fn(t)
+                route.fulfill(response=resp, json=body)
+            page.route(FLEET_RE, handle)
+
+    def poll() -> None:
+        page.evaluate("document.dispatchEvent(new Event('visibilitychange'))")   # вкладка видна — опрос сразу
+        page.wait_for_timeout(1000)
+
+    speed_kmh = page.evaluate("fetch('/api/routes/live').then(r => r.json()).then(b => b.thresholds.speed_kmh)")
+    fast = speed_kmh < 95   # машина 5 едет 97 км/ч: тревога «speed» — если порог копии ниже
+    red_car = cars[4] if fast else cars[0]   # иначе красная — «не успеет» к окну машины 1
+    today = page.input_value('#lvDate')
     base = page.title()
     n = count()
     check(n >= 4 and 'is-new lv-sev1' in (page.get_attribute('#lvAlarm', 'class') or '')
           and page.evaluate("document.getElementById('lvAlarm').getAnimations().length") > 0,
           f'тревоги: баннер красный, мигает — «{n} նոր խնդիր» ({page.inner_text("#lvAlarm")!r})')
     check(base.startswith(f'({n}) ⚠ '), f'тревоги: заголовок вкладки — «({n}) ⚠ …» ({base!r})')
-    speed = row(cars[0], 'speed').locator('button.lv-prob')
-    check('lv-sev1' in cls(speed) and 'is-new' in cls(speed), f'тревоги: превышение скорости машины 1 — красная новая ({cls(speed)!r})')
+    if fast:
+        check('lv-sev1' in prob(cars[4], 'speed') and 'is-new' in prob(cars[4], 'speed'),
+              f'тревоги: превышение скорости машины 5 — красная новая ({prob(cars[4], "speed")!r}, порог {speed_kmh})')
     for car, kind, sev in ((cars[0], 'late:window', 1), (cars[1], 'stop', 2), (cars[1], 'deviation', 2),
-                           (cars[1], 'sequence', 1), (cars[2], 'gps', 1)):
-        c = cls(row(car, kind).locator('button.lv-prob'))
-        check(f'lv-sev{sev}' in c, f'тревоги: {kind} машины {cars.index(car) + 1} — важность {sev} ({c!r})')
-    nc = row(cars[2], 'no_contact').locator('button.lv-prob')
-    check('lv-sev2' in cls(nc) and 'lv-sev1' not in cls(nc), f'тревоги: «нет связи» машины 3 — жёлтая, не красная ({cls(nc)!r})')
+                           (cars[1], 'sequence', 1), (cars[2], 'gps', 1), (cars[3], 'late:plan', 2)):
+        check(f'lv-sev{sev}' in prob(car, kind), f'тревоги: {kind} машины {cars.index(car) + 1} — важность {sev} ({prob(car, kind)!r})')
+    nc = prob(cars[2], 'no_contact')
+    check('lv-sev2' in nc and 'lv-sev1' not in nc, f'тревоги: «нет связи» машины 3 — жёлтая, не красная ({nc!r})')
     sevs = page.eval_on_selector_all('#lvProbList button.lv-prob', 'els => els.map(e => e.className)')
     rank = [(0 if 'is-new' in c else 2) + (0 if 'lv-sev1' in c else 1 if 'lv-sev2' in c else 9) for c in sevs]
     check(rank == sorted(rank), f'тревоги: порядок — новые красные, новые жёлтые, отмеченные, сведения ({rank})')
     check(page.locator('#lvProbList .lv-ack').count() == n, 'тревоги: у каждой новой проблемы — «Տեսա»')
-    item = page.get_attribute(f'.lv-item[data-car="{cars[0]}"]', 'class')
-    check(all(x in item for x in ('lv-sev1', 'is-new', 'lv-new1')), f'тревоги: машина 1 в списке — красная новая ({item!r})')
-    mk = page.evaluate(MARK_JS, cars[0])
+    item = page.get_attribute(f'.lv-item[data-car="{red_car}"]', 'class')
+    check(all(x in item for x in ('lv-sev1', 'is-new', 'lv-new1')), f'тревоги: красная машина в списке — новая ({item!r})')
+    mk = page.evaluate(MARK_JS, red_car)
     check(mk and 'is-new' in mk[0] and 'lv-new1' in mk[0] and mk[1] > 0,
-          f'тревоги: маркер машины 1 (превышение скорости) — пульсирующее красное кольцо ({mk})')
-    check('is-new' in (page.get_attribute('.lv-sum.is-alert', 'class') or ''), 'тревоги: плитка «ահազանգ» мигает')
+          f'тревоги: маркер красной машины ({"превышение скорости" if fast else "не успеет к окну"}) — пульсирующее кольцо ({mk})')
+    tile = page.locator('.lv-sum.is-alert')
+    check('is-new' in (tile.get_attribute('class') or '') and tile.locator('b').inner_text() != '0',
+          'тревоги: плитка «ահազանգ» мигает (и в ней не ноль)')
     page.screenshot(path=str(SHOTS / 'live_alarm_desktop.png'))
 
     row(cars[2], 'no_contact').locator('.lv-ack').click()
     page.wait_for_timeout(200)
-    nc = row(cars[2], 'no_contact')
-    check('is-new' not in cls(nc.locator('button.lv-prob')) and nc.locator('.lv-ack').count() == 0 and count() == n - 1,
-          f'тревоги: «Տեսա» — строка ровная, в баннере {count()} из {n}')
+    check('is-new' not in prob(cars[2], 'no_contact') and row(cars[2], 'no_contact').locator('.lv-ack').count() == 0
+          and count() == n - 1, f'тревоги: «Տեսա» — строка ровная, в баннере {count()} из {n}')
     check(page.evaluate("document.activeElement.classList.contains('lv-prob')"), 'тревоги: после «Տեսա» фокус — на строке')
     page.click('#lvAlarmAck')
     page.wait_for_timeout(200)
-    mk = page.evaluate(MARK_JS, cars[0])
-    check(not page.is_visible('#lvAlarm') and '⚠' not in page.title() and page.locator('.is-new').count() == 0,
-          f'тревоги: «Տեսա բոլորը» — баннера и счётчика во вкладке нет ({page.title()!r}, '
+    mk = page.evaluate(MARK_JS, red_car)
+    check(not page.is_visible('#lvAlarm') and '⚠' not in page.title() and page.locator('.is-new').count() == 0
+          and page.inner_text('#lvAlarmSr') == '',
+          f'тревоги: «Տեսա բոլորը» — баннера, счётчика во вкладке и текста диктора нет ({page.title()!r}, '
           f'{page.eval_on_selector_all(".is-new", "els => els.map(e => e.className)")})')
     check(mk and 'lv-sev1' in mk[0] and 'is-new' not in mk[0] and mk[1] == 0,
-          f'тревоги: отмеченная — маркер с ровным красным кольцом, без анимации ({mk})')
+          f'тревоги: отмеченная — маркер с ровным кольцом, без анимации ({mk})')
     page.screenshot(path=str(SHOTS / 'live_alarm_acked.png'))
     page.reload()
     page.wait_for_selector('.lv-item')
     page.wait_for_timeout(500)
     check(not page.is_visible('#lvAlarm') and '⚠' not in page.title() and page.locator('#lvProbList .lv-prob.lv-sev1').count() >= 3,
           'тревоги: после перезагрузки отметки «Տեսա» сохранились (баннера нет, проблемы — на месте)')
+
+    # дату сменили на прошлую и сразу вернули «сегодня»: ответ за прошлый день пришёл последним — не показывается
+    page.evaluate("""() => { window.__lists = []; new MutationObserver(() => window.__lists.push([...document.querySelectorAll(
+        '#lvList .lv-item')].map(e => e.dataset.car).join(','))).observe(document.getElementById('lvList'), { childList: true }); }""")
+    held = []
+    page.route('**/api/routes/live?date=*', lambda r: held.append(r))
+    set_date = "v => { const d = document.getElementById('lvDate'); d.value = v; d.dispatchEvent(new Event('change')); }"
+    page.evaluate(set_date, (date.fromisoformat(today) - timedelta(days=1)).isoformat())
+    page.wait_for_timeout(300)
+    page.evaluate(set_date, '')   # как «Այսօր»
+    page.wait_for_timeout(300)
+    for r in held:   # отпустить до unroute (unroute сам отпускает ждущие)
+        r.continue_()
+    page.unroute('**/api/routes/live?date=*')
+    page.wait_for_timeout(1500)
+    lists = page.evaluate('window.__lists')
+    check(held and lists and len(set(lists)) == 1 and page.input_value('#lvDate') == today and not page.is_visible('#lvAlarm')
+          and page.is_visible('#lvProbs'), f'тревоги: устаревший ответ за прошлый день не показан, отметки целы ({lists})')
+
+    # случай тревоги: начало той же стоянки сдвинулось (дребезг) — отметка держится и запоминает новое начало
+    stop_key = f'{today}|{cars[1]}|stop'
+    flap = f'{today}T10:58:30+04:00'
+    fleet(lambda t: t['alerts']['since'].update(stop=flap) if t['car_code'] == cars[1] else None)
+    poll()
+    stored = page.evaluate(f"JSON.parse(localStorage.getItem('lv.ack'))[{stop_key!r}]")
+    check('is-new' not in prob(cars[1], 'stop') and stored and stored['since'] == flap,
+          f'тревоги: начало той же тревоги сдвинулось (дребезг) — «Տեսա» держится ({stored})')
+    # 11 мин страница не опрашивала (сон, скрытая вкладка): новое начало стоянки — новый случай, мигает; GPS с тем же
+    # началом — тот же случай, отметка держится
+    fleet(lambda t: t['alerts']['since'].update(stop=f'{today}T10:59:30+04:00') if t['car_code'] == cars[1] else None)
+    with page.expect_navigation():
+        page.evaluate("""keys => { const v = JSON.parse(localStorage.getItem('lv.ack'));
+            for (const k of keys) v[k].seen = Date.now() - 11 * 60000;
+            localStorage.setItem('lv.ack', JSON.stringify(v)); location.reload(); }""", [stop_key, f'{today}|{cars[2]}|gps'])
+    page.wait_for_selector('.lv-item')
+    page.wait_for_timeout(800)
+    check('is-new' in prob(cars[1], 'stop') and 'is-new' not in prob(cars[2], 'gps'),
+          f'тревоги: через 11 мин новое начало — снова новая, то же начало — отмечена ({prob(cars[1], "stop")!r}, '
+          f'{prob(cars[2], "gps")!r})')
+
+    # «не успеет»: к окну → к плану (машина 1) — не новая; к плану → к окну (машина 4) — новая красная
+    def lateness(t):
+        swap = {cars[0]: ('window', 'plan'), cars[3]: ('plan', 'window')}.get(t['car_code'])
+        for x in t['late'] if swap else ():
+            if x['late_kind'] == swap[0]:
+                x['late_kind'] = swap[1]
+    fleet(lateness)
+    poll()
+    check(row(cars[0], 'late:plan').count() == 1 and 'is-new' not in prob(cars[0], 'late:plan'),
+          f'тревоги: «не успеет» к окну → к плану — не новая ({prob(cars[0], "late:plan")!r})')
+    check('is-new' in prob(cars[3], 'late:window') and 'lv-sev1' in prob(cars[3], 'late:window'),
+          f'тревоги: «не успеет» к плану → к окну — новая красная ({prob(cars[3], "late:window")!r})')
+    fleet(None)
+    poll()
+    page.click('#lvAlarmAck')
+
+    # звук включён до перезагрузки: браузер ждёт касания — подсказка на кнопке; касание страницы — звук готов
+    page.evaluate("localStorage.setItem('lv.sound', '1')")
+    page.reload()
+    page.wait_for_selector('.lv-item')
+    locked = 'is-locked' in (page.get_attribute('#lvSound', 'class') or '') and 'Սեղմեք' in (page.get_attribute('#lvSound', 'title') or '')
+    page.click('.rt-title')
+    page.wait_for_timeout(400)
+    check(locked and 'is-locked' not in (page.get_attribute('#lvSound', 'class') or ''),
+          'тревоги: звук после перезагрузки — подсказка «Սեղմեք էջի վրա…», касание страницы её снимает')
     page.click('#lvSound')
-    on = page.get_attribute('#lvSound', 'aria-pressed') == 'true' and page.evaluate("localStorage.getItem('lv.sound')") == '1'
+    off = page.get_attribute('#lvSound', 'aria-pressed') == 'false' and page.evaluate("localStorage.getItem('lv.sound')") == '0'
     page.click('#lvSound')
-    check(on and page.get_attribute('#lvSound', 'aria-pressed') == 'false', 'тревоги: «Ձայն» — включается и выключается (aria-pressed)')
+    check(off and page.get_attribute('#lvSound', 'aria-pressed') == 'true', 'тревоги: «Ձայն» — выключается и включается (aria-pressed)')
+    page.click('#lvSound')
 
 
 def main() -> int:
@@ -418,8 +518,11 @@ def main() -> int:
                 page.goto(BASE + '/routes/live')
                 page.wait_for_selector('.lv-item')
                 items = page.locator('.lv-item')
-                check(items.count() == 4, f'в списке 4 машины ({items.count()})')
-                check(page.locator('.lv-marker').count() == 4, 'на карте 4 маркера')
+                check(items.count() == len(cars), f'в списке {len(cars)} машин ({items.count()})')
+                check(page.locator('.lv-marker').count() == len(cars), f'на карте {len(cars)} маркеров')
+                check('is-moving' in page.get_attribute(f'.lv-item[data-car="{cars[0]}"] .lv-dot', 'class')
+                      and page.locator('.lv-marker.is-moving .lv-marker-arrow').count() >= 1,
+                      'машина 1 «ընթացքի մեջ»: точка в списке и стрелка курса на маркере')
                 states = page.eval_on_selector_all('.lv-item .lv-dot', 'els => els.map(e => e.className)')
                 # машина 3: GPS выключен и связи нет — активная тревога GPS важнее «կապ չկա» (повторное ревью №76)
                 # (тревога машины 1 зависит от копии баз — настроек машин парка; на пустой копии её нет)

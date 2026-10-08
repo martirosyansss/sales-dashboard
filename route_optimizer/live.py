@@ -1784,6 +1784,12 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
               + [_alert('late', now, None, True, **x) for x in late])   # прогноз «не успеет» (№87) — пока он такой
     alerts.sort(key=lambda a: a['from'] or '')
     active = sorted({a['kind'] for a in alerts if a['active']})
+    # начало идущей тревоги вида (последней из идущих): «Տեսա» страницы отмечает случай, а не вид; «не успеет» — без него
+    # (её from — момент расчёта)
+    since: dict[str, str] = {}
+    for a in alerts:
+        if a['active'] and a['kind'] != 'late' and a['from'] and a['from'] > since.get(a['kind'], ''):
+            since[a['kind']] = a['from']
 
     if not pts and not contacts:
         state = 'nodata'
@@ -1837,7 +1843,8 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
         'last_contact': _iso(last_contact),
         'contact_age_s': round((now - last_contact).total_seconds()) if last_contact is not None and live else None,
         'closed': finished,
-        'alerts': {'active': active, 'count': sum(1 for a in alerts if not a.get('minor'))},   # «փոքր շեղում» — не тревога
+        # «փոքր շեղում» — не тревога; since — с какого момента идёт активная тревога вида
+        'alerts': {'active': active, 'count': sum(1 for a in alerts if not a.get('minor')), 'since': since},
         # идущие тревоги, которые диспетчер может объяснить («Բացատրել» в «Խնդիրներ հիմա»; журнала API флота не отдаёт)
         'explainable': [{'kind': a['kind'], 'from': a['from']} for a in alerts
                         if a['active'] and a['kind'] in LIVE_EXPLAIN_KINDS],

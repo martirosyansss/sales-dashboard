@@ -583,6 +583,8 @@ def test_ongoing_stop_is_active():
     found = [a for a in card['alerts_log'] if a['kind'] == 'stop']
     assert found and found[0]['active'] is True and found[0]['to'] is None
     assert 'stop' in card['alerts']['active'] and card['state'] == 'alert'
+    # начало идущей стоянки — для «Տեսա» страницы (случай, не вид)
+    assert card['alerts']['since'] == {'stop': found[0]['from']}
 
 
 def test_no_contact_current_and_journal():
@@ -658,6 +660,7 @@ def test_state_alert_over_offline_and_old_apk_silent_threshold():
     gps_off = [(t(2), 'off')]
     card = view(facts(tr.pts, st, [T0, t(2)], {**NEW_APK, 'gps': 'off'}, gps_off), t(12))
     assert {'gps', 'no_contact'} <= set(card['alerts']['active']) and card['state'] == 'alert'
+    assert set(card['alerts']['since']) == set(card['alerts']['active'])   # у каждой идущей — её начало
     # старый APK: до 20 мин тишины — не «կապ չկա», после — да (тревоги нет в обоих случаях)
     old = facts(tr.pts, st, [T0, t(3)])
     assert view(old, t(3 + 19))['state'] != 'offline'
@@ -702,7 +705,7 @@ def test_center_zone_alert_only_for_trucks_without_access():
 def test_empty_facts_and_unknown_truck():
     card = view({}, T0)
     assert card['state'] == 'nodata' and card['position'] is None and card['km'] == 0.0 and card['fuel_l'] == 0.0
-    assert card['next'] is None and card['alerts'] == {'active': [], 'count': 0} and card['device'] is None
+    assert card['next'] is None and card['alerts'] == {'active': [], 'count': 0, 'since': {}} and card['device'] is None
     assert view({}, T0, truck=live.TruckSpec())['fuel_l'] is None
     card = view(facts([], [stop('S:A', 1, A, 100.0)], [T0]), T0 + timedelta(minutes=2), depot=None, detail=True)
     assert card['state'] == 'standing' and card['stores'] == {'done': 0, 'total': 1, 'in_progress': 0,
@@ -1010,6 +1013,7 @@ def test_api_live_fleet_and_truck_for_admin(client, live_app):
     assert car1['next']['stop_id'] == 'S:A' and car1['next']['planned_eta'] == '2026-10-03T10:40:00+04:00'
     assert car1['next']['here'] is True and car1['next']['delay_min'] == 20
     assert car1['device']['battery'] == 64 and 'track' not in car1
+    assert set(car1['alerts']['since']) == set(car1['alerts']['active']) - {'late'}   # API флота отдаёт начало тревог
     assert car1['fuel_l'] is not None
     r = client.get('/api/routes/live/truck?car=CAR1', base_url=LAN)
     truck = r.get_json()['truck']
@@ -1447,7 +1451,10 @@ def test_forecast_old_apk_threshold_and_late_needs_contact():
     assert view(old, tr.t + timedelta(minutes=19), plan)['forecast'] is True
     assert view(old, tr.t + timedelta(minutes=21), plan)['forecast'] is False
     new = facts(tr.pts, stops, [T0, tr.t], NEW_APK)
-    assert [x['stop_id'] for x in view(new, tr.t + timedelta(minutes=1), plan)['late']] == ['S:A']
+    late = view(new, tr.t + timedelta(minutes=1), plan)
+    assert [x['stop_id'] for x in late['late']] == ['S:A']
+    # «не успеет» — без начала (её from — момент расчёта): «Տեսա» страницы держит её по ключу важности
+    assert 'late' in late['alerts']['active'] and 'late' not in late['alerts']['since']
     # точка 10 мин назад (меньше LATE_FIX_MAX), но связи нет 10 мин — прогноза «не успеет» нет
     card = view(new, tr.t + timedelta(minutes=10), plan)
     assert card['late'] == [] and 'late' not in card['alerts']['active']

@@ -360,11 +360,17 @@ button.lv-prob:focus-visible { outline: 2px solid var(--rt-acc); outline-offset:
 .lv-ack:hover { border-color: var(--rt-fg-dim); }
 .lv-alarm-ack:focus-visible, .lv-ack:focus-visible { outline: 2px solid var(--rt-acc); outline-offset: 2px; }
 .lv-sound[aria-pressed="true"] { border-color: var(--rt-acc); color: var(--rt-acc); }
+/* звук включён, но браузер ждёт касания страницы (после перезагрузки) — жёлтая точка и подсказка в title */
+.lv-sound.is-locked::after { content: ''; width: 8px; height: 8px; border-radius: 50%; background: var(--lv-warn); }
 
 /* машина в списке: полоса важности слева 4px и фон */
 .lv-item.lv-sev1, .lv-item.lv-sev2, .lv-item.lv-sev3 { border-left: 4px solid var(--lv-c); }
 .lv-item.lv-sev1, .lv-item.lv-sev2 { background: var(--lv-bg); }
 .lv-sev-ico { margin-left: 7px; font-size: .8125rem; color: var(--lv-c); }
+/* выбранная машина с тревогой: рамка и кольцо выбора поверх фона тревоги (полоса слева — цвет важности) */
+.lv-item[aria-selected="true"]:is(.lv-sev1, .lv-sev2, .lv-sev3) {
+    border-color: var(--rt-acc); border-left-color: var(--lv-c); box-shadow: 0 0 0 2px var(--rt-acc);
+}
 
 /* маркер машины: кольцо важности (::after — ровное, ::before — волна новой); жёлтый корпус у «ահազանգ» из жёлтых тревог.
    Кольца — на самом маркере, не на корпусе: полупрозрачность «нет связи» их не гасит; клики не перехватывают */
