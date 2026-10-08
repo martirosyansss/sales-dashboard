@@ -724,6 +724,7 @@ def test_until_buffer_integer_and_end_of_day():
     assert 'until_buffer_min' in rst.validate_settings({**base, 'until_buffer_min': 15.5}, None)[1]
     assert rst.validate_settings({**base, 'until_buffer_min': 20.0}, None)[0]['until_buffer_min'] == 20
     assert (dy._hm(1440.0), dy._hm(1439.6), dy._hm(1500.0), dy._hm(0.0)) == ('24:00', '24:00', '24:00', '00:00')
+    assert dy._hm(-90.0) == '00:00'                                              # окно «с 23:30 ± 2 ч» — не «-1:30»
 
 
 def test_day_json_until_buffer_is_integer(term_until, client):
@@ -758,7 +759,11 @@ def test_stale_until_move_stays_exempt_until_plan_resent():
     stale = replace(_r(15, ['S3', 'S1', 'S2'], 'until'), plan_version=ac.plan_version([10, 12, 11, 13]))
     assert ac.current_reorders([stale], [old]) == []
     hist = ac.history_reorders([stale], [old], T(60))
-    assert hist[0] == stale and (hist[1].at, hist[1].reason, hist[1].customers) == (T(60), 'plan', tuple(old))
+    # план снова эталон, когда телефон его получил: не позже отправки + опрос /day (RESYNC = 15 мин + кэш сервера)
+    assert hist[0] == stale and (hist[1].at, hist[1].reason, hist[1].customers) == (T(76), 'plan', tuple(old))
+    fresh = replace(_r(65, ['S2', 'S1'], 'until'), plan_version=ac.plan_version(old))   # смена уже на новой версии
+    assert [(x.at, x.reason) for x in ac.history_reorders([stale, fresh], [old], T(60))] == [
+        (T(15), 'until'), (T(65), 'plan'), (T(65), 'until')]
     assert ac.history_reorders([stale], [old], None) == [stale]                 # отправки не знаем — без возврата к плану
     plan = [live.PlanTrip(tuple(old), {})]
     stops = _seq_stops(['full', 'pending', 'pending', 'full'])
@@ -790,10 +795,17 @@ def test_car_view_stale_move_before_resend_no_alarm():
     assert card['reorders'][0]['reason'] == 'until'                            # в журнале смен — и прежняя версия
     bare = live.car_view(LDAY, now, f, plan, live.TruckSpec(), DEPOT, live.Rules(), live.Road(), False)
     assert 'sequence' not in bare['alerts']['active']                          # отправки не знаем — смена в силе
-    # логист отправил новый рейс сразу после смены, а водитель всё равно поехал к S3 — это уже прыжок по плану
+    # логист отправил новый рейс сразу после смены: телефон его ещё не получил (до RESYNC) — S3 по смене водителя
     early = live.car_view(LDAY, now, f, plan, live.TruckSpec(), DEPOT, live.Rules(), live.Road(), False,
                           sent_at=at_a + timedelta(minutes=8))
-    assert 'sequence' in early['alerts']['active']
+    assert 'sequence' not in early['alerts']['active']
+    # отправлен раньше смены: к приезду в S3 телефон уже получил новый план (отправка + RESYNC) — эталон снова план:
+    # S3 раньше S1, S2 — прыжок
+    reset = at_d - timedelta(minutes=1)
+    assert reset > at_a + timedelta(minutes=7)
+    gone = live.car_view(LDAY, now, f, plan, live.TruckSpec(), DEPOT, live.Rules(), live.Road(), False,
+                         sent_at=reset - ac.RESYNC)
+    assert 'sequence' in gone['alerts']['active']
 
 
 def test_build_does_not_rebuild_when_real_deadline_unreachable(monkeypatch):
@@ -865,3 +877,22 @@ def test_plan_lines_done_by_gps_and_latest_move(tmp_path, monkeypatch):
     assert route.trip_stops == ((10, 11, 13, 12),)                            # S1 (GPS) впереди, затем S3
     _, at = views._reordered_lines(draft, {'CAR1': {**fleet['CAR1'], 'reorders': moves}}, DEPOT)
     assert at == {'CAR1': moved + timedelta(minutes=5)}
+    # визиты по GPS для линии — пересчёт только при новом треке (не на каждом опросе карты)
+    calls = []
+    real = views.ac.reconstruct
+    monkeypatch.setattr(views.ac, 'reconstruct', lambda *x, **k: calls.append(1) or real(*x, **k))
+    views._GPS_VISITED.clear()
+    for _ in range(3):
+        views._reordered_lines(draft, fleet, DEPOT)
+    assert len(calls) == 1
+    views._reordered_lines(draft, {'CAR1': {**fleet['CAR1'], 'track': tr.pts + [tr.pts[-1]]}}, DEPOT)
+    assert len(calls) == 2
+
+
+def test_resend_gap_driver_following_phone_not_penalized():
+    """Проба ревью: «until»-смена S3 в 09:15 на прежней версии, логист отправил рейс в 09:40, телефон ещё не обновил /day —
+    водитель едет по своему порядку S3, S2, S1 (09:45, 09:50): штрафа нет; отправка в 10:00 — тем более."""
+    move = replace(_r(15, ['S3', 'S2', 'S1'], 'until'), plan_version='stale0000000')
+    served = [('S0', 10), ('S3', 20), ('S2', 45), ('S1', 50)]
+    for sent in (40, 60):
+        assert ac.reordered_changes(_actual(served), PSTOPS, PLAN, ac.history_reorders([move], PLAN, T(sent))) == (0, 4)

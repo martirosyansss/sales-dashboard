@@ -4760,6 +4760,31 @@ def _sent_at(sent: Any) -> datetime | None:
     return at.replace(tzinfo=ac.YEREVAN) if at is not None and at.utcoffset() is None else at
 
 
+_GPS_VISITED: dict[str, tuple[tuple[Any, ...], dict[str, datetime]]] = {}   # машина → (отпечаток трека и точек, визиты)
+_GPS_VISITED_LOCK = threading.Lock()
+
+
+def _gps_visited(car: str, facts: Mapping[str, Any], xs: Sequence[Mapping[str, Any]], depot: Point | None
+                 ) -> dict[str, datetime]:
+    """Точка → прибытие обслуживающего визита по GPS (ac.reconstruct, как карточка машины) для линии рейса со сменами
+    (№93): пересчёт — только когда трек (число точек, последняя) или точки дня изменились, а не на каждом опросе карты."""
+    track = facts.get('track') or ()
+    key = (len(track), track[-1][0] if track else None, depot,
+           tuple((x['stop_id'], x.get('customer_id'), x.get('lat'), x.get('lon')) for x in xs))
+    with _GPS_VISITED_LOCK:
+        hit = _GPS_VISITED.get(car)
+    if hit is not None and hit[0] == key:
+        return hit[1]
+    points = [ac.PlanStop(x['stop_id'], x.get('customer_id'), (x['lat'], x['lon']) if x.get('lat') is not None
+                          and x.get('lon') is not None else None, float(x.get('weight_kg') or 0.0)) for x in xs]
+    visited = ac.reconstruct(learning.track_fixes(track), points, depot).visited
+    with _GPS_VISITED_LOCK:
+        _GPS_VISITED[car] = (key, visited)
+        while len(_GPS_VISITED) > 64:
+            _GPS_VISITED.pop(next(iter(_GPS_VISITED)))
+    return visited
+
+
 def _reordered_lines(draft: dp.Draft, fleet: Mapping[str, Mapping[str, Any]], depot: Point | None = None
                      ) -> tuple[dict[str, list[list[int]]], dict[str, datetime]]:
     """Клиенты рейсов машин по порядку для плановой линии: отправленный план со сменами порядка водителем (№93, факт
@@ -4778,9 +4803,7 @@ def _reordered_lines(draft: dp.Draft, fleet: Mapping[str, Mapping[str, Any]], de
         if not moves:
             continue
         touches = {x['stop_id']: t for x in xs if (t := live._moment(x.get('delivered_at'))) is not None}
-        points = [ac.PlanStop(x['stop_id'], x.get('customer_id'), (x['lat'], x['lon']) if x.get('lat') is not None
-                              and x.get('lon') is not None else None, float(x.get('weight_kg') or 0.0)) for x in xs]
-        for sid, t in ac.reconstruct(learning.track_fixes(facts.get('track') or ()), points, depot).visited.items():
+        for sid, t in _gps_visited(car, facts, xs, depot).items():
             touches[sid] = min(t, touches.get(sid, t))
         plan = live.reordered_plan([live.PlanTrip(tuple(c), {}) for c in lists], moves, xs, touches)
         order[car] = [list(p.customers) for p in plan]

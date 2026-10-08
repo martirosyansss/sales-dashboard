@@ -125,11 +125,12 @@ def _line_json(line: Line, product: Product | None, gtins: tuple[str, ...], mark
 
 
 def _hm(minutes: float) -> str | None:
-    """Минуты от полуночи → «HH:MM»; конец суток и позже — «24:00» (срок «до конца дня», не «00:00»); края окна нет
+    """Минуты от полуночи → «HH:MM»; конец суток и позже — «24:00» (срок «до конца дня», не «00:00»), раньше полуночи —
+    «00:00»; края окна нет
     (±бесконечность) — None."""
     if not math.isfinite(minutes):
         return None
-    m = min(int(round(minutes)), 24 * 60)
+    m = min(max(int(round(minutes)), 0), 24 * 60)   # окно «с 23:30 ± 45» не даёт «-1:15»
     return f'{m // 60:02d}:{m % 60:02d}'
 
 

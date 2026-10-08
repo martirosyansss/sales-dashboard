@@ -585,6 +585,8 @@ def order_changes(ranks: Sequence[int]) -> int:
 
 
 REORDER_REASONS = ('until', 'driver')   # смена порядка водителем (№93): срок под риском / без срока
+# новый план доходит до телефона не позже: APK опрашивает /day раз в 15 мин при связи (контракт §2) + кэш /day 60 с
+RESYNC = timedelta(minutes=16)
 
 
 @dataclass(frozen=True)
@@ -647,14 +649,20 @@ def history_reorders(reorders: Sequence[Reorder], trips: Sequence[Sequence[int]]
                      ) -> list[Reorder]:
     """Смены порядка для оценки уже сделанного (тревога и балл «порядок», №93): все смены — и на прежней версии рейса
     (логист после неё пересобрал рейс): до новой отправки плана (sent_at — Draft.sent['at']) смена водителя была эталоном,
-    её «until» не становится задним числом нарушением. С момента отправки эталон рейса со сменами на прежней версии —
-    снова план (смена 'plan': без штрафа и без «прыжка»). Вперёд (очередь ETA, линия, следующий магазин) —
+    её «until» не становится задним числом нарушением. Телефон узнаёт о новом плане только при следующем /day, поэтому
+    эталон рейса со сменами на прежней версии становится снова планом (смена 'plan': без штрафа и без «прыжка») не в
+    момент отправки, а в самый ранний из: первая смена водителя уже на новой версии рейса (телефон её получил) или
+    sent_at + RESYNC (опрос /day приложения + кэш /day сервера). Вперёд (очередь ETA, линия, следующий магазин) —
     current_reorders."""
+    if sent_at is None:
+        return sorted(reorders, key=lambda x: x.at)
     live = current_reorders(reorders, trips)
-    stale = sorted({r.trip for r in reorders if r not in live and sent_at is not None and r.at < sent_at
-                    and r.trip < len(trips) and trips[r.trip]})
-    resets = [Reorder(sent_at, k, tuple(trips[k]), trips[k][0], '', 'plan') for k in stale]   # type: ignore[arg-type]
-    return sorted([*reorders, *resets], key=lambda x: x.at)
+    resets = []
+    for k in sorted({r.trip for r in reorders if r not in live and r.trip < len(trips) and trips[r.trip]}):
+        at = min([r.at for r in live if r.trip == k and r.at >= sent_at] + [sent_at + RESYNC])
+        if any(r.trip == k and r not in live and r.at < at for r in reorders):
+            resets.append(Reorder(at, k, tuple(trips[k]), trips[k][0], '', 'plan'))
+    return sorted([*reorders, *resets], key=lambda x: (x.at, x.reason != 'plan'))   # в один момент — сначала план
 
 
 def reorder_trip(ref: Sequence[int], r: Reorder, done: Collection[int]) -> list[int]:
