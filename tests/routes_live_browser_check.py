@@ -86,11 +86,14 @@ def build_app(tmp: Path) -> Flask:
     courier.init_app(app, FakeDb(), db_path=str(tmp / 'courier.db'))
     route_optimizer.attach_live_facts(app, courier.live_facts(app))
     app.extensions['route_optimizer'].roads = StraightRoads()
+    from route_optimizer import views
+    views.LIVE_ROAD_BACKGROUND = False   # линии плана — сразу (иначе первые 10 с кэша карточек — «по прямой»)
     return app
 
 
 class StraightRoads:
-    """Провайдер дорог без карты: линии «по дорогам» — те же ломаные (views._live_plan_routes)."""
+    """Провайдер дорог без карты: линия участка «по дорогам» — тот же отрезок с серединой (две точки roads.draw рисует
+    у участка без дороги — views._plan_geometry счёл бы его «по прямой»)."""
     failed = False
     version = 'live-check'
 
@@ -101,7 +104,8 @@ class StraightRoads:
         return base
 
     def lines(self, lines):
-        return [list(x) for x in lines]
+        return [[p for a, b in zip(x, x[1:]) for p in (a, ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2))] + [x[-1]]
+                for x in lines]
 
 
 def seed(app: Flask) -> list[str]:
