@@ -133,7 +133,8 @@ def test_add_dialog_refreshes_after_conditions_saved():
     assert 'try { await reloadQuiet(); } catch (e) { failed = e; showActionError(e); }' in save
     assert "if (failed) { $('dpAddErr').textContent = failed.message; addSummary(); return; }" in save
     # «Ավելացնել» ждёт свежих списков: ответ перечитывания не затрёт правку, ушедшую раньше него
-    assert save.index('add.reloading = true') < save.index('await reloadQuiet()') < save.index('add.reloading = false')
+    # счётчик, не флаг: два сохранения подряд — «Ավելացնել» ждёт последнего перечитывания
+    assert save.index('add.reloading = (add.reloading || 0) + 1') < save.index('await reloadQuiet()') < save.index('add.reloading--')
     assert "$('dpAddSave').disabled = !n || state.busy || !!a.reloading" in js
     save_add = js[js.index('async function saveAddStops('):js.index('// Одна точка — строка расписания')]
     assert 'if (!a || !a.picked.size || state.busy || a.reloading) return;' in save_add

@@ -103,7 +103,7 @@
         mapFocus: null,                     // карта только одной машины {truck} или одного рейса {truck, trip}; null — все
         roadCache: new Map(), roadGen: 0,   // линии рейсов по дорогам: ключ — точки линии; номер отрисовки
         pickMap: null, pickMarker: null, pickCid: null, dragging: false, undo: null,
-        addFor: null,                       // окно «Ավելացնել խանութ»: {trip, kg, capacity, list, blocked, picked, reloading}
+        addFor: null,                       // окно «Ավելացնել խանութ»: {trip, kg, capacity, list, blocked, picked, reloading — сколько перечитываний идёт}
         why: null,                          // окно «Ինչու՞» у «×»: {stop, tripId, idx, truck}
         loadSeq: 0,                         // номер последнего запроса дня: ответы на прежние запросы не применяются
         editing: new Set(),                 // рейсы, открытые кнопкой «Փոփոխել»
@@ -1985,10 +1985,11 @@
         // Под окном — «Ավելացնել խանութներ»: уведомление скрыто его фоном — тот же текст и в окне. «Ավելացնել» ждёт свежих
         // списков: правка, ушедшая раньше ответа перечитывания, была бы затёрта им (reloadQuiet о правках не знает)
         const add = $('dpAddDlg').open ? state.addFor : null;
-        if (add) { add.reloading = true; addSummary(); $('dpAddOk').textContent = text; }
+        // reloading — счётчик: два сохранения подряд — «Ավելացնել» ждёт последнего перечитывания
+        if (add) { add.reloading = (add.reloading || 0) + 1; addSummary(); $('dpAddOk').textContent = text; }
         let failed = null;
         try { await reloadQuiet(); } catch (e) { failed = e; showActionError(e); }   // плашки допуска, окна и центра у точек
-        if (add) add.reloading = false;
+        if (add) add.reloading--;
         if (!add || state.addFor !== add || !$('dpAddDlg').open) return;
         if (failed) { $('dpAddErr').textContent = failed.message; addSummary(); return; }   // ошибка под страницей за окном не видна
         refreshAddStops(stop.customer_id);          // списки окна — по новому правилу
