@@ -13,7 +13,14 @@
    по участкам фактического порядка («Ավելորդ վազք», таблица участков, оранжевым на карте), t.deviation.adherence_pct —
    следование плану; отклонение с малым перепробегом — «փոքր շեղում» (серым, тонкой линией, не в «Խնդիրներ հիմա»);
    «Բացատրել» (только администратор, data.can_explain; сервер проверяет сам) — причина и заметка в диалоге <dialog>,
-   объяснённая тревога — серой с причиной, «Չեղարկել» снимает объяснение. */
+   объяснённая тревога — серой с причиной, «Չեղարկել» снимает объяснение.
+   Тревоги (08.10, «диспетчер сразу видит проблемы»; Samsara/Geotab/Wialon, ISA-101/ISA-18.2): важность — на клиенте
+   (alarmSev): 1 красная «կրիտիկական» (треугольник) — speed, center, gps, sequence, late к окну приёма или возврату на склад;
+   2 жёлтая «զգուշացում» (круг) — stop, deviation, no_contact (терминалы без мобильного интернета — частая, красной была бы
+   «усталость от тревог»), late только к плану; 3 сведения (фиолетовая, не мигает) — stores.unmarked; неизвестный вид — 1.
+   Активная и не отмеченная «Տեսա» — новая: мигает (1 Гц, только CSS), баннер, «(N) ⚠» во вкладке, звук (по желанию).
+   «Տեսա» — по случаю: t.alerts.since (начало идущей тревоги вида, сервер); дребезг до 10 мин — тот же случай.
+   Подробно — в блоке «тревоги: важность и «Տեսա»» ниже. */
 (function () {
     'use strict';
 
@@ -66,11 +73,214 @@
         // воспроизведение дня: снимок машины на начало (опрос его не меняет), момент t (секунды эпохи), слои
         replay: { on: false, playing: false, t: 0, raf: 0, last: 0, truck: null, prefix: null, ghost: null, stops: [] },
         // подсказка точки линии: подсказка и точка на карте; at/car — где курсор (координаты: после опроса — снова), fns — линии
-        hover: { tip: null, mark: null, at: null, car: null, fns: [] } };
+        hover: { tip: null, mark: null, at: null, car: null, fns: [] },
+        // тревоги: проблемы сегодня, отметки «Տեսա», уже прозвучавшие красные и объявленные новые, звук
+        alarm: { probs: [], acks: loadAcks(), heard: new Set(), told: new Set(), sound: loadSound(), audio: null } };
 
     // «Պլանային երթուղի» на карте — удобство одного зрителя: помнится в браузере (нет хранилища — просто включено)
     function loadPlanToggle() { try { return window.localStorage.getItem('lv.plan') !== '0'; } catch (e) { return true; } }
     function savePlanToggle(on) { try { window.localStorage.setItem('lv.plan', on ? '1' : '0'); } catch (e) { /* нет хранилища */ } }
+
+    // ---------- тревоги: важность и «Տեսա» ----------
+    // Проблема — ключ «дата|машина|вид» («не успеет» — по важности: late:window / late:plan) и случай — t.alerts.since[вид]
+    // (начало идущей тревоги, сервер; у «не успеет» и GPS-визитов его нет). Новая — активная (sev 1–2) без «Տեսա»: мигает
+    // строка «Խնդիրներ հիմա», машина в списке, кольцо маркера (поднят над остальными), баннер над страницей, «(N) ⚠» во
+    // вкладке. «Տեսա» (кнопка, нажатие на строку — оператор её увидел, «Տեսա բոլորը») — ровный цвет, пока проблема идёт.
+    // Отметка (lv.ack: ключ → {since, seen — когда проблему видели последний раз}) держится, пока случай тот же (since
+    // совпадает) или проблему видели не дольше ACK_GRACE_MS назад (дребезг того же случая: since обновляется); без проблемы
+    // дольше ACK_GRACE_MS — снимается (вернётся — снова мигает). «Не успеет» к окну → к плану — та же отметка (ослабление),
+    // к плану → к окну — новая (усиление). Две вкладки: перед записью — слияние с хранилищем (свежее seen побеждает).
+    // Тревоги — только для ответа за сегодня (прошлый день и устаревший ответ при смене даты — нет; отметки не трогаются).
+    // Звук (lv.sound, по умолчанию выключен): два коротких тона WebAudio один раз на каждую новую красную; AudioContext —
+    // только после жеста (после перезагрузки — первое касание или клавиша на странице; до того — подсказка на кнопке, тона
+    // не ставятся, без очереди). Со звуком опрос идёт и в скрытой вкладке — раз в 60 с (schedule). Мигание — только CSS
+    // (1 Гц; prefers-reduced-motion: reduce — без анимации: обводка и «ՆՈՐ»); слои карты по таймеру не перерисовываются.
+    const SEV = { 1: ['fa-triangle-exclamation', 'կրիտիկական'], 2: ['fa-circle-exclamation', 'զգուշացում'],
+        3: ['fa-location-dot', 'տեղեկություն'] };
+    const WARN_KINDS = ['stop', 'deviation', 'no_contact'];
+    // важность вида тревоги; «не успеет» — к окну приёма или возврату на склад — красная, только к плану — жёлтая
+    const alarmSev = (kind, late) => (kind === 'late'
+        ? ((late || []).some(x => x.late_kind === 'window' || x.late_kind === 'return') ? 1 : 2)
+        : (WARN_KINDS.includes(kind) ? 2 : 1));
+    const isNew = (p) => p.sev < 3 && !state.alarm.acks.has(p.key);
+    // порядок: новые красные, новые жёлтые, отмеченные красные, отмеченные жёлтые, сведения; внутри — номер машины
+    const alarmRank = (p) => (isNew(p) ? p.sev - 1 : p.sev + 1);
+    const byAlarm = (a, b) => alarmRank(a) - alarmRank(b) || a.t.car_code.localeCompare(b.t.car_code);
+    const BASE_TITLE = document.title;
+    const HIDDEN_POLL_MS = 60000;
+    const ACK_GRACE_MS = 10 * 60000;
+    const SOUND_TITLE = 'Ձայնային ազդանշան՝ նոր կրիտիկական խնդրի դեպքում';
+    const SOUND_LOCKED = 'Սեղմեք էջի վրա՝ ձայնը միացնելու համար';
+
+    function loadAcks() {
+        try {
+            const v = JSON.parse(window.localStorage.getItem('lv.ack') || '{}');
+            const ok = (a) => !!a && typeof a.seen === 'number' && (a.since === null || typeof a.since === 'string');
+            return new Map(v && typeof v === 'object' && !Array.isArray(v) ? Object.entries(v).filter(([, a]) => ok(a)) : []);
+        } catch (e) { return new Map(); }
+    }
+    function saveAcks() { try { window.localStorage.setItem('lv.ack', JSON.stringify(Object.fromEntries(state.alarm.acks))); } catch (e) { /* нет хранилища */ } }
+    // другая вкладка могла отметить своё: из хранилища — записи новее своих
+    function mergeAcks() {
+        for (const [k, a] of loadAcks()) {
+            const mine = state.alarm.acks.get(k);
+            if (!mine || a.seen > mine.seen) state.alarm.acks.set(k, a);
+        }
+    }
+    function loadSound() { try { return window.localStorage.getItem('lv.sound') === '1'; } catch (e) { return false; } }
+    function saveSound(on) { try { window.localStorage.setItem('lv.sound', on ? '1' : '0'); } catch (e) { /* нет хранилища */ } }
+
+    // проблемы машины сегодня: тревоги (кроме «нет связи» и «не успеет») → нет связи → не успеет → не отмеченные GPS-визиты
+    function problemsOf(t) {
+        const since = (t.alerts && t.alerts.since) || {};
+        const one = (kind, sev, title, text, ex) => ({ key: state.data.date + '|' + t.car_code + '|' + kind, kind, t, sev, title, text,
+            since: typeof since[kind] === 'string' ? since[kind] : null, ex: ex || null });
+        const out = [];
+        for (const k of t.alerts.active || []) {
+            if (k === 'late' || k === 'no_contact') continue;
+            // отклонение и порядок объезда — с кнопкой «Բացատրել» (администратор): тревога — из t.explainable
+            const ex = EXPLAINS.includes(k) && canExplain() ? (t.explainable || []).find(x => x.kind === k) : null;
+            const title = (ALERT[k] || ['', k])[1];
+            out.push(one(k, alarmSev(k), title, title, ex));
+        }
+        if (noContact(t)) {
+            out.push(one('no_contact', alarmSev('no_contact'), ALERT.no_contact[1],
+                ('Կապ չկա ' + silentFor(silentAge(t))).trim() + (t.data_until ? ' · վերջինը՝ ' + hm(t.data_until) : '')));
+        }
+        if (lateSummary(t.late)) {
+            const sev = alarmSev('late', t.late);
+            out.push(one(sev === 1 ? 'late:window' : 'late:plan', sev, ALERT.late[1], lateSummary(t.late)));
+        }
+        if (t.stores.unmarked) {
+            out.push(one('unmarked', 3, 'GPS-ով այցելած, չնշված', t.stores.unmarked + ' խանութ GPS-ով այցելած է, բայց չնշված'));
+        }
+        return out;
+    }
+
+    // отметка проблемы сейчас: тот же случай (since) или дребезг в пределах ACK_GRACE_MS (без since — только он);
+    // «не успеет» к плану — и отметка «к окну»
+    function ackOf(p, now) {
+        const acks = state.alarm.acks;
+        const a = acks.get(p.key) || (p.kind === 'late:plan' ? acks.get(p.key.replace(/late:plan$/, 'late:window')) : null);
+        return a && ((p.since !== null && a.since === p.since) || now - a.seen <= ACK_GRACE_MS) ? a : null;
+    }
+
+    // после опроса: проблемы, отметки, звук на новые красные, объявление новых для экранного диктора
+    function syncAlarms(data) {
+        const al = state.alarm;
+        if (state.date || data.date !== String(data.now || '').slice(0, 10)) { al.probs = []; return; }
+        const now = Date.now();
+        al.probs = data.trucks.flatMap(problemsOf);
+        mergeAcks();
+        for (const p of al.probs) {
+            if (ackOf(p, now)) al.acks.set(p.key, { since: p.since, seen: now }); else al.acks.delete(p.key);
+        }
+        const keys = new Set(al.probs.map(p => p.key));
+        for (const [k, a] of al.acks) if (!keys.has(k) && now - a.seen > ACK_GRACE_MS) al.acks.delete(k);
+        saveAcks();
+        const fresh = al.probs.filter(isNew), red = fresh.filter(p => p.sev === 1).map(p => p.key);
+        if (al.sound && red.some(k => !al.heard.has(k))) beep();
+        al.heard = new Set(red);
+        // диктор — только когда новых прибавилось (не каждые 15 с)
+        if (fresh.some(p => !al.told.has(p.key))) $('lvAlarmSr').textContent = alarmText(fresh);
+        al.told = new Set(fresh.map(p => p.key));
+    }
+
+    const alarmText = (fresh) => fresh.length + ' նոր խնդիր՝ ' + fresh.slice().sort(byAlarm).map(p => p.t.car_code + ' · ' + p.title).join(', ');
+
+    // машина: наибольшая важность активных проблем и новых (0 — нет); классы строки списка и маркера
+    function carAlarm(car) {
+        const mine = state.alarm.probs.filter(p => p.t.car_code === car);
+        const top = (ps) => (ps.length ? Math.min(...ps.map(p => p.sev)) : 0);
+        return { sev: top(mine), fresh: top(mine.filter(isNew)) };
+    }
+    const alarmCls = (a) => [a.sev ? 'lv-sev' + a.sev : null, a.fresh ? 'is-new lv-new' + a.fresh : null].filter(Boolean).join(' ');
+
+    function ack(keys) {
+        const al = state.alarm;
+        if (!keys.some(k => !al.acks.has(k))) return;
+        mergeAcks();
+        const now = Date.now();
+        for (const k of keys) {
+            const p = al.probs.find(x => x.key === k);
+            al.acks.set(k, { since: p ? p.since : null, seen: now });
+        }
+        saveAcks();
+        const trucks = state.data ? state.data.trucks : [];
+        renderProblems();
+        renderSummary(trucks);
+        renderList(trucks);
+        renderMarkers(trucks);
+        renderBanner();
+    }
+
+    // баннер новых проблем и счётчик во вкладке; новых нет — и диктору нечего держать
+    function renderBanner() {
+        const fresh = state.alarm.probs.filter(isNew).sort(byAlarm);
+        $('lvAlarm').hidden = !fresh.length;
+        document.title = fresh.length ? '(' + fresh.length + ') ⚠ ' + BASE_TITLE : BASE_TITLE;
+        if (!fresh.length) { $('lvAlarm').className = 'lv-alarm'; $('lvAlarmSr').textContent = ''; return; }
+        const sev = fresh[0].sev;   // есть новая красная — баннер красный
+        $('lvAlarm').className = 'lv-alarm is-new lv-sev' + sev + ' lv-new' + sev;
+        $('lvAlarmIco').className = 'fas ' + SEV[sev][0] + ' lv-alarm-ico';
+        $('lvAlarmCount').textContent = fresh.length + ' նոր խնդիր';
+        const items = fresh.slice(0, 3).map(p => h('li', null, icon(SEV[p.sev][0]), h('span', { text: p.t.car_code + ' · ' + p.title })));
+        if (fresh.length > 3) items.push(h('li', { text: '+' + (fresh.length - 3) }));
+        $('lvAlarmList').replaceChildren(...items);
+    }
+
+    // звук: AudioContext — только по жесту пользователя (без жеста он «спит»); ошибки не наружу
+    const audioReady = () => !!state.alarm.audio && state.alarm.audio.state === 'running';
+    function wakeAudio() {
+        try {
+            const AC = window.AudioContext || window.webkitAudioContext;
+            if (!AC) return Promise.resolve();
+            const ctx = state.alarm.audio || (state.alarm.audio = new AC());
+            ctx.onstatechange = renderSound;
+            return ctx.state === 'running' ? Promise.resolve() : ctx.resume().catch(() => { /* ждёт жеста */ });
+        } catch (e) { return Promise.resolve(); }
+    }
+    // звук был включён до перезагрузки — проснуться от жеста на странице; pointerdown на телефоне (Android Chrome, iOS
+    // Safari) жестом не считается — и pointerup / click / touchend / keydown; слушать, пока звук не готов
+    const WAKE_EVENTS = ['pointerdown', 'pointerup', 'click', 'touchend', 'keydown'];
+    function armAudio() {
+        if (!state.alarm.sound || audioReady()) return;
+        const wake = () => {
+            if (!state.alarm.sound) return;
+            wakeAudio().then(() => {
+                renderSound();
+                if (audioReady()) WAKE_EVENTS.forEach(e => document.removeEventListener(e, wake, true));
+            });
+        };
+        WAKE_EVENTS.forEach(e => document.addEventListener(e, wake, true));
+    }
+
+    // два коротких тона (без файлов); контекст «спит» — тонов не ставим (иначе пачкой после пробуждения)
+    function beep() {
+        if (!audioReady()) return;
+        try {
+            const ctx = state.alarm.audio, t0 = ctx.currentTime + 0.02;
+            [[880, 0], [660, 0.17]].forEach(([hz, at]) => {
+                const osc = ctx.createOscillator(), gain = ctx.createGain();
+                osc.frequency.value = hz;
+                gain.gain.setValueAtTime(0.0001, t0 + at);
+                gain.gain.exponentialRampToValueAtTime(0.25, t0 + at + 0.02);
+                gain.gain.exponentialRampToValueAtTime(0.0001, t0 + at + 0.15);
+                osc.connect(gain).connect(ctx.destination);
+                osc.start(t0 + at);
+                osc.stop(t0 + at + 0.16);
+            });
+        } catch (e) { /* звука нет — тревога видна и без него */ }
+    }
+
+    function renderSound() {
+        const on = state.alarm.sound, locked = on && !audioReady(), b = $('lvSound');
+        b.setAttribute('aria-pressed', String(on));
+        b.classList.toggle('is-locked', locked);
+        b.title = locked ? SOUND_LOCKED : SOUND_TITLE;
+        b.replaceChildren(icon(on ? 'fa-volume-high' : 'fa-volume-xmark'), h('span', { text: 'Ձայն' }),
+            ...(locked ? [h('span', { class: 'rt-sr-only', text: SOUND_LOCKED })] : []));
+    }
 
     function h(tag, props, ...kids) {
         const el = document.createElement(tag);
@@ -178,9 +388,12 @@
     // ---------- список ----------
     function renderSummary(trucks) {
         const count = (st) => trucks.filter(t => t.state === st).length;
+        // «ահազանգ» мигает, пока у машины «ահազանգ» есть новая красная («не успеет» состояния «ահազանգ» не даёт)
+        const redNew = state.alarm.probs.some(p => p.sev === 1 && isNew(p) && p.t.state === 'alert');
         $('lvSummary').replaceChildren(
             ...[['moving', 'ընթացքում'], ['standing', 'կանգնած'], ['alert', 'ահազանգ'], ['offline', 'կապ չկա']]
-                .map(([st, label]) => h('div', { class: 'lv-sum is-' + st }, h('b', { text: String(count(st)) }), h('span', { text: label }))));
+                .map(([st, label]) => h('div', { class: 'lv-sum is-' + st + (st === 'alert' && redNew ? ' is-new lv-new1' : '') },
+                    h('b', { text: String(count(st)) }), h('span', { text: label }))));
     }
 
     function renderList(trucks) {
@@ -200,10 +413,14 @@
                 if (d) meta.push(h('span', { class: d[1] === 'is-ok' ? '' : (d[1] === 'is-bad' ? 'is-bad' : 'is-warn'), text: d[0] }));
             }
             if (lateSummary(t.late)) meta.push(h('span', { class: 'is-bad', text: lateSummary(t.late) }));
-            const item = h('li', { class: 'lv-item', role: 'option', tabindex: '0', 'aria-selected': String(t.car_code === state.selected),
+            // тревоги: полоса слева и фон цвета важности (новая — мигает), значок важности у номера (не только цвет)
+            const a = carAlarm(t.car_code);
+            const item = h('li', { class: ('lv-item ' + alarmCls(a)).trim(), role: 'option', tabindex: '0', 'aria-selected': String(t.car_code === state.selected),
                 'data-car': t.car_code },
                 h('span', { class: 'lv-dot ' + cls, title: label }),
-                h('div', { class: 'lv-item-main' }, h('div', { class: 'lv-item-plate', text: t.car_code }),
+                h('div', { class: 'lv-item-main' }, h('div', { class: 'lv-item-plate' }, t.car_code,
+                    a.sev ? h('i', { class: 'fas ' + SEV[a.sev][0] + ' lv-sev-ico', 'aria-hidden': 'true', title: SEV[a.sev][1] }) : null,
+                    a.sev ? h('span', { class: 'rt-sr-only', text: SEV[a.sev][1] + (a.fresh ? ', նոր' : '') }) : null),
                     h('div', { class: 'lv-item-name', text: [t.name, t.driver].filter(Boolean).join(' · ') || label })),
                 h('div', { class: 'lv-item-right' },
                     // скорость — только у свежей точки: у давней (нет связи) она уже не «сейчас»
@@ -216,33 +433,43 @@
         }));
     }
 
-    // «Խնդիրներ հիմա» (сегодня): тревоги (кроме «нет связи» и «не успеет») → нет связи → не успеет → не отмеченные GPS-визиты
-    function renderProblems(trucks) {
+    // «Խնդիրներ հիմա» (сегодня): проблемы state.alarm.probs по важности (byAlarm); строка — выбор машины (и «Տեսա»)
+    function renderProblems() {
         const box = $('lvProbs');
         box.hidden = !!state.date;
         if (state.date) return;
-        const rows = [];
-        for (const t of trucks) {
-            for (const k of t.alerts.active || []) {
-                if (k === 'late' || k === 'no_contact') continue;
-                // отклонение и порядок объезда — с кнопкой «Բացատրել» (администратор): тревога — из t.explainable
-                const ex = EXPLAINS.includes(k) && canExplain() ? (t.explainable || []).find(x => x.kind === k) : null;
-                rows.push([0, t, (ALERT[k] || ['fa-bell'])[0], (ALERT[k] || ['', k])[1], ex]);
-            }
-            if (noContact(t)) {
-                rows.push([1, t, ALERT.no_contact[0], ('Կապ չկա ' + silentFor(silentAge(t))).trim()
-                    + (t.data_until ? ' · վերջինը՝ ' + hm(t.data_until) : '')]);
-            }
-            if (lateSummary(t.late)) rows.push([2, t, ALERT.late[0], lateSummary(t.late)]);
-            if (t.stores.unmarked) rows.push([3, t, 'fa-location-dot', t.stores.unmarked + ' խանութ GPS-ով այցելած է, բայց չնշված']);
+        const list = $('lvProbList');
+        // фокус клавиатуры в списке — после перерисовки на ту же строку; «Տեսա» исчезла — на саму строку
+        const was = list.contains(document.activeElement) ? document.activeElement : null;
+        const focusKey = was && was.closest('li') ? was.closest('li').dataset.key : null;
+        const focusCls = was ? ['lv-ack', 'lv-explain'].find(c => was.classList.contains(c)) || 'lv-prob' : null;
+        const rows = state.alarm.probs.slice().sort(byAlarm);
+        list.replaceChildren(...(rows.length ? rows.map(problemRow)
+            : [h('li', null, h('div', { class: 'lv-prob is-none' }, icon('fa-circle-check'), h('span', { text: 'Խնդիրներ չկան' })))]));
+        const li = focusKey ? [...list.children].find(x => x.dataset.key === focusKey) : null;
+        const to = li ? li.querySelector('.' + focusCls) || li.querySelector('.lv-prob') : null;
+        if (to) to.focus({ preventScroll: true });
+    }
+
+    function problemRow(p) {
+        const car = p.t.car_code, fresh = isNew(p);
+        const btn = h('button', { type: 'button', class: 'lv-prob lv-sev' + p.sev + (fresh ? ' is-new lv-new' + p.sev : '') },
+            icon(SEV[p.sev][0]), h('b', { text: car }), h('span', { text: p.text }),
+            h('span', { class: 'rt-sr-only', text: SEV[p.sev][1] + (fresh ? ', նոր' : '') }),
+            fresh ? h('em', { class: 'lv-new-tag', 'aria-hidden': 'true', text: 'ՆՈՐ' }) : null);
+        // нажатие на строку — оператор проблему увидел
+        btn.addEventListener('click', () => {
+            if (fresh) ack([p.key]);
+            if (state.selected !== car) select(car); else focusCard();
+        });
+        let seen = null;
+        if (fresh) {
+            seen = h('button', { type: 'button', class: 'lv-ack', 'aria-label': 'Տեսա՝ ' + car + ' · ' + p.title },
+                icon('fa-check'), h('span', { text: 'Տեսա' }));
+            seen.addEventListener('click', () => ack([p.key]));
         }
-        rows.sort((a, b) => a[0] - b[0] || a[1].car_code.localeCompare(b[1].car_code));
-        $('lvProbList').replaceChildren(...(rows.length ? rows.map(([sev, t, ico, text, ex]) => {
-            const btn = h('button', { type: 'button', class: 'lv-prob is-sev' + sev },
-                icon(ico), h('b', { text: t.car_code }), h('span', { text }));
-            btn.addEventListener('click', () => { if (state.selected !== t.car_code) select(t.car_code); else focusCard(); });
-            return h('li', { class: ex ? 'lv-prob-row' : null }, btn, ex ? explainButton(t.car_code, ex, t.car_code + ' · ' + text) : null);
-        }) : [h('li', null, h('div', { class: 'lv-prob is-none' }, icon('fa-circle-check'), h('span', { text: 'Խնդիրներ չկան' })))]));
+        return h('li', { class: seen || p.ex ? 'lv-prob-row' : null, 'data-key': p.key }, btn, seen,
+            p.ex ? explainButton(car, p.ex, car + ' · ' + p.text) : null);
     }
 
     // ---------- карта ----------
@@ -270,7 +497,10 @@
 
     function markerIcon(t) {
         const [, cls] = STATE[t.state] || STATE.standing;
-        const el = h('div', { class: 'lv-marker ' + cls + (t.car_code === state.selected ? ' is-selected' : '') + (stale(t) ? ' is-stale' : '') });
+        // тревоги: новая — пульсирующее кольцо цвета важности, отмеченная «Տեսա» — ровное; «ահազանգ» только из жёлтых — жёлтый
+        const a = carAlarm(t.car_code);
+        const el = h('div', { class: ['lv-marker', cls, t.car_code === state.selected ? 'is-selected' : null, stale(t) ? 'is-stale' : null,
+            alarmCls(a), t.state === 'alert' && a.sev === 2 ? 'is-warn' : null].filter(Boolean).join(' ') });
         const heading = t.position ? num(t.position.heading) : null;
         if (heading !== null && t.state === 'moving') {
             const arrow = h('span', { class: 'lv-marker-arrow' });
@@ -298,8 +528,11 @@
             } else {
                 m.setLatLng(ll);
             }
-            m.setIcon(markerIcon(t));
-            m.setZIndexOffset(t.car_code === state.selected ? 1000 : 0);
+            // значок не изменился — не заменять (иначе мигание кольца начинается заново каждые 15 с)
+            const ic = markerIcon(t);
+            if (m.lvHtml !== ic.options.html) { m.setIcon(ic); m.lvHtml = ic.options.html; }
+            // выбранная — сверху, машина с новой проблемой — над остальными и над номерами магазинов (500)
+            m.setZIndexOffset(t.car_code === state.selected ? 1000 : carAlarm(t.car_code).fresh ? 800 : 0);
             m.bindTooltip(tip(t.car_code + (t.name ? ' · ' + t.name : '')
                 + (stale(t) ? ' · Վերջին հայտնի դիրքը՝ ' + lastFix(t) : '')), { direction: 'top', offset: [0, -16] });
         }
@@ -538,6 +771,55 @@
             .bindTooltip(tip('Ճանապարհի սկիզբը' + at)).addTo(layer);
     }
 
+    // ---------- стоянки не по плану (владелец 08.10 «очень чётко покажи, где были остановки вне маршрута») ----------
+    // t.stops_off (live.off_stays): ≥ 5 мин вне склада и точек дня. На карте — плашка с минутами поверх всего: янтарная —
+    // короткая, красная — длиннее порога тревоги (long), серая с вилкой — обед; красное кольцо — вне плановой линии
+    // (off_line), пульс — стоит там сейчас. В карточке — таблица «Կանգառներ ոչ խանութում» с кнопкой к точке на карте.
+    const offStops = (t) => (Array.isArray(t.stops_off) ? t.stops_off.filter(s => num(s.lat) !== null && num(s.lon) !== null) : []);
+    const offWhere = (s) => (s.off_line === true ? 'երթուղուց դուրս' : s.off_line === false ? 'պլանային երթուղու վրա' : null);
+    const offText = (s) => ['Կանգառ ոչ խանութում՝ ' + s.minutes + ' րոպե',
+        hm(s.from) + '–' + (s.to ? hm(s.to) : 'հիմա'), offWhere(s), s.lunch ? 'ճաշ' : null,
+        s.long ? 'ահազանգ (երկար կանգառ)' : null].filter(Boolean).join(' · ');
+
+    function offIcon(s) {
+        const cls = 'lv-spin' + (s.lunch && !s.long ? ' is-lunch' : s.long ? ' is-long' : '') + (s.off_line ? ' is-off' : '')
+            + (s.ongoing ? ' is-now' : '');
+        const el = h('span', { class: 'lv-spin-box' }, h('span', { class: cls },
+            icon(s.lunch && !s.long ? 'fa-utensils' : 'fa-square-parking'), h('b', { text: s.minutes + ' ր' })));
+        return L.divIcon({ html: el.outerHTML, className: '', iconSize: [64, 26], iconAnchor: [32, 13] });
+    }
+
+    function drawOffStops(t, layer) {
+        for (const s of offStops(t)) {
+            L.marker([s.lat, s.lon], { icon: offIcon(s), keyboard: false, zIndexOffset: 800, riseOnHover: true })
+                .bindTooltip(tip(offText(s)), { direction: 'top', offset: [0, -12] }).addTo(layer);
+        }
+    }
+
+    // карточка: таблица стоянок не по плану, строка — кнопка к точке на карте
+    function renderOffStops(t) {
+        const list = offStops(t);
+        $('lvOffBox').hidden = !Array.isArray(t.stops_off);
+        $('lvOffNote').textContent = list.length
+            ? list.length + ' կանգառ · ընդամենը ' + dur(list.reduce((m, s) => m + (num(s.minutes) || 0), 0))
+                + (list.some(s => s.off_line) ? ' · երթուղուց դուրս՝ ' + list.filter(s => s.off_line).length : '')
+                + ' · 5 րոպեից երկար, պահեստից և այս օրվա խանութներից դուրս'
+            : 'Խանութներից և պահեստից դուրս 5 րոպեից երկար կանգառ չի եղել';
+        const cell = (text, cls) => h('td', { class: cls || null, text });
+        $('lvOff').replaceChildren(...list.map((s, i) => {
+            const go = h('button', { type: 'button', class: 'lv-linkbtn lv-off-go', title: 'Ցույց տալ քարտեզում',
+                'aria-label': 'Կանգառ ' + (i + 1) + '՝ ցույց տալ քարտեզում' }, icon('fa-location-dot'));
+            go.addEventListener('click', () => showPoint(s.lat, s.lon, offText(s)));
+            const note = [s.ongoing ? 'հիմա այնտեղ է' : null, s.lunch ? 'ճաշ' : null, s.long ? 'ահազանգ' : null].filter(Boolean).join(' · ');
+            return h('tr', null,
+                cell(String(i + 1), 'is-num'), cell(hm(s.from) + '–' + (s.to ? hm(s.to) : 'հիմա'), 'lv-nowrap'),
+                cell(String(s.minutes), 'is-num' + (s.long ? ' is-bad' : '')),
+                h('td', null, h('span', { class: s.off_line ? 'is-bad' : s.off_line === false ? null : 'is-mute', text: offWhere(s) || '—' }),
+                    note ? h('small', { text: note }) : null),
+                h('td', null, go));
+        }));
+    }
+
     // плановая линия (что водитель получил): широкий полупрозрачный коридор по рейсам — под фактическим путём
     function drawPlan(t, layer) {
         const r = t.route;
@@ -601,8 +883,10 @@
                 : L.circleMarker([s.lat, s.lon], { radius: 7, color: lt ? '#ff6b79' : '#0e1116', weight: lt ? 3 : 2, fillColor: color, fillOpacity: 1 }))
                 .bindTooltip(tip((s.plan_no ? '№' + s.plan_no + ' · ' : '') + text)).addTo(state.layer);
         }
+        drawOffStops(t, state.layer);
         for (const a of t.alerts_log || []) {
             if (num(a.lat) === null || num(a.lon) === null) continue;
+            if (a.kind === 'stop' && Array.isArray(t.stops_off)) continue;   // долгая стоянка — значком стоянки (drawOffStops)
             L.circleMarker([a.lat, a.lon], { radius: 5, color: '#ff6b79', weight: 2, fill: false })
                 .bindTooltip(tip((ALERT[a.kind] || ['', a.kind])[1] + ' · ' + hm(a.from))).addTo(state.layer);
         }
@@ -770,6 +1054,7 @@
             return h('li', { class: cls || null }, icon((ALERT[a.kind] || ['fa-bell'])[0]), h('span', { text }), h('span', { class: 'when', text: when }), act);
         }) : [h('li', null, h('span'), h('span', { text: 'Ահազանգ չկա' }), h('span'))]));
         renderDetour(t);
+        renderOffStops(t);
     }
 
     // ---------- показатели дня, плановая линия, отклонение (08.10) ----------
@@ -944,6 +1229,13 @@
             num(st.avg_kmh) !== null ? null : 'is-mute'));
         rows.push(field('Ընթացքում / կանգնած', num(st.moving_min) !== null ? dur(st.moving_min) + ' / ' + dur(st.stopped_min) : NO_DATA,
             st.nodata_min ? 'առանց տվյալի՝ ' + dur(st.nodata_min) : null, num(st.moving_min) !== null ? null : 'is-mute'));
+        const off = offStops(t);
+        if (Array.isArray(t.stops_off)) {
+            rows.push(field('Կանգառներ ոչ խանութում', off.length ? off.length + ' · ' + dur(off.reduce((m, s) => m + (num(s.minutes) || 0), 0)) : 'չկա',
+                off.length ? [off.some(s => s.off_line) ? 'երթուղուց դուրս՝ ' + off.filter(s => s.off_line).length : null,
+                    off.some(s => s.long) ? 'երկար (ահազանգ)՝ ' + off.filter(s => s.long).length : null].filter(Boolean).join(' · ') || null : null,
+                off.some(s => s.long || s.off_line) ? 'is-warn' : 'is-ok'));
+        }
         const ov = st.overspeed;
         rows.push(field('Արագության գերազանցում', ov ? (ov.count ? ov.count + ' անգամ · ' + dur(ov.minutes) : 'չկա') : NO_DATA,
             th ? 'ավելի, քան ' + fmt(th.speed_kmh) + ' կմ/ժ՝ ' + fmt(th.speed_sec) + ' վ-ից երկար' : null,
@@ -1009,6 +1301,7 @@
                 .bindTooltip(tip('Պահեստ')).addTo(state.layer);
         }
         drawPlan(t, state.layer);   // плановая линия — и при воспроизведении (сравнить путь с планом)
+        drawOffStops(t, state.layer);   // стоянки не по плану — и при воспроизведении
         L.polyline(t.track, { color: LN.track, weight: LINE_W, opacity: 0.3, interactive: false }).addTo(state.layer);   // весь день — тускло
         rp.prefix = cased([], LN.track, 'lv-l-track', state.layer, { interactive: false });   // пройденное — с обводкой
         setArrows(t.track);
@@ -1092,7 +1385,9 @@
         if (state.busy) { state.again = true; return; }   // дата/выбор сменились во время запроса — один повтор после него
         state.busy = true;
         try {
+            const asked = state.date;   // дату сменили во время запроса — ответ устарел: не показывать, повторить
             const data = await api('/api/routes/live' + query());
+            if (state.date !== asked) { state.again = true; return; }
             state.data = data;
             if (!state.date) $('lvDate').value = data.date;
             $('lvToday').hidden = !state.date;
@@ -1104,15 +1399,18 @@
             if (state.selected) {
                 const sep = query() ? '&' : '?';
                 const one = await api('/api/routes/live/truck' + query() + sep + 'car=' + encodeURIComponent(state.selected));
+                if (state.date !== asked) { state.again = true; return; }
                 state.detail = one.truck;
                 retrack(one.truck);
             }
-            renderProblems(data.trucks);
+            syncAlarms(data);
+            renderProblems();
             renderSummary(data.trucks);
             renderList(data.trucks);
             renderMarkers(data.trucks);
             renderTruckLayer(state.detail);
             renderCard();
+            renderBanner();
             showError('');
             $('lvLive').hidden = false;
             $('lvLive').classList.toggle('is-paused', !!state.date);
@@ -1163,11 +1461,14 @@
         });
     }
 
-    // опрос — только пока вкладка видна (телефон в кармане не тратит трафик); прошлый день не обновляется
+    // опрос — только пока вкладка видна (телефон в кармане не тратит трафик); прошлый день не обновляется. Звук включён —
+    // и в скрытой вкладке, раз в 60 с: счётчик «(N) ⚠» во вкладке и звук новой красной тревоги работают из другой вкладки
     function schedule() {
         clearInterval(state.timer);
         state.timer = null;
-        if (document.visibilityState === 'visible' && !state.date) state.timer = setInterval(refresh, POLL_MS);
+        if (state.date) return;
+        if (document.visibilityState === 'visible') state.timer = setInterval(refresh, POLL_MS);
+        else if (state.alarm.sound) state.timer = setInterval(refresh, HIDDEN_POLL_MS);
     }
     document.addEventListener('visibilitychange', () => {
         if (document.visibilityState === 'visible') refresh();
@@ -1188,6 +1489,22 @@
         schedule();
     });
     $('lvToday').addEventListener('click', () => { $('lvDate').value = ''; $('lvDate').dispatchEvent(new Event('change')); });
+    // «Տեսա բոլորը» — все новые; «Ձայն» — включение (жест пользователя будит AudioContext: пробный сигнал)
+    $('lvAlarmAck').addEventListener('click', () => {
+        ack(state.alarm.probs.filter(isNew).map(p => p.key));
+        const first = $('lvProbList').querySelector('.lv-prob');   // баннер скрылся — фокус на список проблем
+        if (first) first.focus({ preventScroll: true });
+        $('lvProbList').scrollTop = 0;
+    });
+    $('lvSound').addEventListener('click', () => {
+        state.alarm.sound = !state.alarm.sound;
+        saveSound(state.alarm.sound);
+        renderSound();
+        if (state.alarm.sound) wakeAudio().then(() => { renderSound(); beep(); });
+        schedule();
+    });
+    renderSound();
+    armAudio();
 
     initMap();
     refresh();

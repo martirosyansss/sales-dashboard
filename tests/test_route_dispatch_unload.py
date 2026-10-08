@@ -150,7 +150,9 @@ def test_dispatch_day_carries_own_store_times(client):
     assert all('store_unload' not in key for s in stops.values() for key in s)  # в plan — ничего нового
     assert _unload(client, 102, None).status_code == 200 and _unload(client, 101, 25).status_code == 200
     assert client.get(f'/api/routes/dispatch?date={DAY}').get_json()['store_unload'] == {'101': 25.0}
-    assert _unload(client, 999, 30).status_code == 400                          # магазина нет в данных ERP раздела
+    # 999 — вне шаблонов менеджеров, но в заказах дня: время задают и ему (08.10, «Խանութը չի գտնվել»)
+    assert _unload(client, 999, 30).status_code == 200
+    assert _unload(client, 123456, 30).status_code == 400                       # ни в снимке, ни в заказах
 
 
 def test_every_page_route_carries_store_times(client):

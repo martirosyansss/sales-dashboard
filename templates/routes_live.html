@@ -15,7 +15,7 @@
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=25">
 <!-- Машины на карте сейчас (№76): тема «Развоза», свои классы .lv-*; новые файлы статики — и в _PUBLIC_STATIC app_v2 -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_live.css') }}?v=12">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_live.css') }}?v=14">
 {% endblock %}
 
 {% block content %}
@@ -32,9 +32,24 @@
                 <label class="rt-sr-only" for="lvDate">Օր</label>
                 <input id="lvDate" class="rt-input lv-date" type="date">
                 <button id="lvToday" type="button" class="rt-btn rt-btn-ghost rt-btn-sm" hidden>Այսօր</button>
+                <!-- звук новой красной тревоги: по умолчанию выключен, помнится в браузере (lv.sound) -->
+                <button id="lvSound" type="button" class="rt-btn rt-btn-ghost rt-btn-sm lv-sound" aria-pressed="false"
+                        title="Ձայնային ազդանշան՝ նոր կրիտիկական խնդրի դեպքում"><i class="fas fa-volume-xmark" aria-hidden="true"></i><span>Ձայն</span></button>
             </div>
         </div>
     </header>
+
+    <!-- Тревоги (08.10): новые, не отмеченные «Տեսա» проблемы сегодня — мигающая полоса; диктор — только когда новых прибавилось -->
+    <div id="lvAlarm" class="lv-alarm" hidden>
+        <i id="lvAlarmIco" class="fas fa-triangle-exclamation lv-alarm-ico" aria-hidden="true"></i>
+        <div class="lv-alarm-main">
+            <b id="lvAlarmCount" class="lv-alarm-count"></b>
+            <em class="lv-new-tag" aria-hidden="true">ՆՈՐ</em>
+            <ul id="lvAlarmList" class="lv-alarm-list"></ul>
+        </div>
+        <button id="lvAlarmAck" type="button" class="lv-alarm-ack"><i class="fas fa-check-double" aria-hidden="true"></i><span>Տեսա բոլորը</span></button>
+    </div>
+    <div id="lvAlarmSr" class="rt-sr-only" role="alert"></div>
 
     <div id="lvStatus" class="rt-sr-only" role="status" aria-live="polite"></div>
     <div id="lvAlert" class="rt-alert" role="alert" hidden>
@@ -70,9 +85,14 @@
                     <span><i class="lv-ln is-minor"></i>փոքր շեղում</span>
                     <span><i class="lv-ln is-explained"></i>բացատրված շեղում</span>
                     <span><i class="lv-ln is-over"></i>ավելորդ վազք</span>
+                    <span><i class="lv-spin is-sample"><b>12 ր</b></i>կանգառ ոչ խանութում</span>
+                    <span><i class="lv-spin is-long is-sample"><b>25 ր</b></i>երկար կանգառ (ահազանգ)</span>
+                    <span><i class="lv-spin is-off is-sample"><b>ր</b></i>կարմիր եզր՝ երթուղուց դուրս</span>
                     <span><i class="lv-dot is-moving"></i>ընթացքի մեջ</span>
                     <span><i class="lv-dot is-standing"></i>կանգնած</span>
                     <span><i class="lv-dot is-alert"></i>ահազանգ</span>
+                    <span><i class="lv-dot is-warn"></i>զգուշացում</span>
+                    <span><i class="lv-ring"></i>նոր խնդիր (թարթում է)</span>
                     <span><i class="lv-dot is-offline is-stale"></i>կապ չկա (վերջին հայտնի դիրքը)</span>
                     <span><i class="lv-sq is-full"></i>առաքված</span>
                     <span><i class="lv-sq is-partial"></i>մասնակի</span>
@@ -118,6 +138,20 @@
                     </select>
                 </div>
             </div>
+            <!-- Стоянки не по плану (владелец 08.10 «очень чётко покажи остановки вне маршрута»): t.stops_off — открыто сразу -->
+            <details class="lv-more" id="lvOffBox" open hidden>
+                <summary>Կանգառներ ոչ խանութում</summary>
+                <p class="lv-pf" id="lvOffNote"></p>
+                <div class="lv-table-wrap">
+                    <table class="lv-stops lv-offs">
+                        <thead>
+                            <tr><th scope="col">#</th><th scope="col">Ժամը</th><th scope="col">Ր</th>
+                                <th scope="col">Որտեղ</th><th scope="col"><span class="rt-sr-only">Քարտեզ</span></th></tr>
+                        </thead>
+                        <tbody id="lvOff"></tbody>
+                    </table>
+                </div>
+            </details>
             <details class="lv-more" id="lvStopsBox">
                 <summary>Խանութներ՝ պլան և փաստ</summary>
                 <p class="lv-pf" id="lvPf" hidden></p>
@@ -189,6 +223,6 @@
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
 <!-- подложка — Яндекс, как на остальных картах (решение владельца 06.10, см. live_page) -->
-<script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=1" data-yandex-key="{{ yandex_tiles_key }}"></script>
-<script src="{{ url_for('static', filename='js/routes_live.js') }}?v=18"></script>
+<script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=2" data-yandex-key="{{ yandex_tiles_key }}"></script>
+<script src="{{ url_for('static', filename='js/routes_live.js') }}?v=21"></script>
 {% endblock %}

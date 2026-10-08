@@ -4,6 +4,9 @@
    не отдаёт ни одной плитки (неверный ключ), — OpenStreetMap, как было.
    Условия Яндекса: логотип в углу карты без своих отступов, ссылка на Яндекс Карты; до 30 запросов/с на ключ;
    плитки не изменять (п. 5.1.2) — тёмный фильтр routes.css действует только на слой OpenStreetMap (rt-tiles-osm).
+   Тёмная карта Яндекса (владелец 08.10: «Яндекс тоже чёрным, если остальное чёрное») — тёмная тема, которую рисует
+   сам Яндекс (theme=dark; в документации Tiles API параметра нет, проверено 08.10: те же плитки, тёмные). Перестанет
+   работать — Яндекс вернёт обычную светлую карту, не ошибку. Все страницы «Маршрутов» тёмные.
    Проверка в браузере: tests/routes_basemap_browser_check.py. */
 (function () {
     'use strict';
@@ -64,7 +67,7 @@
 
     function addYandex(map) {
         const layer = L.tileLayer('https://tiles.api-maps.yandex.ru/v1/tiles/?x={x}&y={y}&z={z}'
-            + '&lang=ru_RU&l=map&projection=web_mercator&scale={ymScale}&apikey={ymKey}', {
+            + '&lang=ru_RU&l=map&theme=dark&projection=web_mercator&scale={ymScale}&apikey={ymKey}', {
             maxZoom: 19,
             updateWhenIdle: true,           // при перетаскивании не грузить промежуточные плитки — меньше запросов
             ymScale: SCALE,

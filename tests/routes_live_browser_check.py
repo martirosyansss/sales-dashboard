@@ -6,7 +6,7 @@
 папки (по умолчанию — корень проекта) копируются во временную папку через sqlite backup (только чтение источника);
 дальше всё пишется только в копию: синтетический план «Развоза» на сегодня и день четырёх машин парка копии (трек,
 доставки, состояние терминала): в пути с превышением скорости, долгая стоянка не у магазина, нет связи и GPS выключен,
-на складе до выезда. Порт 8771 на 127.0.0.1. Снимки — в _shots/ (ПК 1440×900 и телефон 390×860).
+на складе до выезда. Порт на 127.0.0.1 — свободный (LIVE_CHECK_PORT — свой). Снимки — в _shots/ (ПК 1440×900 и телефон 390×860).
 
 Этап 2 (06.10): у машины 1 — возврат товара и две заправки (интервал «полный бак → полный бак» против расчёта),
 у неё же карточка показывает «բեռնված այս երթում», возврат на борту, сверку топлива, источник ETA («ճանապարհներով» /
@@ -40,6 +40,18 @@
 возвращает фокус), объяснённая тревога — серой с причиной в журнале и уходит из «Խնդիրներ հիմա», «Չեղարկել» её
 возвращает. Администратор — g.user_role (гейта app_v2 в проверке нет).
 
+Тревоги (08.10, «диспетчер сразу видит проблемы»): машина 5 сейчас превышает скорость (едет с выезда, терминал
+сообщает 97 км/ч; машина 1 по-прежнему «ընթացքի մեջ»), проверка «speed» — если порог копии ниже 95 км/ч; баннер
+«N նոր խնդիր» мигает, «(N) ⚠» в заголовке вкладки, строка списка и маркер — классы важности и новой, у маркера красной
+машины — пульсирующее кольцо; «нет связи» машины 3 — жёлтая, не красная; «Տեսա» у одной строки — строка ровная, в баннере
+на одну меньше; «Տեսա բոլորը» — баннера и счётчика во вкладке нет, отметки переживают перезагрузку; ответ за прошлый день,
+пришедший после «Այսօր», не показывается и отметок не трогает; ответы API флота подменяются (page.route): начало той же
+тревоги сдвинулось (дребезг) — отметка держится, новое начало после 10 мин без проблемы — снова мигает; «не успеет» к окну →
+к плану — не новая, к плану → к окну — новая; звук, включённый до перезагрузки, ждёт касания страницы (подсказка на кнопке);
+у машины 2 после «Բացատրել» пропущенного магазина остались только жёлтые — корпус маркера жёлтый; prefers-reduced-motion:
+reduce — ни одной анимации, метка «ՆՈՐ» и обводка; телефон 390 px с баннером — без горизонтальной прокрутки. Снимки:
+live_alarm_desktop.png, live_alarm_acked.png, live_alarm_phone.png.
+
 Проверяется: список и маркеры всех машин, состояние и счётчик тревог, карточка выбранной машины (поля №76), путь и
 магазины на карте, нет горизонтальной прокрутки на телефоне, опрос раз в 15 с, нет ошибок страницы и консоли (кроме сетевых
 ошибок внешних ресурсов: шрифты, CDN, плитки).
@@ -49,12 +61,13 @@ from __future__ import annotations
 import logging
 import math
 import os
+import re
 import sqlite3
 import sys
 import tempfile
 import threading
 import uuid
-from datetime import timedelta
+from datetime import date, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -74,8 +87,9 @@ from route_optimizer import live  # noqa: E402
 from route_optimizer import store as st  # noqa: E402
 from route_optimizer.geo import haversine_km  # noqa: E402
 
-PORT = 8771
-BASE = f'http://127.0.0.1:{PORT}'
+# порт: LIVE_CHECK_PORT или свободный (0) — проверки соседних сессий на одном ПК не отвечают друг за друга (Windows
+# пускает два сервера на один порт)
+PORT = int(os.environ.get('LIVE_CHECK_PORT', '0'))
 SHOTS = ROOT / '_shots'
 EXTERNAL = ('cdn.jsdelivr.net', 'fonts.googleapis.com', 'fonts.gstatic.com', 'tile.openstreetmap.org', 'cdnjs.cloudflare.com')
 
@@ -130,8 +144,8 @@ def seed(app: Flask) -> list[str]:
     depot = bundle.depot or (40.1360, 44.4710)
     if bundle.depot is None:   # пустая копия: склад нужен линии плана (рейс — склад → магазины → склад) и тревогам
         rs.save(st.Changes(dict(bundle.settings), True, depot, (), ()), 'live-check')
-    cars = [c for c, t in sorted(bundle.trucks.items()) if t.capacity_kg and t.fuel_l_per_100km][:4]
-    while len(cars) < 4:
+    cars = [c for c, t in sorted(bundle.trucks.items()) if t.capacity_kg and t.fuel_l_per_100km][:5]
+    while len(cars) < 5:
         cars.append(f'TEST{len(cars) + 1}')
     now = clock.now()
     day = now.date().isoformat()
@@ -257,6 +271,11 @@ def seed(app: Flask) -> list[str]:
     # 4) на складе, загрузка
     a, t = park(depot, now - timedelta(minutes=25), 24)
     send(cars[3], a, (), {**dev, 'charging': True, 'net': 'wifi'})
+    # 5) тревоги (08.10): с выезда со склада едет 97 км/ч и едет сейчас (тревога speed активна), не к магазинам машины 1
+    b, _ = path([depot, (40.2250, 44.4400)], now, speed=27.0)
+    b = [(t - (b[-1][0] - now), la, lo, sp, br) for t, la, lo, sp, br in b]   # конец пути — сейчас
+    a, _ = park(depot, b[0][0] - timedelta(minutes=6), 5)
+    send(cars[4], a + b, (), dev)
     return cars
 
 
@@ -265,6 +284,14 @@ POINT_JS = """([sel, at]) => { const p = document.querySelector(sel); if (!p) re
     const len = p.getTotalLength(), q = p.getPointAtLength(at < 1 ? len * at : at), m = p.getScreenCTM();
     const x = q.x * m.a + q.y * m.c + m.e, y = q.x * m.b + q.y * m.d + m.f;
     return document.elementFromPoint(x, y) === p ? [x, y] : null; }"""
+# маркер машины по номеру: классы и число анимаций (вместе с ::before / ::after)
+MARK_JS = """car => { const m = [...document.querySelectorAll('.lv-marker')].find(x => x.querySelector('.lv-marker-plate').textContent === car);
+    return m ? [m.className, m.getAnimations({ subtree: true }).length] : null; }"""
+# анимации тревог на странице: баннер, строки, машины, маркеры, сводка
+ALARM_ANIMS_JS = """() => [...document.querySelectorAll('#lvAlarm, .lv-prob, .lv-item, .lv-marker, .lv-sum')]
+    .reduce((n, e) => n + e.getAnimations({ subtree: true }).length, 0)"""
+FLEET_RE = re.compile(r'/api/routes/live$')   # API флота за сегодня (без ?date=)
+NO_SCROLL_JS = 'document.documentElement.scrollWidth <= window.innerWidth + 1'
 TRACK_HIT = '.leaflet-overlay-pane path.lv-hit.is-track'
 PLAN_HIT = '.leaflet-overlay-pane path.lv-hit.is-plan'
 
@@ -297,6 +324,162 @@ def fit_track(page) -> None:
     page.wait_for_timeout(300)
 
 
+def alarm_checks(page, cars, check) -> None:
+    """Тревоги (08.10): важность, новые мигают, «Տեսա» строки и «Տեսա բոլորը», заголовок вкладки, отметки после перезагрузки,
+    устаревший ответ при смене даты, случай тревоги (since) и дребезг, ослабление / усиление «не успеет», звук до касания."""
+    def count() -> int:
+        m = re.search(r'(\d+) նոր խնդիր', page.inner_text('#lvAlarmCount')) if page.is_visible('#lvAlarm') else None
+        return int(m.group(1)) if m else 0
+
+    def row(car, kind):
+        return page.locator(f'#lvProbList li[data-key$="|{car}|{kind}"]')
+
+    def cls(loc) -> str:
+        return (loc.get_attribute('class') or '') if loc.count() == 1 else ''
+
+    def prob(car, kind) -> str:
+        return cls(row(car, kind).locator('button.lv-prob'))
+
+    def fleet(fn) -> None:
+        """Ответ API флота за сегодня — через fn(машина) (синтетика тревог); None — настоящий."""
+        page.unroute(FLEET_RE)
+        if fn:
+            def handle(route):
+                resp = route.fetch()
+                body = resp.json()
+                for t in body['trucks']:
+                    fn(t)
+                route.fulfill(response=resp, json=body)
+            page.route(FLEET_RE, handle)
+
+    def poll() -> None:
+        page.evaluate("document.dispatchEvent(new Event('visibilitychange'))")   # вкладка видна — опрос сразу
+        page.wait_for_timeout(1000)
+
+    speed_kmh = page.evaluate("fetch('/api/routes/live').then(r => r.json()).then(b => b.thresholds.speed_kmh)")
+    fast = speed_kmh < 95   # машина 5 едет 97 км/ч: тревога «speed» — если порог копии ниже
+    red_car = cars[4] if fast else cars[0]   # иначе красная — «не успеет» к окну машины 1
+    today = page.input_value('#lvDate')
+    base = page.title()
+    n = count()
+    check(n >= 4 and 'is-new lv-sev1' in (page.get_attribute('#lvAlarm', 'class') or '')
+          and page.evaluate("document.getElementById('lvAlarm').getAnimations().length") > 0,
+          f'тревоги: баннер красный, мигает — «{n} նոր խնդիր» ({page.inner_text("#lvAlarm")!r})')
+    check(base.startswith(f'({n}) ⚠ '), f'тревоги: заголовок вкладки — «({n}) ⚠ …» ({base!r})')
+    if fast:
+        check('lv-sev1' in prob(cars[4], 'speed') and 'is-new' in prob(cars[4], 'speed'),
+              f'тревоги: превышение скорости машины 5 — красная новая ({prob(cars[4], "speed")!r}, порог {speed_kmh})')
+    for car, kind, sev in ((cars[0], 'late:window', 1), (cars[1], 'stop', 2), (cars[1], 'deviation', 2),
+                           (cars[1], 'sequence', 1), (cars[2], 'gps', 1), (cars[3], 'late:plan', 2)):
+        check(f'lv-sev{sev}' in prob(car, kind), f'тревоги: {kind} машины {cars.index(car) + 1} — важность {sev} ({prob(car, kind)!r})')
+    nc = prob(cars[2], 'no_contact')
+    check('lv-sev2' in nc and 'lv-sev1' not in nc, f'тревоги: «нет связи» машины 3 — жёлтая, не красная ({nc!r})')
+    sevs = page.eval_on_selector_all('#lvProbList button.lv-prob', 'els => els.map(e => e.className)')
+    rank = [(0 if 'is-new' in c else 2) + (0 if 'lv-sev1' in c else 1 if 'lv-sev2' in c else 9) for c in sevs]
+    check(rank == sorted(rank), f'тревоги: порядок — новые красные, новые жёлтые, отмеченные, сведения ({rank})')
+    check(page.locator('#lvProbList .lv-ack').count() == n, 'тревоги: у каждой новой проблемы — «Տեսա»')
+    item = page.get_attribute(f'.lv-item[data-car="{red_car}"]', 'class')
+    check(all(x in item for x in ('lv-sev1', 'is-new', 'lv-new1')), f'тревоги: красная машина в списке — новая ({item!r})')
+    mk = page.evaluate(MARK_JS, red_car)
+    check(mk and 'is-new' in mk[0] and 'lv-new1' in mk[0] and mk[1] > 0,
+          f'тревоги: маркер красной машины ({"превышение скорости" if fast else "не успеет к окну"}) — пульсирующее кольцо ({mk})')
+    tile = page.locator('.lv-sum.is-alert')
+    check('is-new' in (tile.get_attribute('class') or '') and tile.locator('b').inner_text() != '0',
+          'тревоги: плитка «ահազանգ» мигает (и в ней не ноль)')
+    page.screenshot(path=str(SHOTS / 'live_alarm_desktop.png'))
+
+    row(cars[2], 'no_contact').locator('.lv-ack').click()
+    page.wait_for_timeout(200)
+    check('is-new' not in prob(cars[2], 'no_contact') and row(cars[2], 'no_contact').locator('.lv-ack').count() == 0
+          and count() == n - 1, f'тревоги: «Տեսա» — строка ровная, в баннере {count()} из {n}')
+    check(page.evaluate("document.activeElement.classList.contains('lv-prob')"), 'тревоги: после «Տեսա» фокус — на строке')
+    page.click('#lvAlarmAck')
+    page.wait_for_timeout(200)
+    mk = page.evaluate(MARK_JS, red_car)
+    check(not page.is_visible('#lvAlarm') and '⚠' not in page.title() and page.locator('.is-new').count() == 0
+          and page.inner_text('#lvAlarmSr') == '',
+          f'тревоги: «Տեսա բոլորը» — баннера, счётчика во вкладке и текста диктора нет ({page.title()!r}, '
+          f'{page.eval_on_selector_all(".is-new", "els => els.map(e => e.className)")})')
+    check(mk and 'lv-sev1' in mk[0] and 'is-new' not in mk[0] and mk[1] == 0,
+          f'тревоги: отмеченная — маркер с ровным кольцом, без анимации ({mk})')
+    page.screenshot(path=str(SHOTS / 'live_alarm_acked.png'))
+    page.reload()
+    page.wait_for_selector('.lv-item')
+    page.wait_for_timeout(500)
+    check(not page.is_visible('#lvAlarm') and '⚠' not in page.title() and page.locator('#lvProbList .lv-prob.lv-sev1').count() >= 3,
+          'тревоги: после перезагрузки отметки «Տեսա» сохранились (баннера нет, проблемы — на месте)')
+
+    # дату сменили на прошлую и сразу вернули «сегодня»: ответ за прошлый день пришёл последним — не показывается
+    page.evaluate("""() => { window.__lists = []; new MutationObserver(() => window.__lists.push([...document.querySelectorAll(
+        '#lvList .lv-item')].map(e => e.dataset.car).join(','))).observe(document.getElementById('lvList'), { childList: true }); }""")
+    held = []
+    page.route('**/api/routes/live?date=*', lambda r: held.append(r))
+    set_date = "v => { const d = document.getElementById('lvDate'); d.value = v; d.dispatchEvent(new Event('change')); }"
+    page.evaluate(set_date, (date.fromisoformat(today) - timedelta(days=1)).isoformat())
+    page.wait_for_timeout(300)
+    page.evaluate(set_date, '')   # как «Այսօր»
+    page.wait_for_timeout(300)
+    for r in held:   # отпустить до unroute (unroute сам отпускает ждущие)
+        r.continue_()
+    page.unroute('**/api/routes/live?date=*')
+    page.wait_for_timeout(1500)
+    lists = page.evaluate('window.__lists')
+    check(held and lists and len(set(lists)) == 1 and page.input_value('#lvDate') == today and not page.is_visible('#lvAlarm')
+          and page.is_visible('#lvProbs'), f'тревоги: устаревший ответ за прошлый день не показан, отметки целы ({lists})')
+
+    # случай тревоги: начало той же стоянки сдвинулось (дребезг) — отметка держится и запоминает новое начало
+    stop_key = f'{today}|{cars[1]}|stop'
+    flap = f'{today}T10:58:30+04:00'
+    fleet(lambda t: t['alerts']['since'].update(stop=flap) if t['car_code'] == cars[1] else None)
+    poll()
+    stored = page.evaluate(f"JSON.parse(localStorage.getItem('lv.ack'))[{stop_key!r}]")
+    check('is-new' not in prob(cars[1], 'stop') and stored and stored['since'] == flap,
+          f'тревоги: начало той же тревоги сдвинулось (дребезг) — «Տեսա» держится ({stored})')
+    # 11 мин страница не опрашивала (сон, скрытая вкладка): новое начало стоянки — новый случай, мигает; GPS с тем же
+    # началом — тот же случай, отметка держится
+    fleet(lambda t: t['alerts']['since'].update(stop=f'{today}T10:59:30+04:00') if t['car_code'] == cars[1] else None)
+    with page.expect_navigation():
+        page.evaluate("""keys => { const v = JSON.parse(localStorage.getItem('lv.ack'));
+            for (const k of keys) v[k].seen = Date.now() - 11 * 60000;
+            localStorage.setItem('lv.ack', JSON.stringify(v)); location.reload(); }""", [stop_key, f'{today}|{cars[2]}|gps'])
+    page.wait_for_selector('.lv-item')
+    page.wait_for_timeout(800)
+    check('is-new' in prob(cars[1], 'stop') and 'is-new' not in prob(cars[2], 'gps'),
+          f'тревоги: через 11 мин новое начало — снова новая, то же начало — отмечена ({prob(cars[1], "stop")!r}, '
+          f'{prob(cars[2], "gps")!r})')
+
+    # «не успеет»: к окну → к плану (машина 1) — не новая; к плану → к окну (машина 4) — новая красная
+    def lateness(t):
+        swap = {cars[0]: ('window', 'plan'), cars[3]: ('plan', 'window')}.get(t['car_code'])
+        for x in t['late'] if swap else ():
+            if x['late_kind'] == swap[0]:
+                x['late_kind'] = swap[1]
+    fleet(lateness)
+    poll()
+    check(row(cars[0], 'late:plan').count() == 1 and 'is-new' not in prob(cars[0], 'late:plan'),
+          f'тревоги: «не успеет» к окну → к плану — не новая ({prob(cars[0], "late:plan")!r})')
+    check('is-new' in prob(cars[3], 'late:window') and 'lv-sev1' in prob(cars[3], 'late:window'),
+          f'тревоги: «не успеет» к плану → к окну — новая красная ({prob(cars[3], "late:window")!r})')
+    fleet(None)
+    poll()
+    page.click('#lvAlarmAck')
+
+    # звук включён до перезагрузки: браузер ждёт касания — подсказка на кнопке; касание страницы — звук готов
+    page.evaluate("localStorage.setItem('lv.sound', '1')")
+    page.reload()
+    page.wait_for_selector('.lv-item')
+    locked = 'is-locked' in (page.get_attribute('#lvSound', 'class') or '') and 'Սեղմեք' in (page.get_attribute('#lvSound', 'title') or '')
+    page.click('.rt-title')
+    page.wait_for_timeout(400)
+    check(locked and 'is-locked' not in (page.get_attribute('#lvSound', 'class') or ''),
+          'тревоги: звук после перезагрузки — подсказка «Սեղմեք էջի վրա…», касание страницы её снимает')
+    page.click('#lvSound')
+    off = page.get_attribute('#lvSound', 'aria-pressed') == 'false' and page.evaluate("localStorage.getItem('lv.sound')") == '0'
+    page.click('#lvSound')
+    check(off and page.get_attribute('#lvSound', 'aria-pressed') == 'true', 'тревоги: «Ձայն» — выключается и включается (aria-pressed)')
+    page.click('#lvSound')
+
+
 def main() -> int:
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     logging.getLogger('werkzeug').setLevel(logging.ERROR)
@@ -322,6 +505,7 @@ def main() -> int:
         with app.app_context():
             cars = seed(app)
         server = make_server('127.0.0.1', PORT, app, threaded=True)
+        base = f'http://127.0.0.1:{server.server_port}'
         threading.Thread(target=server.serve_forever, daemon=True).start()
         SHOTS.mkdir(exist_ok=True)
         errors: list[str] = []
@@ -336,11 +520,14 @@ def main() -> int:
                 polls: list[str] = []
                 page.on('request', lambda r: polls.append(r.url) if ('/api/routes/live?' in r.url
                                                                      or r.url.endswith('/api/routes/live')) else None)
-                page.goto(BASE + '/routes/live')
+                page.goto(base + '/routes/live')
                 page.wait_for_selector('.lv-item')
                 items = page.locator('.lv-item')
-                check(items.count() == 4, f'в списке 4 машины ({items.count()})')
-                check(page.locator('.lv-marker').count() == 4, 'на карте 4 маркера')
+                check(items.count() == len(cars), f'в списке {len(cars)} машин ({items.count()})')
+                check(page.locator('.lv-marker').count() == len(cars), f'на карте {len(cars)} маркеров')
+                check('is-moving' in page.get_attribute(f'.lv-item[data-car="{cars[0]}"] .lv-dot', 'class')
+                      and page.locator('.lv-marker.is-moving .lv-marker-arrow').count() >= 1,
+                      'машина 1 «ընթացքի մեջ»: точка в списке и стрелка курса на маркере')
                 states = page.eval_on_selector_all('.lv-item .lv-dot', 'els => els.map(e => e.className)')
                 # машина 3: GPS выключен и связи нет — активная тревога GPS важнее «կապ չկա» (повторное ревью №76)
                 # (тревога машины 1 зависит от копии баз — настроек машин парка; на пустой копии её нет)
@@ -351,6 +538,7 @@ def main() -> int:
                 check('ուշանում' in page.inner_text('#lvProbList'), '«Խնդիրներ հիմա»: «не успеет» машины 1')
                 first = page.inner_text(f'.lv-item[data-car="{cars[0]}"]')
                 check('1 խանութ ուշանում է' in first, f'№87: в списке у машины 1 — «1 խանութ ուշանում է» ({first!r})')
+                alarm_checks(page, cars, check)
                 page.locator(f'.lv-item[data-car="{cars[0]}"]').click()
                 page.wait_for_selector('#lvCard:not([hidden]) .lv-grid dt')
                 page.wait_for_timeout(800)
@@ -448,6 +636,16 @@ def main() -> int:
                 page.locator(f'.lv-item[data-car="{cars[1]}"]').click()
                 page.wait_for_timeout(1200)
                 check('Երկար կանգառ' in page.inner_text('#lvActive'), 'машина 2: активная тревога «долгая стоянка»')
+                # 08.10 «очень чётко покажи остановки вне маршрута»: плашка с минутами на карте, таблица в карточке, кнопка к точке
+                check(page.locator('.leaflet-marker-pane .lv-spin.is-long').count() >= 1,
+                      'машина 2: долгая стоянка не у магазина — красной плашкой с минутами на карте')
+                check(page.is_visible('#lvOffBox') and page.locator('#lvOff tr').count() >= 1
+                      and 'Կանգառներ ոչ խանութում' in page.inner_text('#lvStats'),
+                      'машина 2: «Կանգառներ ոչ խանութում» — таблица в карточке и строка в показателях дня')
+                page.locator('#lvOff .lv-off-go').first.click()
+                page.wait_for_timeout(500)
+                check('Կանգառ ոչ խանութում՝' in page.inner_text('.leaflet-tooltip-pane'),
+                      'машина 2: кнопка строки показывает стоянку на карте')
                 check('Շեղում երթուղուց' in page.inner_text('#lvActive'), 'машина 2: активная тревога «Շեղում երթուղուց»')
                 check('Շեղում երթուղուց' in page.inner_text('#lvProbList'), '«Խնդիրներ հիմա»: отклонение машины 2')
                 check(page.locator('.leaflet-overlay-pane path.lv-l-dev').count() >= 1,
@@ -495,6 +693,9 @@ def main() -> int:
                 check(not page.is_visible('#lvExplainDlg'), '«Բացատրել»: сохранено, диалог закрыт')
                 check('Խանութներ բաց են թողնված' not in page.inner_text('#lvProbList'),
                       '«Բացատրել»: объяснённая тревога ушла из «Խնդիրներ հիմա»')
+                mk = page.evaluate(MARK_JS, cars[1])
+                check(mk and 'is-alert' in mk[0] and 'is-warn' in mk[0] and 'lv-sev2' in mk[0],
+                      f'тревоги: у машины 2 остались жёлтые (стоянка, отклонение) — корпус маркера жёлтый ({mk})')
                 if not page.is_visible('#lvLog'):
                     page.locator('#lvLogBox summary').click()
                 done = page.locator('#lvLog li.is-explained')
@@ -537,7 +738,7 @@ def main() -> int:
                 for w, h, cols in ((1366, 650, 2), (1920, 1080, 3)):
                     pc = browser.new_page(viewport={'width': w, 'height': h})
                     pc.on('pageerror', lambda e: errors.append(str(e)))
-                    pc.goto(BASE + '/routes/live')
+                    pc.goto(base + '/routes/live')
                     pc.wait_for_selector('.lv-item')
                     n_cols = pc.eval_on_selector('.lv-layout', "e => getComputedStyle(e).gridTemplateColumns.split(' ').length")
                     pc.locator(f'.lv-item[data-car="{cars[0]}"]').click()
@@ -551,11 +752,28 @@ def main() -> int:
                         out.mkdir(parents=True, exist_ok=True)
                         pc.screenshot(path=str(out / 'live-1366x650-car-selected.png'))
                     pc.close()
+                # «меньше движения»: новые — без анимации, обводка и «ՆՈՐ» (свой контекст — отметок «Տեսա» нет)
+                calm = browser.new_page(viewport={'width': 1440, 'height': 900}, reduced_motion='reduce')
+                calm.on('pageerror', lambda e: errors.append(str(e)))
+                calm.goto(base + '/routes/live')
+                calm.wait_for_selector('.lv-item')
+                calm.wait_for_timeout(500)
+                anims = calm.evaluate(ALARM_ANIMS_JS)
+                check(calm.is_visible('#lvAlarm') and anims == 0, f'тревоги, reduced motion: баннер есть, анимаций нет ({anims})')
+                new_row = calm.locator('#lvProbList .lv-prob.is-new').first
+                check(calm.is_visible('#lvAlarm .lv-new-tag') and new_row.locator('.lv-new-tag').is_visible()
+                      and new_row.evaluate('e => getComputedStyle(e).outlineWidth') == '3px',
+                      'тревоги, reduced motion: метка «ՆՈՐ» в баннере и строке, обводка 3px')
+                calm.close()
 
                 phone = browser.new_page(viewport={'width': 390, 'height': 860}, is_mobile=True, has_touch=True)
                 phone.on('pageerror', lambda e: errors.append(str(e)))
-                phone.goto(BASE + '/routes/live')
+                phone.goto(base + '/routes/live')
                 phone.wait_for_selector('.lv-item')
+                phone.wait_for_timeout(500)
+                check(phone.is_visible('#lvAlarm') and phone.evaluate(NO_SCROLL_JS),
+                      'тревоги, телефон 390 px: баннер переносится, нет горизонтальной прокрутки')
+                phone.screenshot(path=str(SHOTS / 'live_alarm_phone.png'))
                 phone.locator(f'.lv-item[data-car="{cars[0]}"]').click()
                 phone.wait_for_selector('#lvCard:not([hidden]) .lv-grid dt')
                 phone.wait_for_timeout(800)
@@ -573,6 +791,15 @@ def main() -> int:
                 wide = phone.evaluate('document.documentElement.scrollWidth > window.innerWidth + 1')
                 check(not wide, '08.10: телефон, машина 2 (перепробег, журнал с «Բացատրել») — нет горизонтальной прокрутки')
                 phone.locator('#lvCard').screenshot(path=str(SHOTS / 'live_phone_card2.png'))
+                # звук включён до перезагрузки: на телефоне жест — касание (pointerdown жестом не считается)
+                phone.evaluate("localStorage.setItem('lv.sound', '1')")
+                phone.reload()
+                phone.wait_for_selector('.lv-item')
+                locked = 'is-locked' in (phone.get_attribute('#lvSound', 'class') or '')
+                phone.locator('.rt-title').tap()
+                phone.wait_for_timeout(400)
+                check(locked and 'is-locked' not in (phone.get_attribute('#lvSound', 'class') or ''),
+                      'тревоги, телефон: звук после перезагрузки — касание страницы его включает')
                 browser.close()
         finally:
             server.shutdown()
