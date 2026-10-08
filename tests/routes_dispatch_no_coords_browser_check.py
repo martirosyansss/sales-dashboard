@@ -89,7 +89,7 @@ def main() -> int:
             check(page.locator('#dpNoCoords .dp-nc-hd').is_visible(), 'A table header visible on desktop')
             ya = row.locator('a.rt-btn')
             href = ya.get_attribute('href') or ''
-            check(ya.count() == 1 and href.startswith('https://yandex.com/maps/?text=') and ya.get_attribute('target') == '_blank'
+            check(ya.count() == 1 and href.startswith('https://yandex.com/maps/?ll=44.5126%2C40.1811&z=12&text=') and ya.get_attribute('target') == '_blank'
                   and 'noopener' in (ya.get_attribute('rel') or ''), 'A Yandex search link opens new tab: ' + href[:60])
             check(row.locator('button', has_text='Նշել քարտեզում').count() == 1, 'A button «Նշել քարտեզում»')
             check(page.locator('#dpPickMap, .dp-howto, #dpPickList').count() == 0, 'A old howto/inline map removed')

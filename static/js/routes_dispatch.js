@@ -1474,7 +1474,7 @@
         const main = cell('dp-bl-main', name, span([s.code, s.agent_name || s.agent_code].filter(Boolean).join(' · ')), addr);
         const kg = document.createElement('b');
         kg.textContent = s.kg > 0 ? kgText(s.kg) : '—';
-        const num = cell('dp-bl-num dp-nc-num', kg, span(money(s.revenue)));
+        const qty = cell('dp-bl-num dp-nc-num', kg, span(money(s.revenue)));
         const act = cell('dp-bl-act');
         const find = mapSearchUrl(s.address);
         if (find) {
@@ -1485,7 +1485,7 @@
             a.rel = 'noopener noreferrer';
             a.innerHTML = '<i class="fas fa-magnifying-glass-location" aria-hidden="true"></i>';
             a.title = 'Գտնել հասցեն Yandex քարտեզում (նոր ներդիրում)';
-            a.setAttribute('aria-label', 'Գտնել Yandex քարտեզում — ' + label);
+            a.setAttribute('aria-label', 'Գտնել Yandex քարտեզում (նոր ներդիրում) — ' + label);
             act.append(a);
         }
         const b = document.createElement('button');
@@ -1495,13 +1495,13 @@
         b.setAttribute('aria-label', 'Նշել քարտեզում — ' + label);
         b.addEventListener('click', () => openGeo(s, true));
         act.append(b);
-        li.append(main, num, act);
+        li.append(main, qty, act);
         return li;
     }
     // Поиск адреса на Яндекс Картах: найти дом, скопировать координаты (клик по карте) и вставить в диалог
     function mapSearchUrl(address) {
         const q = String(address || '').trim();
-        return q ? 'https://yandex.com/maps/?text=' + encodeURIComponent(q) : '';
+        return q ? 'https://yandex.com/maps/?ll=44.5126%2C40.1811&z=12&text=' + encodeURIComponent(q) : '';   // ll — Ереван (долгота, широта)
     }
     function parseCoord(s) {
         const m = /^\s*(-?\d{1,2}(?:[.,]\d+)?)\s*[,;\s]\s*(-?\d{1,3}(?:[.,]\d+)?)\s*$/.exec(String(s || ''));
@@ -1551,7 +1551,7 @@
         const has = num(stop.lat) !== null && num(stop.lon) !== null;
         $('dpGeoTitle').textContent = '«' + (stop.name || stop.code) + '» — խանութի տեղը';
         $('dpGeoLead').textContent = (stop.address ? stop.address + '։ ' : '') + (src ? 'Հիմա՝ ' + src[1] + '։ ' : '')
-            + 'Քաշեք կետը կամ սեղմեք քարտեզի վրա այնտեղ, որտեղ մեքենան բեռնաթափում է, կամ տեղադրեք կոորդինատները։';
+            + (has ? 'Քաշեք կետը կամ սեղմեք' : 'Սեղմեք') + ' քարտեզի վրա այնտեղ, որտեղ մեքենան բեռնաթափում է, կամ տեղադրեք կոորդինատները։';
         $('dpGeoAuto').hidden = stop.coord_source !== 'manual';
         const find = mapSearchUrl(stop.address);
         $('dpGeoFind').hidden = !find;
@@ -1605,6 +1605,9 @@
                 toast('«' + (stop.name || stop.code) + '»՝ կետը պահպանված է։ ' + (state.data.plan
                     ? 'Խանութն այժմ «Դեռ երթերում չեն» ցուցակում է։' : 'Խանութը կմտնի երթերի մեջ դրանք կազմելիս։'));
                 await reloadQuiet();
+                // строка ушла из таблицы — фокус на следующий магазин или на заголовок раздела (не на <body>)
+                const next = $('dpNoCoords').hidden ? null : $('dpNoCoordsList').querySelector('button');
+                if (next) next.focus(); else if (!$('dpNoCoords').hidden) $('dpNoCoords').querySelector('summary').focus();
                 return;
             }
             await geoSaved('«' + (stop.name || stop.code) + '»՝ ' + (auto ? 'կետը նորից ավտոմատ է։' : 'նոր կետը պահպանված է։'), true);
