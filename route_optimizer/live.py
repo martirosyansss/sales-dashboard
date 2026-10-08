@@ -82,8 +82,8 @@
   трек начался вне склада — с первого магазина: дорога из дома не отклонение) до входа в зону склада после последнего
   магазина, когда все точки закрыты или посещены (дорога домой — не отклонение), и не позже закрытия дня. Не считаются
   точки в DEPOT_RADIUS_M склада и в STOP_RADIUS_M магазинов дня (терминала и плана), точки стоянки обеда (та же стоянка,
-  что у тревоги «стоянка»; подъезд к ней и отъезд — как обычно) и точки «по пути» участков плана по прямой (дороги в
-  карте нет: _along). Отклонение — не меньше DEVIATION_MIN_KM пути (geo.track_steps, как км дня) и DEVIATION_MIN_S от
+  что у тревоги «стоянка»; заезд к ней и отъезд — если не длиннее LUNCH_DETOUR_MAX_KM) и точки «по пути» участков
+  плана по прямой (дороги в карте нет: _along). Отклонение — не меньше DEVIATION_MIN_KM пути (geo.track_steps, как км дня) и DEVIATION_MIN_S от
   первой до последней точки (скачок GPS и короткий заезд к кафе у дороги — не отклонение); перерыв трека дольше
   STATS_GAP его прерывает. Сводка — число и км, в деталях — линии отклонений;
 - показатели дня (day_stats): максимальная скорость терминала (момент, место; больше ac.MAX_SPEED_KMH — сбой GPS, мимо),
@@ -138,6 +138,7 @@ PLAN_LINE_POINTS = 1500             # плановая линия на карт�
 DEVIATION_LINE_POINTS = 300         # линия одного отклонения на карте
 DEVIATION_MIN_KM = 0.5              # отклонение — не меньше 0,5 км пути вне линии плана…
 DEVIATION_MIN_S = 60.0              # …и не меньше минуты от первой до последней точки
+LUNCH_DETOUR_MAX_KM = 3.0          # заезд к обеду и отъезд от него вне линии до 3 км — не отклонение (дальше — отклонение)
 STRAIGHT_DETOUR = 1.5               # участок плана по прямой (дороги нет): путь машины не длиннее 1,5 × прямой — «по пути»
 STATS_GAP = timedelta(minutes=5)    # перерыв трека дольше — «нет данных»: ни езда, ни стоянка
 M_PER_DEG_LAT = 110540.0            # равнопромежуточная проекция (как actuals.simplify): метров на градус широты…
@@ -784,29 +785,39 @@ def deviation_runs(moving: Sequence[Fix], index: RouteIndex | None, threshold_m:
     """Отклонения от плановой линии (правило — в описании модуля): moving — точки км-трека (ac.moving_track), index —
     участки плана по дорогам (None — их нет: отклонений нет, не тревога), keep_out — (точка, радиус, м) склада и
     магазинов, since — первый настоящий выезд (None — машина не выезжала), until — конец счёта (возвращение последнего
-    рейса на склад, закрытие дня; None — день идёт), lunch — (начало, конец) стоянки обеда: её точки — не отклонение
-    (подъезд к обеду и отъезд — как обычно), straight — участки плана по прямой (_along). Перерыв трека дольше STATS_GAP
-    со сменой места отклонение прерывает (что было между точками — неизвестно); стоянка (в km-треке — две точки в одном
-    месте) — нет."""
+    рейса на склад, закрытие дня; None — день идёт), lunch — (начало, конец) стоянки обеда: её точки — не отклонение, и
+    заезд к обеду (отклонение, которое кончилось прямо перед стоянкой обеда) и отъезд от него (началось сразу после) не
+    длиннее LUNCH_DETOUR_MAX_KM — тоже (кафе в стороне от линии; дальний объезд вокруг обеда — отклонение); straight —
+    участки плана по прямой (_along). Перерыв трека дольше STATS_GAP со сменой места отклонение прерывает (что было между
+    точками — неизвестно); стоянка (в km-треке — две точки в одном месте) — нет."""
     if index is None or since is None:
         return []
     out: list[list[Fix]] = []
     run: list[Fix] = []
+    after_lunch = False   # отклонение началось сразу после стоянки обеда
 
-    def close() -> None:
-        if len(run) >= 2 and (run[-1].at - run[0].at).total_seconds() >= DEVIATION_MIN_S                 and _path_km(run) >= DEVIATION_MIN_KM:
-            out.append(list(run))
+    def close(before_lunch: bool = False) -> None:
+        nonlocal after_lunch
+        if len(run) >= 2 and (run[-1].at - run[0].at).total_seconds() >= DEVIATION_MIN_S:
+            km = _path_km(run)
+            if km >= DEVIATION_MIN_KM and not ((before_lunch or after_lunch) and km <= LUNCH_DETOUR_MAX_KM):
+                out.append(list(run))
+        after_lunch = False
+    prev_lunch = False
     for f in moving:
+        in_lunch = lunch is not None and lunch[0] <= f.at <= lunch[1]
         if run and f.at - run[-1].at > STATS_GAP and f.point != run[-1].point:   # стоянка в km-треке — две точки на месте
             close()
             run = []
-        if (f.at >= since and (until is None or f.at <= until)
-                and not (lunch is not None and lunch[0] <= f.at <= lunch[1])
+        if (not in_lunch and f.at >= since and (until is None or f.at <= until)
                 and off_route(f.point, index, threshold_m, keep_out, straight)):
+            if not run:
+                after_lunch = prev_lunch
             run.append(f)
-            continue
-        close()
-        run = []
+        else:
+            close(in_lunch)
+            run = []
+        prev_lunch = in_lunch
     close()
     return out
 

@@ -93,8 +93,7 @@ def build_app(tmp: Path) -> Flask:
 
 
 class StraightRoads:
-    """Провайдер дорог без карты: линия участка «по дорогам» — тот же отрезок с серединой (две точки roads.draw рисует
-    у участка без дороги — views._plan_geometry счёл бы его «по прямой»)."""
+    """Провайдер дорог без карты: участок «по дорогам» (путь найден) — тот же отрезок с серединой."""
     failed = False
     version = 'live-check'
 
@@ -104,9 +103,8 @@ class StraightRoads:
     def bypass(self, base, zone):
         return base
 
-    def lines(self, lines):
-        return [[p for a, b in zip(x, x[1:]) for p in (a, ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2))] + [x[-1]]
-                for x in lines]
+    def leg_lines(self, legs):
+        return [([a, ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2), b], True) for a, b in legs]
 
 
 def seed(app: Flask) -> list[str]:

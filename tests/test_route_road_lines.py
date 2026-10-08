@@ -101,3 +101,17 @@ def test_api_road_lines(client):
                 {'lines': [[[10.0, 10.0]]]}, {'lines': [[list(RN[0])] * (2 * 3000)]}):
         assert client.post('/api/routes/road-lines', json=bad).status_code == 400, bad
     assert client.post('/api/routes/road-lines', data='x', content_type='text/plain').status_code == 415
+
+
+def test_leg_lines_mark_found_path_even_when_drawn_as_two_points():
+    """Участки для плановой линии «Մեքենաները առցանց»: та же линия, что lines, и нашёлся ли путь (RoadNetwork.paths) —
+    прямая дорога 0 → 1, упрощённая до двух точек, найдена; островок и точка без дороги — нет."""
+    far = (40.50, 44.60)
+    roads = _roads()
+    legs = [(RN[0], RN[1]), (RN[0], RN[3]), (RN[0], far), (RN[1], RN[0])]
+    got = roads.leg_lines(legs)
+    assert [line for line, _ in got] == roads.lines([list(x) for x in legs])
+    assert [found for _, found in got] == [True, False, False, True]
+    assert len(got[0][0]) == 2                                  # дорога прямая — две точки, но по дорогам
+    roads.failed = True
+    assert roads.leg_lines(legs) is None

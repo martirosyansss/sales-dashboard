@@ -1657,20 +1657,39 @@ def test_deviation_ongoing_is_active_alert():
     assert old['deviation']['count'] == 1 and old['deviation']['active'] is False
 
 
+LUNCH_AT = datetime(2026, 10, 5, 12, 20, tzinfo=Y)
+
+
 def test_deviation_lunch_stay_itself_is_not_counted():
-    """Стоянка обеда (та же, что у тревоги «стоянка») — не отклонение, а подъезд к ней и отъезд — как обычно: кафе в 1,5 км
-    от линии — два отклонения (туда и обратно) без самой стоянки; тот же заезд не в обед — одно, со стоянкой."""
-    start = datetime(2026, 10, 5, 12, 20, tzinfo=Y)
-    lunch = _detour_track(1500.0, start, park_min=30)
-    runs = _route_view(lunch, lunch.t, _route())['deviation']['runs']
-    stay = [p for p in lunch.pts if p[4] == 0.0 and haversine_km((p[1], p[2]), _off(MID_AB, 1500.0)) < 0.01]
-    lo, hi = stay[0][0] / 1000, stay[-1][0] / 1000
-    assert len(runs) == 2 and all(datetime.fromisoformat(r['to']).timestamp() <= lo
-                                  or datetime.fromisoformat(r['from']).timestamp() >= hi for r in runs)
-    near = _detour_track(450.0, start, park_min=30)            # кафе у дороги — не отклонение
+    """Стоянка обеда (та же, что у тревоги «стоянка») — не отклонение, и заезд к ней и отъезд не длиннее 3 км — тоже:
+    кафе в 1,5 км от линии — машина не «красная» весь день; тот же заезд не в обед — одно отклонение, со стоянкой."""
+    lunch = _detour_track(1500.0, LUNCH_AT, park_min=30)
+    assert _route_view(lunch, lunch.t, _route())['deviation']['count'] == 0
+    near = _detour_track(450.0, LUNCH_AT, park_min=30)          # кафе у дороги
     assert _route_view(near, near.t, _route())['deviation']['count'] == 0
     morning = _detour_track(1500.0, datetime(2026, 10, 5, 9, 0, tzinfo=Y), park_min=30)
     assert _route_view(morning, morning.t, _route())['deviation']['count'] == 1
+
+
+def test_deviation_long_detour_around_lunch_still_counts():
+    """Дальний объезд вокруг обеда (заезд и отъезд дальше 3 км вне линии) — отклонения, но без самой стоянки обеда."""
+    far = _detour_track(6000.0, LUNCH_AT, park_min=30)
+    runs = _route_view(far, far.t, _route())['deviation']['runs']
+    stay = [p for p in far.pts if p[4] == 0.0 and haversine_km((p[1], p[2]), _off(MID_AB, 6000.0)) < 0.01]
+    lo, hi = stay[0][0] / 1000, stay[-1][0] / 1000
+    assert len(runs) == 2 and all(r['km'] > live.LUNCH_DETOUR_MAX_KM for r in runs)
+    assert all(datetime.fromisoformat(r['to']).timestamp() <= lo or datetime.fromisoformat(r['from']).timestamp() >= hi
+               for r in runs)
+    # отклонение не у обеда (не кончилось прямо перед ним и не началось сразу после) — правило обеда его не трогает
+    side = _off(MID_AB, 1500.0)
+    index = live.RouteIndex(PLAN_LINE, 300.0)
+    run = [Fix(T0 + timedelta(seconds=30 * i), side[0], side[1] + 0.003 * i, 5.0) for i in range(5)]   # ~1 км
+    back = [Fix(T0 + timedelta(minutes=5), *A, 5.0)]
+    lunch = (T0 + timedelta(minutes=30), T0 + timedelta(minutes=60))
+    assert len(live.deviation_runs(run + back, index, 300.0, [], T0, None, lunch)) == 1
+    stay = [Fix(lunch[0], *side, 1.0), Fix(lunch[1], *side, 1.0)]
+    late = [Fix(lunch[1] + timedelta(seconds=30 * (i + 1)), side[0], side[1] + 0.003 * i, 5.0) for i in range(5)]
+    assert live.deviation_runs(stay + late, index, 300.0, [], T0, None, lunch) == []   # сразу после обеда, ~1 км
 
 
 def test_plan_numbers_on_stops_and_route_stops():
@@ -1743,12 +1762,11 @@ class FakeLineRoads:
         self.ok = ok
         self.calls = []
 
-    def lines(self, lines):
-        self.calls.append([list(x) for x in lines])
+    def leg_lines(self, legs):
+        self.calls.append(list(legs))
         if not self.ok:
             return None
-        return [[p for a, b in zip(x, x[1:]) for p in (a, ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2))] + [x[-1]]
-                for x in lines]
+        return [([a, ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2), b], True) for a, b in legs]
 
 
 class FakeRoadProvider:
@@ -1921,18 +1939,21 @@ def test_plan_geometry_marks_long_straight_leg_inside_road_line():
     from route_optimizer import views
     far = (40.30, 44.70)
 
-    class Roads:
-        def lines(self, lines):
-            return [[a, b] if (a, b) == (A, far) else [a, ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2 + 0.001), b]
-                    for a, b in lines]
+    class Roads:   # путь (A → far) не найден; склад → A — найден, прямая дорога (две точки после упрощения)
+        def leg_lines(self, legs):
+            return [([a, b], (a, b) != (A, far)) if (a, b) in ((A, far), (DEPOT, A))
+                    else ([a, ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2 + 0.001), b], True) for a, b in legs]
     key = (((DEPOT, A, far, DEPOT),), (), 'v')
     geo = views._plan_geometry(Roads(), {'CAR1': key})['CAR1']
     assert geo.straight == ((A, far),) and len(geo.road_parts) == 2 and geo.road and geo.km is None
+    assert geo.road_parts[0] == (DEPOT, A)                             # прямая дорога — по дорогам, не «ճանապարհ չգտնվեց»
+    whole = views._plan_geometry(Roads(), {'CAR1': (((DEPOT, A, DEPOT),), (), 'v')})['CAR1']
+    assert whole.straight == () and whole.km is not None
     assert geo.trips[0][0] == DEPOT and geo.trips[0][-1] == DEPOT and A in geo.trips[0] and far in geo.trips[0]
     assert not geo.index(300.0).near(_off(((A[0] + far[0]) / 2, (A[1] + far[1]) / 2), 0.0), 300.0)   # прямой нет в индексе
 
     class Broken:
-        def lines(self, lines):
+        def leg_lines(self, legs):
             return None
     assert views._plan_geometry(Broken(), {'CAR1': key}) == {'CAR1': None}
 
@@ -2135,3 +2156,37 @@ def test_stay_cut_by_speed_jitter_truck_still_there_is_here_in_card_and_table():
     assert card['next']['stop_id'] == 'S:A' and card['next']['here'] is True
     assert g['here'] is True and g['leave'] is None and card['stops'][0]['unmarked'] is False
     assert g['minutes'] == round((tr.t - datetime.fromisoformat(g['arrive'])).total_seconds() / 60)
+
+
+def test_plan_lines_cache_keeps_recently_opened_old_day(monkeypatch):
+    """Прошлый день, открытый после трёх более поздних, не вытесняется сразу после постройки (иначе — пересборка на
+    каждом пересчёте и линии «по прямой» в истории): уходит тот день, который дольше всего не спрашивали."""
+    from route_optimizer import views
+    cache = _plan_cache(monkeypatch, False)
+    clock = [100.0]
+    monkeypatch.setattr(views, '_monotonic', lambda: clock[0])
+    geo = live.RouteGeometry(PLAN_LINE, PLAN_LINE)
+    built = []
+
+    def build(todo):
+        built.append(1)
+        return {car: geo for car in todo}
+    days = [DAY + timedelta(days=k) for k in (3, 2, 1)]
+    for d in days:
+        clock[0] += 1
+        cache.get(d, {'CAR1': 'k'}, build)
+    old = DAY - timedelta(days=4)
+    clock[0] += 1
+    assert cache.get(old, {'CAR1': 'k'}, build) == {'CAR1': geo}
+    n = len(built)
+    for _ in range(3):
+        clock[0] += 1
+        assert cache.get(old, {'CAR1': 'k'}, build) == {'CAR1': geo}   # уже построен — без пересборки
+    assert len(built) == n
+    kept = {d for d, _ in cache._slots}
+    assert old in kept and days[0] not in kept and len(kept) == views.LIVE_LINES_DAYS   # ушёл давно не открытый
+    clock[0] += 1
+    cache.get(days[1], {'CAR1': 'k'}, build)                           # спросили — «свежий», не уходит
+    clock[0] += 1
+    cache.get(days[0], {'CAR1': 'k'}, build)                           # пересобран; уходит самый давний — days[2]
+    assert {d for d, _ in cache._slots} == {old, days[1], days[0]}

@@ -4233,11 +4233,14 @@ class _LivePlanLines:
     на весь процесс (граф дорог ~100 МБ грузится на время построения): пока он занят, новые сборки ждут следующего
     опроса. Пока линии машины перестраиваются (план поменяли, карта обновилась), отдаются прежние линии того же дня — без
     мигания «по дорогам → по прямой» и пропадающих отклонений; не построились — по прямой (None), повтор — не раньше
-    LIVE_ROAD_FAIL_TTL_S. Память: не больше LIVE_LINES_DAYS дней и LIVE_LINES_MAX машино-дней."""
+    LIVE_ROAD_FAIL_TTL_S. Память: не больше LIVE_LINES_DAYS дней и LIVE_LINES_MAX машино-дней — уходят те, которые дольше
+    всего не спрашивали (не самые старые даты: открытый прошлый день не перестраивается на каждом пересчёте); только что
+    построенный день не уходит никогда."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        # (день, машина) → {'key', 'value' (None — сбой), 'at' (когда построено), 'good' — последнее удачное этого дня}
+        # (день, машина) → {'key', 'value' (None — сбой), 'at' (когда построено), 'good' — последнее удачное этого дня,
+        # 'used' — когда спрашивали последний раз}
         self._slots: dict[tuple[date, str], dict[str, Any]] = {}
         self._busy = False
 
@@ -4248,6 +4251,8 @@ class _LivePlanLines:
             todo: dict[str, Any] = {}
             for car, key in wanted.items():
                 slot = self._slots.get((day, car))
+                if slot is not None:
+                    slot['used'] = _monotonic()
                 if slot is not None and slot['key'] == key:
                     if slot['value'] is not None:
                         out[car] = slot['value']
@@ -4275,13 +4280,9 @@ class _LivePlanLines:
                     for car, key in todo.items():
                         value = got.get(car)
                         slot = self._slots.pop((day, car), {})
-                        self._slots[(day, car)] = {'key': key, 'value': value, 'at': _monotonic(),
+                        self._slots[(day, car)] = {'key': key, 'value': value, 'at': _monotonic(), 'used': _monotonic(),
                                                    'good': value if value is not None else slot.get('good')}
-                    days = sorted({d for d, _ in self._slots}, reverse=True)[:LIVE_LINES_DAYS]
-                    for k in [k for k in self._slots if k[0] not in days]:
-                        del self._slots[k]
-                    while len(self._slots) > LIVE_LINES_MAX:
-                        self._slots.pop(next(iter(self._slots)))
+                    self._trim(day)
             finally:
                 with self._lock:
                     self._busy = False
@@ -4295,14 +4296,30 @@ class _LivePlanLines:
             return serve()[0]
 
 
+    def _trim(self, built: date) -> None:
+        """Под замком: дни и машино-дни, которые дольше всего не спрашивали, — вон; день built остаётся."""
+        used: dict[date, float] = {}
+        for (d, _), slot in self._slots.items():
+            used[d] = max(used.get(d, -math.inf), slot['used'])
+        recent = sorted((d for d in used if d != built), key=lambda d: used[d], reverse=True)
+        keep = {built, *recent[:LIVE_LINES_DAYS - 1]}
+        for k in [k for k in self._slots if k[0] not in keep]:
+            del self._slots[k]
+        while len(self._slots) > LIVE_LINES_MAX:
+            old = min((k for k in self._slots if k[0] != built), key=lambda k: self._slots[k]['used'], default=None)
+            if old is None:
+                break
+            del self._slots[old]
+
+
 def _plan_geometry(roads: Any, todo: Mapping[str, Any]) -> dict[str, live.RouteGeometry | None]:
     """Линии рейсов машин todo (машина → ключ _LivePlanLines: (линии по прямой, граница центра, версия карты)) по дорогам
-    одним построением: каждый участок (магазин → магазин) — отдельной линией roads.lines, чтобы знать, нашлась ли для
-    него дорога. Участок без пути (точка дальше roads.SNAP_MAX_KM от дороги, пути нет — roads.draw рисует его двумя
-    точками) — по прямой (RouteGeometry.straight). Дороги не построились — машине None."""
+    одним построением: каждый участок (магазин → магазин) — своей линией roads.leg_lines, с отметкой, нашёлся ли путь по
+    дорогам (RoadNetwork.paths). Участок без пути (точка дальше roads.SNAP_MAX_KM от дороги, пути нет) — по прямой
+    (RouteGeometry.straight); прямая дорога, упрощённая до двух точек, — по дорогам. Дороги не построились — машине None."""
     legs = list(dict.fromkeys((a, b) for key in todo.values() for line in key[0] for a, b in zip(line, line[1:])
                               if a != b))
-    got = roads.lines([[a, b] for a, b in legs]) if legs else []
+    got = roads.leg_lines(legs) if legs else []
     if got is None:
         logger.warning('[Routes] Карта машин: дороги для плановых линий не построились — линии по прямой')
         return {car: None for car in todo}
@@ -4315,8 +4332,8 @@ def _plan_geometry(roads: Any, todo: Mapping[str, Any]) -> dict[str, live.RouteG
         for line in key[0]:
             pts: list[Point] = [line[0]]
             for a, b in zip(line, line[1:]):
-                road = drawn.get((a, b)) if a != b else None
-                if road is not None and len(road) > 2:
+                road, found = drawn.get((a, b), (None, False)) if a != b else (None, False)
+                if road is not None and found and len(road) > 1:
                     parts.append(tuple(tuple(p) for p in road))
                     pts.extend(tuple(p) for p in road[1:])
                 else:
