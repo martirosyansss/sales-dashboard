@@ -372,6 +372,38 @@ def test_loop_around_building_replaced_by_in_and_out():
     assert ok and len(line) == 3                                     # за угол по дороге — как привязано
 
 
+def _pair_chunk(a, b, dt, spd):
+    """Кусок из двух точек (как после фильтра: между ними могли быть выброшенные точки «стоит»)."""
+    t = T0.timestamp()
+    return tl.Chunk(((a[0], a[1], t, 8.0, spd), (b[0], b[1], t + dt, 8.0, spd)))
+
+
+def test_hairpin_at_speed_is_road_not_detour():
+    """Серпантин (перевал к Севану): 15 м/с, шаг 15 с — между точками 50 м по прямой, 225 м по дороге. Машина это
+    проехала за шаг (15 × 15 × 1,3 + 40 м) — линия по дороге, не хорда. Тот же разворот во дворе на 2 м/с или после
+    стоянки между точками (шаг дольше LOCAL_CONT_S) — объезд: хорда по точкам трека."""
+    a = A
+    b = east(a, 50.0)
+    loop = [a, north(a, 85.0), north(b, 85.0), b]                      # 85 + 50 + 85 ≈ 220 м по дороге
+    for dt, spd, spliced in ((15, 15.0, False), (15, 2.0, True), (15, None, True), (160, 15.0, True)):
+        chunk = _pair_chunk(a, b, dt, spd)
+        line, ok = tl.match_chunk(chunk, lambda body: fake_response(chunk.raw(), loop), TRIES)
+        hairpin = any(tl._m(v, loop[1]) < 1 for v in line)
+        assert ok and hairpin is not spliced, (dt, spd)
+        assert all(x[2] <= y[2] for x, y in zip(line, line[1:]))
+
+
+def test_stay_center_marker_is_not_a_real_zero_accuracy_fix():
+    """Середина стоянки в куске — погрешность STAY_ACC (−1): точка трека с погрешностью 0,0 — обычная точка (без
+    радиуса поиска стоянки, в доле непривязанных)."""
+    fixes = [ac.TrackFix(T0 + timedelta(seconds=10 * i), *east(A, 100.0 * i), 0.0, 10.0) for i in range(3)]
+    chunk = tl.chunks(fixes, [])[0]
+    body = tl.match_body(chunk, 'auto', None)
+    assert all('radius' not in x for x in body['shape']) and body['trace_options']['gps_accuracy'] == tl.GPS_ACC_M[0]
+    res = fake_response(chunk.raw(), unmatched=(0,))
+    assert tl._timed(res, chunk.points)[1] == pytest.approx(1 / 3)
+
+
 def test_driving_piece_starts_and_ends_at_stay_centers():
     """Кусок езды — от середины стоянки в момент отъезда до середины следующей в момент прибытия: соединение идёт
     по дорогам (середина ищет дорогу в STAY_RADIUS_M), без прямой от стоянки через квартал. Между стоянками без точек
@@ -382,8 +414,8 @@ def test_driving_piece_starts_and_ends_at_stay_centers():
     depot, site = actual.stays
     move = [c for c in parts if not c.stay]
     assert [c.stay for c in parts] == [True, False, True] and len(move) == 1
-    assert move[0].points[0] == (depot.center[0], depot.center[1], depot.leave.timestamp(), 0.0)
-    assert move[0].points[-1] == (site.center[0], site.center[1], site.arrive.timestamp(), 0.0)
+    assert move[0].points[0] == (depot.center[0], depot.center[1], depot.leave.timestamp(), tl.STAY_ACC, None)
+    assert move[0].points[-1] == (site.center[0], site.center[1], site.arrive.timestamp(), tl.STAY_ACC, None)
     body = tl.match_body(move[0], 'truck', None)
     assert body['shape'][0]['radius'] == tl.STAY_RADIUS_M and body['shape'][-1]['radius'] == tl.STAY_RADIUS_M
     assert all('radius' not in x for x in body['shape'][1:-1]) and body['trace_options']['gps_accuracy'] == 8.0
