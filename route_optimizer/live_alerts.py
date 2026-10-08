@@ -217,9 +217,12 @@ def build_text(card: Mapping[str, Any], a: Mapping[str, Any], phase: str, rules:
             lines.append(EXIT_TEXT[reason].capitalize() + '։')
     elif kind == 'center':
         lines.append('Մեքենան մտել է փոքր կենտրոն, որտեղ նրան թույլատրված չէ։')
-    elif kind == 'deviation':
-        lines.append(f'Մեքենան պլանային երթուղուց {rules.deviation_m:g} մ-ից ավելի հեռու է՝ արդեն '
-                     + str(a.get('km')).replace('.', ',') + ' կմ։')
+    elif kind == 'deviation':   # идёт — «уже N км»; кончилось к отправке — «отклонилась на N км (с — до)»
+        km = str(a.get('km')).replace('.', ',')
+        lines.append(f'Մեքենան պլանային երթուղուց {rules.deviation_m:g} մ-ից ավելի հեռու է՝ արդեն {km} կմ։'
+                     if a.get('active') else
+                     f'Մեքենան շեղվել էր պլանային երթուղուց ({rules.deviation_m:g} մ-ից ավելի)՝ {km} կմ, '
+                     f'{_hm(a.get("from"))}–{_hm(a.get("to"))}։')
     lat, lon, last_known = a.get('lat'), a.get('lon'), False
     if lat is None or lon is None:   # «нет связи» и GPS: места события нет — последняя известная точка
         pos = card.get('position') or {}

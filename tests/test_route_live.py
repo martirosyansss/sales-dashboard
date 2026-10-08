@@ -1559,8 +1559,10 @@ PLAN_LINE = ((DEPOT, A, B, DEPOT),)
 MID_AB = ((A[0] + B[0]) / 2, (A[1] + B[1]) / 2)
 
 
-def _route(lines=PLAN_LINE, road=True, stops=((7, A), (8, B)), km=None):
-    return live.PlanRoute(tuple(tuple(x) for x in lines), road, tuple(stops), km)
+def _route(lines=PLAN_LINE, road=True, stops=((7, A), (8, B)), km=None, parts=None, straight=()):
+    lines = tuple(tuple(x) for x in lines)
+    geo = live.RouteGeometry(lines, (lines if parts is None else parts) if road else (), straight)
+    return live.PlanRoute(geo, tuple(stops), km)
 
 
 def _route_view(tr, now, route, rules=RULES, detail=True):
@@ -1655,10 +1657,18 @@ def test_deviation_ongoing_is_active_alert():
     assert old['deviation']['count'] == 1 and old['deviation']['active'] is False
 
 
-def test_deviation_lunch_detour_is_not_counted():
-    """Заезд на обед (стоянка обеда — как у тревоги «стоянка») — не отклонение; тот же заезд не в обед — отклонение."""
-    lunch = _detour_track(1500.0, datetime(2026, 10, 5, 12, 20, tzinfo=Y), park_min=30)
-    assert _route_view(lunch, lunch.t, _route())['deviation']['count'] == 0
+def test_deviation_lunch_stay_itself_is_not_counted():
+    """Стоянка обеда (та же, что у тревоги «стоянка») — не отклонение, а подъезд к ней и отъезд — как обычно: кафе в 1,5 км
+    от линии — два отклонения (туда и обратно) без самой стоянки; тот же заезд не в обед — одно, со стоянкой."""
+    start = datetime(2026, 10, 5, 12, 20, tzinfo=Y)
+    lunch = _detour_track(1500.0, start, park_min=30)
+    runs = _route_view(lunch, lunch.t, _route())['deviation']['runs']
+    stay = [p for p in lunch.pts if p[4] == 0.0 and haversine_km((p[1], p[2]), _off(MID_AB, 1500.0)) < 0.01]
+    lo, hi = stay[0][0] / 1000, stay[-1][0] / 1000
+    assert len(runs) == 2 and all(datetime.fromisoformat(r['to']).timestamp() <= lo
+                                  or datetime.fromisoformat(r['from']).timestamp() >= hi for r in runs)
+    near = _detour_track(450.0, start, park_min=30)            # кафе у дороги — не отклонение
+    assert _route_view(near, near.t, _route())['deviation']['count'] == 0
     morning = _detour_track(1500.0, datetime(2026, 10, 5, 9, 0, tzinfo=Y), park_min=30)
     assert _route_view(morning, morning.t, _route())['deviation']['count'] == 1
 
@@ -1717,6 +1727,10 @@ def test_build_text_deviation():
     a = {'kind': 'deviation', 'from': T0.isoformat(), 'to': None, 'active': True, 'km': 1.2, 'lat': A[0], 'lon': A[1]}
     text = la.build_text({'car_code': 'CAR1', 'driver': 'Արամ'}, a, 'start', RULES)
     assert text.splitlines()[0] == 'Շեղում երթուղուց' and '300 մ' in text and '1,2 կմ' in text and 'yandex' in text
+    assert 'արդեն' in text
+    ended = la.build_text({'car_code': 'CAR1'}, {**a, 'active': False, 'to': (T0 + timedelta(minutes=7)).isoformat()},
+                          'start', RULES)
+    assert 'արդեն' not in ended and 'շեղվել էր' in ended and '09:00–09:07' in ended
 
 
 class FakeLineRoads:
@@ -1766,7 +1780,7 @@ def _lines_app(live_app, monkeypatch, ok=True):
     roads = FakeLineRoads(ok)
     provider = FakeRoadProvider(roads)
     monkeypatch.setattr(state, 'roads', provider)
-    monkeypatch.setattr(state, 'live_lines', views._LiveRoads(math.inf))
+    monkeypatch.setattr(state, 'live_lines', views._LivePlanLines())
     from route_optimizer import store as st
     state.store.save(st.Changes(dict(state.store.load().settings), True, DEPOT, (), ()), 'qa')   # склад — у трека FakeLive
     state.live_facts.data['2026-10-03'] = dict(state.live_facts.data['2026-10-03'])   # новый факт — без кэша карточек
@@ -1781,7 +1795,8 @@ def test_api_live_plan_route_by_roads_once_and_prediction_km(client, live_app, m
     body = client.get('/api/routes/live', base_url=LAN).get_json()
     assert body['thresholds']['deviation_m'] == 300
     car1 = {t['car_code']: t for t in body['trucks']}['CAR1']
-    assert car1['plan_sent'] is True and car1['route'] == {'road': True, 'km': 21.4, 'trips': 1, 'stops': 2}
+    assert car1['plan_sent'] is True and car1['route'] == {'road': True, 'km': 21.4, 'trips': 1, 'stops': 2,
+                                                            'straight': 0}
     assert car1['deviation'] == {'threshold_m': 300, 'count': 0, 'km': 0.0, 'active': False}
     assert car1['stats']['max_speed']['kmh'] == 36 and car1['stats']['overspeed'] == {'count': 0, 'minutes': 0}
     truck = client.get('/api/routes/live/truck?car=CAR1', base_url=LAN).get_json()['truck']
@@ -1837,3 +1852,158 @@ def test_api_live_no_plan_route_until_sent_or_without_map(client, live_app, monk
     state.live_facts.data['2026-10-03'] = dict(state.live_facts.data['2026-10-03'])
     truck = client.get('/api/routes/live/truck?car=CAR1', base_url=LAN).get_json()['truck']
     assert truck['route']['road'] is False and truck['route']['km'] is None and truck['deviation'] is None
+
+
+# ============================== по ревью плановой линии (08.10) ==============================
+
+HOME = _off(MID_AB, -4000.0)   # дом водителя — далеко от линии плана
+
+
+def _done_stops(tr):
+    """Обе точки плана закрыты водителем (доставлены)."""
+    return [stop('S:A', 7, A, 100.0, 'full', 1.0, tr.t), stop('S:B', 8, B, 100.0, 'full', 1.0, tr.t, seq=2)]
+
+
+def test_deviation_not_counted_driving_from_home_to_depot():
+    """Трек начался дома: дорога дом → склад до первого настоящего выезда (конца стоянки на складе) — не отклонение."""
+    tr = Track().park(HOME, 2).drive(DEPOT).park(DEPOT, 10).drive(A).park(A, 3).drive(B).park(B, 3)
+    card = _route_view(tr, tr.t, _route())
+    assert card['deviation']['count'] == 0
+    # тот же путь, но трек начался на складе и машина поехала «через дом» — отклонение
+    tr = Track().park(DEPOT, 10).drive(HOME).drive(A).park(A, 3).drive(B).park(B, 3)
+    assert _route_view(tr, tr.t, _route())['deviation']['count'] == 1
+    # склада в начале нет вовсе (из дома сразу к магазину) — счёт с первого магазина
+    tr = Track().park(HOME, 2).drive(A).park(A, 3).drive(B).park(B, 3)
+    assert _route_view(tr, tr.t, _route())['deviation']['count'] == 0
+
+
+def test_deviation_not_counted_driving_home_after_last_trip_returned():
+    """Все точки закрыты, машина вернулась на склад — дорога домой без закрытия дня не отклонение; точка ещё открыта —
+    отклонение (рейс не кончился)."""
+    tr = Track().park(DEPOT, 5).drive(A).park(A, 3).drive(B).park(B, 3).drive(DEPOT).park(DEPOT, 5).drive(HOME)
+    card = live.car_view(DAY, tr.t, facts(tr.pts, _done_stops(tr), [T0, tr.t]), [], TRUCK, DEPOT, RULES, ROAD, True,
+                         None, _route())
+    assert card['deviation']['count'] == 0 and card['deviation']['active'] is False
+    open_b = [stop('S:A', 7, A, 100.0, 'full', 1.0, tr.t), stop('S:B', 8, B, 100.0, 'pending', seq=2)]
+    open_b[1]['lat'], open_b[1]['lon'] = _off(B, 5000.0)    # магазин B ещё не посещён (его точка — в стороне)
+    card = live.car_view(DAY, tr.t, facts(tr.pts, open_b, [T0, tr.t]), [], TRUCK, DEPOT, RULES, ROAD, True, None, _route())
+    assert card['deviation']['count'] == 1
+
+
+def test_deviation_broken_by_track_gap():
+    """Перерыв трека дольше STATS_GAP со сменой места прерывает отклонение: что было между точками — неизвестно."""
+    side = _off(MID_AB, 1500.0)
+    index = live.RouteIndex(PLAN_LINE, 300.0)
+    a = [Fix(T0 + timedelta(seconds=30 * i), side[0], side[1] + 0.001 * i, 5.0) for i in range(3)]       # ~0,17 км
+    b = [Fix(T0 + timedelta(minutes=20, seconds=30 * i), side[0], side[1] + 0.003 + 0.001 * i, 5.0) for i in range(3)]
+    assert live.deviation_runs(a + b, index, 300.0, [], T0, None) == []   # вместе 0,5 км, но через 20 мин без данных
+    stay = [Fix(T0 + timedelta(minutes=3), *a[-1].point, 1.0), Fix(T0 + timedelta(minutes=30), *a[-1].point, 1.0)]
+    more = [Fix(T0 + timedelta(minutes=30, seconds=30 * i), side[0], side[1] + 0.002 + 0.001 * i, 5.0) for i in range(1, 5)]
+    assert len(live.deviation_runs(a + stay + more, index, 300.0, [], T0, None)) == 1   # стоянка — не перерыв
+
+
+def test_straight_leg_is_not_judged():
+    """Участок плана без дороги (по прямой) — вдоль него отклонение не считается; тот же объезд у участка по дорогам —
+    отклонение. Без единого участка по дорогам — не считается вовсе."""
+    tr = _detour_track(1200.0)
+    parts = ((DEPOT, A), (B, DEPOT))
+    card = _route_view(tr, tr.t, _route(parts=parts, straight=((A, B),)))
+    assert card['deviation']['count'] == 0 and card['route']['straight'] == 1 and card['route']['road'] is True
+    assert _route_view(tr, tr.t, _route())['deviation']['count'] == 1
+    far = Track().park(DEPOT, 5).drive(A).park(A, 3).drive(_off(MID_AB, 5000.0)).drive(B).park(B, 3)
+    assert _route_view(far, far.t, _route(parts=parts, straight=((A, B),)))['deviation']['count'] == 1   # не «по пути»
+    assert live.RouteGeometry(PLAN_LINE, (), ((A, B),)).road is False
+
+
+def test_plan_geometry_marks_long_straight_leg_inside_road_line():
+    """roads.draw рисует участок без пути двумя точками (магазин дальше SNAP_MAX_KM от дороги): он — по прямой, остальные —
+    по дорогам; км линии — неизвестны (есть участок по прямой)."""
+    from route_optimizer import views
+    far = (40.30, 44.70)
+
+    class Roads:
+        def lines(self, lines):
+            return [[a, b] if (a, b) == (A, far) else [a, ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2 + 0.001), b]
+                    for a, b in lines]
+    key = (((DEPOT, A, far, DEPOT),), (), 'v')
+    geo = views._plan_geometry(Roads(), {'CAR1': key})['CAR1']
+    assert geo.straight == ((A, far),) and len(geo.road_parts) == 2 and geo.road and geo.km is None
+    assert geo.trips[0][0] == DEPOT and geo.trips[0][-1] == DEPOT and A in geo.trips[0] and far in geo.trips[0]
+    assert not geo.index(300.0).near(_off(((A[0] + far[0]) / 2, (A[1] + far[1]) / 2), 0.0), 300.0)   # прямой нет в индексе
+
+    class Broken:
+        def lines(self, lines):
+            return None
+    assert views._plan_geometry(Broken(), {'CAR1': key}) == {'CAR1': None}
+
+
+def test_route_geometry_index_and_map_lines_built_once(monkeypatch):
+    geo = live.RouteGeometry(PLAN_LINE, PLAN_LINE)
+    calls = []
+    real = ac.simplify
+    monkeypatch.setattr(ac, 'simplify', lambda *a, **k: calls.append(1) or real(*a, **k))
+    assert geo.index(300.0) is geo.index(300.0) and geo.index(100.0) is not geo.index(300.0)
+    assert geo.shown() is geo.shown() and len(calls) == 1
+    tr = _detour_track(1500.0)
+    route = live.PlanRoute(geo, ((7, A), (8, B)))
+    first = _route_view(tr, tr.t, route)
+    built = dict(geo._index)
+    _route_view(tr, tr.t, route)
+    assert geo._index == built and first['route']['lines'] is geo.shown()
+
+
+def _plan_cache(monkeypatch, background):
+    from route_optimizer import views
+    monkeypatch.setattr(views, 'LIVE_ROAD_BACKGROUND', background)
+    return views._LivePlanLines()
+
+
+def test_plan_lines_cache_per_truck_key_and_failures(monkeypatch):
+    cache = _plan_cache(monkeypatch, False)
+    asked = []
+
+    def build(todo):
+        asked.append(dict(todo))
+        return {car: (None if key == 'bad' else live.RouteGeometry(PLAN_LINE, PLAN_LINE)) for car, key in todo.items()}
+    got = cache.get(DAY, {'CAR1': 'k1', 'CAR2': 'k2'}, build)
+    assert set(got) == {'CAR1', 'CAR2'} and asked == [{'CAR1': 'k1', 'CAR2': 'k2'}]
+    old = got['CAR1']
+    got = cache.get(DAY, {'CAR1': 'k1b', 'CAR2': 'k2'}, build)     # сменился план одной машины — строится только она
+    assert asked[-1] == {'CAR1': 'k1b'} and got['CAR1'] is not old and got['CAR2'] is not None
+    got = cache.get(DAY, {'CAR1': 'bad'}, build)                    # не построились — по прямой (нет в ответе)
+    assert 'CAR1' not in got
+    n = len(asked)
+    cache.get(DAY, {'CAR1': 'bad'}, build)                          # сбой не повторяется на каждом опросе
+    assert len(asked) == n
+    boom = cache.get(DAY, {'CAR3': 'x'}, lambda todo: 1 / 0)       # исключение сборки не роняет карту
+    assert boom == {}
+
+
+def test_plan_lines_cache_serves_previous_while_rebuilding_and_one_build_at_a_time(monkeypatch):
+    cache = _plan_cache(monkeypatch, False)
+    first = live.RouteGeometry(PLAN_LINE, PLAN_LINE)
+    cache.get(DAY, {'CAR1': 'k1'}, lambda todo: {'CAR1': first})
+    from route_optimizer import views
+    monkeypatch.setattr(views, 'LIVE_ROAD_BACKGROUND', True)
+    release, started = threading.Event(), []
+    second = live.RouteGeometry(PLAN_LINE, PLAN_LINE)
+
+    def slow(todo):
+        started.append(dict(todo))
+        release.wait(5)
+        return {car: second for car in todo}
+    assert cache.get(DAY, {'CAR1': 'k2'}, slow)['CAR1'] is first    # строится новая — прежняя линия, не «по прямой»
+    assert cache.get(DAY, {'CAR1': 'k2', 'CAR2': 'z'}, slow)['CAR1'] is first
+    assert len(started) <= 1                                         # вторая сборка не запускается, пока идёт первая
+    release.set()
+    for _ in range(200):
+        got = cache.get(DAY, {'CAR1': 'k2'}, slow)
+        if got.get('CAR1') is second:
+            break
+        time.sleep(0.02)
+    assert got['CAR1'] is second and len(started) == 1
+    # другой день — прежних линий нет; память — не больше LIVE_LINES_DAYS дней
+    monkeypatch.setattr(views, 'LIVE_ROAD_BACKGROUND', False)
+    for k in range(views.LIVE_LINES_DAYS + 2):
+        cache.get(DAY + timedelta(days=k + 1), {'CAR1': 'k'}, lambda todo: {'CAR1': first})
+    assert len({d for d, _ in cache._slots}) == views.LIVE_LINES_DAYS

@@ -512,7 +512,9 @@
         const r = t.route;
         const rows = [];
         rows.push(field('Պլանային երթուղի', r ? r.trips + ' երթ · ' + r.stops + ' խանութ' : '—',
-            r ? (r.road ? 'ճանապարհներով, ինչպես «Առաքում» էջում' : 'ուղիղ գծով՝ ճանապարհների քարտեզը դեռ պատրաստ չէ') : noRouteText(t),
+            r ? (r.road ? 'ճանապարհներով, ինչպես «Առաքում» էջում'
+                + (r.straight ? ' · ' + r.straight + ' հատված՝ ուղիղ գծով (ճանապարհ չգտնվեց, այնտեղ շեղումը չի հաշվվում)' : '')
+                : 'ուղիղ գծով՝ ճանապարհների քարտեզը դեռ պատրաստ չէ') : noRouteText(t),
             r ? null : 'is-mute', true));
         const [km, kmSub, kmCls] = kmText(t);
         rows.push(field('Կմ՝ փաստ / պլան', km, kmSub, kmCls));
