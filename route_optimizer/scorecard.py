@@ -5,7 +5,8 @@
 тара по водителю) и GPS-факт машин дня из обучения «Развоза» (CarDay: км, прибытие по GPS и окно приёма точек —
 actuals.stop_marks, плановое ETA клиентов — прогноз сборки отправленного водителям плана, превышения скорости и
 стоянки вне магазинов — правила карты машин live.speed_alerts / live.stop_alerts, порядок объезда —
-actuals.visit_metrics); литры к норме машино-дня считает views (_scorecard_fuel) и передаёт в period().
+actuals.visit_metrics); литры к норме машино-дня (_scorecard_fuel) и следование плановой линии (_scorecard_route) считает
+views и передаёт в period().
 
 Правила:
 - человек дня — водитель, чьё «заявление» (действующая доставка, правило §5 п. 12) определило статус точки; covered
@@ -27,6 +28,9 @@ actuals.visit_metrics); литры к норме машино-дня счита�
   - Հերթականություն — доля обслуженных точек с плановым местом, объехавших в плановом порядке
     (1 − actuals.order_changes / ordered);
   - Վառելիք — (литры по заправкам − норма) / норма за машино-дни с покрытыми треком заправками (views._scorecard_fuel);
+  - Երթուղի — следование плановой линии (владелец 08.10, live.adherence): 100 × (1 − км отклонений / км езды в счёте
+    дня) по сумме машино-дней с GPS-треком и линией отправленного плана по дорогам (views._scorecard_route); объяснённые
+    диспетчером отклонения не считаются. Нет трека или линии плана — у дня значения нет (не штраф);
 - Միավոր (0–100) — средневзвешенное подоценок WEIGHTS, каждая — линейно по SCALE; показатель без данных выпадает, веса
   остальных перенормируются; меньше MIN_DAYS дней или ни одного показателя с данными — «քիչ տվյալ» (enough_data
   false): без балла и места; место — среди своей роли;
@@ -65,7 +69,8 @@ DONE = ('full', 'partial', 'refused', 'covered')
 ROLES = ('driver', 'helper')
 
 # Итоговый балл 0–100 (решение №87 п. 3): вес показателя — в баллах из 100.
-WEIGHTS = {'on_time': 35, 'order': 15, 'speed': 20, 'stops': 15, 'liters': 15}
+# Երթուղի (route, владелец 08.10) — сверх 100: без данных выпадает, с данными — веса перенормируются (score), как у всех.
+WEIGHTS = {'on_time': 35, 'order': 15, 'speed': 20, 'stops': 15, 'liters': 15, 'route': 10}
 # Балл առաքիչ (№88): выполнение плана машины-дня, где он был в экипаже.
 HELPER_WEIGHTS = {'clean': 30, 'on_time': 25, 'unload': 30, 'day': 15}
 # Подоценка 0–100: линейно между (значение «100 баллов», значение «0 баллов»), за пределами — 100 или 0.
@@ -81,6 +86,7 @@ SCALE = {
     'speed': (0.0, 2.0),       # превышений на 100 км: ни одного — 100, 2 и больше — 0
     'stops': (0.0, 60.0),      # минут стоянок вне магазинов в среднем за машино-день: 0 — 100, 60 и больше — 0
     'liters': (5.0, 25.0),     # % литров сверх нормы: до +5 % (и экономия) — 100, +25 % и больше — 0
+    'route': (95.0, 70.0),     # % км по плановой линии: 95 и выше — 100, 70 и ниже — 0
 }
 
 
@@ -349,7 +355,7 @@ def _detail(day: date, e: Mapping[str, Any]) -> dict[str, Any]:
             'clean_pct': _pct(e['stops'] - e['partial'] - e['refused'], e['stops']),
             'unload_vs_norm_pct': _pct(e['unload_fact'], e['unload_norm']),
             'day_vs_plan_pct': _pct(e['day_fact'], e['day_plan']),
-            'liters_vs_norm_pct': None, 'late': list(e['late'])}
+            'liters_vs_norm_pct': None, 'route_pct': None, 'late': list(e['late'])}
 
 
 def _metrics(r: Mapping[str, Any]) -> dict[str, Any]:
@@ -366,14 +372,22 @@ def _metrics(r: Mapping[str, Any]) -> dict[str, Any]:
             'unload_vs_norm_pct': _pct(r['unload_fact'], r['unload_norm']),
             'day_vs_plan_pct': _pct(r['day_fact'], r['day_plan']),
             'liters_vs_norm_pct': (round(100.0 * (r['fuel_fact_l'] - fuel_norm) / fuel_norm, 1)
-                                   if fuel_norm > 0 else None)}
+                                   if fuel_norm > 0 else None),
+            'route_pct': _route_pct(r['route_km'], r['route_off_km'])}
+
+
+def _route_pct(km: float, off_km: float) -> float | None:
+    """Следование плановой линии, %: 100 × (1 − км отклонений / км езды); езды нет — None."""
+    return round(max(0.0, 100.0 * (1.0 - off_km / km)), 1) if km > 0 else None
 
 
 def period(days: Sequence[tuple[date, Mapping[str, Any]]], names: Mapping[int, str],
-           fuel: Mapping[tuple[str, str], tuple[float, float]] | None = None) -> dict[str, Any]:
+           fuel: Mapping[tuple[str, str], tuple[float, float]] | None = None,
+           route: Mapping[tuple[str, str], tuple[float, float]] | None = None) -> dict[str, Any]:
     """Сводки дней (day_summary) за период → строки людей (показатели, балл и место за период, по дням — новые первыми),
     точность ETA и покрытие за период. fuel — (день, машина) → (литры по заправкам, норма) машино-дней с покрытыми
-    треком заправками: водителю машины дня (mains)."""
+    треком заправками; route — (день, машина) → (км езды в счёте дня, км отклонений без объяснённых) машино-дней с
+    треком и линией плана по дорогам: оба — водителю машины дня (mains)."""
     rows: dict[str, dict[str, Any]] = {}
     cov: dict[str, float] = {}
     errors: list[float] = []
@@ -388,7 +402,8 @@ def period(days: Sequence[tuple[date, Mapping[str, Any]]], names: Mapping[int, s
                                       'name': names.get(int(pid)) or f'#{pid}',
                                       'days': 0, **{k: 0 for k in SUMS}, 'delay_sum': 0.0, 'km': None, 'km_days': 0,
                                       'cash': None, 'tare': 0.0, 'fuel_days': 0, 'fuel_fact_l': 0.0,
-                                      'fuel_norm_l': 0.0, 'detail': []})
+                                      'fuel_norm_l': 0.0, 'route_days': 0, 'route_km': 0.0, 'route_off_km': 0.0,
+                                      'detail': []})
             r['days'] += int(e['stops'] > 0)
             for k in SUMS:
                 r[k] += e[k]
@@ -408,6 +423,17 @@ def period(days: Sequence[tuple[date, Mapping[str, Any]]], names: Mapping[int, s
             d = r['detail'][-1]   # строка этого дня — только что добавлена (водитель машины закрыл её точки)
             fact, norm = d.get('fuel') or (0.0, 0.0)
             d['fuel'] = (fact + got[0], norm + got[1])
+        for car, did in (summary.get('mains') or {}).items():
+            got = (route or {}).get((ds, car))
+            r = rows.get(f'driver:{did}')
+            if got is None or r is None or got[0] <= 0:
+                continue
+            r['route_days'] += 1
+            r['route_km'] += got[0]
+            r['route_off_km'] += got[1]
+            d = r['detail'][-1]
+            km, off = d.get('route') or (0.0, 0.0)
+            d['route'] = (km + got[0], off + got[1])
     out = []
     for r in rows.values():
         r['detail'].reverse()
@@ -416,10 +442,13 @@ def period(days: Sequence[tuple[date, Mapping[str, Any]]], names: Mapping[int, s
                 fact, norm = d.pop('fuel')
                 d.update(fuel_fact_l=round(fact, 1), fuel_norm_l=round(norm, 1),
                          liters_vs_norm_pct=_pct(fact - norm, norm))
+            if 'route' in d:   # следование плану дня — по сумме км машин дня, где он водитель
+                d['route_pct'] = _route_pct(*d.pop('route'))
         m = _metrics(r)
         if r['role'] == 'driver':
             total, parts = score({'on_time': m['on_time_pct'], 'order': m['order_pct'], 'speed': m['speed_per_100km'],
-                                  'stops': m['offroute_min_per_day'], 'liters': m['liters_vs_norm_pct']})
+                                  'stops': m['offroute_min_per_day'], 'liters': m['liters_vs_norm_pct'],
+                                  'route': m['route_pct']})
         else:
             total, parts = score({'clean': m['clean_pct'], 'on_time': m['on_time_pct'],
                                   'unload': m['unload_vs_norm_pct'], 'day': m['day_vs_plan_pct']},
@@ -434,6 +463,7 @@ def period(days: Sequence[tuple[date, Mapping[str, Any]]], names: Mapping[int, s
                     'tare': round(r['tare'], 2), 'speed_km': round(r['speed_km'], 1),
                     'offroute_min': m['offroute_min'], 'speed_events': m['speed_events'],
                     'fuel_fact_l': round(r['fuel_fact_l'], 1), 'fuel_norm_l': round(r['fuel_norm_l'], 1),
+                    'route_km': round(r['route_km'], 1), 'route_off_km': round(r['route_off_km'], 1),
                     'enough_data': enough, 'score': total if enough else None, 'parts': parts, 'rank': None})
     ranked = {role: [r for r in out if r['role'] == role and r['score'] is not None] for role in ROLES}
     for rows_ in ranked.values():   # место — среди своей роли; равный балл — одно место

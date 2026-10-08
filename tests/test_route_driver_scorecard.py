@@ -336,7 +336,8 @@ def test_api_scorecard_for_admin(client, sc_app):
     assert [d['date'] for d in r3['detail']] == [D2, D1]
     assert body['coverage'] == {'closed': 5, 'unattributed': 0, 'rated': 2, 'no_eta': 1, 'no_gps': 2, 'car_days': 3,
                                 'car_days_gps': 1, 'km_unassigned': 0.0,
-                                'fuel': {'terrain': 0, 'flat': 0, 'uncovered': 0, 'no_norm': 0}}
+                                'fuel': {'terrain': 0, 'flat': 0, 'uncovered': 0, 'no_norm': 0},
+                                'route': {'days': 0, 'pending': 0, 'no_roads': 1}}   # карты дорог нет — не штраф
     # сводки дней — из кэша: второй запрос факт дня не пересчитывает; изменился отпечаток дня — пересчёт только его
     assert sorted(crew.calls) == [D1, D2]
     assert client.get(f'/api/routes/drivers/scorecard?from={D1}&to={D2}', base_url=LAN).get_json() == body
@@ -451,7 +452,9 @@ def test_sub_score_thresholds_and_renormalization():
     assert [sc.sub_score('liters', v) for v in (-30, 5, 15, 25, 60)] == [100, 100, 50, 0, 0]
     assert (sc.sub_score('speed', 0), sc.sub_score('speed', 1), sc.sub_score('speed', 5)) == (100, 50, 0)
     assert (sc.sub_score('stops', 0), sc.sub_score('stops', 30), sc.sub_score('stops', 90)) == (100, 50, 0)
-    assert sum(sc.WEIGHTS.values()) == 100
+    # веса №87 — из 100; «Երթուղի» (08.10) — сверх них: без данных выпадает, с данными веса перенормируются
+    assert sum(v for k, v in sc.WEIGHTS.items() if k != 'route') == 100 and sc.WEIGHTS['route'] == 10
+    assert (sc.sub_score('route', 100), sc.sub_score('route', 82.5), sc.sub_score('route', 60)) == (100, 50, 0)
     full, parts = sc.score({'on_time': 95, 'order': 90, 'speed': 0, 'stops': 0, 'liters': 0})
     assert full == 100.0 and [p['share'] for p in parts.values()] == [35.0, 15.0, 20.0, 15.0, 15.0]
     # без скорости и литров веса 35 + 15 + 15 = 65 перенормируются: вовремя — 35 / 65

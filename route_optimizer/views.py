@@ -43,8 +43,8 @@ from .geo import Point, haversine_km, in_city, in_polygon, is_valid_point
 from .roads import SNAP_MAX_KM, CenterBypassRoads, RoadDistances, RoadProvider, roads_version
 from .snapshot import CAR_IDLE_DAYS, MIN_REFRESH_SECONDS, ResultCache, Snapshot, SnapshotCache
 from .store import (CREW_TABLES, DEFAULT_MANAGER_FUEL, DEFAULT_SETTINGS, KEEP, Bundle, Decision, GarageError, Store, StoreError,
-                    big_auto, center_auto, check_driver_name, check_garage_entry, check_unload_min, check_window,
-                    validate_payload)
+                    big_auto, center_auto, check_driver_name, check_garage_entry, check_live_explanation,
+                    check_unload_min, check_window, validate_payload)
 from .valhalla_engine import (CAR_COSTING, PROFILE_CAR, PROFILE_TRUCK, TRUCK_TIME_MODEL, TRUCK_TIME_VALHALLA, ValhallaProvider,
                               ValhallaRoads, truck_costing, truck_leg_minutes, truck_time_source)
 from .vehicle_access import check_access
@@ -207,6 +207,8 @@ class RoutesState:
     live_cards: dict[date, tuple[Any, float, Any, datetime, dict[str, dict[str, Any]]]] = field(default_factory=dict)
     live_lock: threading.Lock = field(default_factory=threading.Lock)   # только словари кэша: расчёт под ним не идёт
     live_flight: dict[date, threading.Lock] = field(default_factory=dict)   # пересчёт флота — один на день
+    # следование плановой линии машино-дней для «Վարորդներ» (scorecard «Երթուղի», 08.10) — считает фон (_ScoreRoutes)
+    score_routes: _ScoreRoutes = field(default_factory=lambda: _ScoreRoutes())
     learning_lock: threading.Lock = field(default_factory=threading.Lock)   # прогон обучения — один за раз
     learning_job: dict[str, Any] = field(default_factory=dict)              # последний прогон: статус, время, ошибка
     learning_warning: dict[str, str] | None = None   # выученные нормы не применились (битый журнал) — для страницы
@@ -407,6 +409,19 @@ def _api(fn: Callable[..., Any]) -> Callable[..., Any]:
         except Exception:
             logger.exception('[Routes] Внутренняя ошибка (%s)', request.path)
             return jsonify({'success': False, 'error': 'Սերվերի ներքին սխալ'}), 500
+    return wrapper
+
+
+def _admin_only(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Зарплаты, «Առաքման արժեք» и объяснения тревог карты машин — только администратору. Гейт app_v2 и так пускает в
+    «Маршруты» лишь admin (прочие роли — default-deny; «Гаражу» карта машин — только на чтение); эта проверка — вторая
+    линия: роль, которой когда-нибудь откроют раздел, денег и записи всё равно не получит."""
+    @wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        if g.get('user_role') != 'admin':
+            logger.warning('[Routes] Только администратору: отказ роли %r (%s)', g.get('user_role'), request.path)
+            return jsonify({'success': False, 'error': PAY_FORBIDDEN}), 403
+        return fn(*args, **kwargs)
     return wrapper
 
 
@@ -4228,6 +4243,8 @@ class _LiveContext:
     sent: bool = False
     # линия трека машины по дорогам (08.10, _LiveTracks): (машина, куски линии) → привязанные куски; None — без привязки
     tracks: Callable[[str, Sequence[tl.Chunk]], Mapping[Any, Sequence[tl.TPoint]]] | None = None
+    # объяснения диспетчера за день (схема 26, store.live_explanations): машина → объяснения
+    explained: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
 
 
 LIVE_LINES_MAX = 300   # машино-дней плановых линий в памяти (кэш _LivePlanLines)
@@ -4323,7 +4340,8 @@ def _plan_geometry(roads: Any, todo: Mapping[str, Any]) -> dict[str, live.RouteG
     """Линии рейсов машин todo (машина → ключ _LivePlanLines: (линии по прямой, граница центра, версия карты)) по дорогам
     одним построением: каждый участок (магазин → магазин) — своей линией roads.leg_lines, с отметкой, нашёлся ли путь по
     дорогам (RoadNetwork.paths). Участок без пути (точка дальше roads.SNAP_MAX_KM от дороги, пути нет) — по прямой
-    (RouteGeometry.straight); прямая дорога, упрощённая до двух точек, — по дорогам. Дороги не построились — машине None."""
+    (RouteGeometry.straight); прямая дорога, упрощённая до двух точек, — по дорогам; км участка по дорогам — длина его
+    линии (RouteGeometry.leg_km: план участка перепробега). Дороги не построились — машине None."""
     legs = list(dict.fromkeys((a, b) for key in todo.values() for line in key[0] for a, b in zip(line, line[1:])
                               if a != b))
     got = roads.leg_lines(legs) if legs else []
@@ -4336,6 +4354,7 @@ def _plan_geometry(roads: Any, todo: Mapping[str, Any]) -> dict[str, live.RouteG
         trips: list[tuple[Point, ...]] = []
         parts: list[tuple[Point, ...]] = []
         straight: list[tuple[Point, Point]] = []
+        leg_km: dict[tuple[Point, Point], float] = {}
         for line in key[0]:
             pts: list[Point] = [line[0]]
             for a, b in zip(line, line[1:]):
@@ -4343,12 +4362,13 @@ def _plan_geometry(roads: Any, todo: Mapping[str, Any]) -> dict[str, live.RouteG
                 if road is not None and found and len(road) > 1:
                     parts.append(tuple(tuple(p) for p in road))
                     pts.extend(tuple(p) for p in road[1:])
+                    leg_km[(a, b)] = math.fsum(haversine_km(tuple(x), tuple(y)) for x, y in zip(road, road[1:]))
                 else:
                     if a != b:
                         straight.append((a, b))
                     pts.append(b)
             trips.append(tuple(pts))
-        out[car] = live.RouteGeometry(trips, parts, straight)
+        out[car] = live.RouteGeometry(trips, parts, straight, leg_km)
     return out
 
 
@@ -4440,14 +4460,15 @@ def _track_line(state: RoutesState, day: date, car: str, capacity_kg: float | No
 
 
 def _live_plan_routes(state: RoutesState, bundle: Bundle, snap: Any, day: date, draft: dp.Draft,
-                      fleet: Mapping[str, Mapping[str, Any]]) -> dict[str, live.PlanRoute]:
+                      fleet: Mapping[str, Mapping[str, Any]], now: bool = False) -> dict[str, live.PlanRoute]:
     """Плановые линии машин по отправленному плану draft (владелец 08.10: «его маршрут, который дал ему софт»): рейс —
     склад → магазины по порядку плана → склад, как линии «Развоза» (routes_dispatch.js → /api/routes/road-lines с
     avoid_center). Точка магазина — с терминала (что водитель видит в «Առաքիչ»), нет — visit_coord снимка в памяти (ERP
     не читается), нет и её — магазина на линии нет. Линии по дорогам — в фоне (state.live_lines, _plan_geometry); пока не
     готовы впервые, карты нет или дороги сломаны — по прямой (road false: отклонение не считается). Км плана — прогноз
     сборки машины (prediction km), если его рейсы — те же клиенты в том же порядке; иначе длина линий, если все участки
-    по дорогам; иначе неизвестно."""
+    по дорогам; иначе неизвестно. now — линии по дорогам строятся сразу, без кэша (фон «Երթուղի» в «Վարորդներ»,
+    _ScoreRoutes: прошлые дни не держат линии в памяти)."""
     known = {x['customer_id']: (x['lat'], x['lon']) for facts in fleet.values() for x in facts.get('stops') or ()
              if isinstance(x.get('customer_id'), int) and x.get('lat') is not None and x.get('lon') is not None}
 
@@ -4477,7 +4498,10 @@ def _live_plan_routes(state: RoutesState, bundle: Bundle, snap: Any, day: date, 
 
         def build(todo: dict[str, Any]) -> dict[str, live.RouteGeometry | None]:
             return _plan_geometry(provider.bypass(roads, zone), todo)   # type: ignore[union-attr]
-        drawn = state.live_lines.get(day, wanted, build)
+        if now:
+            drawn = {car: geo for car, geo in build(wanted).items() if geo is not None}
+        else:
+            drawn = state.live_lines.get(day, wanted, build)
     pred = (draft.prediction or {}).get('trucks') or {}
     out: dict[str, live.PlanRoute] = {}
     for car, lines in straight.items():
@@ -4550,14 +4574,48 @@ def _live_road_build(state: RoutesState, bundle: Bundle, snap: Any, calib: Any, 
             return None
         leg = truck_leg_minutes(norms, a, b, minute)
         return leg.valhalla if truck_time and leg.valhalla is not None else leg.model
+
+    def pair(a: Point, b: Point, minute: float) -> tuple[float, float] | None:
+        """План участка перепробега (live.detour_legs): км и минуты склад/магазин → магазин/склад по тем же дорогам и
+        минутам, что участки ETA (таблицы дорог дня; положения машины тут нет); пары нет — None."""
+        r = norms.roads
+        if r is None or r.km(a, b) is None:
+            return None
+        leg = truck_leg_minutes(norms, a, b, minute)
+        return leg.km, (leg.valhalla if truck_time and leg.valhalla is not None else leg.model)
     return replace(base, legs=legs if norms.roads is not None else None,
-                   unload=lambda p, kg: tn.unload_at(kg, p))
+                   unload=lambda p, kg: tn.unload_at(kg, p), pair=pair if norms.roads is not None else None)
+
+
+LIVE_WEAR_TTL_S = 300.0   # износ ֏/км машин карты (журнал гаража, заправки APK) пересчитывается не чаще
+_LIVE_WEAR: dict[date, tuple[float, dict[str, float | None]]] = {}
+
+
+def _live_wear(state: RoutesState, bundle: Bundle, day: date) -> dict[str, float | None]:
+    """Износ ֏/км машин на день — как в расчёте «Развоза» (Bundle.resolved_trucks: цена журнала гаража на этот день, иначе
+    ручной, пустой ручной — средняя модели или парка). Журнал и заправки читаются не чаще LIVE_WEAR_TTL_S (пересчёт флота
+    — раз в 10 с); сбой журнала — ручной износ (перепробег в ֏ — оценка, карта от него не падает)."""
+    with state.live_lock:
+        hit = _LIVE_WEAR.get(day)
+    if hit is not None and _monotonic() - hit[0] < LIVE_WEAR_TTL_S:
+        return hit[1]
+    try:
+        out = {code: t.wear_amd_per_km for code, t in _with_garage(state, bundle, day).resolved_trucks(()).items()}
+    except Exception:
+        logger.warning('[Routes] Карта машин: износ журнала гаража не посчитан — ручной', exc_info=True)
+        out = {code: t.wear_amd_per_km for code, t in bundle.trucks.items()}
+    with state.live_lock:
+        _LIVE_WEAR[day] = (_monotonic(), out)
+        while len(_LIVE_WEAR) > 4:
+            _LIVE_WEAR.pop(next(iter(_LIVE_WEAR)))
+    return out
 
 
 def _live_context(state: RoutesState, day: date,
-                  fleet: Mapping[str, Mapping[str, Any]] | None = None) -> _LiveContext:
+                  fleet: Mapping[str, Mapping[str, Any]] | None = None, lines_now: bool = False) -> _LiveContext:
     """Настройки, нормы машин, план «Развоза» на день и экипажи — для live.car_view (ERP не читается). fleet — факт
-    терминалов дня: точки магазинов для дорожной модели ETA (_LiveRoads)."""
+    терминалов дня: точки магазинов для дорожной модели ETA (_LiveRoads). lines_now — плановые линии строятся сразу
+    (_live_plan_routes now)."""
     bundle = state.store.load()
     s = bundle.settings
     snap = state.snapshots.peek()
@@ -4573,13 +4631,15 @@ def _live_context(state: RoutesState, day: date,
         road = state.live_roads.get(key, lambda: _live_road_build(state, bundle, snap, calib, day, road, customers), road)
     names = {code: car.name for code, car in snap.cars.items()} if snap is not None else {}
     trucks = {}
+    wear = _live_wear(state, bundle, day)   # перепробег в ֏ — с износом машины, как «Развоз»
     for code, t in bundle.trucks.items():
         name = (t.name if t.manual else names.get(code)) or None
         if t.name and code not in names:
             names[code] = t.name
         known = t.center_ok is not None or name is not None   # «авто» без названия (ERP не в памяти) — неизвестно
         trucks[code] = live.TruckSpec(t.capacity_kg, t.fuel_l_per_100km, t.fuel_empty_l_per_100km,
-                                      t.fuel_full_l_per_100km, bundle.truck_center_ok(code, name) if known else None)
+                                      t.fuel_full_l_per_100km, bundle.truck_center_ok(code, name) if known else None,
+                                      wear_amd_per_km=wear.get(code), wear_load_amd_per_km=t.wear_load_amd_per_km)
     stored = state.store.load_dispatch(day.isoformat())
     plans: dict[str, list[live.PlanTrip]] = {}
     planned: list[str] = []
@@ -4609,7 +4669,7 @@ def _live_context(state: RoutesState, day: date,
                 trucks[car] = replace(trucks[car], center_customers=mine)
         planned = list(by_truck)
         if full.released is not None:   # №80/№81: план отправлен водителям — его линия на карте и отклонение от неё
-            routes = _live_plan_routes(state, bundle, snap, day, draft, fleet or {})
+            routes = _live_plan_routes(state, bundle, snap, day, draft, fleet or {}, lines_now)
     ds = day.isoformat()
     drivers, helpers = state.store.truck_drivers(ds)[0], state.store.truck_drivers(ds, 'helper')[0]
     crew = {car: {'driver': drivers.get(car), 'helper': helpers.get(car)} for car in set(drivers) | set(helpers)}
@@ -4619,7 +4679,7 @@ def _live_context(state: RoutesState, day: date,
         return state.live_tracks.get(day, car, parts, _track_matcher(state, caps.get(car)))
     return _LiveContext(rules, road, bundle.depot, plans, trucks, names, crew, tuple(planned),
                         {cid: w.span() for cid, w in bundle.windows.items()}, routes,
-                        stored is not None and full.released is not None, tracks)
+                        stored is not None and full.released is not None, tracks, state.store.live_explanations(ds))
 
 
 def _live_card(ctx: _LiveContext, day: date, now: datetime, car: str, facts: Mapping[str, Any] | None,
@@ -4632,7 +4692,8 @@ def _live_card(ctx: _LiveContext, day: date, now: datetime, car: str, facts: Map
             'planned': car in ctx.planned, 'plan_sent': ctx.sent,
             **live.car_view(day, now, facts or {}, ctx.plans.get(car, []), ctx.trucks.get(car, live.TruckSpec()),
                             ctx.depot, ctx.rules, ctx.road, detail, ctx.windows, ctx.routes.get(car),
-                            (lambda parts: tracks(car, parts)) if tracks is not None else None)}
+                            (lambda parts: tracks(car, parts)) if tracks is not None else None,
+                            ctx.explained.get(car, ()))}
 
 
 def _live_cards(state: RoutesState, day: date) -> tuple[_LiveContext, datetime, dict[str, Any],
@@ -4691,7 +4752,10 @@ def _live_head(ctx: _LiveContext, day: date, now: datetime) -> dict[str, Any]:
             'depot': list(ctx.depot) if ctx.depot else None,
             'thresholds': {'speed_kmh': r.speed_kmh, 'speed_sec': r.speed_sec, 'stop_min': r.stop_min,
                            'no_contact_min': r.no_contact_min, 'stale_s': live.STALE_S,
-                           'old_apk_silent_min': live.OLD_APK_SILENT_MIN, 'deviation_m': r.deviation_m},
+                           'old_apk_silent_min': live.OLD_APK_SILENT_MIN, 'deviation_m': r.deviation_m,
+                           'detour_min_km': r.detour_min_km},
+            # «Բացատրել» (объяснение отклонения и порядка объезда) — только администратору; сервер проверяет сам
+            'can_explain': g.get('user_role') == 'admin',
             'center_zone': [list(p) for p in r.center_zone]}
 
 
@@ -4729,6 +4793,90 @@ def api_live_truck() -> Any:
         return jsonify({'success': False, 'error': 'Այս մեքենան այս օրը տվյալներ չունի'}), 404
     now = _yerevan_now()
     return jsonify({**_live_head(ctx, day, now), 'truck': _live_card(ctx, day, now, car, fleet.get(car), True, True)})
+
+
+# «Բացատրել» (владелец 08.10): диспетчер объясняет отклонение или нарушение порядка объезда — причина и заметка (схема 26).
+# Только администратор (_admin_only — вторая линия после гейта app_v2: «Гаражу» карта открыта только на чтение) и только
+# JSON (_json_body: форма другого сайта JSON не пошлёт; cookie сессии — SameSite=Lax), как остальные POST раздела.
+LIVE_EXPLAIN_GONE = 'Ահազանգը չի գտնվել՝ թարմացրեք էջը'
+
+
+def _live_forget(state: RoutesState, day: date) -> None:
+    """Объяснения дня изменились: карточки флота дня — пересчитать на следующем опросе (не ждать LIVE_CARDS_TTL_S)."""
+    with state.live_lock:
+        state.live_cards.pop(day, None)
+
+
+@bp.post('/api/routes/live/explain')
+@_admin_only
+@_api
+def api_live_explain() -> Any:
+    """{date, car, kind: deviation | sequence, from, to (null — идёт), reason, note}: тревога ищется в пересчёте
+    карточки машины — того же вида и пересекающаяся по времени с from–to (отклонение между опросами сдвигается на
+    несколько точек), ближайшая по началу; в базу — её время (идёт — до сейчас). Нет такой — 404, уже объяснена — 409."""
+    payload, error = _json_body()
+    if error is not None:
+        return error
+    if not isinstance(payload, dict):
+        return _bad_request({'_': 'Սերվերը չընդունեց հարցումը'})
+    note, errors = check_live_explanation(payload.get('kind'), payload.get('reason'), payload.get('note'))
+    day = _parse_day(payload.get('date'))
+    if day is None or day > _yerevan_now().date():
+        errors['date'] = 'Ամսաթիվը՝ ՏՏՏՏ-ԱԱ-ՕՕ, ոչ ապագայից'
+    car = payload.get('car')
+    if not isinstance(car, str) or not car or len(car) > LIVE_CAR_MAX:
+        errors['car'] = 'Անհրաժեշտ է car'
+    a_from = live._moment(payload.get('from'))
+    a_to = live._moment(payload.get('to')) if payload.get('to') is not None else None
+    if a_from is None or (payload.get('to') is not None and (a_to is None or a_to < a_from)):
+        errors['from'] = 'Ահազանգի ժամը սխալ է'
+    if errors:
+        return _bad_request(errors)
+    state = _state()
+    if state.live_facts is None:
+        return _bad_request({'_': '«Առաքիչ» բաժինը միացված չէ — տվյալներ չկան'})
+    ctx, _, fleet, cards = _live_cards(state, day)   # type: ignore[arg-type]
+    if car not in cards:
+        return jsonify({'success': False, 'error': LIVE_EXPLAIN_GONE}), 404
+    now = _yerevan_now()
+    card = _live_card(ctx, day, now, car, fleet.get(car), True)   # type: ignore[arg-type]
+    hi = a_to or now
+    near = [a for a in card['alerts_log'] if a['kind'] == payload['kind']
+            and datetime.fromisoformat(a['from']) <= hi and a_from <= (datetime.fromisoformat(a['to']) if a['to'] else now)]
+    hit = min(near, key=lambda a: abs((datetime.fromisoformat(a['from']) - a_from).total_seconds()), default=None)
+    if hit is None:
+        return jsonify({'success': False, 'error': LIVE_EXPLAIN_GONE}), 404
+    if 'explained' in hit:
+        return jsonify({'success': False, 'error': 'Այս ահազանգն արդեն բացատրված է'}), 409
+    to = hit['to'] or now.isoformat(timespec='seconds')
+    new_id = state.store.add_live_explanation(day.isoformat(), car, hit['kind'], hit['from'], to,   # type: ignore[union-attr]
+                                              payload['reason'], note, session.get('username'))
+    _live_forget(state, day)   # type: ignore[arg-type]
+    logger.info('[Routes] Карта машин: %s объяснил %s %s %s–%s (%s)', session.get('username'), hit['kind'], car,
+                hit['from'], to, payload['reason'])
+    return jsonify({'success': True, 'id': new_id})
+
+
+@bp.post('/api/routes/live/unexplain')
+@_admin_only
+@_api
+def api_live_unexplain() -> Any:
+    """«Չեղարկել»: {id} — объяснение снимается, тревога снова считается (активна, если ещё идёт). Нет такого — 404."""
+    payload, error = _json_body()
+    if error is not None:
+        return error
+    raw = payload.get('id') if isinstance(payload, dict) else None
+    if not isinstance(raw, int) or isinstance(raw, bool) or raw <= 0:
+        return _bad_request({'id': 'Անհրաժեշտ է id'})
+    state = _state()
+    gone = state.store.delete_live_explanation(raw)
+    if gone is None:
+        return jsonify({'success': False, 'error': 'Բացատրությունը չի գտնվել'}), 404
+    day = _parse_day(gone[0])
+    if day is not None:
+        _live_forget(state, day)
+    logger.info('[Routes] Карта машин: %s отменил объяснение #%d (%s %s)', session.get('username'), raw, gone[1], gone[0])
+    return jsonify({'success': True})
 
 
 # --- Ход дня на шкале «Развоза» (ответ владельца №82: как мониторинг Яндекса / Routific live) ---
@@ -5215,14 +5363,135 @@ def _scorecard_fuel(state: RoutesState, bundle: Bundle, since: date, until: date
     return out, counts
 
 
+class _ScoreRoutes:
+    """Следование плановой линии машино-дней для «Վարորդներ» (scorecard «Երթուղի»): день считает один фоновый поток на
+    процесс (линии плана по дорогам прошлого дня строятся заново — секунды на день), запрос «Վարորդներ» его не ждёт: чего
+    ещё нет — у дня значения нет (coverage.route.pending), появится при следующем запросе. Результат дня — машина → (км
+    езды в счёте дня, км отклонений без объяснённых) — помнится, пока тот же отпечаток дня; линии после расчёта не
+    хранятся. Дни — не больше SCORECARD_CACHE_DAYS (уходят давно не спрошенные). Расчёт дня вернул None (дорог нет) — не
+    кэшируется: повтор при следующем запросе."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._items: OrderedDict[str, tuple[Any, dict[str, tuple[float, float]]]] = OrderedDict()
+        self._busy = False
+
+    def get(self, wanted: Mapping[str, Any], compute: Callable[[str], dict[str, tuple[float, float]] | None]
+            ) -> tuple[dict[str, dict[str, tuple[float, float]]], list[str]]:
+        """(день → результат — готовые с тем же отпечатком, дни, которые ещё считаются)."""
+        def serve() -> tuple[dict[str, dict[str, tuple[float, float]]], list[str]]:
+            ready, todo = {}, []
+            for ds, fp in wanted.items():
+                hit = self._items.get(ds)
+                if hit is not None and hit[0] == fp:
+                    self._items.move_to_end(ds)
+                    ready[ds] = hit[1]
+                else:
+                    todo.append(ds)
+            return ready, todo
+        with self._lock:
+            ready, todo = serve()
+            start = bool(todo) and not self._busy
+            if start:
+                self._busy = True
+
+        def run() -> None:
+            try:
+                for ds in todo:
+                    got = compute(ds)
+                    if got is None:
+                        continue
+                    with self._lock:
+                        self._items.pop(ds, None)
+                        self._items[ds] = (wanted[ds], got)
+                        while len(self._items) > SCORECARD_CACHE_DAYS:
+                            self._items.popitem(last=False)
+            except Exception:
+                logger.exception('[Routes] Վարորդներ: следование плановой линии не посчитано')
+            finally:
+                with self._lock:
+                    self._busy = False
+        if not start:
+            return ready, todo
+        if LIVE_ROAD_BACKGROUND:
+            threading.Thread(target=run, name='routes-score-route', daemon=True).start()
+            return ready, todo
+        run()
+        with self._lock:
+            return serve()
+
+
+def _route_day(state: RoutesState, ds: str) -> dict[str, tuple[float, float]] | None:
+    """Машина → (км езды в счёте дня, км отклонений без объяснённых) прошлого дня ds — тот же расчёт карточки машины, что
+    у карты (live.car_view: deviation.counted_km / off_km, объяснения диспетчера), по линии отправленного плана по
+    дорогам, построенной сразу. Дорог нет — None (повтор позже); машина без линии по дорогам или без езды — нет в ответе."""
+    roads = state.roads.get() if state.roads is not None else None
+    if roads is None or roads.failed or state.live_facts is None:
+        return None
+    day = date.fromisoformat(ds)
+    fleet = state.live_facts.fleet(ds)
+    ctx = _live_context(state, day, fleet, lines_now=True)
+    now = _yerevan_now()
+    out: dict[str, tuple[float, float]] = {}
+    for car, route in ctx.routes.items():
+        if not route.geo.road or car not in fleet:
+            continue
+        card = live.car_view(day, now, fleet[car], ctx.plans.get(car, []), ctx.trucks.get(car, live.TruckSpec()),
+                             ctx.depot, ctx.rules, ctx.road, False, ctx.windows, route, None, ctx.explained.get(car, ()))
+        dev = card.get('deviation')
+        if dev is not None and dev.get('adherence_pct') is not None:
+            out[car] = (float(dev['counted_km']), float(dev['off_km']))
+    return out
+
+
+def _scorecard_route(state: RoutesState, bundle: Bundle, since: date, until: date
+                     ) -> tuple[dict[tuple[str, str], tuple[float, float]], dict[str, int]]:
+    """Следование плановой линии машино-дней since…until (scorecard «Երթուղի»): (день, машина) → (км, км отклонений)
+    и счётчики {'days': дней с расчётом, 'pending': дней ещё в расчёте, 'no_roads': дней без карты дорог}. Только
+    прошедшие дни (сегодня день идёт) с планом «Развоза»; отпечаток дня — данные «Առաքիչ» (crew_facts.versions), правка
+    плана, объяснения диспетчера, пороги отклонения, склад и версия карты дорог. Карты дорог нет — значения нет (не штраф)."""
+    counts = {'days': 0, 'pending': 0, 'no_roads': 0}
+    if state.live_facts is None or state.crew_facts is None:
+        return {}, counts
+    today = _yerevan_now().date()
+    hi = min(until, today - timedelta(days=1))
+    if hi < since:
+        return {}, counts
+    lo_s, hi_s = since.isoformat(), hi.isoformat()
+    versions = state.crew_facts.versions(lo_s, hi_s)
+    revs = state.store.dispatch_revs(lo_s, hi_s)
+    roads = state.roads.get() if state.roads is not None else None
+    if roads is None or roads.failed:
+        counts['no_roads'] = sum(1 for ds in versions if ds in revs)
+        return {}, counts
+    rules = live.Rules.from_settings(bundle.settings)
+    base = (bundle.depot, rules.deviation_m, rules.detour_min_km, getattr(roads, 'version', None))
+    wanted = {}
+    for ds in sorted(versions):
+        if ds in revs:
+            expl = tuple((car, e['id'], e['kind'], e['from'], e['to'])
+                         for car, items in sorted(state.store.live_explanations(ds).items()) for e in items)
+            wanted[ds] = (versions[ds], revs[ds], expl, base)
+    app = current_app._get_current_object()
+
+    def compute(ds: str) -> dict[str, tuple[float, float]] | None:
+        with app.app_context():
+            return _route_day(state, ds)
+    ready, todo = state.score_routes.get(wanted, compute)
+    counts.update(days=len(ready), pending=len(todo))
+    return {(ds, car): v for ds, cars in ready.items() for car, v in cars.items()}, counts
+
+
 def _scorecard(state: RoutesState, since: date, until: date) -> dict[str, Any]:
-    """Показатели людей за since…until (scorecard.period) с литрами к норме; coverage.fuel — счётчики
-    _scorecard_fuel."""
+    """Показатели людей за since…until (scorecard.period) с литрами к норме и следованием плановой линии; coverage.fuel и
+    coverage.route — счётчики _scorecard_fuel и _scorecard_route."""
     assert state.crew_facts is not None
     bundle = state.store.load()
     fuel, fuel_cov = _scorecard_fuel(state, bundle, since, until)
-    body = sc.period(_scorecard_days(state, bundle, since, until), state.crew_facts.names(), fuel)
+    route, route_cov = _scorecard_route(state, bundle, since, until)
+    body = sc.period(_scorecard_days(state, bundle, since, until), state.crew_facts.names(), fuel, route)
     body['coverage']['fuel'] = fuel_cov
+    body['coverage']['route'] = route_cov
     return body
 
 
@@ -6036,18 +6305,6 @@ PAY_MONTHS = 12            # выбор месяца: этот и 11 до нег
 PAY_CACHE_MONTHS = PAY_MONTHS + ck.TREND_MONTHS - 1
 PAY_TTL_SECONDS = 300      # накладные месяца из ERP: CSV, правка параметров и повтор не перечитывают ERP
 PAY_FORBIDDEN = 'Доступ запрещён'
-
-
-def _admin_only(fn: Callable[..., Any]) -> Callable[..., Any]:
-    """Зарплаты и «Առաքման արժեք» — только администратору. Гейт app_v2 и так пускает в «Маршруты» лишь admin (прочие роли —
-    default-deny); эта проверка — вторая линия: роль, которой когда-нибудь откроют раздел, денег всё равно не увидит."""
-    @wraps(fn)
-    def wrapper(*args: Any, **kwargs: Any) -> Any:
-        if g.get('user_role') != 'admin':
-            logger.warning('[Routes] Только администратору: отказ роли %r (%s)', g.get('user_role'), request.path)
-            return jsonify({'success': False, 'error': PAY_FORBIDDEN}), 403
-        return fn(*args, **kwargs)
-    return wrapper
 
 
 @bp.get('/routes/pay')

@@ -1726,7 +1726,8 @@ def test_track_line_changes_nothing_but_the_line():
     fixes = live.track_fixes(tr.pts)
     actual = ac.reconstruct(fixes, [ac.PlanStop('S:A', 7, A, 100.0), ac.PlanStop('S:B', 8, B, 100.0)], DEPOT)
     assert plain['km'] == round(actual.km_gps, 1) and plain['deviation']['count'] == 1
-    assert plain['stats'] == {**live.day_stats(ac.clean_track(fixes)), 'overspeed': plain['stats']['overspeed']}
+    assert plain['stats'] == {**live.day_stats(ac.clean_track(fixes)), 'overspeed': plain['stats']['overspeed'],
+                              'adherence_pct': plain['deviation']['adherence_pct']}
 
 
 def test_deviation_long_detour_around_lunch_still_counts():
@@ -1873,7 +1874,10 @@ def test_api_live_plan_route_by_roads_once_and_prediction_km(client, live_app, m
     car1 = {t['car_code']: t for t in body['trucks']}['CAR1']
     assert car1['plan_sent'] is True and car1['route'] == {'road': True, 'km': 21.4, 'trips': 1, 'stops': 2,
                                                             'straight': 0}
-    assert car1['deviation'] == {'threshold_m': 300, 'count': 0, 'km': 0.0, 'active': False}
+    assert car1['deviation'] == {'threshold_m': 300, 'count': 0, 'km': 0.0, 'active': False, 'alerts': 0, 'minor': 0,
+                                 'explained': 0, 'detour_min_km': 1.0, 'off_km': 0.0,
+                                 'counted_km': car1['deviation']['counted_km'],
+                                 'adherence_pct': car1['deviation']['adherence_pct']}
     assert car1['stats']['max_speed']['kmh'] == 36 and car1['stats']['overspeed'] == {'count': 0, 'minutes': 0}
     truck = client.get('/api/routes/live/truck?car=CAR1', base_url=LAN).get_json()['truck']
     # линия — склад → A → B → склад, как «Развоз»: по дорогам (здесь — с серединами участков), в объезд малого центра

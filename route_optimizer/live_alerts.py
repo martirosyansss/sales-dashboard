@@ -3,7 +3,7 @@
 
 Фоновый поток раз в INTERVAL_S берёт карточки флота (views._live_cards — тот же расчёт, что у карты, кэш 10 с) и шлёт
 сообщение при начале тревоги (скорость, долгая стоянка, нет связи — только APK ≥ 2.2.0, GPS выключен, малый центр,
-отклонение от плановой линии) и при
+отклонение от плановой линии, пропущенные магазины рейса) и при
 её окончании — для «нет связи» и GPS. Включается только env ROUTES_LIVE_ALERTS=1 и только если заданы токен
 (ROUTES_LIVE_TG_TOKEN, иначе TELEGRAM_BOT_TOKEN) и чат (ROUTES_LIVE_TG_CHAT): без них поток не стартует. Слать должен
 ровно один процесс — переменная задаётся только на CT115 (deploy/README.md): у ПК та же карта, но терминалы шлют на
@@ -13,6 +13,9 @@ CT115, и сообщений ПК не нужно.
 - виды тревог — alert_kinds (по умолчанию все); тихие часы quiet (по умолчанию 20:00–08:00, Ереван): тревога, замеченная
   в них, не отправляется вовсе (и не отправится утром, если ещё идёт); повтор — не чаще раза в repeat_min минут на
   тревогу одного вида одной машины (следующая в этом окне пропускается, а не откладывается);
+- «փոքր շեղում» (отклонение с перепробегом участка меньше live_detour_min_km, live: minor) и объяснённые диспетчером
+  тревоги (explained) не рассылаются и не отмечаются: малое отклонение, которое вырастет в тревогу (то же начало), уйдёт
+  тогда; порядок объезда (sequence) — как отклонение, только по галочке владельца (LIVE_KINDS_OPT_IN);
 - «уже отправлено» — файл рядом с базой «Маршрутов» (route_live_alerts.json; новая схема SQLite ради нескольких строк не
   нужна): ключ тревоги — машина, вид и момент её начала; запись после каждой успешной отправки (перезапуск не
   повторяет), недельные хвосты сами уходят. Тревога, которой не было видно в этот момент и которая кончилась больше
@@ -66,7 +69,8 @@ LATE_CLEAR_MIN = 15.0             # …и после стольких минут
 
 TITLE = {'speed': 'Արագության գերազանցում', 'stop': 'Երկար կանգառ ոչ խանութում', 'no_contact': 'Կապ չկա',
          'gps': 'GPS-ն անջատված է', 'center': 'Փոքր կենտրոնում (մուտքը թույլատրված չէ)',
-         'late': 'Չի հասցնում ժամանակին (կանխատեսում)', 'deviation': 'Շեղում երթուղուց'}
+         'late': 'Չի հասցնում ժամանակին (կանխատեսում)', 'deviation': 'Շեղում երթուղուց',
+         'sequence': 'Խանութներ բաց են թողնված (հերթականություն)'}
 EXIT_TEXT = {'closed': 'հավելվածը փակվել է', 'shutdown': 'հեռախոսն անջատվել է'}   # live.offline_reason (APK 2.2.5)
 TITLE_END = {'no_contact': 'Կապը վերականգնվեց', 'gps': 'GPS-ը կրկին միացված է'}
 
@@ -223,6 +227,15 @@ def build_text(card: Mapping[str, Any], a: Mapping[str, Any], phase: str, rules:
                      if a.get('active') else
                      f'Մեքենան շեղվել էր պլանային երթուղուց ({rules.deviation_m:g} մ-ից ավելի)՝ {km} կմ, '
                      f'{_hm(a.get("from"))}–{_hm(a.get("to"))}։')
+        if isinstance(a.get('excess_km'), (int, float)):   # перепробег участка (live.detour_legs)
+            lines.append('Ավելորդ վազք հատվածում՝ ≈ ' + f'{a["excess_km"]:g}'.replace('.', ',') + ' կմ։')
+    elif kind == 'sequence':   # пропущенные магазины (номер по плану и название) и магазин, обслуженный раньше них
+        def name(x: Mapping[str, Any]) -> str:
+            return ' '.join(p for p in (f'№{x["no"]}' if x.get('no') else None, x.get('name') or x.get('stop_id')) if p)
+        skipped = [x for x in a.get('skipped') or () if isinstance(x, Mapping)]
+        lines.append('Բաց թողնված՝ ' + ', '.join(name(x) for x in skipped) + '։')
+        if isinstance(a.get('jump'), Mapping):
+            lines.append('Նախքան դրանք սպասարկվել է՝ ' + name(a['jump']) + '։')
     lat, lon, last_known = a.get('lat'), a.get('lon'), False
     if lat is None or lon is None:   # «нет связи» и GPS: места события нет — последняя известная точка
         pos = card.get('position') or {}
@@ -297,7 +310,7 @@ def _plan_car(car: str, card: Mapping[str, Any], rules: Rules, now: datetime, st
         changed = _plan_late(car, card, rules, now, state, out)
     for a in card.get('alerts_log') or ():
         kind = a.get('kind')
-        if kind not in rules.alert_kinds or kind == 'late' or not a.get('from'):
+        if kind not in rules.alert_kinds or kind == 'late' or not a.get('from') or a.get('minor') or a.get('explained'):
             continue
         key = f'{car}|{kind}|{a["from"]}'
         rec = state.sent.get(key)
