@@ -28,7 +28,9 @@
   норма машины / 100 (норма — середина «пустой — полный», нет — расход машины); заправка сегодня — расчёт с её момента;
 - следующий магазин — первая незакрытая (pending/in_progress) точка с координатой последнего уехавшего рейса (нет
   уехавших — первого) по порядку плана (вне плана — по порядку терминала), затем следующих рейсов, затем пропущенные
-  раньше. ETA (этап 2, eta_plan) — путь по очереди оставшихся точек: участок «машина → магазин» (положение машины в
+  раньше. Точка, у которой GPS-визит уже кончился (unmarked — машина там была и уехала, водитель не отметил), — уже
+  посещена: в следующий магазин и в очередь ETA не идёт, в «точки предыдущего рейса закрыты» (departed_trips) считается
+  закрытой (её касание — прибытие визита — и так есть). ETA (этап 2, eta_plan) — путь по очереди оставшихся точек: участок «машина → магазин» (положение машины в
   таблицы дорог не кладётся — Road.legs(here=True) спрашивает движок отдельно) и дальше участки между магазинами и
   складом — дорожная модель «Развоза» (Road.legs: Valhalla или граф OSM, часовой профиль пробок, выученные поправки;
   нет — запасная по прямой × извилистость, и ETA помечен eta_source «model»); у каждого магазина — время №50/№60
@@ -42,6 +44,20 @@
 - «не успеет» (№87, late_forecast) — по тем же ETA: магазин с окном приёма — позже конца окна, без окна — позже плана на
   late_nowin_min и больше; машина — возвращение после всех рейсов позже конца рабочего дня. Только сегодня, только от
   положения не старше LATE_FIX_MAX; в журнале тревог — вид late (активен, пока прогноз такой; состояние машины не меняет);
+- прогноз (ETA следующего и каждого магазина, опоздание, возвращение, «не успеет») — только при свежей связи (forecast):
+  последняя связь (позже из last_contact и последней точки GPS — data_until) не старше no_contact_min у APK с device и
+  OLD_APK_SILENT_MIN у старого APK, т.е. не «կապ չկա». Стоящая машина со старой точкой, но свежей связью — прогноз есть.
+  Связи нет — прогноза нет (ETA «как будто машина ещё там, где её видели» вводит в заблуждение): следующий магазин
+  называется с плановым ETA, eta/delay_min/eta_source — None, eta_unknown — true, here — false (где машина сейчас,
+  неизвестно); ETA точек и возвращения — None, late — пусто;
+- груз по плану (planned_kg) — вес накладных рейса, который машина повезёт следующим: первый рейс с точками после
+  последнего уехавшего (ничего не уехало — первый рейс с точками); все уехали — None. До выезда карточка показывает его
+  вместо «0 кг»;
+- GPS-визит точки (gps) — обслуживающий визит actuals (served): прибытие, отъезд, минуты стоянки; here — визит идёт
+  сейчас (только сегодня: стоянка продолжается до последней точки трека, и последняя точка в STOP_RADIUS_M точки; отъезд
+  — None). unmarked — точка не закрыта водителем (pending/in_progress), а визит кончился: «GPS-ով այցելած, տերմինալում
+  չնշված». В сводке магазинов — gps_visited (точек с GPS-визитом) и unmarked;
+- воспроизведение дня: track_t — момент (секунды эпохи, UTC) каждой точки линии track, 1:1 с ней (те же упрощённые точки);
 
 Тревоги (пороги — в настройках «Маршрутов», №76):
 - скорость: скорость терминала > live_speed_kmh подряд не меньше live_speed_sec (от первой до последней точки подряд;
@@ -578,12 +594,19 @@ def center_alerts(pts: Sequence[Fix], rules: Rules, truck: TruckSpec, live: bool
 
 # --- карточка машины ---
 
+def _left(stops: Sequence[Mapping[str, Any]], visited: Collection[str]) -> list[Mapping[str, Any]]:
+    """Оставшиеся точки: незакрытые, с координатой, без кончившегося GPS-визита (visited — unmarked)."""
+    return [s for s in stops if s.get('status') in OPEN and s.get('lat') is not None and s.get('lon') is not None
+            and s['stop_id'] not in visited]
+
+
 def _next_stop(stops: Sequence[Mapping[str, Any]], trips: Mapping[str, int], plan: Sequence[PlanTrip],
-               current: int) -> Mapping[str, Any] | None:
+               current: int, visited: Collection[str] = ()) -> Mapping[str, Any] | None:
     """Следующий магазин: незакрытая точка с координатой рейса current, затем следующих рейсов, затем прежних; внутри —
-    in_progress, затем порядок плана (вне плана — порядок терминала)."""
+    in_progress, затем порядок плана (вне плана — порядок терминала). visited — точки с кончившимся GPS-визитом: уже
+    посещены, не следующие."""
     pos = {c: i for t in plan for i, c in enumerate(t.customers)}
-    left = [s for s in stops if s.get('status') in OPEN and s.get('lat') is not None and s.get('lon') is not None]
+    left = _left(stops, visited)
 
     def key(s: Mapping[str, Any]) -> tuple[Any, ...]:
         k = trips[s['stop_id']]
@@ -701,11 +724,13 @@ def eta_plan(day: date, now: datetime, pos: Point, queue: Sequence[tuple[int, Se
 
 
 def _queue(stops: Sequence[Mapping[str, Any]], trips: Mapping[str, int], plan: Sequence[PlanTrip], current: int,
-           nxt: Mapping[str, Any] | None, departed: bool) -> list[tuple[int, list[Mapping[str, Any]]]]:
+           nxt: Mapping[str, Any] | None, departed: bool,
+           visited: Collection[str] = ()) -> list[tuple[int, list[Mapping[str, Any]]]]:
     """Оставшиеся точки по очереди объезда: рейс, где машина сейчас (первым, даже без точек — домой), затем следующие
-    рейсы, затем пропущенные раньше; внутри — следующий магазин (nxt), затем порядок плана (вне плана — терминала)."""
+    рейсы, затем пропущенные раньше; внутри — следующий магазин (nxt), затем порядок плана (вне плана — терминала).
+    visited — точки с кончившимся GPS-визитом: в очередь не идут."""
     pos = {c: i for t in plan for i, c in enumerate(t.customers)}
-    left = [s for s in stops if s.get('status') in OPEN and s.get('lat') is not None and s.get('lon') is not None]
+    left = _left(stops, visited)
     by_trip: dict[int, list[Mapping[str, Any]]] = {}
     for s in left:
         by_trip.setdefault(trips[s['stop_id']], []).append(s)
@@ -786,16 +811,33 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
         t = visited.get(s['stop_id']) or (_moment(s.get('delivered_at')) if s.get('status') in DONE else None)
         if t is not None:
             touches[s['stop_id']] = t
+    last = pts[-1] if pts else None
+    # GPS-визит точки (обслуживающий визит actuals): идёт сейчас — стоянка до последней точки трека (только сегодня)
+    gps: dict[str, dict[str, Any]] = {}
+    unmarked: set[str] = set()
+    served = dict(actual.served)
+    for s in stops:
+        sid = s['stop_id']
+        vi = served.get(sid)
+        if vi is None:
+            continue
+        v = actual.visits[vi]
+        ongoing = live and last is not None and v.leave >= last.at
+        here = (ongoing and s.get('lat') is not None and s.get('lon') is not None
+                and _near(last.point, (s['lat'], s['lon']), ac.STOP_RADIUS_M))   # type: ignore[union-attr]
+        gps[sid] = {'arrive': _iso(v.arrive), 'leave': None if here else _iso(v.leave), 'minutes': round(v.minutes),
+                    'here': here}
+        if s.get('status') in OPEN and not ongoing:
+            unmarked.add(sid)   # машина была и уехала, водитель не отметил — точка посещена
     trips = trip_of(stops, plan)
     deps = departures(pts, actual, depot)
     gone = departed_trips(trips, touches, deps, pts[0].at if pts else None,
-                          {s['stop_id'] for s in stops if s.get('status') in OPEN})
+                          {s['stop_id'] for s in stops if s.get('status') in OPEN} - unmarked)
     load = load_of(stops, trips, gone, touches, facts.get('returns') or (), depot_entries(pts, depot))
     moving = ac.moving_track(fixes, actual)
     fuel = fuel_liters(moving, load, truck) if pts else (0.0 if truck.rate(0) is not None else None)
     refuel = refuel_check(facts.get('refuels') or (), truck, moving, load, day)
 
-    last = pts[-1] if pts else None
     brg = next((p[5] for p in reversed(raw) if last is not None and p[0] == round(last.at.timestamp() * 1000)
                 and len(p) > 5), None)
     contacts = sorted(t for t in (_moment(x) for x in facts.get('contacts') or ()) if t is not None)
@@ -808,10 +850,14 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
     end = closed_at or (last.at if finished and last is not None else None)
     open_now = live and started is not None and not finished
     age = (now - last.at).total_seconds() if last is not None else None
+    # данные до: последняя связь или последняя точка GPS, что позже; прогноз — только при свежей связи (не «կապ չկա»)
+    data_until = max((t for t in (last_contact, last.at if last is not None else None) if t is not None), default=None)
+    silent = timedelta(minutes=rules.no_contact_min if facts.get('device') is not None else OLD_APK_SILENT_MIN)
+    forecast = live and data_until is not None and now - data_until <= silent
 
     # следующий магазин, ETA, опоздание, возвращение
     current = max(gone) if gone else 0
-    nxt = _next_stop(stops, trips, plan, current) if live and stops else None
+    nxt = _next_stop(stops, trips, plan, current, unmarked) if live and stops else None
     next_out = None
     return_eta = None
     return_source = None
@@ -819,8 +865,14 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
     late: list[dict[str, Any]] = []
     own = {s['stop_id']: e for s in stops if trips[s['stop_id']] < len(plan)
            and (e := plan[trips[s['stop_id']]].etas.get(s.get('customer_id'))) is not None}   # плановое ETA её рейса
-    if live and last is not None and not finished and (nxt is not None or (gone and not at_depot and depot is not None)):
-        queue = _queue(stops, trips, plan, current, nxt, bool(gone))
+    if nxt is not None and not forecast and not finished:   # связи нет: магазин и план — да, прогноза — нет
+        k = trips[nxt['stop_id']]
+        planned = plan[k].etas.get(nxt.get('customer_id')) if k < len(plan) else None   # type: ignore[arg-type]
+        next_out = {'stop_id': nxt['stop_id'], 'name': nxt.get('name'), 'here': False, 'eta': None, 'eta_source': None,
+                    'planned_eta': _iso(planned), 'delay_min': None, 'eta_unknown': True}
+    if (forecast and last is not None and not finished
+            and (nxt is not None or (gone and not at_depot and depot is not None))):
+        queue = _queue(stops, trips, plan, current, nxt, bool(gone), unmarked)
         here = None
         if nxt is not None and _near(last.point, (nxt['lat'], nxt['lon']), ac.STOP_RADIUS_M):
             arrived = touches.get(nxt['stop_id'])
@@ -841,7 +893,8 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
             next_out = {'stop_id': nxt['stop_id'], 'name': nxt.get('name'), 'here': here is not None,
                         'eta': _iso(arrival), 'eta_source': None if here is not None else ('road' if by_road else 'model'),
                         'planned_eta': _iso(planned),
-                        'delay_min': round((arrival - planned).total_seconds() / 60) if planned is not None else None}
+                        'delay_min': round((arrival - planned).total_seconds() / 60) if planned is not None else None,
+                        'eta_unknown': False}
 
     # тревоги
     devices = [(t, gps) for t, gps in ((_moment(a), g) for a, g in facts.get('devices') or ()) if t is not None]
@@ -871,6 +924,11 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
     else:
         state = 'standing'
 
+    # груз по плану: рейс, который машина повезёт следующим (первый с точками после последнего уехавшего)
+    ahead = sorted(k for k in set(trips.values()) if not gone or k > max(gone))
+    planned_kg = (math.fsum(float(s.get('weight_kg') or 0.0) for s in stops if trips[s['stop_id']] == ahead[0])
+                  if ahead else None)
+
     device = facts.get('device')
     out: dict[str, Any] = {
         'position': ({'lat': round(last.lat, 6), 'lon': round(last.lon, 6), 'at': _iso(last.at),
@@ -881,7 +939,8 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
                      if last is not None else None),
         'state': state,
         'stores': {'done': done, 'total': len(stops),
-                   'in_progress': sum(1 for s in stops if s.get('status') == 'in_progress')},
+                   'in_progress': sum(1 for s in stops if s.get('status') == 'in_progress'),
+                   'gps_visited': len(gps), 'unmarked': len(unmarked)},
         'km': round(actual.km_gps, 1),
         'fuel_l': round(fuel, 1) if fuel is not None else None,
         'fuel_check': refuel,
@@ -890,8 +949,11 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
                  'trip_kg': round(load.trip_kg), 'refused_kg': round(load.refused_kg),
                  'returns_kg': round(load.returns_aboard_kg), 'returns_unweighed': load.returns_unweighed,
                  'unloaded_kg': round(load.unloaded_kg),
-                 'trips_gone': len(gone), 'trips': max(len(plan), 1 if stops else 0)},
+                 'trips_gone': len(gone), 'trips': max(len(plan), 1 if stops else 0),
+                 'planned_kg': round(planned_kg) if planned_kg is not None else None},
         'next': next_out,
+        'forecast': forecast,
+        'data_until': _iso(data_until),
         'return_eta': _iso(return_eta),
         'return_source': return_source,
         'device': dict(device) if isinstance(device, Mapping) else None,
@@ -905,10 +967,12 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
         'alerts_log': alerts,   # журнал тревог дня: API флота его не отдаёт (views), Telegram и карточка машины — да
     }
     if detail:
-        line = ac.simplify([f.point for f in pts], TRACK_LINE_POINTS)
+        # simplify смотрит только на широту и долготу: момент точки едет вместе с ней (track_t — 1:1 с track)
+        line = ac.simplify([(f.lat, f.lon, f.at.timestamp()) for f in pts], TRACK_LINE_POINTS)   # type: ignore[misc]
         marks = {k: v for k, v in visited.items()}
         out.update({
             'track': [[round(p[0], 6), round(p[1], 6)] for p in line],
+            'track_t': [round(p[2]) for p in line],   # type: ignore[misc]
             'stops': [{'stop_id': s['stop_id'], 'customer_id': s.get('customer_id'), 'name': s.get('name'),
                        'lat': s.get('lat'), 'lon': s.get('lon'),
                        'status': s.get('status'), 'seq': s.get('seq'), 'trip': trips[s['stop_id']] + 1,
@@ -916,7 +980,8 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
                        'planned_eta': _iso(own.get(s['stop_id'])),
                        'eta': _iso(etas[s['stop_id']][0]) if s['stop_id'] in etas else None,
                        'eta_source': ('road' if etas[s['stop_id']][1] else 'model') if s['stop_id'] in etas else None,
-                       'arrive': _iso(marks.get(s['stop_id'])), 'delivered_at': s.get('delivered_at')}
+                       'arrive': _iso(marks.get(s['stop_id'])), 'delivered_at': s.get('delivered_at'),
+                       'gps': gps.get(s['stop_id']), 'unmarked': s['stop_id'] in unmarked}
                       for s in sorted(stops, key=lambda s: (trips[s['stop_id']],
                                                             s.get('seq') if isinstance(s.get('seq'), int) else 0))],
         })
