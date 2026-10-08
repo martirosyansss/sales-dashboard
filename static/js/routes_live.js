@@ -16,6 +16,8 @@
         moving: ['ընթացքի մեջ', 'is-moving'], standing: ['կանգնած', 'is-standing'], alert: ['ահազանգ', 'is-alert'],
         offline: ['կապ չկա', 'is-offline'], nodata: ['տվյալ չկա', 'is-nodata'], closed: ['օրն ավարտված է', 'is-closed'],
     };
+    const OFFLINE_WHY = { closed: 'հավելվածը փակվել է', shutdown: 'հեռախոսն անջատվել է' };   // t.offline_reason (APK 2.2.5)
+    const stateLabel = (t, label) => (t.state === 'offline' && Object.hasOwn(OFFLINE_WHY, t.offline_reason) ? label + ' · ' + OFFLINE_WHY[t.offline_reason] : label);
     const ALERT = {
         speed: ['fa-gauge-high', 'Արագության գերազանցում'], stop: ['fa-square-parking', 'Երկար կանգառ ոչ խանութում'],
         no_contact: ['fa-tower-broadcast', 'Կապ չկա'], gps: ['fa-location-crosshairs', 'GPS-ն անջատված է'],
@@ -117,7 +119,8 @@
         $('lvEmpty').hidden = trucks.length > 0;
         const list = $('lvList');
         list.replaceChildren(...trucks.map(t => {
-            const [label, cls] = STATE[t.state] || STATE.standing;
+            const [baseLabel, cls] = STATE[t.state] || STATE.standing;
+            const label = stateLabel(t, baseLabel);
             const pos = t.position;
             const meta = [h('span', { text: 'Խանութներ՝ ' + t.stores.done + '/' + t.stores.total })];
             if (pos) meta.push(h('span', { class: ageClass(pos.age_s), text: ago(pos.age_s) }));
@@ -251,7 +254,8 @@
         const t = state.detail || (state.data && state.data.trucks.find(x => x.car_code === state.selected));
         $('lvCard').hidden = !t;
         if (!t) return;
-        const [label, cls] = STATE[t.state] || STATE.standing;
+        const [baseLabel, cls] = STATE[t.state] || STATE.standing;
+        const label = stateLabel(t, baseLabel);
         $('lvPlate').textContent = t.car_code;
         $('lvSub').textContent = [t.name, t.planned ? null : 'պլանում չէ'].filter(Boolean).join(' · ');
         $('lvState').replaceChildren(h('span', { class: 'lv-dot ' + cls }), label);
