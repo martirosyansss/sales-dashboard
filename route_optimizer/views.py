@@ -194,6 +194,10 @@ class RoutesState:
     dispatch_cache: dict[tuple[date, date, date], tuple[float, dp.DispatchData]] = field(default_factory=dict)
     dispatch_lock: threading.Lock = field(default_factory=threading.Lock)
     same_day_cache: dict[date, tuple[float, dp.SameDayData]] = field(default_factory=dict)   # под dispatch_lock
+    # (код, название) из ERP магазинов с условиями вне снимка и заказов в памяти (_known_customers) — под dispatch_lock;
+    # ERP не ответил — не раньше customer_names_retry (time.monotonic())
+    customer_names: dict[int, tuple[str, str]] = field(default_factory=dict)
+    customer_names_retry: float = 0.0
     driver_geo: DriverGeo | None = None   # None — раздела «Առաքիչ» нет: точек водителей нет, всё как раньше
     driver_cache: tuple[float, dict[int, Point]] | None = None   # (time.monotonic(), точки) — DRIVER_TTL_SECONDS
     # факт машин (трек, точки дня, заправки) из «Առաքիչ» — обучение «Развоза»; None — без обучения, всё как раньше
@@ -3425,16 +3429,47 @@ def api_customer_window() -> Any:
 CUSTOMER_FLAGS = frozenset({'solo', 'center'})   # флажки карточки магазина «Развоза» (№78)
 
 
-def _known_customers(state: RoutesState, snap: Snapshot) -> Mapping[int, Customer]:
+CUSTOMER_NAMES_RETRY_S = 60.0   # ERP не ответил на названия магазинов с условиями — повтор не чаще
+
+
+def _configured_customers(bundle: Bundle) -> set[int]:
+    """Магазины, у которых задано своё условие (допуск, окно, время у магазина, отдельный рейс, центр)."""
+    return (set(bundle.vehicle_access) | set(bundle.windows) | set(bundle.unload_min) | set(bundle.solo)
+            | set(bundle.center_allow))
+
+
+def _known_customers(state: RoutesState, snap: Snapshot | None,
+                     bundle: Bundle | None = None) -> Mapping[int, Customer]:
     """Магазины для условий: снимок (клиенты шаблонов менеджеров) + клиенты заказов «Развоза» в памяти (кэши заказов
     дня) — магазин вне шаблонов ERP с заказом тоже в рейсе, его условия и «Մինչև ժամը» задают так же (08.10: «ՍԱՍ ս/մ
-    /Բաղրամյան» — «Խանութը չի գտնվել»). Заказов в памяти нет (перезапуск) — «Развоз» загрузит их при обновлении."""
+    /Բաղրամյան» — «Խանութը չի գտնվել»). С bundle — и все магазины со своими условиями (владелец 08.10: видны в
+    настройках всегда, и после перезапуска): названия недостающих — из ERP один раз (state.customer_names); ERP не
+    ответил или клиента там нет — магазин всё равно в списке, с кодом = id и без названия (условие можно снять).
+    Без bundle ERP не читается."""
+    base: Mapping[int, Customer] = snap.customers if snap is not None else {}
     with state.dispatch_lock:
         loaded = [d.customers for _, d in state.dispatch_cache.values()] + [
             d.customers for _, d in state.same_day_cache.values()]
-    extra = {cid: Customer(cid, code, name, '', None, False, None)
-             for names in loaded for cid, (code, name) in names.items() if cid not in snap.customers}
-    return {**snap.customers, **extra} if extra else snap.customers
+        cached = dict(state.customer_names)
+        retry = state.customer_names_retry
+    names = {cid: cn for d in [cached, *loaded] for cid, cn in d.items() if cid not in base}
+    if bundle is not None:
+        missing = sorted(_configured_customers(bundle) - set(base) - set(names))
+        if missing and state.customer_ref_loader is not None and time.monotonic() >= retry:
+            try:
+                found = {c.customer_id: (c.code, c.name) for c in state.customer_ref_loader('', missing)}
+            except ErpError:
+                logger.warning('[Routes] Названия магазинов с условиями из ERP не прочитаны', exc_info=True)
+                with state.dispatch_lock:
+                    state.customer_names_retry = time.monotonic() + CUSTOMER_NAMES_RETRY_S
+            else:
+                with state.dispatch_lock:
+                    state.customer_names.update(found)
+                names.update(found)
+        names.update({cid: (str(cid), '') for cid in missing if cid not in names})
+    if not names:
+        return base
+    return {**base, **{cid: Customer(cid, code, name, '', None, False, None) for cid, (code, name) in names.items()}}
 
 
 @bp.post('/api/routes/customer-vehicles')
@@ -3460,7 +3495,7 @@ def api_customer_vehicles() -> Any:
         return _bad_request({'customer_id': 'Սպասվում էր հաճախորդի կոդ'})
     state = _state()
     snap, _ = state.snapshots.get(allow_stale=True)
-    if cid not in _known_customers(state, snap):
+    if cid not in _known_customers(state, snap, state.store.load()):
         return _bad_request({'customer_id': 'Խանութը չի գտնվել — թարմացրեք էջը'})
     if 'access' not in payload:     # только время у магазина
         minutes = None
@@ -3520,7 +3555,7 @@ def api_customer_vehicles_search() -> Any:
     state = _state()
     snap, _ = state.snapshots.get(allow_stale=True)
     bundle = _bundle(state)
-    customers = [c for cid, c in _known_customers(state, snap).items() if
+    customers = [c for cid, c in _known_customers(state, snap, bundle).items() if
                  (cid == customer_id if customer_id is not None else
                   (not query and (cid in bundle.vehicle_access or cid in bundle.windows or cid in bundle.unload_min
                                   or cid in bundle.solo or cid in bundle.center_allow)) or
@@ -4067,8 +4102,8 @@ def _store_unload(state: RoutesState, bundle: Bundle, rows: Sequence[Mapping[str
     «Развоз» считает сейчас (learning.store_times, как в расчёте; время на груз — сверху). Не больше STORES_SHOWN строк.
     Действует сглаживание к группе (№66, learning.store_rule) — rule 'shrink' и k, магазины и визиты — и из store_shrink
     (без введённого в расчёт идёт и 1-й визит).
-    Названия — из снимка ERP, если он уже в памяти (ERP не читается: страница опрашивает статус во время пересчёта);
-    снимка нет — без названий."""
+    Названия — из того, что уже в памяти (_known_customers без bundle: снимок, заказы «Развоза», названия магазинов с
+    условиями; ERP не читается: страница опрашивает статус во время пересчёта); нет нигде — без названий."""
     per_stop, per_tonne = _unload_norms(bundle, unload)
     times = learning.store_times(per_stop, bundle.unload_min, unload)
     last = next((r for r in reversed(rows) if r['kind'] == 'unload' and r['params'] is not None
@@ -4082,8 +4117,7 @@ def _store_unload(state: RoutesState, bundle: Bundle, rows: Sequence[Mapping[str
         stats = {**{c: (n, fact) for c, (n, fact, _) in shrunk.items()}, **stats}
         active |= set(learning.store_shrink(unload))
     cids = sorted(set(bundle.unload_min) | set(stats) | active, key=lambda c: (-stats[c][0] if c in stats else 0, c))
-    snap = state.snapshots.peek()
-    customers = snap.customers if snap is not None else {}
+    customers = _known_customers(state, state.snapshots.peek())   # без bundle: ERP здесь не читается
     out = []
     for cid in cids[:STORES_SHOWN]:
         c = customers.get(cid)
