@@ -130,6 +130,20 @@ def test_jitter_between_stays_dropped_by_speed_and_displacement():
         assert len([p for p in line if p[2] > stand_to.timestamp()]) == len(after) > 10    # езда к B — вся
 
 
+def test_sustained_crawl_in_traffic_keeps_a_line():
+    """Пробка: машина ползёт 0,9 м/с (ниже STOP_MS) 1 565 точек раз в 5 с (~7 км) — линия не пропадает: точка раз в
+    ~75 м, длина — как путь."""
+    tr = Trip().park(DEPOT, 5)
+    end = east(DEPOT, 1565 * 5 * 0.9)
+    tr.drive(end, speed_ms=0.9, step_s=5)
+    assert len(tr.fixes) - 6 > 1560 and all(f.spd == 0.9 for f in tr.fixes[6:])
+    line, _, _ = _line(tr.fixes)
+    path = tl._path_m(line)
+    straight = haversine_km(DEPOT, end) * 1000
+    assert 60 < len(line) < 120 and abs(path - straight) < 0.02 * straight
+    assert max(tl._m(a, b) for a, b in zip(line, line[1:])) < 100.0
+
+
 def test_small_spike_dropped_real_turn_kept():
     tr = Trip().park(DEPOT, 5).drive(A)
     base = len(tr.fixes)
@@ -229,7 +243,45 @@ def test_match_takes_road_shape_and_times_follow_matched_points():
     b = bodies[0]
     assert len(bodies) == 1 and b['costing'] == 'truck' and b['costing_options'] == {'truck': {'weight': 7.0}}
     assert b['shape_match'] == 'map_snap' and [s['time'] for s in b['shape']] == [int(p[2]) for p in raw]
-    assert b['trace_options'] == {'gps_accuracy': 8.0, 'search_radius': 30.0}
+    assert b['trace_options'] == {'gps_accuracy': 8.0, 'search_radius': 30.0, 'turn_penalty_factor': tl.TURN_PENALTY}
+    assert {'edge.source_percent_along', 'edge.target_percent_along'} <= set(b['filters']['attributes'])
+
+
+def test_times_respect_trimmed_first_and_last_edges():
+    """Первое ребро линии Valhalla начинается с source_percent_along (линия обрезана), последнее кончается на
+    target_percent_along: положение точки на ребре считается от обрезанного края."""
+    chunk = tl.chunks(_run(3, step_s=10.0), [])[0]
+    raw = chunk.raw()
+    shape = [p[:2] for p in raw]
+    res = {'shape': encode6(shape),
+           'edges': [{'begin_shape_index': 0, 'end_shape_index': 1, 'source_percent_along': 0.5},
+                     {'begin_shape_index': 1, 'end_shape_index': 2, 'target_percent_along': 0.5}],
+           'matched_points': [{'type': 'matched', 'edge_index': 0, 'distance_along_edge': 0.5},
+                              {'type': 'matched', 'edge_index': 0, 'distance_along_edge': 1.0},
+                              {'type': 'matched', 'edge_index': 1, 'distance_along_edge': 0.5}]}
+    line, share = tl._timed(res, raw)
+    assert share == 0.0 and [p[2] for p in line] == [p[2] for p in raw]
+    res['matched_points'][1]['distance_along_edge'] = 0.75   # середина обрезанного первого ребра
+    line, _ = tl._timed(res, raw)
+    assert line[0][2] == raw[0][2] and line[1][2] == pytest.approx(raw[1][2] + (raw[2][2] - raw[1][2]) * 0.5)
+
+
+def test_short_stop_with_noisy_speed_is_not_driving():
+    """Остановка 4 мин (меньше стоянки «не по плану»): скорость терминала шумит 0–0,9 м/с, дрожание 15 м — в линии
+    не больше 3 точек на месте (без этого после привязки — езда туда-обратно)."""
+    for seed in range(5):
+        tr = Trip(seed=seed).park(DEPOT, 5).drive(A)
+        stop_from = tr.t
+        for _ in range(16):
+            tr.t += timedelta(seconds=15)
+            q = east(north(A, tr.rnd.gauss(0, 15)), tr.rnd.gauss(0, 15))
+            tr._add(q, tr.rnd.uniform(0.0, 0.9))
+        stop_to = tr.t
+        tr.drive(B)
+        line, actual, _ = _line(tr.fixes)
+        assert [s.kind for s in actual.stays] == ['depot']
+        at_place = [p for p in line if stop_from.timestamp() < p[2] <= stop_to.timestamp()]
+        assert len(at_place) <= 3, (seed, at_place)
 
 
 def test_implausible_match_rejected_then_next_profile_then_raw():
@@ -254,6 +306,24 @@ def test_implausible_match_rejected_then_next_profile_then_raw():
         raise RuntimeError('No suitable edges near location')
     assert tl.match_chunk(chunk, broken, TRIES) == (raw, False)
     assert tl.match_chunk(chunk, lambda body: {'shape': ''}, TRIES) == (raw, False)    # ответ не разобрать
+
+
+def test_engine_failure_is_not_final():
+    """«Путь не найден» (unmatchable, у сервера — ValhallaError) — окончательно: точки куска; другое исключение
+    (сбой движка, память) — вызывающему: кэшировать нельзя."""
+    chunk = tl.chunks(_run(10), [])[0]
+
+    class NoPath(RuntimeError):
+        pass
+
+    def no_path(body):
+        raise NoPath('Map Match algorithm failed to find path')
+    assert tl.match_chunk(chunk, no_path, TRIES, (NoPath,)) == (chunk.raw(), False)
+    for exc in (RuntimeError('actor died'), MemoryError(), OSError('tiles')):
+        def failing(body, exc=exc):
+            raise exc
+        with pytest.raises(type(exc)):
+            tl.match_chunk(chunk, failing, TRIES, (NoPath,))
 
 
 def test_no_valhalla_gives_none_and_short_chunks_stay_raw():
@@ -324,6 +394,23 @@ def test_live_tracks_unavailable_not_cached_and_no_matcher(views_mod):
     assert cache.get(DAY, 'CAR1', parts, lambda c: (c.raw(), False)) == {parts[0].key: parts[0].raw()}
     state = type('S', (), {'valhalla': None})()
     assert views_mod._track_matcher(state, 3000.0) is None
+    off = type('P', (), {'usable': lambda self: False, 'trace': lambda self, body: pytest.fail('не звать')})()
+    assert views_mod._track_matcher(type('S', (), {'valhalla': off})(), 3000.0) is None   # режим osm, нет карты
+    on = type('P', (), {'usable': lambda self: True, 'trace': lambda self, body: None})()
+    assert views_mod._track_matcher(type('S', (), {'valhalla': on})(), 3000.0)(parts[0]) is None
+
+
+def test_live_tracks_previous_tail_version_evicted(views_mod):
+    cache = views_mod._LiveTracks()
+
+    def match(c):
+        return c.raw(), True
+    cache.get(DAY, 'CAR1', tl.chunks(_run(30), []), match)
+    old = tl.chunks(_run(30), [])[0].key
+    grown = tl.chunks(_run(60), [])
+    assert set(cache.get(DAY, 'CAR1', grown, match)) == {grown[0].key}
+    assert (DAY, 'CAR1', old) not in cache._items and len(cache._items) == 1
+    assert cache._size == len(grown[0].points)
 
 
 def test_live_tracks_one_background_worker_and_never_waits(views_mod, monkeypatch):
@@ -339,21 +426,76 @@ def test_live_tracks_one_background_worker_and_never_waits(views_mod, monkeypatc
     other = tl.chunks(_run(50, p0=B), [])
     t = time.monotonic()
     assert cache.get(DAY, 'CAR1', parts, slow) == {}
-    assert cache.get(DAY, 'CAR2', other, slow) == {}                                 # занят — следующий опрос
-    assert time.monotonic() - t < 1.0
+    assert cache.get(DAY, 'CAR2', other, slow) == {}                                 # занят — заказ в очереди
+    assert time.monotonic() - t < 1.0 and len([x for x in threading.enumerate() if x.name == 'routes-live-tracks']) == 1
     gate.set()
     end = time.monotonic() + 5
     while cache._busy and time.monotonic() < end:
         time.sleep(0.01)
-    assert started == [parts[0].key] and set(cache.get(DAY, 'CAR1', parts, slow)) == {parts[0].key}
+    assert started == [parts[0].key, other[0].key]                                    # заказ занятого времени не потерян
+    assert set(cache.get(DAY, 'CAR1', parts, slow)) == {parts[0].key}
+    assert set(cache.get(DAY, 'CAR2', other, slow)) == {other[0].key}
 
 
-def test_live_tracks_matcher_exception_is_logged_not_raised(views_mod):
+def test_live_tracks_wait_budget_for_pages_that_fetch_once(views_mod, monkeypatch):
+    """Карта «план — факт» / «Ավտոտնակ» линию не переспрашивает: ждёт свои куски (и за чужим заказом в очереди)
+    не дольше бюджета; не успели — без привязки, заказ остаётся."""
+    monkeypatch.setattr(views_mod, 'LIVE_ROAD_BACKGROUND', True)
     cache = views_mod._LiveTracks()
 
+    def slow(c):
+        time.sleep(0.2)
+        return c.raw(), True
+    first = tl.chunks(_run(50, p0=B), [])
+    parts = tl.chunks(_run(50), [])
+    assert cache.get(DAY, 'CAR9', first, slow) == {}                                 # поток занят чужим куском
+    got = cache.get(DAY, 'CAR1', parts, slow, wait_s=3.0)
+    assert set(got) == {parts[0].key}
+    gate = threading.Event()
+
+    def stuck(c):
+        gate.wait(10)
+        return c.raw(), True
+    late = tl.chunks(_run(50, p0=DEPOT), [])
+    t = time.monotonic()
+    assert cache.get(DAY, 'CAR2', late, stuck, wait_s=0.3) == {} and time.monotonic() - t < 2.0
+    gate.set()
+    end = time.monotonic() + 5
+    while cache._busy and time.monotonic() < end:
+        time.sleep(0.01)
+    assert set(cache.get(DAY, 'CAR2', late, stuck)) == {late[0].key}
+
+
+def test_live_tracks_thread_start_failure_resets_busy(views_mod, monkeypatch):
+    monkeypatch.setattr(views_mod, 'LIVE_ROAD_BACKGROUND', True)
+
+    def no_threads(self):
+        raise RuntimeError("can't start new thread")
+    monkeypatch.setattr(threading.Thread, 'start', no_threads)
+    cache = views_mod._LiveTracks()
+    parts = tl.chunks(_run(50), [])
+    assert cache.get(DAY, 'CAR1', parts, lambda c: (c.raw(), True)) == {} and cache._busy is False
+
+
+def test_live_tracks_engine_failure_not_cached_logged_rarely_with_count(views_mod, monkeypatch, caplog):
+    cache = views_mod._LiveTracks()
+    clock = [1000.0]
+    monkeypatch.setattr(views_mod, '_monotonic', lambda: clock[0])
+    calls = []
+
     def boom(c):
+        calls.append(c.key)
         raise ValueError('boom')
-    assert cache.get(DAY, 'CAR1', tl.chunks(_run(50), []), boom) == {} and not cache._busy
+    parts = tl.chunks(_run(250), [])
+    with caplog.at_level('WARNING', logger=views_mod.logger.name):
+        assert cache.get(DAY, 'CAR1', parts, boom) == {} and not cache._busy and not cache._items
+        assert cache.get(DAY, 'CAR1', parts, boom) == {} and len(calls) == 6         # не кэшируется — снова
+        warned = [r for r in caplog.records if 'привязка трека' in r.getMessage()]
+        assert len(warned) == 1 and cache._failed == 5                                # журнал — раз в 10 мин
+        clock[0] += views_mod.LIVE_TRACK_WARN_S + 1
+        cache.get(DAY, 'CAR1', parts[:1], boom)
+        warned = [r for r in caplog.records if 'привязка трека' in r.getMessage()]
+        assert len(warned) == 2 and '6 кусков' in warned[-1].getMessage() and cache._failed == 0
 
 
 # ============================== настоящий Valhalla (тайлы сервера, если есть) ==============================
@@ -367,8 +509,9 @@ def _server_build():
 
 
 def test_real_valhalla_snaps_noisy_track_to_the_road():
-    """Маршрут по дорогам Еревана (Actor.route) → точки вдоль него с шумом GPS 15 м раз в ~10 с → привязка
-    правдоподобна, линия — рядом с маршрутом, моменты не убывают. Тайлов нет — пропуск."""
+    """Маршрут по дорогам Еревана (Actor.route) → точки вдоль него с шумом GPS 8 м раз в 10 с, посередине —
+    остановка 6 мин (скорость шумит 0,5–1,5 м/с, дрожание 18 м) → привязка правдоподобна, линия рядом с маршрутом и не
+    длиннее его (остановка не стала ездой туда-обратно), моменты не убывают. Тайлов нет — пропуск."""
     build = _server_build()
     if build is None:
         pytest.skip('тайлов Valhalla на этой машине нет')
@@ -392,10 +535,18 @@ def test_real_valhalla_snaps_noisy_track_to_the_road():
         f = (s - cum[j]) / ((cum[j + 1] - cum[j]) or 1)
         p = (road[j][0] + (road[j + 1][0] - road[j][0]) * f, road[j][1] + (road[j + 1][1] - road[j][1]) * f)
         p = east(north(p, rnd.gauss(0, 8)), rnd.gauss(0, 8))
-        fixes.append(ac.TrackFix(T0 + timedelta(seconds=len(fixes) * 10), p[0], p[1], 10.0, 10.0))
+        at = fixes[-1].at + timedelta(seconds=10) if fixes else T0
+        fixes.append(ac.TrackFix(at, p[0], p[1], 10.0, 10.0))
+        if abs(s - cum[-1] / 2) < 50.0:   # остановка посередине
+            for _ in range(24):
+                q = east(north(p, rnd.gauss(0, 18)), rnd.gauss(0, 18))
+                fixes.append(ac.TrackFix(fixes[-1].at + timedelta(seconds=15), q[0], q[1], 10.0, rnd.uniform(0.5, 1.5)))
         s += 100.0
-    chunk = tl.chunks(fixes, [])[0]
-    line, ok = tl.match_chunk(chunk, trace, (('truck', ve.truck_costing(3000.0)), ('auto', ve.CAR_COSTING)))
+    parts = tl.chunks(fixes, [])
+    assert len(parts) == 1
+    line, ok = tl.match_chunk(parts[0], trace, (('truck', ve.truck_costing(3000.0)), ('auto', ve.CAR_COSTING)),
+                              (ve.valhalla_error(),))
     assert ok and len(line) >= 2
     assert all(x[2] <= y[2] for x, y in zip(line, line[1:]))
     assert max(min(tl._seg_m(p, a, b) for a, b in zip(road, road[1:])) for p in line) < 40.0
+    assert tl._path_m(line) <= 1.05 * cum[-1] + 30.0, (tl._path_m(line), cum[-1])
