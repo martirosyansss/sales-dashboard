@@ -1,0 +1,64 @@
+{#- Меню раздела «Маршруты» — одно место на все страницы (routes_base.html). Пункт: (адрес, иконка Font Awesome, подпись).
+    Порядок и группы — решение владельца 08.10; «Կարգավորումներ» — отдельно внизу. -#}
+{%- set rt_side_groups = [
+    ('Պլանավորում', [
+        ('/routes', 'fa-gauge-high', 'Ակնարկ'),
+        ('/routes/optimize', 'fa-wand-magic-sparkles', 'Օպտիմալացում'),
+        ('/routes/learning', 'fa-graduation-cap', 'Ուսուցում'),
+    ]),
+    ('Առաքում', [
+        ('/routes/dispatch', 'fa-truck-ramp-box', 'Առաքում'),
+        ('/routes/live', 'fa-satellite-dish', 'Մեքենաները առցանց'),
+    ]),
+    ('Թիմ', [
+        ('/routes/drivers', 'fa-id-card', 'Վարորդներ'),
+        ('/routes/araqich', 'fa-people-carry-box', 'Առաքիչների KPI'),
+        ('/routes/garage', 'fa-warehouse', 'Ավտոտնակ'),
+    ]),
+    ('Ֆինանսներ', [
+        ('/routes/pay', 'fa-money-check-dollar', 'Աշխատավարձ'),
+        ('/routes/cost', 'fa-scale-balanced', 'Առաքման արժեք'),
+    ]),
+] -%}
+{%- set rt_side_settings = ('/routes/settings', 'fa-gear', 'Կարգավորումներ') -%}
+{%- set rt_side_items = rt_side_groups | map(attribute=1) | sum(start=[]) + [rt_side_settings] -%}
+{%- set rt_side_here = rt_side_items | selectattr(0, 'equalto', rt_nav) | map(attribute=2) | first | default('') -%}
+{%- macro rt_side_link(item) -%}
+<li><a class="rt-secnav-link" href="{{ item[0] }}"{% if item[0] == rt_nav %} aria-current="page"{% endif %}><i class="fas {{ item[1] }}" aria-hidden="true"></i><span class="rt-secnav-t">{{ item[2] }}</span></a></li>
+{%- endmacro -%}
+<!-- Узкий экран: вместо колонки — кнопка «☰ текущая страница», меню выезжает слева -->
+<div class="rt-page rt-secnav-bar" lang="hy">
+    <button type="button" class="rt-secnav-open" id="rtSecNavOpen" aria-controls="rtSecNav" aria-expanded="false">
+        <i class="fas fa-bars" aria-hidden="true"></i>
+        <span class="rt-secnav-open-k">Երթուղիներ</span>
+        <i class="fas fa-chevron-right rt-secnav-open-sep" aria-hidden="true"></i>
+        <span class="rt-secnav-open-v">{{ rt_side_here }}</span>
+    </button>
+</div>
+<div class="rt-secnav-scrim" id="rtSecNavScrim" hidden></div>
+<aside class="rt-page rt-secnav" id="rtSecNav" lang="hy">
+    <div class="rt-secnav-head">
+        <span class="rt-secnav-title"><i class="fas fa-route" aria-hidden="true"></i><span class="rt-secnav-title-t">Երթուղիներ</span></span>
+        <button type="button" class="rt-secnav-close" id="rtSecNavClose" aria-label="Փակել ընտրացանկը"><i class="fas fa-xmark" aria-hidden="true"></i></button>
+    </div>
+    <nav class="rt-secnav-nav" aria-label="Երթուղիների բաժիններ">
+        <div class="rt-secnav-scroll">
+        {%- for label, items in rt_side_groups %}
+        <div class="rt-secnav-grp">
+            <p class="rt-secnav-glabel" id="rtSecNavG{{ loop.index }}">{{ label }}</p>
+            <ul class="rt-secnav-list" aria-labelledby="rtSecNavG{{ loop.index }}">
+                {%- for item in items %}
+                {{ rt_side_link(item) }}
+                {%- endfor %}
+            </ul>
+        </div>
+        {%- endfor %}
+        </div>
+        <ul class="rt-secnav-list rt-secnav-foot">
+            {{ rt_side_link(rt_side_settings) }}
+        </ul>
+    </nav>
+    <button type="button" class="rt-secnav-fold" id="rtSecNavFold" aria-controls="rtSecNav" aria-expanded="true">
+        <i class="fas fa-angles-left" aria-hidden="true"></i><span class="rt-secnav-fold-t">Փակել</span>
+    </button>
+</aside>

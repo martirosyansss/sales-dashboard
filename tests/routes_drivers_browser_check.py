@@ -185,7 +185,7 @@ def main() -> int:
             check(score.get('Գոռ', '').endswith('1-ին 2-ից') and score.get('Արամ', '').endswith('2-րդ 2-ից'),
                   f'A место среди двух с баллом (1-ին, 2-րդ) — {score}')
             check(page.locator('#drTable thead th[data-key="cash"]').count() == 1
-                  and page.locator('.rt-tabs').count() == 1, 'A у администратора — «Կանխիկ» и вкладки раздела')
+                  and page.locator('#rtSecNav').count() == 1, 'A у администратора — «Կանխիկ» и меню раздела')
             check(page.locator('#drKpis .dr-kpi').count() == 4 and page.is_visible('#drEtaBox')
                   and page.locator('#drEta .dr-kpi').count() == 4, 'A плитки парка и 4 плитки точности ETA')
             eta = bodies[-1]['eta']
@@ -222,7 +222,7 @@ def main() -> int:
             body = bodies[-1]
             check(body['cash'] is False and all('cash' not in r for r in body['drivers'])
                   and all('cash' not in d for r in body['drivers'] for d in r['detail']), 'D в ответе API денег нет')
-            check(page.locator('#drTable th[data-key="cash"]').count() == 0 and page.locator('.rt-tabs').count() == 0
+            check(page.locator('#drTable th[data-key="cash"]').count() == 0 and page.locator('#rtSecNav').count() == 0
                   and page.locator('a[href="/routes/garage"]').count() >= 1, 'D без «Կանխիկ» и вкладок, есть «Ավտոտնակ»')
             page.locator('#drRows tr.dr-row', has_text='Արամ').click()
             cells = page.eval_on_selector('#drRows tr.dr-row', 'e => e.children.length')

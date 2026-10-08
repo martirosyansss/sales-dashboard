@@ -1,0 +1,19 @@
+{% extends "base_v2.html" %}
+{#- Каркас страниц раздела «Маршруты»: меню раздела слева (как у Routific / Onfleet; владелец 08.10 — полоса вкладок
+    «очень не профессионально»), справа — сама страница (её block content без изменений).
+    Страница задаёт на верхнем уровне: rt_nav — свой адрес (пункт меню «текущий»); rt_nav_admin_only — меню только
+    администратору (роль «Гараж» видит «Ավտոտնակ», «Մեքենաները առցանց» и «Վարորդներ» без меню, как раньше). -#}
+{% block page %}
+{%- if rt_nav and (is_admin or not rt_nav_admin_only) -%}
+<div class="rt-shell" id="rtShell">
+<script>try { if (window.localStorage.getItem('rtSecNavCollapsed') === '1') document.getElementById('rtShell').classList.add('is-collapsed'); } catch (e) { /* без хранилища — меню раскрыто */ }</script>
+{% include "_routes_side.html" %}
+<div class="rt-shell-main">
+{{ self.content() }}
+</div>
+</div>
+<script src="{{ url_for('static', filename='js/routes_side.js') }}?v=1" defer></script>
+{%- else -%}
+{{ self.content() }}
+{%- endif -%}
+{% endblock %}

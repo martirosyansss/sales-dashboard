@@ -108,7 +108,7 @@ def main() -> int:
             # A
             page.goto(f'{BASE}/routes/cost')
             page.wait_for_selector('#ctRows tr', timeout=30000)
-            check(page.get_attribute('.rt-tabs a[aria-current="page"]', 'href') == '/routes/cost', 'A вкладка текущая')
+            check(page.get_attribute('#rtSecNav a[aria-current="page"]', 'href') == '/routes/cost', 'A пункт меню раздела текущий')
             check(rows().count() == 4, f'A 4 магазина ({rows().count()})')
             costs = page.eval_on_selector_all('#ctRows td.ct-cost', 'els => els.map(e => +e.textContent.replace(/\\s|\\u00a0/g, ""))')
             check(costs == sorted(costs, reverse=True) and page.get_attribute('th[data-key="cost"]', 'aria-sort') == 'descending',

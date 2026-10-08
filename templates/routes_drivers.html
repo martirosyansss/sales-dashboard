@@ -1,4 +1,7 @@
-{% extends "base_v2.html" %}
+{% extends "routes_base.html" %}
+{#- пункт меню раздела слева (routes_base.html) -#}
+{% set rt_nav = '/routes/drivers' %}
+{% set rt_nav_admin_only = true %}   {#- роль «Гараж» видит страницу без меню раздела -#}
 
 {# «Վարորդներ»: показатели водителей за период (как driver analytics Omnitracs / Routific) — администратор и «Гараж»
    (№87: гаражу — без столбца «Կանխիկ»; деньги сервер ему не отдаёт) #}
@@ -8,28 +11,11 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400..700&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+Armenian:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=24">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=25">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes_drivers.css') }}?v=3">
 {% endblock %}
 
 {% block content %}
-{% if is_admin %}
-<!-- Вкладки раздела — одинаковая полоса на всех страницах «Маршрутов» (одно место, один вид) -->
-<div class="rt-page rt-secbar" lang="hy">
-    <nav class="rt-tabs" aria-label="Երթուղիների բաժիններ">
-        <a href="/routes">Ակնարկ</a>
-        <a href="/routes/optimize">Օպտիմալացում</a>
-        <a href="/routes/dispatch">Առաքում</a>
-        <a href="/routes/learning">Ուսուցում</a>
-        <a href="/routes/drivers" aria-current="page">Վարորդներ</a>
-        <a href="/routes/settings">Կարգավորումներ</a>
-        <a href="/routes/garage">Ավտոտնակ</a>
-        <a href="/routes/pay">Աշխատավարձ</a>
-        <a href="/routes/araqich">Առաքիչների KPI</a>
-        <a href="/routes/cost">Առաքման արժեք</a>
-    </nav>
-</div>
-{% endif %}
 <div class="rt-page" id="drPage" lang="hy" data-cash="{{ '1' if is_admin else '0' }}">
 
     <!-- Шапка: название слева, период справа (7 / 30 / 90 дней или свои даты) -->

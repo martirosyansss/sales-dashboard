@@ -998,7 +998,7 @@ details.dp-costnote p { margin: 6px 0 0; }
     #rtDispatch[data-tab="map"] :is(.dp-kicker, .dp-help, #dpTodo, #dpInbox, #dpNoDriver, #dpSameDay, .dp-prep, #dpRun, .dp-summary, #dpBoard, #dpOverflow, #dpUnassigned, .dp-trucklist, #dpAnalysis) { display: none !important; }
     #rtDispatch[data-tab="map"] .dp-mapbox-body > .dp-map { height: calc(100vh - var(--rt-nav-h, 64px) - 330px); min-height: 300px; }
     /* «Երթեր» и «Քարտեզ»: от шапки — только день и что видят водители */
-    body:is([data-dp-tab="trips"], [data-dp-tab="map"]) .rt-secbar { display: none; }
+    body:is([data-dp-tab="trips"], [data-dp-tab="map"]) .rt-secnav-bar { display: none; }
     #rtDispatch:is([data-tab="trips"], [data-tab="map"]) :is(.dp-cal, .dp-datenote, #dpTomorrow) { display: none !important; }
     #rtDispatch:is([data-tab="trips"], [data-tab="map"]) .dp-dayboard { grid-template-columns: minmax(0, 1fr); padding: 10px 12px; gap: 8px; }
     #rtDispatch:is([data-tab="trips"], [data-tab="map"]) .dp-dayboard .rt-title { font-size: 1.125rem; }
@@ -1046,13 +1046,8 @@ details.dp-costnote p { margin: 6px 0 0; }
 #rtDispatch.is-ws #dpApprovedBadge, #rtDispatch.is-ws #dpNoDriver { display: none !important; }
 #rtDispatch.is-ws .dp-datenote { margin-top: 2px; font-size: .8125rem; flex-wrap: nowrap; }
 #rtDispatch.is-ws .dp-datenote > span { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-body.dp-ws-on .rt-secbar { margin-bottom: 0; }
-body.dp-ws-on .rt-secbar .rt-tabs { padding: 3px; }
-body.dp-ws-on .rt-secbar .rt-tabs a { padding-top: 5px; padding-bottom: 5px; }
 /* №86: шапка ниже — меньше отступов над рабочим экраном (карта выше) */
 body.dp-ws-on main.py-4 { padding-top: 8px !important; }
-body.dp-ws-on .rt-secbar .rt-tabs { padding: 2px; }
-body.dp-ws-on .rt-secbar .rt-tabs a { padding-top: 3px; padding-bottom: 3px; }
 #rtDispatch.is-ws .dp-mast { margin-bottom: 8px; }
 #rtDispatch.is-ws .dp-dayboard { margin-top: 0; }
 /* печать и Excel — в шапке рабочего экрана, в подсказке не повторяются */
