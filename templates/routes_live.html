@@ -13,7 +13,7 @@
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=22">
 <!-- Машины на карте сейчас (№76): тема «Развоза», свои классы .lv-*; новые файлы статики — и в _PUBLIC_STATIC app_v2 -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_live.css') }}?v=3">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_live.css') }}?v=4">
 {% endblock %}
 
 {% block content %}
@@ -72,19 +72,27 @@
             <p class="lv-empty" id="lvEmpty" hidden>Այս օրը մեքենաների տվյալներ չկան։</p>
         </aside>
 
-        <!-- Карта: машины, путь выбранной за день, её магазины цветом статуса -->
+        <!-- Карта: машины, путь выбранной за день, её плановая линия (пунктир) и отклонения от неё, магазины цветом
+             статуса с номером по плану -->
         <section class="lv-mapbox" aria-label="Քարտեզ">
             <div id="lvMap" class="lv-map"></div>
-            <div class="lv-legend" aria-hidden="true">
-                <span><i class="lv-dot is-moving"></i>ընթացքի մեջ</span>
-                <span><i class="lv-dot is-standing"></i>կանգնած</span>
-                <span><i class="lv-dot is-alert"></i>ահազանգ</span>
-                <span><i class="lv-dot is-offline is-stale"></i>կապ չկա (վերջին հայտնի դիրքը)</span>
-                <span><i class="lv-sq is-full"></i>առաքված</span>
-                <span><i class="lv-sq is-partial"></i>մասնակի</span>
-                <span><i class="lv-sq is-refused"></i>մերժված</span>
-                <span><i class="lv-sq is-unmarked"></i>GPS-ով այցելած, չնշված</span>
-                <span><i class="lv-sq is-pending"></i>դեռ ոչ</span>
+            <div class="lv-mapbar">
+                <label class="lv-toggle"><input type="checkbox" id="lvPlanToggle" checked>Պլանային երթուղի</label>
+                <div class="lv-legend" aria-hidden="true">
+                    <span><i class="lv-ln is-track"></i>անցած ճանապարհը</span>
+                    <span><i class="lv-ln is-plan"></i>պլանային երթուղի</span>
+                    <span><i class="lv-ln is-dev"></i>շեղում երթուղուց</span>
+                    <span><i class="lv-dot is-moving"></i>ընթացքի մեջ</span>
+                    <span><i class="lv-dot is-standing"></i>կանգնած</span>
+                    <span><i class="lv-dot is-alert"></i>ահազանգ</span>
+                    <span><i class="lv-dot is-offline is-stale"></i>կապ չկա (վերջին հայտնի դիրքը)</span>
+                    <span><i class="lv-sq is-full"></i>առաքված</span>
+                    <span><i class="lv-sq is-partial"></i>մասնակի</span>
+                    <span><i class="lv-sq is-refused"></i>մերժված</span>
+                    <span><i class="lv-sq is-unmarked"></i>GPS-ով այցելած, չնշված</span>
+                    <span><i class="lv-sq is-pending"></i>դեռ ոչ</span>
+                    <span><i class="lv-npin-sq">1</i>համարը՝ ըստ պլանի</span>
+                </div>
             </div>
         </section>
 
@@ -99,6 +107,9 @@
             </div>
             <div class="lv-active" id="lvActive" hidden></div>
             <dl class="lv-grid" id="lvGrid"></dl>
+            <!-- Показатели дня (08.10): плановая линия, км факт / план, отклонение, скорость, время в движении -->
+            <h3 class="lv-sec-title">Օրվա ցուցանիշներ</h3>
+            <dl class="lv-grid" id="lvStats"></dl>
             <!-- Воспроизведение дня по треку (track_t): ползунок времени, призрак машины, магазины — по состоянию на тот момент -->
             <div class="lv-replay" id="lvReplay" hidden>
                 <div class="lv-replay-head">
@@ -121,6 +132,7 @@
             </div>
             <details class="lv-more" id="lvStopsBox">
                 <summary>Խանութներ՝ պլան և փաստ</summary>
+                <p class="lv-pf" id="lvPf" hidden></p>
                 <div class="lv-table-wrap">
                     <table class="lv-stops">
                         <thead>
@@ -139,7 +151,10 @@
             <p class="lv-note">Վառելիքը՝ հաշվարկ (≈)․ կմ × ծախս ըստ բեռնվածության (դատարկ / լրիվ բեռնված մեքենայի նորմ), ոչ թե
                 տվիչի ցուցմունք։ Բեռի մնացորդը՝ առանց առաքվածի․ չառաքվածն ու վերադարձը մնում են մեքենայում՝ մինչև պահեստ մտնելը։
                 Ժամանման ժամը՝ ճանապարհների մոդելով (ճանապարհներով) կամ մոտավոր՝ ուղիղ գծով × ոլորունություն, գումարած
-                խանութում կանգառի ժամանակը և ճաշը․ մեքենայի դիրքից առաջին հատվածը՝ Valhalla-ով, եթե այն պատրաստ է։</p>
+                խանութում կանգառի ժամանակը և ճաշը․ մեքենայի դիրքից առաջին հատվածը՝ Valhalla-ով, եթե այն պատրաստ է։
+                Պլանային երթուղին՝ վարորդին ուղարկված պլանը, ճանապարհներով (փոքր կենտրոնի շրջանցումով), ինչպես «Առաքում» էջում․
+                շեղում է, եթե մեքենան երթուղուց կարգավորումներում նշված մետրից հեռու անցել է առնվազն 0,5 կմ և 1 րոպե
+                (պահեստի և խանութների մոտ, ճաշի կանգառով՝ ոչ)։</p>
         </section>
     </div>
 </div>
@@ -150,5 +165,5 @@
         integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
 <!-- подложка — Яндекс, как на остальных картах (решение владельца 06.10, см. live_page) -->
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=1" data-yandex-key="{{ yandex_tiles_key }}"></script>
-<script src="{{ url_for('static', filename='js/routes_live.js') }}?v=7"></script>
+<script src="{{ url_for('static', filename='js/routes_live.js') }}?v=8"></script>
 {% endblock %}

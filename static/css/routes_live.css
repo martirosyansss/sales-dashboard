@@ -229,6 +229,34 @@ button.lv-prob:focus-visible { outline: 2px solid var(--rt-acc); outline-offset:
 .lv-log li i { color: var(--lv-alert); }
 .lv-note { margin: 12px 0 0; font-size: .8125rem; color: var(--rt-fg-mute); line-height: 1.5; }
 
+/* Плановая линия и отклонения (08.10): переключатель рядом с легендой, образцы линий, номер магазина по плану */
+.lv-mapbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; margin-top: 8px; }
+.lv-mapbar .lv-legend { margin-top: 0; }
+.lv-toggle { display: inline-flex; align-items: center; gap: 8px; min-height: 36px; font-size: .875rem; font-weight: 600; color: var(--rt-fg); cursor: pointer; }
+.lv-toggle input { width: 16px; height: 16px; margin: 0; accent-color: var(--rt-acc); }
+.lv-ln { display: inline-block; width: 20px; height: 0; border-top: 3px solid #38bdf8; }
+.lv-ln.is-plan { border-top: 3px dashed #e8edf4; opacity: .8; }
+.lv-ln.is-dev { border-top: 4px solid #ff6b79; }
+.lv-npin {
+    display: grid; place-items: center; width: 24px; height: 24px; box-sizing: border-box; border-radius: 50%;
+    border: 2px solid #0e1116; background: #8693a5; color: #0e1116; box-shadow: 0 1px 4px rgba(0, 0, 0, .5);
+    font: 700 11px/1 'Google Sans', system-ui, sans-serif; font-variant-numeric: tabular-nums;
+}
+.lv-npin.is-plan-only { background: rgba(14, 17, 22, .85); color: #e8edf4; border: 2px dashed #e8edf4; }
+.lv-npin.is-late { box-shadow: 0 0 0 3px #ff6b79; }
+.lv-npin-sq {
+    display: inline-grid; place-items: center; width: 16px; height: 16px; border-radius: 50%; background: #8693a5;
+    color: #0e1116; font: 700 9px/1 system-ui, sans-serif; font-style: normal;
+}
+#lvPage .lv-sec-title { margin: 14px 0 8px; font-size: .875rem; font-weight: 700; color: var(--rt-fg-dim); }
+.lv-linkbtn {
+    display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 0; border: 0; background: none;
+    color: var(--rt-acc); font: inherit; cursor: pointer; text-decoration: underline; text-underline-offset: 3px;
+}
+.lv-grid .is-bad .lv-linkbtn { color: var(--rt-danger); }
+.lv-linkbtn:focus-visible { outline: 2px solid var(--rt-acc); outline-offset: 2px; border-radius: 4px; }
+.lv-pf { margin: 6px 0 0; font-size: .875rem; color: var(--rt-fg-dim); font-variant-numeric: tabular-nums; }
+
 /* Телефон: карта сверху на полэкрана, затем список и карточка */
 @media (max-width: 899px) {
     .lv-layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; grid-template-areas: "probs" "map" "side" "card"; }
