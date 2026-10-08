@@ -12,6 +12,9 @@
 у неё же карточка показывает «բեռնված այս երթում», возврат на борту, сверку топлива, источник ETA («ճանապարհներով» /
 «մոտավոր» — карты дорог в проверке нет, значит «մոտավոր») и ETA оставшихся магазинов.
 
+№87 «не успеет»: окно приёма третьего магазина машины 1 кончилось полчаса назад — в списке «1 խանութ ուշանում է», в
+карточке — активная строка «Կուշանա պատուհանից N րոպեով», магазин в списке точек отмечен.
+
 Проверяется: список и маркеры всех машин, состояние и счётчик тревог, карточка выбранной машины (поля №76), путь и
 магазины на карте, нет горизонтальной прокрутки на телефоне, опрос раз в 15 с, нет ошибок страницы и консоли (кроме сетевых
 ошибок внешних ресурсов: шрифты, CDN, плитки).
@@ -43,6 +46,7 @@ import route_optimizer  # noqa: E402
 from courier import clock, events as ev  # noqa: E402
 from route_optimizer import dispatch as dp  # noqa: E402
 from route_optimizer import live  # noqa: E402
+from route_optimizer import store as st  # noqa: E402
 from route_optimizer.geo import haversine_km  # noqa: E402
 
 PORT = 8771
@@ -109,6 +113,9 @@ def seed(app: Flask) -> list[str]:
     draft = dp.Draft(trucks=list(cars), trips=trips)
     draft.prediction = {'trucks': pred}
     rs.save_dispatch(day, draft.to_json(), 'live-check')
+    # №87: окно приёма третьего магазина машины 1 кончилось 30 минут назад — машина к нему опаздывает
+    rs.save_customer_window(trips[0].stops[2], st.CustomerWindow('before', max(0, now.hour * 60 + now.minute - 30)),
+                            'live-check')
 
     def path(points, start, step_s=15, speed=11.0):
         out, t = [], start
@@ -241,9 +248,13 @@ def main() -> int:
                 # машина 3: GPS выключен и связи нет — активная тревога GPS важнее «կապ չկա» (повторное ревью №76)
                 check(sum('is-alert' in s for s in states) >= 3 and not any('is-offline' in s for s in states),
                       f'состояния: у машин 1-3 «ահազանգ», «կապ չկա» только без других тревог: {states}')
+                first = page.inner_text(f'.lv-item[data-car="{cars[0]}"]')
+                check('1 խանութ ուշանում է' in first, f'№87: в списке у машины 1 — «1 խանութ ուշանում է» ({first!r})')
                 page.locator(f'.lv-item[data-car="{cars[0]}"]').click()
                 page.wait_for_selector('#lvCard:not([hidden]) .lv-grid dt')
                 page.wait_for_timeout(800)
+                act1 = page.inner_text('#lvActive')
+                check('Կուշանա պատուհանից' in act1 and 'րոպեով' in act1, f'№87: в карточке — «Կուշանա պատուհանից N րոպեով» ({act1!r})')
                 labels = page.eval_on_selector_all('#lvGrid dt', 'els => els.map(e => e.textContent)')
                 for need in ('Դիրքը', 'Արագություն', 'Վարորդ / առաքիչ', 'Խանութներ', 'Այսօր, կմ (GPS)', 'Վառելիք',
                              'Բեռի մնացորդ', 'Հաջորդ խանութը', 'Վերադարձ պահեստ', 'Վերջին կապը', 'Տերմինալ'):
@@ -257,6 +268,7 @@ def main() -> int:
                 check('(մոտավոր)' in grid or '(ճանապարհներով)' in grid, 'этап 2: источник ETA подписан')
                 page.locator('#lvStopsBox summary').click()
                 check('≈' in page.inner_text('#lvStops'), 'этап 2: у оставшегося магазина — ETA')
+                check(page.locator('#lvStops li.is-late').count() == 1, '№87: опаздывающий магазин отмечен в списке точек')
                 check(page.locator('.leaflet-overlay-pane path').count() >= 4, 'путь и магазины выбранной машины на карте')
                 page.locator('#lvLogBox summary').click()
                 check('Արագության գերազանցում' in page.inner_text('#lvLog'), 'журнал: превышение скорости')

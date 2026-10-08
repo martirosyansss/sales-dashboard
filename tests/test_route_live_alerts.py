@@ -378,7 +378,7 @@ def test_settings_defaults_and_validation():
     vals = dict(st.DEFAULT_SETTINGS)
     out, errors = st.validate_settings(vals, None)
     assert not errors
-    assert out['live_alert_kinds'] == ['speed', 'stop', 'no_contact', 'gps', 'center']      # по умолчанию все
+    assert out['live_alert_kinds'] == ['speed', 'stop', 'no_contact', 'gps', 'center', 'late']   # по умолчанию все
     assert (out['live_quiet_from'], out['live_quiet_to'], out['live_repeat_min']) == ('20:00', '08:00', 30)
     out, errors = st.validate_settings({**vals, 'live_alert_kinds': ['gps', 'speed', 'gps']}, None)
     assert not errors and out['live_alert_kinds'] == ['speed', 'gps']                       # порядок канонический, без повторов

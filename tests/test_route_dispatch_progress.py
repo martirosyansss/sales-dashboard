@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """«Развоз»: ход дня на шкале (ответ владельца №82, как мониторинг Яндекса / Routific live). GET
 /api/routes/dispatch/progress — по факту терминала «Առաքիչ» и ETA онлайн-карты (№76): магазин доставлен, частично,
-отказ, машина на месте, опаздывает (ETA позже плана на PROGRESS_LATE_MIN), ждёт. Только сегодня.
+отказ, машина на месте, опаздывает («не успеет», №87: прогноз позже конца окна приёма или позже плана на late_nowin_min —
+tests/test_route_late_forecast.py), ждёт. Только сегодня.
 
 Запуск из корня проекта:  python -m pytest tests/test_route_dispatch_progress.py -q
 """
@@ -11,6 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from route_optimizer.store import CustomerWindow  # noqa: E402
 from route_optimizer import views  # noqa: E402
 from test_route_live import LAN, _session_as, app_v2, client, live_app  # noqa: E402,F401
 
@@ -28,17 +30,20 @@ def test_progress_marks_store_where_truck_stands_and_waiting_store(client, live_
     assert 'CAR9' not in body['trucks']                             # машина плана без терминала — не красим
 
 
-def test_progress_late_and_delivered(client, live_app, monkeypatch):
+def test_progress_late_and_delivered(client, live_app):
     _session_as(client, 'boss', base=LAN)
     facts = live_app.app.extensions['route_optimizer'].live_facts.data['2026-10-03']['CAR1']
     facts['stops'][0]['status'] = 'full'
     facts['stops'][0]['delivered_at'] = '2026-10-03T10:50:00+04:00'
     live_app.app.extensions['route_optimizer'].live_facts.data['2026-10-03'] = dict(
         live_app.app.extensions['route_optimizer'].live_facts.data['2026-10-03'])   # новый факт — пересчёт кэша
-    monkeypatch.setattr(views, 'PROGRESS_LATE_MIN', -10_000)       # любое ETA — «опаздывает»
+    # окно приёма магазина 8 — до 10:00: сейчас 11:00, прогноз прибытия позже — «опаздывает» (№87)
+    live_app.app.extensions['route_optimizer'].store.save_customer_window(8, CustomerWindow('before', 600), 'qa')
     car = client.get('/api/routes/dispatch/progress?date=2026-10-03', base_url=LAN).get_json()['trucks']['CAR1']
     assert car['7'] == {'s': 'done', 'at': '10:50', 'delay': None}
-    assert car['8']['s'] == 'late' and isinstance(car['8']['delay'], int)
+    assert car['8']['s'] == 'late' and isinstance(car['8']['delay'], int) and car['8']['late_kind'] == 'window'
+    h, m = map(int, car['8']['at'].split(':'))
+    assert abs(car['8']['late_min'] - (h * 60 + m - 600)) <= 1        # на сколько позже конца окна
 
 
 def test_progress_only_today_and_with_courier(client, live_app, monkeypatch):
@@ -60,7 +65,7 @@ def test_progress_access_admin_only_and_not_public(client, live_app):
     assert client.get('/api/routes/dispatch/progress?date=2026-10-03', base_url=PUBLIC).status_code in (403, 404)
 
 
-def test_progress_worst_state_of_several_invoices_and_here_over_late(client, live_app, monkeypatch):
+def test_progress_worst_state_of_several_invoices_and_here_over_late(client, live_app):
     """Магазин с двумя накладными: одна доставлена, другая ждёт — магазин «ждёт» (худшее); машина у магазина — «here»
     даже при опоздании."""
     _session_as(client, 'boss', base=LAN)
@@ -70,7 +75,8 @@ def test_progress_worst_state_of_several_invoices_and_here_over_late(client, liv
     twin = dict(stops[1], stop_id='S:B2', status='full', delivered_at='2026-10-03T10:30:00+04:00')
     fleet['CAR1'] = dict(fleet['CAR1'], stops=[*stops, twin])
     st.live_facts.data['2026-10-03'] = dict(fleet)
-    monkeypatch.setattr(views, 'PROGRESS_LATE_MIN', -10_000)
+    st.store.save_customer_window(8, CustomerWindow('before', 600), 'qa')   # окно уже кончилось
+    st.store.save_customer_window(7, CustomerWindow('before', 600), 'qa')
     car = client.get('/api/routes/dispatch/progress?date=2026-10-03', base_url=LAN).get_json()['trucks']['CAR1']
     assert car['8']['s'] == 'late'                                  # не «done» второй накладной
     assert car['7']['s'] == 'here'                                  # у магазина — «here», не «late»

@@ -1,0 +1,107 @@
+{% extends "base_v2.html" %}
+
+{% block title %}Տարա — Sales Dashboard{% endblock %}
+
+{% block extra_css %}
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400..700&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+Armenian:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=24">
+<!-- «Տարա» (№87 п. 9) — баланс тары магазинов: ушло с товаром − забрал водитель + начальный остаток (API /api/courier/admin/tare*) -->
+<link rel="stylesheet" href="{{ url_for('static', filename='css/courier_tare.css') }}?v=1">
+{% endblock %}
+
+{% block content %}
+<div class="rt-page ct-page" id="ctPage" lang="hy">
+
+    <header class="rt-head ct-head">
+        <a class="ct-back" href="/courier"><i class="fas fa-arrow-left" aria-hidden="true"></i>Առաքիչ</a>
+        <div class="ct-head-row">
+            <div class="ct-head-title">
+                <h1 class="rt-title">Տարա խանութներում</h1>
+                <p class="ct-sub">Որքան մեր տարայից կա յուրաքանչյուր խանութում՝ ըստ վարորդների տերմինալների. սկզբնական մնացորդ + տարվել է ապրանքի հետ − հետ է վերցվել։ ERP-ում ոչինչ չի փոխվում։</p>
+            </div>
+            <div class="ct-tools">
+                <button type="button" class="rt-iconbtn ct-iconbtn" id="ctRefresh" aria-label="Թարմացնել" title="Թարմացնել"><i class="fas fa-rotate" aria-hidden="true"></i></button>
+                <button type="button" class="rt-btn rt-btn-ghost rt-btn-sm" id="ctImport" title="CSV (UTF-8) կամ Excel՝ խանութի կոդ, տարա, քանակ, ամսաթիվ"><i class="fas fa-file-import" aria-hidden="true"></i><span>Սկզբնական մնացորդներ ֆայլից</span></button>
+                <a class="rt-btn rt-btn-ghost rt-btn-sm" id="ctCsv" href="/api/courier/admin/tare.csv" download><i class="fas fa-file-csv" aria-hidden="true"></i><span>CSV</span></a>
+                <input type="file" id="ctFile" accept=".csv,.xlsx,.xls,text/csv" hidden>
+            </div>
+        </div>
+        <p class="ct-period" id="ctPeriod"></p>
+    </header>
+
+    <div id="ctStatus" class="rt-sr-only" role="status" aria-live="polite"></div>
+    <div id="ctError" class="rt-alert d-none" role="alert">
+        <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
+        <span id="ctErrorText" class="rt-alert-text"></span>
+    </div>
+    <div id="ctNotes"></div>
+
+    <section class="ct-kpis" id="ctKpis" aria-label="Ամփոփում"></section>
+
+    <div class="ct-bar" role="search">
+        <div class="ct-search">
+            <i class="fas fa-magnifying-glass" aria-hidden="true"></i>
+            <label for="ctQ" class="rt-sr-only">Որոնում</label>
+            <input id="ctQ" class="rt-input" type="search" placeholder="Խանութ կամ կոդ" maxlength="80" autocomplete="off">
+        </div>
+        <label class="ct-pick"><span>Մենեջեր</span><select id="ctAgent" class="rt-select"><option value="">Բոլորը</option></select></label>
+        <label class="ct-pick"><span>Մեքենա</span><select id="ctCar" class="rt-select"><option value="">Բոլորը</option></select></label>
+        <label class="ct-pick"><span>Տարա</span><select id="ctKind" class="rt-select"><option value="">Բոլորը</option></select></label>
+        <label class="ct-check"><input type="checkbox" id="ctDebt"> Միայն խանութում մնացածը</label>
+    </div>
+
+    <div class="rt-table-scroll ct-tablewrap">
+        <table class="rt-table ct-table" id="ctTable">
+            <caption class="rt-sr-only">Տարան խանութներում՝ մեծ մնացորդը վերևում</caption>
+            <thead><tr>
+                <th scope="col">Խանութ</th><th scope="col">Մենեջեր</th><th scope="col">Մեքենա</th><th scope="col">Տարա</th>
+                <th scope="col" class="num">Սկզբնական</th><th scope="col" class="num">Տարվել է</th>
+                <th scope="col" class="num">Հետ է վերցվել</th><th scope="col" class="num">Մնացորդ</th>
+            </tr></thead>
+            <tbody id="ctBody"><tr><td colspan="8"><div class="rt-loading"><div class="rt-spinner"></div>Բեռնվում է…</div></td></tr></tbody>
+        </table>
+    </div>
+    <p class="ct-more" id="ctMore" hidden></p>
+
+    <details class="rt-fold ct-howto">
+        <summary><span class="rt-fold-t"><i class="fas fa-circle-info" aria-hidden="true"></i>Ինչպես է հաշվվում</span></summary>
+        <div class="rt-fold-body">
+            <dl class="ct-terms">
+                <dt>Տարվել է</dt><dd>Առաքված ապրանքի տարան (ERP-ում ապրանքի և տարայի կապով)։ Մասնակի առաքման դեպքում՝ միայն առաքված ապրանքինը, հրաժարման դեպքում՝ ոչինչ։</dd>
+                <dt>Հետ է վերցվել</dt><dd>Վարորդի նշած տարան տերմինալում (ուղղված նշումը փոխարինում է նախորդին)։</dd>
+                <dt>Սկզբնական մնացորդ</dt><dd>Գույքագրման արդյունքը նշված օրվա վերջում։ Այդ օրը և դրանից առաջ եղածը չի հաշվվում՝ արդեն մնացորդի մեջ է։ Առանց մնացորդի՝ հաշվարկը տերմինալների առաջին օրից է։</dd>
+                <dt>≈</dt><dd>Մասնակի առաքում, երբ ERP-ի կապերը հասանելի չէին՝ հաշվված է ապրանքի քաշի համամասնությամբ։</dd>
+                <dt>Ֆայլ</dt><dd>CSV (UTF-8) կամ Excel՝ 4 սյունակ. խանութի կոդ, տարայի տեսակ (անունը կամ erp:N), քանակ, ամսաթիվ (ՕՕ.ԱԱ.ՏՏՏՏ)։ Առաջին տողը կարող է լինել վերնագիր։ Սխալների դեպքում ոչինչ չի գրանցվում։</dd>
+            </dl>
+        </div>
+    </details>
+
+    <!-- История магазина и его начальные остатки -->
+    <dialog class="ct-dlg ct-dlg-wide" id="ctStoreDlg" aria-labelledby="ctStoreTitle">
+        <form method="dialog" class="ct-dlg-head">
+            <h2 id="ctStoreTitle">Խանութ</h2>
+            <button class="rt-iconbtn" value="close" aria-label="Փակել" title="Փակել"><i class="fas fa-xmark" aria-hidden="true"></i></button>
+        </form>
+        <div class="ct-dlg-body" id="ctStoreBody"></div>
+    </dialog>
+
+    <!-- Импорт начальных остатков: предпросмотр и ошибки до записи -->
+    <dialog class="ct-dlg ct-dlg-wide" id="ctImportDlg" aria-labelledby="ctImportTitle">
+        <form method="dialog" class="ct-dlg-head">
+            <h2 id="ctImportTitle">Սկզբնական մնացորդներ ֆայլից</h2>
+            <button class="rt-iconbtn" value="close" aria-label="Փակել" title="Փակել"><i class="fas fa-xmark" aria-hidden="true"></i></button>
+        </form>
+        <div class="ct-dlg-body" id="ctImportBody"></div>
+        <div class="ct-dlg-foot">
+            <button type="button" class="rt-btn rt-btn-ghost" id="ctImportCancel">Չեղարկել</button>
+            <button type="button" class="rt-btn rt-btn-primary" id="ctImportApply" disabled>Գրանցել</button>
+        </div>
+    </dialog>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/courier_tare.js') }}?v=1"></script>
+{% endblock %}

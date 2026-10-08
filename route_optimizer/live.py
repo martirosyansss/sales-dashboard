@@ -33,11 +33,15 @@
   складом — дорожная модель «Развоза» (Road.legs: Valhalla или граф OSM, часовой профиль пробок, выученные поправки;
   нет — запасная по прямой × извилистость, и ETA помечен eta_source «model»); у каждого магазина — время №50/№60
   (Road.stay: введённое/выученное по GPS, иначе норма на точку + на тонну; у магазина, где машина уже стоит, — остаток);
+  приехала раньше начала окна приёма магазина — ждёт его начала, потом разгрузка (как «Развоз»; прибытие — без ожидания);
   обед (№61), если ещё не был: после разгрузки не раньше начала окна, а если перегон кончается позже конца окна —
   в дороге; рейс ещё не уехал — через склад, загрузка (настройки; первый рейс вне сезона утренней погрузки, №78, — без
   неё: загружен с вечера) и не раньше планового выезда. Машина в STOP_RADIUS_M от
   магазина — «на месте», ETA = сейчас. Опоздание = ETA − плановое ETA (прогноз сборки «Развоза»);
 - возвращение на склад — ETA прихода на склад после оставшихся точек рейса, на котором машина сейчас (тот же расчёт);
+- «не успеет» (№87, late_forecast) — по тем же ETA: магазин с окном приёма — позже конца окна, без окна — позже плана на
+  late_nowin_min и больше; машина — возвращение после всех рейсов позже конца рабочего дня. Только сегодня, только от
+  положения не старше LATE_FIX_MAX; в журнале тревог — вид late (активен, пока прогноз такой; состояние машины не меняет);
 
 Тревоги (пороги — в настройках «Маршрутов», №76):
 - скорость: скорость терминала > live_speed_kmh подряд не меньше live_speed_sec (от первой до последней точки подряд;
@@ -73,6 +77,9 @@ CENTER_MIN_POINTS = 2               # в малом центре — не мен
 NO_CONTACT_END_H = 20               # APK останавливает запись в 20:00 — после этого «нет связи» не тревога (№76, ревью)
 OLD_APK_SILENT_MIN = 20              # старый APK (без device) шлёт пачками раз в 2–17 мин: «կապ չկա» — после 20 мин
 NO_CONTACT_MAX = timedelta(hours=3)  # связи нет дольше — машина закончила день: состояние «կապ չկա», без тревоги
+# «не успеет» (№87) — только от свежего положения: старый APK шлёт пачками до 20 мин; давнее — прогноз от места, где машины
+# уже нет (телефон выключен), и ложные тревоги
+LATE_FIX_MAX = timedelta(minutes=OLD_APK_SILENT_MIN)
 TRACK_LINE_POINTS = 1500            # линия трека на карте (actuals.simplify)
 
 
@@ -103,6 +110,10 @@ class Rules:
     alert_kinds: tuple[str, ...] = LIVE_ALERT_KINDS
     quiet: tuple[float, float] | None = (1200.0, 480.0)
     repeat_min: float = 30.0
+    # «не успеет» (№87): магазин без окна — прогноз позже плана не меньше чем на late_nowin_min; машина — возврат на склад
+    # позже work_end (конец рабочего дня машины, минуты от полуночи; принята переработка №32 — её предел, views)
+    late_nowin_min: float = 30.0
+    work_end: float = 1080.0
 
     @classmethod
     def from_settings(cls, s: Mapping[str, Any]) -> Rules:
@@ -124,7 +135,8 @@ class Rules:
                    num('unload_min_per_stop'), num('unload_min_per_tonne'),
                    opt('warehouse_load_fixed_min'), opt('warehouse_load_min_per_tonne'),
                    tuple(k for k in LIVE_ALERT_KINDS if k in (s.get('live_alert_kinds', LIVE_ALERT_KINDS))),
-                   quiet if quiet[0] != quiet[1] else None, num('live_repeat_min'))
+                   quiet if quiet[0] != quiet[1] else None, num('live_repeat_min'),
+                   num('late_nowin_min'), hm('truck_work_end', 1080.0))
 
 
 @dataclass(frozen=True)
@@ -584,10 +596,12 @@ def _next_stop(stops: Sequence[Mapping[str, Any]], trips: Mapping[str, int], pla
 @dataclass(frozen=True)
 class EtaPlan:
     """ETA по очереди: точка → (прибытие, участки до неё — все по дорожной модели), возвращение на склад после рейса, на
-    котором машина сейчас (так же), и когда вставлен обед."""
+    котором машина сейчас (так же), и когда вставлен обед; end — возвращение на склад после всех оставшихся рейсов
+    (конец дня машины, №87; склада нет — None)."""
     arrive: Mapping[str, tuple[datetime, bool]]
     back: tuple[datetime, bool] | None
     lunch_at: datetime | None = None
+    end: datetime | None = None
 
 
 def lunch_taken(actual: ac.DayActual, day: date, rules: Rules) -> bool:
@@ -609,10 +623,13 @@ def lunch_taken(actual: ac.DayActual, day: date, rules: Rules) -> bool:
 def eta_plan(day: date, now: datetime, pos: Point, queue: Sequence[tuple[int, Sequence[Mapping[str, Any]]]],
              gone: Collection[int], current: int | None, plan: Sequence[PlanTrip], depot: Point | None,
              road: Road, rules: Rules, lunch_pending: bool, at_depot: bool,
-             here: tuple[Mapping[str, Any], float] | None = None) -> EtaPlan:
+             here: tuple[Mapping[str, Any], float] | None = None,
+             windows: Mapping[int, tuple[float, float]] | None = None) -> EtaPlan:
     """Прибытия к оставшимся точкам по очереди queue (рейс, точки по порядку; рейс, где машина сейчас, — первым, даже
     пустой) и возвращение на склад после него — правило в описании модуля. here — (точка, минут уже стоит): разгрузка
-    идёт, её ETA — сейчас, дальше — после остатка стоянки."""
+    идёт, её ETA — сейчас, дальше — после остатка стоянки. windows — окна приёма клиентов (не раньше, не позже; минуты
+    от полуночи): у следующих магазинов разгрузка — не раньше начала окна."""
+    midnight = datetime(day.year, day.month, day.day, tzinfo=YEREVAN)
     t, live_pos, by_road = now, True, True
     arrive: dict[str, tuple[datetime, bool]] = {}
     back: tuple[datetime, bool] | None = None
@@ -642,7 +659,12 @@ def eta_plan(day: date, now: datetime, pos: Point, queue: Sequence[tuple[int, Se
         s, stayed = here
         p = (s['lat'], s['lon'])
         arrive[s['stop_id']] = (now, True)
-        t = now + timedelta(minutes=max(0.0, road.stay(p, float(s.get('weight_kg') or 0.0), rules) - stayed))
+        stay = road.stay(p, float(s.get('weight_kg') or 0.0), rules)
+        opens = (windows or {}).get(s.get('customer_id'), (-math.inf, math.inf))[0]
+        if math.isfinite(opens) and midnight + timedelta(minutes=opens) > now:   # ждёт окна: разгрузка — с его начала
+            t = midnight + timedelta(minutes=opens + stay)
+        else:
+            t = now + timedelta(minutes=max(0.0, stay - stayed))
         rest(True)
         pos, live_pos, at_depot = p, False, False
     for k, stops in queue:
@@ -662,6 +684,9 @@ def eta_plan(day: date, now: datetime, pos: Point, queue: Sequence[tuple[int, Se
             move(pos, p)
             rest(False)
             arrive[x['stop_id']] = (t, by_road)
+            opens = (windows or {}).get(x.get('customer_id'), (-math.inf, math.inf))[0]
+            if math.isfinite(opens):   # окно ещё не открылось — ждёт (прибытие то же)
+                t = max(t, midnight + timedelta(minutes=opens))
             t += timedelta(minutes=road.stay(p, float(x.get('weight_kg') or 0.0), rules))
             rest(True)
             pos, at_depot = p, False
@@ -672,7 +697,7 @@ def eta_plan(day: date, now: datetime, pos: Point, queue: Sequence[tuple[int, Se
         if k == current and back is None and not (at_depot and not stops):
             back = (t, by_road)
         pos, at_depot = depot, True
-    return EtaPlan(arrive, back, lunch_at)
+    return EtaPlan(arrive, back, lunch_at, t if depot is not None and queue else None)
 
 
 def _queue(stops: Sequence[Mapping[str, Any]], trips: Mapping[str, int], plan: Sequence[PlanTrip], current: int,
@@ -692,10 +717,59 @@ def _queue(stops: Sequence[Mapping[str, Any]], trips: Mapping[str, int], plan: S
     return [(k, by_trip.get(k, [])) for k in [*first, *later]]
 
 
+def late_forecast(day: date, stops: Sequence[Mapping[str, Any]], arrive: Mapping[str, tuple[datetime, bool]],
+                  planned: Mapping[str, datetime], windows: Mapping[int, tuple[float, float]], end: datetime | None,
+                  rules: Rules, here: str | None = None) -> list[dict[str, Any]]:
+    """«Не успеет» (ответ владельца №87, п.2) по прогнозу eta_plan: arrive — точка → (прибытие, по дорогам), planned —
+    точка → плановое ETA её клиента в её рейсе, windows — клиент → окно приёма (не раньше, не позже; минуты от полуночи,
+    store.CustomerWindow.span), end — возвращение на склад после всех оставшихся рейсов, here — точка, у которой машина
+    стоит (её прибытие — факт, не прогноз). Только ожидающие точки (pending) с прогнозом — in_progress водитель открывает
+    у магазина, прибытие уже было:
+    - магазин с окном — прибытие позже конца окна (как window_miss «Развоза»: раньше начала — машина ждёт, не
+      опоздание); late_kind window, over_min — на сколько позже конца;
+    - без окна и с окном без конца («не раньше HH:MM») — прибытие позже планового ETA не меньше чем на
+      rules.late_nowin_min; late_kind plan, over_min — насколько позже плана; нет планового ETA — не оценивается;
+    - машина — возвращение на склад позже rules.work_end (конец рабочего дня; возврат в запасе конца дня №78 — не
+      опоздание, как в «Развозе»); late_kind return.
+    Опоздание, округлённое до минут, меньше 1 — не опоздание. Магазин с несколькими накладными — одна строка (самое
+    большое опоздание); target — ключ строки на день (cКЛИЕНТ, без клиента — точка; return). Магазины — по прибытию,
+    машина — последней."""
+    midnight = datetime(day.year, day.month, day.day, tzinfo=YEREVAN)
+    worst: dict[str, dict[str, Any]] = {}
+    for s in stops:
+        sid, cid = s['stop_id'], s.get('customer_id')
+        if s.get('status') != 'pending' or sid == here or sid not in arrive:
+            continue
+        at = arrive[sid][0]
+        span = windows.get(cid) if isinstance(cid, int) else None
+        if span is not None and math.isfinite(span[1]):
+            limit = midnight + timedelta(minutes=span[1])
+            kind = 'window'
+        else:
+            limit = planned.get(sid)   # type: ignore[assignment]
+            if limit is None or (at - limit).total_seconds() / 60.0 < rules.late_nowin_min:
+                continue
+            kind = 'plan'
+        over = round((at - limit).total_seconds() / 60.0)
+        target = f'c{cid}' if isinstance(cid, int) else str(sid)
+        if over >= 1 and (target not in worst or over > worst[target]['over_min']):
+            worst[target] = {'target': target, 'late_kind': kind, 'stop_id': sid, 'customer_id': cid,
+                             'name': s.get('name'), 'eta': _iso(at), 'limit': _iso(limit), 'over_min': over}
+    out = sorted(worst.values(), key=lambda x: (x['eta'], x['target']))
+    if end is not None:
+        limit = midnight + timedelta(minutes=rules.work_end)
+        over = round((end - limit).total_seconds() / 60.0)
+        if over >= 1:
+            out.append({'target': 'return', 'late_kind': 'return', 'stop_id': None, 'customer_id': None, 'name': None,
+                        'eta': _iso(end), 'limit': _iso(limit), 'over_min': over})
+    return out
+
+
 def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[PlanTrip], truck: TruckSpec,
-             depot: Point | None, rules: Rules, road: Road, detail: bool = False) -> dict[str, Any]:
+             depot: Point | None, rules: Rules, road: Road, detail: bool = False,
+             windows: Mapping[int, tuple[float, float]] | None = None) -> dict[str, Any]:
     """Карточка машины (detail — ещё линия трека, точки дня и журнал тревог). now — сейчас (Ереван); день не сегодня —
-    без ETA и тревог «сейчас»."""
+    без ETA и тревог «сейчас». windows — окна приёма клиентов (late_forecast)."""
     live = now.astimezone(YEREVAN).date() == day
     stops = list(facts.get('stops') or ())
     raw = list(facts.get('track') or ())
@@ -742,6 +816,9 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
     return_eta = None
     return_source = None
     etas: dict[str, tuple[datetime, bool]] = {}
+    late: list[dict[str, Any]] = []
+    own = {s['stop_id']: e for s in stops if trips[s['stop_id']] < len(plan)
+           and (e := plan[trips[s['stop_id']]].etas.get(s.get('customer_id'))) is not None}   # плановое ETA её рейса
     if live and last is not None and not finished and (nxt is not None or (gone and not at_depot and depot is not None)):
         queue = _queue(stops, trips, plan, current, nxt, bool(gone))
         here = None
@@ -750,8 +827,11 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
             here = (nxt, max(0.0, (now - arrived).total_seconds() / 60.0) if arrived is not None else 0.0)
             queue = [(k, [x for x in xs if x['stop_id'] != nxt['stop_id']]) for k, xs in queue]
         eta = eta_plan(day, now, last.point, queue, gone, current if gone else None, plan, depot, road, rules,
-                       not lunch_taken(actual, day, rules), at_depot, here)
+                       not lunch_taken(actual, day, rules), at_depot, here, windows)
         etas = dict(eta.arrive)
+        if now - last.at <= LATE_FIX_MAX:   # давнее положение — прогноз «не успеет» не строится (нет GPS — нет тревоги)
+            late = late_forecast(day, stops, etas, own, windows or {}, eta.end, rules,
+                                 nxt['stop_id'] if here is not None else None)   # type: ignore[index]
         if eta.back is not None and gone and not at_depot:
             return_eta, return_source = eta.back[0], 'road' if eta.back[1] else 'model'
         if nxt is not None:
@@ -771,7 +851,8 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
               + (contact_alerts(contacts, last_contact, now if open_now else None, started, end, rules)
                  if facts.get('device') is not None else [])   # старый APK (<2.2.0) шлёт пачками раз в 2–17 мин
               + gps_alerts(devices, open_now)
-              + center_alerts(pts, rules, truck, live and age is not None and age <= STALE_S, stops))
+              + center_alerts(pts, rules, truck, live and age is not None and age <= STALE_S, stops)
+              + [_alert('late', now, None, True, **x) for x in late])   # прогноз «не успеет» (№87) — пока он такой
     alerts.sort(key=lambda a: a['from'] or '')
     active = sorted({a['kind'] for a in alerts if a['active']})
 
@@ -779,8 +860,8 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
         state = 'nodata'
     elif finished:
         state = 'closed'
-    elif any(k != 'no_contact' for k in active):
-        state = 'alert'   # другая активная тревога важнее «կապ չկա»
+    elif any(k not in ('no_contact', 'late') for k in active):
+        state = 'alert'   # другая активная тревога важнее «կապ չկա»; «не успеет» — прогноз, не событие машины: своя строка
     elif 'no_contact' in active or (open_now and last_contact is not None and now - last_contact > timedelta(
             minutes=rules.no_contact_min if facts.get('device') is not None else OLD_APK_SILENT_MIN)):
         state = 'offline'   # «կապ չկա»; тревогой — только у APK 2.2.0 и в пределах дня (contact_alerts)
@@ -820,18 +901,19 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
         'contact_age_s': round((now - last_contact).total_seconds()) if last_contact is not None and live else None,
         'closed': finished,
         'alerts': {'active': active, 'count': len(alerts)},
+        'late': late,   # «не успеет» (№87, late_forecast): магазины и возврат на склад
         'alerts_log': alerts,   # журнал тревог дня: API флота его не отдаёт (views), Telegram и карточка машины — да
     }
     if detail:
         line = ac.simplify([f.point for f in pts], TRACK_LINE_POINTS)
-        planned_etas = {c: e for t in plan for c, e in t.etas.items()}
         marks = {k: v for k, v in visited.items()}
         out.update({
             'track': [[round(p[0], 6), round(p[1], 6)] for p in line],
-            'stops': [{'stop_id': s['stop_id'], 'name': s.get('name'), 'lat': s.get('lat'), 'lon': s.get('lon'),
+            'stops': [{'stop_id': s['stop_id'], 'customer_id': s.get('customer_id'), 'name': s.get('name'),
+                       'lat': s.get('lat'), 'lon': s.get('lon'),
                        'status': s.get('status'), 'seq': s.get('seq'), 'trip': trips[s['stop_id']] + 1,
                        'weight_kg': round(float(s.get('weight_kg') or 0.0), 1),
-                       'planned_eta': _iso(planned_etas.get(s.get('customer_id'))),   # type: ignore[arg-type]
+                       'planned_eta': _iso(own.get(s['stop_id'])),
                        'eta': _iso(etas[s['stop_id']][0]) if s['stop_id'] in etas else None,
                        'eta_source': ('road' if etas[s['stop_id']][1] else 'model') if s['stop_id'] in etas else None,
                        'arrive': _iso(marks.get(s['stop_id'])), 'delivered_at': s.get('delivered_at')}

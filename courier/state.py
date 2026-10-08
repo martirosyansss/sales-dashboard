@@ -11,7 +11,7 @@ from typing import Any, Callable
 from flask import current_app
 
 from .day import DayService
-from .erp_day import CatalogItem, InvoiceCar
+from .erp_day import CatalogItem, ContainerLink, InvoiceCar
 from .store import Store
 
 EXTENSION_KEY = 'courier'
@@ -50,9 +50,15 @@ class CourierState:
     catalog_loader: Callable[[date], list[CatalogItem]] | None = None
     cars_loader: Callable[[date], list[dict[str, Any]]] | None = None
     invoice_loader: Callable[[date], tuple[list[InvoiceCar], dict[int, tuple[str, str]]]] | None = None
+    # баланс тары (№87 п. 9): связи товар → тара ERP и названия тары; магазины ERP по коду (импорт начальных остатков)
+    tare_links_loader: Callable[[], tuple[tuple[ContainerLink, ...], dict[int, str]]] | None = None
+    customer_code_loader: Callable[[list[str]], dict[str, tuple[int, str]]] | None = None
     refs: TtlCache = field(default_factory=TtlCache)
     # экипаж плана «Развоза» для терминала (/login, /crew, /status): день → (monotonic, машина → экипаж | None)
     crew_plan: dict[str, tuple[float, Any]] = field(default_factory=dict)
+    # движение тары по дням (courier.tare): дата → (отпечаток данных даты и связей тары, движения даты)
+    tare_days: dict[str, tuple[Any, Any]] = field(default_factory=dict)
+    tare_lock: threading.Lock = field(default_factory=threading.Lock)   # пересчёт дней — один на процесс
 
 
 def state() -> CourierState:

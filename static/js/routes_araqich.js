@@ -1,5 +1,7 @@
-/* «Առաքիչների KPI» /routes/araqich — показатели առաքիչ за месяц и тренд за 6 месяцев (route_optimizer/crew_kpi.py).
-   API: GET /api/routes/araqich?month=YYYY-MM (команда, люди, тренд, месяцы для выбора). Только администратору.
+/* «Առաքիչների KPI» /routes/araqich — балл առաքիչ по выполнению плана (№88: route_optimizer/scorecard.py, роль helper) и
+   объём по ERP за месяц и тренд за 6 месяцев без оценки (route_optimizer/crew_kpi.py): объём дня решает логист.
+   API: GET /api/routes/araqich?month=YYYY-MM (объём ERP, месяцы для выбора), GET /api/routes/drivers/scorecard?from=&to=
+   (балл по плану). Только администратору.
    Всё, что пришло с сервера, выводится только через textContent. */
 (function () {
     'use strict';
@@ -14,7 +16,6 @@
     const SHORT = ['հնվ', 'փտվ', 'մրտ', 'ապր', 'մյս', 'հնս', 'հլս', 'օգս', 'սեպ', 'հոկ', 'նոյ', 'դեկ'];
     const monthHy = (key) => MONTHS[+key.slice(5, 7) - 1] + ' ' + key.slice(0, 4);
     const TONE_FROM = 3;   // % (у нормы — процентных пунктов): меньшее изменение к прошлому месяцу — без цвета и стрелки
-    const GRADE = { good: ['b-ok', 'ուժեղ'], bad: ['b-danger', 'հետ է մնում'], fewdays: ['b-none', 'քիչ օր'], mid: null };
 
     function h(tag, props, ...kids) {
         const el = document.createElement(tag);
@@ -37,7 +38,7 @@
         return el;
     }
 
-    const state = { data: null, seq: 0, sort: { key: 'points_day', dir: -1 }, open: null };
+    const state = { data: null, seq: 0, planSeq: 0, sort: { key: 'points_day', dir: -1 }, open: null };
 
     function announce(text) { $('kpStatus').textContent = ''; setTimeout(() => { $('kpStatus').textContent = text; }, 30); }
     function showError(text) { $('kpAlert').hidden = !text; $('kpAlertText').textContent = text || ''; }
@@ -67,6 +68,9 @@
     // ---------- загрузка месяца ----------
     async function load(month) {
         const seq = ++state.seq;          // ответ на прежний выбор месяца не перетирает новый
+        // балл по плану от ERP не зависит: грузится параллельно (ERP недоступна — балл всё равно есть)
+        const key = month || $('kpMonth').value;
+        loadPlan(key, key === $('kpMonth').options[0].value);
         showError('');
         $('kpLoading').hidden = false;
         $('kpTeam').hidden = true;
@@ -93,16 +97,13 @@
             value: key, text: monthHy(key) + (i === 0 ? ' (մինչև այսօր)' : ''),
         })));
         $('kpMonth').value = d.month;
-        ['kpMinDays', 'kpMinDays2'].forEach(id => { $(id).textContent = String(d.min_days); });
-        $('kpGood').textContent = fmt((d.good - 1) * 100);
-        $('kpBad').textContent = fmt((1 - d.bad) * 100);
         $('kpNorm').textContent = fmt(d.norm_per_day, d.norm_per_day % 1 ? 1 : 0);
         $('kpSub').textContent = monthHy(d.month) + (d.current ? ' (մինչև այսօր)' : '') + ' · աշխատանքային օրեր՝ '
             + d.team.workdays + ' · առաքիչներ՝ ' + d.team.people;
         const warn = [
             d.calendar_warning || '',
             d.current && d.team.workdays < d.min_days ? 'Ամսվա սկիզբն է՝ ' + d.team.workdays + ' աշխատանքային օր․ '
-                + 'գնահատականը կերևա ' + d.min_days + '-րդ օրից։ Ամբողջական պատկերի համար ընտրեք նախորդ ամիսը։' : '',
+                + 'միավորը կերևա ' + d.min_days + '-րդ օրից։ Ամբողջական պատկերի համար ընտրեք նախորդ ամիսը։' : '',
         ].filter(Boolean);
         $('kpWarn').hidden = !warn.length;
         $('kpWarnText').textContent = warn.join(' ');
@@ -120,7 +121,7 @@
         if (ok(now) && ok(prev) && prev !== 0) {
             const ch = asPct ? (now - prev) * 100 : (now - prev) / Math.abs(prev) * 100;
             const r = Math.round(ch);
-            if (Math.abs(ch) >= TONE_FROM) tone = (r > 0) === (better > 0) ? 'good' : 'bad';
+            if (better && Math.abs(ch) >= TONE_FROM) tone = (r > 0) === (better > 0) ? 'good' : 'bad';
             delta = (r > 0 ? '▲ +' : r < 0 ? '▼ −' : '') + fmt(Math.abs(r)) + (asPct ? ' տոկոսային կետ' : '%') + ' նախորդ ամսվա համեմատ';
         }
         return h('div', { class: 'rt-kpi' + (tone ? ' is-' + tone : '') },
@@ -133,9 +134,9 @@
     function renderTeam(t, p) {
         p = p || {};
         $('kpTeam').replaceChildren(
-            tile('Կետ/օր՝ թիմի մեդիան', t.median_points_day, p.median_points_day, 1, 'կետ', 1),
-            tile('Տոննա/օր՝ մեկ առաքիչի հաշվով', t.tonnes_day, p.tonnes_day, 2, 'տ', 1),
-            tile('Նորմի կատարում', t.norm, p.norm, 0, '%', 1, true),
+            tile('Կետ/օր՝ թիմի մեդիան', t.median_points_day, p.median_points_day, 1, 'կետ', 0),
+            tile('Տոննա/օր՝ մեկ առաքիչի հաշվով', t.tonnes_day, p.tonnes_day, 2, 'տ', 0),
+            tile('Կետեր՝ «Աշխատավարձ»-ի նորմից', t.norm, p.norm, 0, '%', 0, true),
             tile('Վարձը մեկ տոննայի համար', t.cost_tonne, p.cost_tonne, 0, '֏', -1));
     }
 
@@ -144,13 +145,12 @@
     const COLS = [
         { key: 'name', label: 'Առաքիչ', get: p => p.name, text: true },
         { key: 'days', label: 'Օրեր', get: p => p.now.days },
-        { key: 'points_day', label: 'Կետ/օր', get: p => p.now.points_day, d: 1, prev: p => p.prev && p.prev.points_day, better: 1 },
-        { key: 'tonnes_day', label: 'Տոննա/օր', get: p => p.now.tonnes_day, d: 2, prev: p => p.prev && p.prev.tonnes_day, better: 1 },
+        { key: 'points_day', label: 'Կետ/օր', get: p => p.now.points_day, d: 1, prev: p => p.prev && p.prev.points_day, better: 0 },
+        { key: 'tonnes_day', label: 'Տոննա/օր', get: p => p.now.tonnes_day, d: 2, prev: p => p.prev && p.prev.tonnes_day, better: 0 },
         { key: 'kg_point', label: 'Կգ/կետ', get: p => p.now.kg_point, d: 0 },
         { key: 'sales_day', label: 'Վաճառք/օր, ֏', get: p => p.now.sales_day, d: 0 },
         { key: 'norm', label: 'Նորմ', get: p => p.now.norm, pct: true },
         { key: 'cost_tonne', label: '֏/տոննա', get: p => p.now.cost_tonne, d: 0, prev: p => p.prev && p.prev.cost_tonne, better: -1 },
-        { key: 'vs_median', label: 'Մեդիանի նկատմամբ', get: p => p.vs_median, pct: true },
         { key: 'trend', label: '6 ամիս', none: true },
     ];
 
@@ -186,7 +186,7 @@
         const ch = (now - prev) / Math.abs(prev);
         if (Math.abs(ch) * 100 < TONE_FROM) return null;    // как у плиток: меньше — шум месяца, без стрелки
         const good = (ch > 0) === (better > 0);
-        return h('span', { class: 'kp-arr ' + (good ? 'is-good' : 'is-bad'),
+        return h('span', { class: 'kp-arr' + (better ? (good ? ' is-good' : ' is-bad') : ''),
             title: 'Նախորդ ամիս՝ ' + fmt(prev, Math.abs(prev) < 10 ? 2 : 0) },
             (ch > 0 ? '▲' : '▼') + fmt(Math.abs(ch) * 100) + '%');
     }
@@ -216,11 +216,10 @@
 
     function cell(c, p) {
         if (c.key === 'name') {
-            const g = GRADE[p.grade];
             return h('td', { class: 'txt kp-name' }, h('button', { type: 'button', class: 'rt-linkbtn kp-person', text: p.name,
                 'aria-label': p.name + '՝ օր առ օր', 'aria-controls': 'kpPerson',
                 'aria-expanded': state.open === p.code + '|' + p.name ? 'true' : 'false' }),
-                g ? h('span', { class: 'rt-badge ' + g[0], text: g[1] }) : null,
+                p.grade === 'fewdays' ? h('span', { class: 'rt-badge b-none', text: 'քիչ օր' }) : null,
                 h('span', { class: 'kp-code', text: p.code }));
         }
         if (c.key === 'days') {
@@ -233,9 +232,7 @@
                 h('span', { class: 'rt-sr-only', text: 'Կետ/օր՝ ' + t }));
         }
         const v = c.get(p);
-        const tone = c.key === 'vs_median' && p.grade !== 'fewdays' && ok(v)
-            ? (p.grade === 'good' ? ' is-good' : p.grade === 'bad' ? ' is-bad' : '') : '';
-        return h('td', { class: 'num' + tone }, c.pct ? pct(v) : fmt(v, c.d),
+        return h('td', { class: 'num' }, c.pct ? pct(v) : fmt(v, c.d),
             c.prev ? arrow(v, c.prev(p), c.better) : null);
     }
 
@@ -250,6 +247,72 @@
             tr.addEventListener('click', () => openPerson(p));   // кнопка имени — клавиатура и чтец, строка — мышь
             return tr;
         }));
+    }
+
+    // ---------- балл по выполнению плана (№88) ----------
+    const PLAN_PART = { clean: 'Առանց խնդրի', on_time: 'Ժամանակին', unload: 'Բեռնաթափում՝ նորմի', day: 'Օրը՝ պլանի' };
+    const PCT = (v, cls) => h('td', { class: 'num' + (cls ? ' ' + cls : '') }, ok(v) ? fmt(v, 1) + '%' : '—');
+    // разгрузка и день: 100 % — как норма / план; больше — дольше
+    const slow = (v, warn, bad) => !ok(v) ? '' : v >= bad ? 'is-bad' : v >= warn ? 'is-warn' : 'is-good';
+    const high = (v, warn, bad) => !ok(v) ? '' : v <= bad ? 'is-bad' : v <= warn ? 'is-warn' : 'is-good';
+
+    async function loadPlan(month, current) {
+        const seq = ++state.planSeq;
+        $('kpPlanLoading').hidden = false;
+        $('kpPlanWrap').hidden = true;
+        $('kpPlanEmpty').hidden = true;
+        $('kpPlanNote').textContent = '';
+        $('kpPlanSub').textContent = '';
+        const y = +month.slice(0, 4), m = +month.slice(5, 7);
+        const last = new Date(y, m, 0).getDate();
+        // текущий месяц — по сегодня (сервер, дата Еревана); прошлый — до последнего дня
+        const q = '?from=' + month + '-01' + (current ? '' : '&to=' + month + '-' + String(last).padStart(2, '0'));
+        try {
+            const d = await api('/api/routes/drivers/scorecard' + q);
+            if (seq !== state.planSeq) return;
+            renderPlan(d);
+        } catch (e) {
+            if (seq !== state.planSeq) return;
+            $('kpPlanRows').replaceChildren();
+            $('kpPlanNote').textContent = e.message;
+        } finally {
+            if (seq === state.planSeq) $('kpPlanLoading').hidden = true;
+        }
+    }
+
+    function renderPlan(d) {
+        const rows = d.drivers.filter(r => r.role === 'helper').sort((a, b) =>
+            (b.score ?? -1) - (a.score ?? -1) || b.stops - a.stops || a.name.localeCompare(b.name, 'hy'));
+        const w = (d.rules && d.rules.helper_weights) || {};
+        $('kpWeights').textContent = 'առանց խնդրի ' + fmt(w.clean) + ', ժամանակին ' + fmt(w.on_time)
+            + ', բեռնաթափում ' + fmt(w.unload) + ', օր ' + fmt(w.day);
+        $('kpPlanMinDays').textContent = fmt(d.rules && d.rules.min_days);
+        $('kpPlanSub').textContent = 'առաքիչներ՝ ' + rows.length + (d.ranked_helpers ? ' · միավորով՝ ' + d.ranked_helpers : '');
+        $('kpPlanEmpty').hidden = rows.length > 0;
+        $('kpPlanWrap').hidden = !rows.length;
+        $('kpPlanRows').replaceChildren(...rows.map(r => {
+            const s = ok(r.score) ? r.score : null;
+            const scoreTd = h('td', { class: 'num kp-score',
+                title: Object.entries(r.parts || {}).map(([k, p]) => (PLAN_PART[k] || k) + '՝ ' + fmt(p.value, 1) + '% → ' + fmt(p.score) + ' միավոր').join('\n') || null },
+                s === null ? h('span', { class: 'rt-badge b-none', text: r.enough_data ? '—' : 'քիչ տվյալ' })
+                    : h('span', { class: 'kp-score-val ' + (s >= 80 ? 'is-good' : s >= 60 ? 'is-warn' : 'is-bad'), text: fmt(s) }),
+                ok(r.rank) ? h('small', { text: fmt(r.rank) + (r.rank === 1 ? '-ին' : '-րդ') + ' ' + fmt(d.ranked_helpers) + '-ից' }) : null);
+            return h('tr', null,
+                h('td', { class: 'txt kp-name' }, h('span', { class: 'kp-person-name', text: r.name })),
+                scoreTd,
+                h('td', { class: 'num', text: fmt(r.days) }),
+                h('td', { class: 'num', text: fmt(r.stops) }),
+                PCT(r.clean_pct, high(r.clean_pct, 95, 85)),
+                PCT(r.on_time_pct, high(r.on_time_pct, 85, 60)),
+                PCT(r.unload_vs_norm_pct, slow(r.unload_vs_norm_pct, 115, 140)),
+                PCT(r.day_vs_plan_pct, slow(r.day_vs_plan_pct, 110, 125)));
+        }));
+        const c = d.coverage || {};
+        const note = [];
+        if (!d.gps) note.push('GPS-ը միացված չէ․ «Ժամանակին»-ը, բեռնաթափումը և օրը չեն հաշվվում։');
+        else if (c.closed) note.push('«Ժամանակին»-ը գնահատված է ' + fmt(c.rated) + ' խանութի համար ' + fmt(c.closed) + ' փակվածից։');
+        $('kpPlanNote').replaceChildren(note.join(' ') + (note.length ? ' ' : ''),
+            rows.length ? h('a', { href: '/routes/drivers', text: 'Բաղադրիչները և օրերը՝ «Վարորդներ» էջում' }) : '');
     }
 
     // ---------- человек: дни и полгода ----------

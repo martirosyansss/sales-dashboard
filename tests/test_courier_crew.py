@@ -144,7 +144,7 @@ def test_migration_v6_to_v7_with_data(st, client, tmp_path):
     assert r.status_code == 200 and r.get_json()['helper'] is None and r.get_json()['decided'] is False
     with closing(sqlite3.connect(st.store.path)) as conn:
         version = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0]
-        assert version == str(SCHEMA_VERSION) == '8'                          # 6 → 7 → 8 (журнал терминала)
+        assert version == str(SCHEMA_VERSION) == '9'                          # 6 → 7 → 8 (журнал терминала) → 9 (тара)
         assert conn.execute('SELECT driver_id, helper_id FROM sessions').fetchall() == [(did, None)]
     fresh = Store(str(tmp_path / 'fresh.db'))
     fresh.list_drivers()

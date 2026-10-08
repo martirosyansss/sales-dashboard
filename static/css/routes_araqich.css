@@ -45,6 +45,20 @@
 .kp-spark-now { fill: var(--rt-acc); }
 
 .kp-legend { margin: 10px 0 0; line-height: 1.9; }
+
+/* балл по выполнению плана (№88) */
+.kp-plan { min-width: 860px; }
+.kp-plan tbody tr { cursor: default; }
+.kp-plan td.is-good { color: var(--rt-ok); }
+.kp-plan td.is-warn { color: var(--rt-warn); }
+.kp-plan td.is-bad { color: var(--rt-danger); }
+.kp-person-name { font-weight: 600; color: var(--rt-fg); }
+.kp-score { white-space: nowrap; }
+.kp-score-val { font-weight: 700; font-size: 1.05rem; }
+.kp-score-val.is-good { color: var(--rt-ok); }
+.kp-score-val.is-warn { color: var(--rt-warn); }
+.kp-score-val.is-bad { color: var(--rt-danger); }
+.kp-score small { display: block; color: var(--rt-fg-mute); font-size: .75rem; }
 .kp-legend .rt-badge { margin: 0 2px; }
 .kp-close { margin-left: auto; }
 

@@ -345,6 +345,10 @@ def main() -> int:
             plan_trucks = page.locator('#dpTruckCards .dp-tcard').count()
             n_sheets = sheet_page.locator('.sheet').count()
             check(n_sheets > 0 and n_sheets == plan_trucks, f'F print page: {n_sheets} .sheet for {plan_trucks} trucks in the plan')
+            # №87 п. 4: «Բեռն. №» у каждой точки — обратный объезду (последняя грузится первой)
+            ld = sheet_page.locator('.sheet').first.locator('table').first.locator('td.ld').all_inner_texts()
+            check('Բեռն. №' in sheet_page.locator('.sheet').first.locator('thead').first.inner_text()
+                  and ld == [str(len(ld) - i) for i in range(len(ld))] and len(ld) > 0, f'F loading numbers per stop {ld}')
             sheet_page.close()
 
             # H (до сброса — нужен построенный план)
@@ -645,17 +649,40 @@ def main() -> int:
             t0 = next((t for t in (today_day.get('plan') or {}).get('trucks', []) if t['trips'] and t['trips'][0]['stops']), None)
             if t0 is not None:
                 cids = [s['customer_id'] for s in t0['trips'][0]['stops']]
+                # №87: опаздывающий — по окну приёма (на сколько позже конца окна): второй магазин этой машины, а нет его —
+                # первый магазин другой машины; у этой машины — «не успевает вернуться»
+                other = [(t['car_code'], s['customer_id']) for t in today_day['plan']['trucks'] for tr in t['trips']
+                         for s in tr['stops'] if (t['car_code'], s['customer_id']) != (t0['car_code'], cids[0])]
                 fake = {'success': True, 'live': True, 'now': '11:00', 'trucks': {t0['car_code']: {
-                    str(cids[0]): {'s': 'done', 'at': '09:40', 'delay': None},
-                    **({str(cids[1]): {'s': 'late', 'at': '11:30', 'delay': 25}} if len(cids) > 1 else {})}}}
+                    str(cids[0]): {'s': 'done', 'at': '09:40', 'delay': None}}},
+                    'returns': {t0['car_code']: {'eta': '18:40', 'limit': '18:00', 'late_min': 40}}}
+                if other:
+                    fake['trucks'].setdefault(other[0][0], {})[str(other[0][1])] = {
+                        's': 'late', 'at': '11:30', 'delay': 25, 'late_kind': 'window', 'late_min': 20}
                 ws.route('**/api/routes/dispatch/progress**', lambda r: r.fulfill(status=200, content_type='application/json',
                                                                               body=json.dumps(fake)))
                 ws.goto(f'{BASE}/routes/dispatch?date={DAY2}')
                 ws.wait_for_selector('#dpBoard .dp-tick.pg-done', timeout=15000)
                 lab = ws.locator(f'#dpBoard .dp-blabel[data-truck="{t0["car_code"]}"] .dp-blx-pg')
                 check(ws.locator('#dpBoard .dp-tick.pg-done').count() >= 1
-                      and (len(cids) < 2 or ws.locator('#dpBoard .dp-tick.pg-late').count() >= 1)
+                      and (not other or ws.locator('#dpBoard .dp-tick.pg-late').count() >= 1)
                       and lab.inner_text().startswith('✓ 1/'), f'Z progress painted: done/late stops, «{lab.inner_text()}» on the truck')
+                # №87: подсказка кружка, «↩ +40 ր» у машины, счётчики в строке «требует внимания», нажатие — машина
+                if other:
+                    tip = ws.locator('#dpBoard .dp-tick.pg-late').first.get_attribute('title') or ''
+                    check('Կուշանա պատուհանից 20 րոպեով' in tip and '11:30' in tip, f'Z late tick tooltip: {tip!r}')
+                    check(ws.locator('#dpLateChip').inner_text().replace('\xa0', ' ').strip() == '1 խանութ ուշանում է',
+                          f'Z late chip: {ws.locator("#dpLateChip").inner_text()!r}')
+                bend = ws.locator(f'#dpBoard .dp-bend[data-truck="{t0["car_code"]}"] small')
+                check('≈ 18:40' in bend.inner_text() and '+40' in bend.inner_text() and 'pg-back' in (bend.get_attribute('class') or ''),
+                      f'Z truck does not make it back: «{bend.inner_text()}» under the return time')
+                check(ws.locator('#dpLateBackChip').inner_text().replace('\xa0', ' ').strip() == '1 մեքենա չի հասցնում վերադառնալ',
+                      'Z «չի հասցնում վերադառնալ» chip')
+                ws.click('#dpLateBackChip')
+                ws.wait_for_timeout(600)
+                check(ws.locator(f'#dpWsSide:not([hidden]) .dp-tcard.is-focus[data-truck="{t0["car_code"]}"]').count() == 1,
+                      'Z chip click focuses the truck (side card)')
+                ws.screenshot(path=str(Path(tempfile.gettempdir()) / 'dispatch-late-chips.png'))
             check(not ws_errors, f'Y no page errors {ws_errors[:2]}')
             ws.close()
             views._clock, views._yerevan_now = real_clock, real_yerevan

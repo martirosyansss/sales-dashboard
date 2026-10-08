@@ -213,6 +213,8 @@ curl.exe -i https://araqich.orix.am/api/courier/v1/ping
 | `/api/routes/garage`, `/api/routes/garage/…` | GET, POST | API журнала (POST — с CSRF, как в офисе) |
 | `/routes/live`, `/api/routes/live`, `/api/routes/live/…` | GET | машины на карте сейчас «Մեքենաները առցանց» (№76; сессия «Гаража», только чтение) |
 | `/static/css/routes_live.css`, `/static/js/routes_live.js`, `/static/img/yandex_maps_logo_ru.svg` | GET | статика карты машин (№76; подложка Яндекса — логотип обязателен) |
+| `/routes/drivers`, `/api/routes/drivers/scorecard` | GET | показатели водителей «Վարորդներ» (№87; сессия «Гаража», только чтение; столбца «Կանխիկ» и денег в ответе API у гаража нет) |
+| `/static/css/routes_drivers.css`, `/static/js/routes_drivers.js` | GET | статика «Վարորդներ» (прочая — общая с журналом) |
 | `/favicon.ico`, `/static/css/tokens.css`, `/static/css/base.css`, `/static/css/routes.css`, `/static/css/routes_garage.css`, `/static/js/base.js`, `/static/js/routes_garage.js`, `/static/js/routes_basemap.js` | GET | статика страницы журнала (у страницы входа своей нет — CDN; Leaflet карты дня «Նորմ և փաստ» — тоже CDN) |
 | `/routes/warehouse` | GET | склад «Պահեստ» (№78): отметки «Բեռնված է» по утверждённому плану (сессия роли «Склад»; без входа — на `/login`) |
 | `/api/routes/warehouse`, `/api/routes/warehouse/…` | GET, POST | API склада (POST — с CSRF, как в офисе); Բեռնագիր машины — `/api/routes/warehouse/waybill`, лист рисует общий `base.js` — новых правил не нужно |
@@ -371,6 +373,11 @@ curl.exe -i https://araqich.orix.am/api/courier/v1/ping
    location = /static/css/routes_live.css   { include snippets/araqich-garage-public.conf; }
    location = /static/js/routes_live.js     { include snippets/araqich-garage-public.conf; }
    location = /static/img/yandex_maps_logo_ru.svg { include snippets/araqich-garage-public.conf; }
+   # №87 «Վարորդներ» (показатели водителей; приложение пускает только GET и только сессию «Гаража», денег не отдаёт)
+   location = /routes/drivers               { include snippets/araqich-garage-public.conf; }
+   location = /api/routes/drivers/scorecard { include snippets/araqich-garage-public.conf; }
+   location = /static/css/routes_drivers.css { include snippets/araqich-garage-public.conf; }
+   location = /static/js/routes_drivers.js  { include snippets/araqich-garage-public.conf; }
    # №78 «Պահեստ» (склад; приложение пускает только сессию роли «Склад», чужие сессии — 404)
    location = /routes/warehouse             { include snippets/araqich-garage-public.conf; }
    location = /api/routes/warehouse         { include snippets/araqich-garage-public.conf; }
@@ -392,13 +399,13 @@ curl.exe -i https://araqich.orix.am/api/courier/v1/ping
    192.168.1.11:
    ```yaml
      - hostname: araqich.orix.am
-       path: '^/(login|logout|favicon\.ico|routes/garage|routes/live|routes/warehouse)$'
+       path: '^/(login|logout|favicon\.ico|routes/garage|routes/live|routes/warehouse|routes/drivers)$'
        service: <как у правила ^/api/courier/v1/>
      - hostname: araqich.orix.am
-       path: '^/api/routes/(garage|live|warehouse)(/[a-z0-9_-]+)*$'
+       path: '^/api/routes/((garage|live|warehouse)(/[a-z0-9_-]+)*|drivers/scorecard)$'
        service: <как у правила ^/api/courier/v1/>
      - hostname: araqich.orix.am
-       path: '^/static/(css/(tokens|base|routes|routes_garage|routes_live|routes_warehouse)\.css|js/(base|routes_garage|routes_basemap|routes_live|routes_warehouse)\.js|img/yandex_maps_logo_ru\.svg)$'
+       path: '^/static/(css/(tokens|base|routes|routes_garage|routes_live|routes_warehouse|routes_drivers)\.css|js/(base|routes_garage|routes_basemap|routes_live|routes_warehouse|routes_drivers)\.js|img/yandex_maps_logo_ru\.svg)$'
        service: <как у правила ^/api/courier/v1/>
    ```
    Проверка и перезапуск: `cloudflared tunnel --config <config.yml> ingress validate`;
@@ -406,6 +413,12 @@ curl.exe -i https://araqich.orix.am/api/courier/v1/ping
    → `http_status:404`; перезапустить службу `cloudflared`. Если туннель управляется из кабинета Cloudflare
    (Zero Trust → Networks → Tunnels → туннель → Public Hostname): добавить три записи — поддомен `araqich`, домен
    `orix.am`, Path — те же три выражения, Service — как у записи API.
+
+   **№87 «Վարորդներ» (гаражу из интернета):** новых записей не нужно — три существующих Path заменить выражениями
+   выше: в первой добавлено `routes/drivers`, во второй — ровно путь `drivers/scorecard` (не весь `drivers/…`), в
+   третьей — `routes_drivers` в группах `css/(…)` и `js/(…)`. Пока Path не заменены, «Վարորդներ» снаружи — 404 (в
+   офисе работает), всё остальное — как было. Терминальный `GET /api/courier/v1/score` (оценка водителя в APK) идёт под прежним правилом
+   `^/api/courier/v1/` — для него ничего не нужно.
 
 ### Проверка после выкладки
 

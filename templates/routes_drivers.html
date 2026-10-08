@@ -1,0 +1,154 @@
+{% extends "base_v2.html" %}
+
+{# «Վարորդներ»: показатели водителей за период (как driver analytics Omnitracs / Routific) — администратор и «Гараж»
+   (№87: гаражу — без столбца «Կանխիկ»; деньги сервер ему не отдаёт) #}
+{% block title %}Վարորդներ — Sales Dashboard{% endblock %}
+
+{% block extra_css %}
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400..700&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+Armenian:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=24">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_drivers.css') }}?v=2">
+{% endblock %}
+
+{% block content %}
+{% if is_admin %}
+<!-- Вкладки раздела — одинаковая полоса на всех страницах «Маршрутов» (одно место, один вид) -->
+<div class="rt-page rt-secbar" lang="hy">
+    <nav class="rt-tabs" aria-label="Երթուղիների բաժիններ">
+        <a href="/routes">Ակնարկ</a>
+        <a href="/routes/optimize">Օպտիմալացում</a>
+        <a href="/routes/dispatch">Առաքում</a>
+        <a href="/routes/learning">Ուսուցում</a>
+        <a href="/routes/drivers" aria-current="page">Վարորդներ</a>
+        <a href="/routes/settings">Կարգավորումներ</a>
+        <a href="/routes/garage">Ավտոտնակ</a>
+        <a href="/routes/pay">Աշխատավարձ</a>
+        <a href="/routes/araqich">Առաքիչների KPI</a>
+        <a href="/routes/cost">Առաքման արժեք</a>
+    </nav>
+</div>
+{% endif %}
+<div class="rt-page" id="drPage" lang="hy" data-cash="{{ '1' if is_admin else '0' }}">
+
+    <header class="rt-head">
+        <div class="rt-head-row">
+            <h1 class="rt-title"><i class="fas fa-id-card dr-title-ico" aria-hidden="true"></i>Վարորդներ</h1>
+            {% if is_garage %}<a class="rt-btn rt-btn-ghost rt-btn-sm" href="/routes/garage"><i class="fas fa-wrench" aria-hidden="true"></i>Ավտոտնակ</a>{% endif %}
+        </div>
+        <p class="rt-head-lead">Ինչպես է առաքում յուրաքանչյուր վարորդը՝ ըստ «Առաքիչ» հավելվածի նշումների, մեքենայի GPS-ի և «Առաքում» էջի
+            պլանի։ Սեղմեք վարորդի տողին՝ միավորի բաղադրիչները և օրերով մանրամասները տեսնելու համար։ ERP-ում ոչինչ չի փոխվում։</p>
+    </header>
+
+    <!-- Период: 7 / 30 / 90 дней или свои даты -->
+    <form class="dr-period rt-card" id="drPeriod" novalidate>
+        <fieldset class="dr-quick">
+            <legend class="rt-sr-only">Ժամանակահատված</legend>
+            <div class="rt-seg">
+                <label><input type="radio" name="drSpan" value="7">7 օր</label>
+                <label><input type="radio" name="drSpan" value="30" checked>30 օր</label>
+                <label><input type="radio" name="drSpan" value="90">90 օր</label>
+            </div>
+        </fieldset>
+        <div class="dr-dates">
+            <label class="rt-field dr-field" for="drFrom"><span class="rt-field-label">Սկսած</span>
+                <input id="drFrom" class="rt-input" type="date" required></label>
+            <label class="rt-field dr-field" for="drTo"><span class="rt-field-label">Մինչև</span>
+                <input id="drTo" class="rt-input" type="date" required></label>
+            <button type="submit" class="rt-btn rt-btn-ghost rt-btn-sm" id="drApply"><i class="fas fa-rotate" aria-hidden="true"></i>Ցույց տալ</button>
+        </div>
+    </form>
+
+    <div id="drStatus" class="rt-sr-only" role="status" aria-live="polite"></div>
+    <div id="drAlert" class="rt-alert" role="alert" hidden>
+        <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
+        <span id="drAlertText" class="rt-alert-text"></span>
+    </div>
+
+    <div class="dr-kpis" id="drKpis" hidden></div>
+    <!-- Точность планового ETA парка (№87 п. 7) -->
+    <section class="dr-eta" id="drEtaBox" aria-labelledby="drEtaTitle" hidden>
+        <h2 class="dr-eta-title" id="drEtaTitle">Պլանի ժամի (ETA) ճշտությունը</h2>
+        <div class="dr-kpis" id="drEta"></div>
+    </section>
+
+    <section class="rt-card dr-card" aria-labelledby="drTableTitle">
+        <div class="rt-card-head">
+            <h2 class="rt-card-title" id="drTableTitle"><i class="fas fa-ranking-star" aria-hidden="true"></i><span id="drTableTitleText">Վարորդներ</span></h2>
+        </div>
+        <div class="dr-scroll">
+            <table class="dr-table" id="drTable">
+                <caption class="rt-sr-only">Վարորդների ցուցանիշները ընտրված ժամանակահատվածում․ սյունակի վերնագիրը սեղմելով՝ դասավորել, տողը՝ բացել միավորի բաղադրիչները և օրերը</caption>
+                <thead>
+                    <tr>
+                        <th scope="col" data-key="name" class="dr-col-name"><button type="button" class="dr-sort">Վարորդ</button></th>
+                        <th scope="col" data-key="score" class="num"><button type="button" class="dr-sort">Միավոր</button></th>
+                        <th scope="col" data-key="days" class="num"><button type="button" class="dr-sort">Օրեր</button></th>
+                        <th scope="col" data-key="stops" class="num"><button type="button" class="dr-sort">Խանութներ</button></th>
+                        <th scope="col" data-key="on_time_pct" class="num"><button type="button" class="dr-sort">Ժամանակին</button></th>
+                        <th scope="col" data-key="late_mean_min" class="num"><button type="button" class="dr-sort">Միջին ուշացում</button></th>
+                        <th scope="col" data-key="order_pct" class="num"><button type="button" class="dr-sort">Հերթականություն</button></th>
+                        <th scope="col" data-key="speed_per_100km" class="num"><button type="button" class="dr-sort">Արագություն</button></th>
+                        <th scope="col" data-key="offroute_min" class="num"><button type="button" class="dr-sort">Կանգառ խանութից դուրս</button></th>
+                        <th scope="col" data-key="liters_vs_norm_pct" class="num"><button type="button" class="dr-sort">Վառելիք՝ նորմից</button></th>
+                        <th scope="col" data-key="partial" class="num"><button type="button" class="dr-sort">Մասնակի / Հրաժարում</button></th>
+                        <th scope="col" data-key="km" class="num"><button type="button" class="dr-sort">Կմ</button></th>
+                        {% if is_admin %}<th scope="col" data-key="cash" class="num"><button type="button" class="dr-sort">Կանխիկ</button></th>{% endif %}
+                        <th scope="col" data-key="tare" class="num"><button type="button" class="dr-sort">Տարա</button></th>
+                    </tr>
+                </thead>
+                <tbody id="drRows"><tr><td colspan="{{ 14 if is_admin else 13 }}" class="rt-empty">Բեռնվում է…</td></tr></tbody>
+            </table>
+        </div>
+        <p class="dr-coverage" id="drCoverage"></p>
+        <details class="rt-fold dr-help">
+            <summary><span class="rt-fold-t"><i class="fas fa-circle-info" aria-hidden="true"></i>Ինչպես է հաշվվում</span></summary>
+            <div class="rt-fold-body">
+                <ul class="dr-rules">
+                    <li><b>Վարորդ</b>՝ ով է «Առաքիչ» հավելվածում նշել առաքումը (իր PIN-ով)։ Առաքիչը (երկրորդ մարդը մեքենայում) ցույց է տրված
+                        առանձին տողով՝ «առաքիչ» նշումով․ նա է, ով իր PIN-ով հաստատվել է հավելվածում, իսկ եթե նշում չկա՝ «Առաքում» էջում
+                        այդ օրը մեքենային նշանակված առաքիչը։ Մեքենայի ցուցանիշները (արագություն, կանգառներ, հերթականություն, վառելիք) գրվում են
+                        օրվա վարորդին՝ նրան, ով այդ օրը մեքենայով ամենաշատ խանութն է փակել։</li>
+                    <li><b>Միավոր</b> (0–100)՝ <span id="drWeights">ժամանակին 35, հերթականություն 15, արագություն 20, կանգառներ 15, վառելիք 15</span>
+                        միավոր։ Յուրաքանչյուր ցուցանիշ վերածվում է 0–100-ի (<span id="drScale"></span>)։ Եթե ցուցանիշի համար տվյալ չկա, այն
+                        դուրս է մնում, իսկ մնացածների կշիռները համամասնորեն մեծանում են։ <span id="drMinDays">3</span> օրից քիչ աշխատած
+                        վարորդը միավոր և տեղ չի ստանում («քիչ տվյալ»)։ Մկնիկը միավորի վրա պահելով կամ տողը բացելով՝ երևում են բաղադրիչները։</li>
+                    <li><b>Առաքիչի միավոր</b> (0–100)՝ ըստ իրեն տրված պլանի կատարման, ոչ թե օրվա ծավալի (ծավալը որոշում է
+                        լոգիստը)․ առանց խնդրի (առանց մերժման և պակասի) 30, ժամանակին 25, բեռնաթափումը՝ «Առաքում»-ի նորմի նկատմամբ 30,
+                        օրվա տևողությունը՝ պլանի նկատմամբ 15։ Բեռնաթափումն ու օրը մեքենայինն են և բաժանվում են ըստ փակած խանութների,
+                        ինչպես կմ-ը։ Գումարն ու տարան գրվում են վարորդին, ուստի առաքիչի միավորի մեջ չեն։ Առաքիչների տեղը՝ առանձին
+                        վարորդներից։</li>
+                    <li><b>Օրեր</b>՝ օրեր, երբ մարդը փակել է գոնե մեկ խանութ։ <b>Խանութներ</b>՝ փակված խանութներ (առաքված, մասնակի, հրաժարում,
+                        պատվերով առաքված)։</li>
+                    <li><b>Ժամանակին</b>՝ մեքենան GPS-ով հասել է խանութ պլանի ժամից ոչ ավելի, քան <span id="drSlack">15</span> րոպե ուշ, և եթե
+                        խանութն ունի ընդունման ժամ՝ դրա մեջ։ Հաշվվում են միայն այն խանութները, որոնց համար կա և՛ պլանի ժամ («Առաքում» էջ),
+                        և՛ GPS-ով ժամանում (n/N՝ ժամանակին / գնահատված)։</li>
+                    <li><b>Միջին ուշացում</b>՝ ուշացած խանութների միջինը (րոպե)՝ պլանի ժամից կամ ընդունման ժամի ավարտից։</li>
+                    <li><b>Հերթականություն</b>՝ պլանի հերթականությամբ այցելված խանութների բաժինը (պլանում տեղ ունեցող և GPS-ով այցելված
+                        խանութներից)։</li>
+                    <li><b>Արագություն</b>՝ քանի անգամ է մեքենան գնացել սահմանից արագ (կարգավորումներ՝ «Մեքենաները առցանց» ահազանգեր) և
+                        դա 100 կմ-ի հաշվով։</li>
+                    <li><b>Կանգառ խանութից դուրս</b>՝ կանգառներ ոչ խանութում և ոչ պահեստում, որոնք երկար են ահազանգի շեմից (ճաշը՝ ճաշի
+                        ժամանակից ավելին), առաջին մեկնումից մինչև վերջին վերադարձը։ Շարժիչի աշխատանքը GPS-ով չի երևում․ սա շարժիչի
+                        պարապուրդ չէ, այլ պլանից դուրս կանգառ։</li>
+                    <li><b>Վառելիք՝ նորմից</b>՝ օրվա լիտրերն ըստ «մինչև լրիվ բաք» լիցքավորումների՝ համեմատած նորմի հետ (ինչպես «Նորմ և
+                        փաստ» էջում, վերելքներով)։ Հաշվվում է միայն, եթե GPS-ը ծածկում է լիցքավորումների միջև կմ-ի առնվազն կեսը։</li>
+                    <li><b>Պլանի ժամի ճշտությունը</b>՝ բոլոր գնահատված խանութներով․ քանի տոկոսում է մեքենան հասել պլանի ժամից
+                        ±<span id="drEtaOk">15</span> րոպեի ընթացքում, շեղման մեդիանը և P80-ը (10 խանութից 8-ի շեղումն այդքանից քիչ է)։</li>
+                    <li><b>Կմ</b>՝ մեքենայի կիլոմետրերն ըստ GPS-ի՝ մարդու մասնակցած խանութների բաժնով․ եթե նույն օրը մեքենայում
+                        մի քանի վարորդ է եղել, բաժանվում է ըստ նրանց փակած խանութների, իսկ առաքիչը ստանում է այն խանութների բաժինը,
+                        որտեղ ինքն է եղել։</li>
+                    {% if is_admin %}<li><b>Կանխիկ</b>՝ որքան կանխիկ պետք էր վերցնել, բայց չի վերցվել (ինչպես «Վարորդների գումարը» էջում)։ Մինուսը՝
+                        վերցվել է ավելին։ Մանրամասներում՝ նաև «հանձնել է − վերցրել է», եթե հանձնումը նշված է։</li>{% endif %}
+                    <li><b>Տարա</b>՝ խանութներից վերցված դատարկ տարա (հատ)՝ ըստ «Առաքիչ» հավելվածի նշումների։</li>
+                </ul>
+            </div>
+        </details>
+    </section>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/routes_drivers.js') }}?v=4"></script>
+{% endblock %}

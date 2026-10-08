@@ -9,12 +9,14 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 TABS = [('/routes', 'Ակնարկ'), ('/routes/optimize', 'Օպտիմալացում'), ('/routes/dispatch', 'Առաքում'),
-        ('/routes/learning', 'Ուսուցում'), ('/routes/settings', 'Կարգավորումներ'), ('/routes/garage', 'Ավտոտնակ'),
-        ('/routes/pay', 'Աշխատավարձ'), ('/routes/araqich', 'Առաքիչների KPI')]
+        ('/routes/learning', 'Ուսուցում'), ('/routes/drivers', 'Վարորդներ'), ('/routes/settings', 'Կարգավորումներ'),
+        ('/routes/garage', 'Ավտոտնակ'), ('/routes/pay', 'Աշխատավարձ'), ('/routes/araqich', 'Առաքիչների KPI'),
+        ('/routes/cost', 'Առաքման արժեք')]
 PAGES = {'routes_overview.html': '/routes', 'routes_optimize.html': '/routes/optimize',
          'routes_dispatch.html': '/routes/dispatch', 'routes_learning.html': '/routes/learning',
          'routes_settings.html': '/routes/settings', 'routes_garage.html': '/routes/garage',
-         'routes_pay.html': '/routes/pay', 'routes_araqich.html': '/routes/araqich'}
+         'routes_pay.html': '/routes/pay', 'routes_araqich.html': '/routes/araqich',
+         'routes_cost.html': '/routes/cost', 'routes_drivers.html': '/routes/drivers'}
 
 
 def _tabs(template):

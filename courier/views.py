@@ -21,7 +21,7 @@ import math
 import os
 import secrets
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from functools import wraps
@@ -33,11 +33,11 @@ from werkzeug.exceptions import HTTPException
 from route_optimizer.erp import ErpError
 from route_optimizer.store import StoreError as RoutesStoreError
 
-from . import clock, events as ev, merge as mg
+from . import clock, events as ev, merge as mg, tare as tr
 from .facts import gps_summary, office_window, refuel_flags
 from .routes_link import RoutesView, driver_name_hints, planned_crew, routes_depot, routes_view
 from .state import state
-from .store import MarkSetting, PinConflict, PinPepperMissing, PinUnverifiable, Release, StoreError, Terminal
+from .store import MarkSetting, PinConflict, PinPepperMissing, PinUnverifiable, Release, StoreError, TareOpening, Terminal
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +116,12 @@ def money_page() -> str:
 def invoice_page() -> str:
     """«Ապրանքագիր» — одна накладная: деньги, доставка, сканы маркировки, фото и подпись (API /api/courier/admin/invoice)."""
     return render_template('courier_invoice.html')
+
+
+@bp.get('/courier/tare')
+def tare_page() -> str:
+    """«Տարա» — баланс тары магазинов (№87 п. 9; API /api/courier/admin/tare*)."""
+    return render_template('courier_tare.html')
 
 
 # --- «Վարորդներ»: водители и терминалы ---
@@ -861,6 +867,213 @@ def money_handover() -> Any:
         return _bad('Մեկնաբանությունը՝ մինչև 200 նիշ')
     state().store.save_handover(d.isoformat(), did, None if handed is None else float(handed), comment or None, _user())
     return jsonify({'success': True})
+
+
+# --- «Տարա»: баланс тары магазинов (№87 п. 9, courier/tare.py) ---
+
+TARE_CSV_TEXT = ('code', 'name', 'agent', 'car_code', 'tare')   # текст из ERP и файлов — защита от формул; числа — как есть
+TARE_CSV_COLUMNS = (
+    ('code', 'Խանութի կոդ'), ('name', 'Խանութ'), ('agent', 'Մենեջեր'), ('car_code', 'Մեքենա'), ('tare', 'Տարա'),
+    ('opening', 'Սկզբնական մնացորդ'), ('as_of', 'Սկզբնական մնացորդի ամսաթիվ'), ('went', 'Տարվել է'),
+    ('returned', 'Հետ է վերցվել'), ('balance', 'Մնացորդ խանութում'),
+)
+
+
+def _tare_links() -> tuple[dict[int, dict[str, float]], dict[str, str], bool]:
+    """Связи товар → тара ERP (tr.links_by_product), названия видов ERP ('erp:N' → название) и сбой ли ERP."""
+    st = state()
+    if st.tare_links_loader is None:
+        return {}, {}, False
+    try:
+        links, names = st.tare_links_loader()
+    except ErpError:
+        logger.warning('[Courier] Связи тары ERP не прочитаны — частичные доставки по доле веса', exc_info=True)
+        return {}, {}, True
+    return tr.links_by_product(links), {f'erp:{k}': v for k, v in names.items()}, False
+
+
+def _tare_kinds(days: Iterable[tr.DayTare], erp_names: Mapping[str, str]) -> dict[str, str]:
+    """Названия видов тары: из tare_expected дней, ERP, свои (и выключенные — у старых записей)."""
+    kinds = {k: v for day in days for k, v in day.names.items()}
+    kinds.update(erp_names)
+    kinds.update({f'custom:{t["id"]}': t['name'] for t in state().store.tare_custom(active_only=False)})
+    return kinds
+
+
+def tare_days() -> tuple[list[tr.DayTare], dict[str, str], bool]:
+    """Движение тары по всем датам с доставками или отметками тары (tr.day_moves по правилу дня day_model и _tare),
+    названия видов тары и сбой ли ERP (связи тары). Дата пересчитывается, только если изменились её данные
+    (store.tare_day_keys), вытесненные отметки (store.tare_superseded) или связи тары ERP; иначе — из кэша процесса
+    (CourierState.tare_days). Пересчёт — под замком: параллельные запросы после перезапуска ждут один расчёт, а не
+    повторяют его. Отметка тары, вытесненная исправлением с другой датой, не считается в своём дне."""
+    st = state()
+    links, names, failed = _tare_links()
+    links_key = repr(sorted((p, sorted(m.items())) for p, m in links.items()))
+    with st.tare_lock:
+        keys = st.store.tare_day_keys()
+        dropped = st.store.tare_superseded()
+        out = []
+        for ds, key in keys.items():
+            gone = dropped.get(ds, frozenset())
+            full = (key, tuple(sorted(gone)), links_key)
+            hit = st.tare_days.get(ds)
+            if hit is None or hit[0] != full:
+                model = day_model(ds, st.store.events_for_day(ds, skip_track=True))
+                marks = _tare(replace(model, inputs=[e for e in model.inputs if e['type'] != 'tare'
+                                                     or e['id'].lower() not in gone]) if gone else model)
+                other = sorted(set(marks) - set(model.views))
+                foreign = {x: vs[-1]['data'] for x, vs in st.store.stop_versions(other).items()} if other else {}
+                hit = (full, tr.day_moves(ds, model, marks, links, foreign))
+                st.tare_days[ds] = hit
+            out.append(hit[1])
+        for ds in set(st.tare_days) - set(keys):   # даты без данных (удалены) кэш не держит
+            st.tare_days.pop(ds, None)
+    return out, _tare_kinds(out, names), failed
+
+
+def _tare_cached() -> tuple[list[tr.DayTare], dict[str, str]]:
+    """Посчитанные дни и названия видов тары без пересчёта (запись остатков): пустой кэш (после перезапуска) — один
+    расчёт tare_days."""
+    st = state()
+    days = [hit[1] for hit in list(st.tare_days.values())]
+    if not days:
+        return tare_days()[:2]
+    return days, _tare_kinds(days, _tare_links()[1])
+
+
+def _tare_customers(days: Iterable[tr.DayTare]) -> dict[int, tuple[str, str]]:
+    """Магазины с движением тары (код и название — последнего дня) и с записанным остатком: id → (код, название)."""
+    out: dict[int, tuple[str, str]] = {}
+    for m in sorted((m for d in days for m in d.moves), key=lambda x: x.day):
+        out[m.customer_id] = (m.code, m.name)
+    for o in state().store.tare_openings():
+        out.setdefault(o['customer_id'], (o['code'], o['name']))
+    return out
+
+
+def tare_view() -> dict[str, Any]:
+    """«Տարա»: строки (магазин, вид тары) с балансом (tr.balances), виды тары, период данных терминалов."""
+    days, kinds, failed = tare_days()
+    rows = tr.balances([m for d in days for m in d.moves], state().store.tare_openings())
+    used = {r['tare_id'] for r in rows}
+    return {'rows': rows, 'kinds': [{'tare_id': t, 'name': kinds.get(t) or t} for t in sorted(kinds.keys() | used)],
+            'first_day': days[0].day if days else None, 'last_day': days[-1].day if days else None,
+            'lost': sum(d.lost for d in days), 'links_failed': failed}
+
+
+@bp.get('/api/courier/admin/tare')
+@_api
+def tare_balance() -> Any:
+    return jsonify({'success': True, **tare_view()})
+
+
+@bp.get('/api/courier/admin/tare/history')
+@_api
+def tare_history() -> Any:
+    raw = request.args.get('customer', '')
+    if not raw.isascii() or not raw.isdecimal() or len(raw) > 12:   # '²' — isdigit, но не int
+        return _bad('Սխալ խանութ')
+    days, _, _ = tare_days()
+    return jsonify({'success': True, **tr.history([m for d in days for m in d.moves], state().store.tare_openings(),
+                                                   int(raw))})
+
+
+@bp.post('/api/courier/admin/tare/opening')
+@_api
+def tare_opening() -> Any:
+    """Начальный остаток одной пары: {customer_id, tare_id, qty (null — убрать), as_of}."""
+    body = _body()
+    if body is None:
+        return _bad('Սպասվում է JSON')
+    cid, tare_id = body.get('customer_id'), body.get('tare_id')
+    if isinstance(cid, bool) or not isinstance(cid, int) or not 0 < cid <= ev.SQLITE_INT_MAX:
+        return _bad('Խանութը չի գտնվել')
+    if not isinstance(tare_id, str) or not ev.TARE_RE.match(tare_id):
+        return _bad('Տարայի այդպիսի տեսակ չկա')
+    if body.get('qty') is None:
+        state().store.save_tare_openings([TareOpening(cid, tare_id, None, None)], _user())
+        return jsonify({'success': True})
+    days, kinds = _tare_cached()
+    known = _tare_customers(days)
+    if cid not in known:
+        return _bad('Խանութը չի գտնվել')
+    if tare_id not in kinds:
+        return _bad('Տարայի այդպիսի տեսակ չկա')
+    qty, as_of = tr.parse_qty(body.get('qty')), tr.parse_day(body.get('as_of'), clock.today())
+    if qty is None:
+        return _bad(f'Քանակը՝ թիվ 0-ից {int(tr.QTY_MAX)}')
+    if as_of is None:
+        return _bad('Ամսաթիվը՝ ոչ ուշ քան այսօր')
+    code, name = known[cid]
+    state().store.save_tare_openings([TareOpening(cid, tare_id, qty, as_of, code, name)], _user())
+    return jsonify({'success': True})
+
+
+def _customers_by_code(days: Iterable[tr.DayTare], codes: list[str]) -> dict[str, tuple[int, str]]:
+    """Код магазина → (customer_id, название): магазины с движением тары и записанными остатками, остальные коды — ERP
+    (только чтение; ERP недоступна — такие коды не найдены)."""
+    st = state()
+    found = {code: (cid, name) for cid, (code, name) in _tare_customers(days).items() if code}
+    out = {c: found[c] for c in codes if c in found}
+    rest = [c for c in codes if c not in out]
+    if rest and st.customer_code_loader is not None:
+        try:
+            out.update(st.customer_code_loader(rest))
+        except ErpError:
+            logger.warning('[Courier] Магазины ERP по коду не прочитаны', exc_info=True)
+    return out
+
+
+@bp.post('/api/courier/admin/tare/import')
+@_api
+def tare_import() -> Any:
+    """Импорт начальных остатков: {rows: [{row, code, tare, qty, as_of}], apply}. Без apply — предпросмотр (что
+    запишется, что заменится, ошибки); с apply — запись всех строк одной транзакцией, только если ошибок нет (иначе 400
+    с ошибками и ничего не записано)."""
+    body = _body()
+    rows = body.get('rows') if body else None
+    if not isinstance(rows, list) or not rows:
+        return _bad('Ֆայլում տողեր չկան')
+    if len(rows) > tr.IMPORT_ROWS_MAX:
+        return _bad(f'Մեկ ֆայլում՝ մինչև {tr.IMPORT_ROWS_MAX} տող')
+    days, kinds = _tare_cached()
+    items, errors = tr.check_import(rows, lambda codes: _customers_by_code(days, codes), kinds, clock.today())
+    old = {(o['customer_id'], o['tare_id']): o for o in state().store.tare_openings()}
+    preview = []
+    for x in items:
+        was = old.get((x.customer_id, x.tare_id))
+        preview.append({'customer_id': x.customer_id, 'code': x.code, 'name': x.name, 'tare_id': x.tare_id,
+                        'tare_name': kinds.get(x.tare_id, x.tare_id), 'qty': x.qty, 'as_of': x.as_of,
+                        'old': {'qty': was['qty'], 'as_of': was['as_of']} if was else None})
+    applied = body.get('apply') is True
+    if applied:
+        if errors:
+            return jsonify({'success': False, 'error': 'Ֆայլում սխալներ կան — ոչինչ չի գրանցվել', 'errors': errors}), 400
+        state().store.save_tare_openings(items, _user())
+        logger.info('[Courier] Начальные остатки тары: %d строк (%s)', len(items), _user())
+    return jsonify({'success': True, 'rows': preview, 'errors': errors, 'applied': applied})
+
+
+def tare_csv(rows: Iterable[Mapping[str, Any]], kinds: Mapping[str, str]) -> str:
+    """CSV баланса тары для Excel (как marks_csv: UTF-8 с BOM, «;», защита от формул)."""
+    buf = io.StringIO()
+    w = csv.writer(buf, delimiter=';', lineterminator='\r\n')
+    w.writerow([title for _, title in TARE_CSV_COLUMNS])
+    for r in rows:
+        line = {**r, 'tare': kinds.get(r['tare_id']) or r['tare_id']}
+        w.writerow(['' if line.get(k) is None else _csv_safe(str(line[k])) if k in TARE_CSV_TEXT else str(line[k])
+                    for k, _ in TARE_CSV_COLUMNS])
+    return '\ufeff' + buf.getvalue()
+
+
+@bp.get('/api/courier/admin/tare.csv')
+@_api
+def tare_export() -> Any:
+    view = tare_view()
+    text = tare_csv(view['rows'], {k['tare_id']: k['name'] for k in view['kinds']})
+    name = f'tara_{clock.today().isoformat()}.csv'
+    return Response(text.encode('utf-8'), mimetype='text/csv; charset=utf-8',
+                    headers={'Content-Disposition': f'attachment; filename="{name}"'})
 
 
 # --- «Ապրանքագիր»: одна накладная — деньги, доставка, сканы, фото ---

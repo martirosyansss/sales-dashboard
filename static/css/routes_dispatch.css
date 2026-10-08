@@ -1237,6 +1237,8 @@ body.dp-ws-on .rt-secbar .rt-tabs a { padding-top: 3px; padding-bottom: 3px; }
 #rtDispatch.is-ws .dp-blx-pg { position: absolute; right: 0; top: 1px; font-size: .75rem; }
 .dp-blx-pg.is-late { color: var(--rt-danger); }
 .dp-blx-pg[hidden] { display: none; }
+/* №87: машина не успевает вернуться до конца дня — прогноз возврата под плановым */
+.dp-bend small.pg-back { color: var(--rt-danger); font-weight: 600; }
 /* №86: карта ↔ карточка — точка всех машин (перетаскивается), строка магазина, найденная на карте, подсветка */
 .dp-dpin span { display: block; width: 14px; height: 14px; margin: 1px; border-radius: 50%; border: 2px solid #0c0f14; box-shadow: 0 1px 3px rgba(0, 0, 0, .45); }
 .dp-dpin.leaflet-marker-draggable, .dp-npin.leaflet-marker-draggable { cursor: grab; }

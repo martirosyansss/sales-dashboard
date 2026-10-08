@@ -30,6 +30,7 @@ from .day import DayService
 from .facts import FactsSource
 from .geo import DriverSource
 from .live import LiveSource
+from .scorecard import CrewSource
 from .routes_link import routes_bundle, routes_view
 from .state import API_PREFIX, EXTENSION_KEY, CourierState
 from .store import Store
@@ -40,8 +41,8 @@ DB_FILENAME = 'courier.db'
 DEFAULT_PUBLIC_HOST = 'araqich.orix.am'
 ROUTES_EXTENSION = 'route_optimizer'
 
-__all__ = ['API_PREFIX', 'driver_geo', 'fleet_facts', 'init_app', 'is_public_request', 'live_facts', 'not_found',
-           'public_guard']
+__all__ = ['API_PREFIX', 'crew_facts', 'driver_geo', 'fleet_facts', 'init_app', 'is_public_request', 'live_facts',
+           'not_found', 'public_guard']
 
 
 def init_app(app: Flask, db: Any, db_path: str | None = None) -> None:
@@ -60,6 +61,8 @@ def init_app(app: Flask, db: Any, db_path: str | None = None) -> None:
         catalog_loader=lambda today: erp_day.product_catalog(cs, today),
         cars_loader=lambda today: erp_day.terminal_cars(cs, today, routes_bundle(app.extensions.get(ROUTES_EXTENSION))),
         invoice_loader=lambda day: erp_day.invoice_cars(cs, day),
+        tare_links_loader=lambda: erp_day.container_links(cs),
+        customer_code_loader=lambda codes: erp_day.customers_by_code(cs, codes),
     )
     app.register_blueprint(api.bp)
     app.register_blueprint(views.bp)
@@ -85,6 +88,12 @@ def live_facts(app: Flask) -> LiveSource:
     """Факт терминалов за день для «Մեքենաները առցանց» (№76) — после init_app:
     route_optimizer.attach_live_facts(app, courier.live_facts(app))."""
     return LiveSource(app.extensions[EXTENSION_KEY].store)
+
+
+def crew_facts(app: Flask) -> CrewSource:
+    """Кто закрыл точки, деньги и тара по людям за день для «Վարորդներ» — после init_app:
+    route_optimizer.attach_crew_facts(app, courier.crew_facts(app))."""
+    return CrewSource(app.extensions[EXTENSION_KEY].store)
 
 
 def is_public(request: Request, public_host: str) -> bool:

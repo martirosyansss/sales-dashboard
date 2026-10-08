@@ -42,7 +42,10 @@
    магазинов, загрузка %, ⚠); шаги 1–2 и пересборка — в выдвижной панели «Մեքենաներ, պատվերներ». Узлы страницы не
    пересоздаются — переносятся в слоты и обратно (id и обработчики те же).
    Ход дня (№82, как мониторинг Яндекса): сегодня кружки магазинов на шкале — по факту «Առաքիչ» (GET
-   /api/routes/dispatch/progress раз в минуту): доставлен, частично, отказ, машина на месте, опаздывает; у машины «✓ 7/17». */
+   /api/routes/dispatch/progress раз в минуту): доставлен, частично, отказ, машина на месте, опаздывает; у машины «✓ 7/17».
+   «Не успеет» (№87): опаздывает — прогноз позже конца окна приёма или плана (сервер, live.late_forecast), подсказка кружка —
+   на сколько; машина не успевает вернуться до конца дня — прогноз возврата красным под временем возврата; в строке
+   счётчиков — «N խանութ ուշանում է» и «M մեքենա չի հասցնում վերադառնալ», нажатие — следующая такая машина. */
 (function () {
     'use strict';
 
@@ -751,7 +754,7 @@
         const sm = plan.summary;
         if (sm.loading_configured === false || sm.fuel_load_unconfigured || sm.wear_unconfigured)
             add('is-warn', 'fa-gear', 'Լրացնել մեքենաների նորմերը', 0, null, '/routes/settings#trucks');
-        box.hidden = !box.children.length;
+        syncLateChips();
     }
 
     // ---------- Новые заказы дня (ответ владельца №72) ----------
@@ -2227,6 +2230,7 @@
 
             const end = document.createElement('div');
             end.className = 'dp-bend';
+            end.dataset.truck = t.car_code;
             end.innerHTML = '<b></b><small></small>';
             end.firstChild.textContent = t.return;
             if (t.over_time) end.firstChild.className = 'is-bad'; else if (t.late) end.firstChild.className = 'is-late';
@@ -4466,9 +4470,11 @@
         let r;
         try { r = await api('GET', '/api/routes/dispatch/progress?date=' + encodeURIComponent(day)); } catch (e) { return; }
         if (seq !== progressSeq || !state.data || state.data.day !== day) return;   // пришёл более свежий ответ / сменили день
-        state.progress = r && r.live ? { day, trucks: r.trucks || {}, now: r.now } : null;
+        state.progress = r && r.live ? { day, trucks: r.trucks || {}, returns: isObj(r.returns) ? r.returns : {}, now: r.now } : null;
         paintProgress();
     }
+    // №87: подсказка опаздывающего кружка — на сколько позже окна приёма или плана
+    const lateText = (g) => (g.late_kind === 'window' ? 'Կուշանա պատուհանից ' : 'Կուշանա պլանից ') + fmt(g.late_min) + ' րոպեով';
     function paintProgress() {
         const p = state.progress && state.data && state.progress.day === state.data.day ? state.progress : null;
         $('dpBoard').querySelectorAll('.dp-bar').forEach(bar => {
@@ -4480,7 +4486,8 @@
                 tick.title = tick.dataset.baseTitle;
                 if (!g || g.s === 'pending') return;
                 tick.classList.add('pg-' + g.s);
-                tick.title += ' — ' + PG_HY[g.s] + (g.at ? ' ' + g.at : '') + (g.s === 'late' && g.delay ? ' (+' + g.delay + ' ր)' : '');
+                tick.title += ' — ' + (g.s === 'late' && g.late_min ? lateText(g) + (g.at ? ' (≈ ' + g.at + ')' : '')
+                    : PG_HY[g.s] + (g.at ? ' ' + g.at : ''));
             });
         });
         $('dpBoard').querySelectorAll('.dp-blabel').forEach(lab => {
@@ -4491,13 +4498,54 @@
             if (!car) return;
             const all = Object.values(car), done = all.filter(g => g.s === 'done' || g.s === 'partial').length;
             const refused = all.filter(g => g.s === 'refused').length, late = all.filter(g => g.s === 'late').length;
+            const back = p.returns[lab.dataset.truck];   // №87: не успевает вернуться до конца дня
             el.textContent = '✓ ' + done + '/' + all.length + (refused ? ' · ✗ ' + refused : '') + (late ? ' · ուշ ' + late : '');
             el.classList.toggle('is-late', late > 0);
             if (lab.dataset.baseLabel === undefined) lab.dataset.baseLabel = lab.getAttribute('aria-label') || '';
             lab.setAttribute('aria-label', lab.dataset.baseLabel + ' · առաքված ' + done + '/' + all.length
-                + (refused ? ', հրաժարում ' + refused : '') + (late ? ', ուշանում է ' + late : ''));
+                + (refused ? ', հրաժարում ' + refused : '') + (late ? ', ուշանում է ' + late : '')
+                + (back ? ', չի հասցնում վերադառնալ (+' + back.late_min + ' րոպե)' : ''));
+        });
+        // №87: не успевает вернуться — под плановым временем возврата прогноз (красным) вместо «վերադարձ · ≈ N կմ»
+        $('dpBoard').querySelectorAll('.dp-bend[data-truck]').forEach(end => {
+            const back = p ? p.returns[end.dataset.truck] : null, sm = end.querySelector('small');
+            if (end.dataset.baseText === undefined) end.dataset.baseText = sm.textContent;
+            sm.textContent = back ? 'կանխատեսում ≈ ' + back.eta + ' · +' + fmt(back.late_min) + NB + 'ր' : end.dataset.baseText;
+            sm.classList.toggle('pg-back', !!back);
+            end.title = back ? 'Չի հասցնում վերադառնալ մինչև ' + back.limit + '՝ կանխատեսված վերադարձ ≈ ' + back.eta : '';
         });
         $('dpBoard').classList.toggle('has-progress', !!p);
+        syncLateChips();
+    }
+    // №87: «N խանութ ուշանում է» / «M մեքենա չի հասցնում վերադառնալ» — в строке счётчиков (dpInbox, её перерисовывает
+    // renderInbox — тогда и снова здесь); нажатие — следующая такая машина по кругу (шкала, карта, карточка)
+    let lateTurn = 0;
+    function syncLateChips() {
+        const box = $('dpInbox'), d = state.data;
+        ['dpLateChip', 'dpLateBackChip'].forEach(id => { const el = $(id); if (el) el.remove(); });
+        const p = state.progress && d && d.plan && state.progress.day === d.day ? state.progress : null;
+        if (p) {
+            const codes = d.plan.trucks.map(t => t.car_code);
+            const stores = codes.filter(c => p.trucks[c]).map(c => [c, Object.values(p.trucks[c]).filter(g => g.s === 'late').length]).filter(x => x[1]);
+            const backs = codes.filter(c => p.returns[c]);
+            const chip = (id, label, cars) => {
+                const el = document.createElement('button');
+                el.type = 'button';
+                el.id = id;
+                el.className = 'dp-inchip is-bad';
+                el.innerHTML = '<i class="fas fa-hourglass-half" aria-hidden="true"></i><span></span>';
+                el.lastChild.textContent = label;
+                el.addEventListener('click', () => {
+                    const t = d.plan.trucks.find(x => x.car_code === cars[lateTurn++ % cars.length]);
+                    if (t) focusFromBoard(t, null);
+                });
+                box.prepend(el);   // самое срочное — первым
+            };
+            if (backs.length) chip('dpLateBackChip', pl(backs.length, 'մեքենա') + ' չի հասցնում վերադառնալ', backs);
+            const n = stores.reduce((a, x) => a + x[1], 0);
+            if (n) chip('dpLateChip', pl(n, 'խանութ') + ' ուշանում է', stores.map(x => x[0]));
+        }
+        box.hidden = !box.children.length;
     }
 
     // ---------- Вариант А (ответ владельца №82): рабочий экран на широком экране ----------
@@ -4733,7 +4781,7 @@
             + 'h1{font-size:24px;margin:0 0 4px}h2{font-size:19px;margin:18px 0 6px}.sub{font-size:15px;margin:0 0 10px}'
             + 'table{width:100%;border-collapse:collapse}th,td{border:1px solid #000;padding:7px 8px;vertical-align:top;text-align:left}'
             + 'th{font-size:13px;background:#eee}td.n{font-size:22px;font-weight:700;width:38px;text-align:center}td.kg{font-size:18px;font-weight:700;white-space:nowrap;width:90px}'
-            + 'td.ok{width:60px}td.t{font-size:17px;font-weight:700;white-space:nowrap;width:110px}.win{font-size:13px;font-weight:400}'
+            + 'td.ok{width:60px}td.ld{font-size:18px;text-align:center;width:56px}td.t{font-size:17px;font-weight:700;white-space:nowrap;width:110px}.win{font-size:13px;font-weight:400}'
             + '.addr{font-size:17px}.nm{font-weight:700}@media screen{body{background:#fff}}'
             + '</style></head><body>';
         plan.trucks.forEach(t => {
@@ -4742,14 +4790,15 @@
                 + ' · ≈ ' + esc(fmt(t.km)) + ' կմ</p>';
             t.trips.forEach((tr, i) => {
                 html += '<h2>Երթ ' + (i + 1) + '՝ մեկնում ' + esc(tr.depart) + ', ' + esc(kgText(tr.kg)) + ', ≈ ' + esc(fmt(tr.km)) + ' կմ</h2>'
-                    + '<table><thead><tr><th>№</th><th>Խանութ և հասցե</th><th>Ժամանում</th><th>Բեռ</th><th>Նշում</th></tr></thead><tbody>';
+                    + '<table><thead><tr><th>№</th><th>Խանութ և հասցե</th><th>Ժամանում</th><th>Բեռ</th><th>Բեռն. №</th><th>Նշում</th></tr></thead><tbody>';
                 tr.stops.forEach((s, si) => {
                     const win = windowText(s.window);
+                    // №87 п. 4: номер погрузки — обратный объезду (последняя точка грузится первой), как «Բեռնագիր»
                     html += '<tr><td class="n">' + (si + 1) + '</td><td><div class="nm">' + esc(s.name || s.code) + ' <small>(' + esc(s.code) + ')</small></div>'
                         + '<div class="addr">' + esc(s.address || 'ERP-ում հասցե չկա') + '</div></td>'
                         + '<td class="t">' + esc(s.eta ? '≈ ' + s.eta : '') + (win ? '<div class="win">ընդունում է՝ ' + esc(win) + '</div>' : '')
                         + (s.center ? '<div class="win">Կենտրոն</div>' : '') + '</td>'
-                        + '<td class="kg">' + esc(kgText(s.kg)) + '</td><td class="ok"></td></tr>';
+                        + '<td class="kg">' + esc(kgText(s.kg)) + '</td><td class="ld">' + (tr.stops.length - si) + '</td><td class="ok"></td></tr>';
                 });
                 html += '</tbody></table>';
             });
@@ -4769,10 +4818,11 @@
         const d = state.data, plan = d.plan;
         if (!plan) return;
         if (typeof window.XLSX === 'undefined') { showActionError(new Error('Excel-ի գրադարանը չբեռնվեց (cdn.jsdelivr.net-ը հասանելի չէ)։')); return; }
-        const rows = [['Մեքենա', 'Երթ', 'Մեկնում', 'Վերադարձ', '№', 'Ժամանում', 'Ընդունման ժամ', 'Կենտրոն', 'Կոդ', 'Խանութ', 'Հասցե', 'Մենեջեր',
+        // «Բեռն. №» (№87 п. 4) — номер погрузки точки: обратный объезду, как в листе водителя
+        const rows = [['Մեքենա', 'Երթ', 'Մեկնում', 'Վերադարձ', '№', 'Բեռն. №', 'Ժամանում', 'Ընդունման ժամ', 'Կենտրոն', 'Կոդ', 'Խանութ', 'Հասցե', 'Մենեջեր',
             'Բեռ, կգ', 'Գումար, դրամ', 'Լայնություն', 'Երկայնություն']];
         plan.trucks.forEach(t => t.trips.forEach((tr, i) => tr.stops.forEach((s, si) => rows.push([
-            truckLabel(t), i + 1, tr.depart, tr.return, si + 1, s.eta || '', windowText(s.window), s.center ? 'այո' : '',
+            truckLabel(t), i + 1, tr.depart, tr.return, si + 1, tr.stops.length - si, s.eta || '', windowText(s.window), s.center ? 'այո' : '',
             s.code, s.name, s.address, s.agent_name || s.agent_code, s.kg, Math.round(s.revenue / (s.share || 1)), s.lat, s.lon]))));
         const sum = [['Մեքենա', 'Երթեր', 'Կետեր', 'Բեռ, կգ', 'կմ', 'Լիտր', 'Մաշվածք, դրամ', 'Դիզել և մաշվածք, դրամ', 'Վերադարձ', 'Նորմերը լրացված են']];
         plan.trucks.forEach(t => sum.push([truckLabel(t), t.trips.length, t.stops, t.kg, t.km, t.liters,
@@ -5150,6 +5200,16 @@
                 r.pack && r.packs !== null ? r.packs : '', r.pack && r.packs !== null ? r.loose : '', r.pack || '', r.kg]));
             rows.push(['', '', 'Ընդամենը', '', '', '', '', '', tr.kg], []);
             wbNotes(tr).forEach(x => rows.push([x]));
+            // №87 п. 4: «Բեռնման հերթականություն» — ниже итогов, те же столбцы; строка магазина, под ней его товары
+            if (Array.isArray(tr.loading) && tr.loading.length) {
+                rows.push([], ['Բեռնման հերթականություն'], [window.RtWaybill.loadHint],
+                    ['Բեռն. №', 'Կոդ', 'Ապրանք', 'Միավոր', 'Քանակ', 'Փաթեթ', 'Առանձին', 'Փաթեթում', 'Քաշ, կգ']);
+                tr.loading.forEach(x => {
+                    rows.push([window.RtWaybill.loadNo(x), '', window.RtWaybill.loadStore(x), '', '', '', '', '', x.kg]);
+                    x.rows.forEach(r => rows.push(['', r.code, wbName(r), r.unit, r.qty,
+                        r.pack && r.packs !== null ? r.packs : '', r.pack && r.packs !== null ? r.loose : '', r.pack || '', r.kg]));
+                });
+            }
             const ws = XLSX.utils.aoa_to_sheet(rows);
             ws['!cols'] = [{ wch: 5 }, { wch: 8 }, { wch: 42 }, { wch: 8 }, { wch: 9 }, { wch: 8 }, { wch: 9 }, { wch: 10 }, { wch: 9 }];
             XLSX.utils.book_append_sheet(book, ws, 'Երթ ' + tr.no);

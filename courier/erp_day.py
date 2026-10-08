@@ -277,6 +277,13 @@ OUTER APPLY (SELECT TOP 1 x.fADDRESS, x.fLATITUDE, x.fLONGITUDE
 WHERE c.fID IN ({ph})
 """
 
+# Магазины по коду (№87 п. 9: импорт начальных остатков тары) — сравнение char в SQL Server без хвостовых пробелов
+SQL_CUSTOMERS_BY_CODE = """
+SELECT c.fID, RTRIM(c.fCODE), c.fNAME
+FROM CUSTOMERS c WITH (NOLOCK)
+WHERE c.fCODE IN ({ph})
+"""
+
 # «Дефолтные» точки: одна координата (5 знаков) у ≥ 3 разных клиентов — невалидны (geo.default_point_keys)
 SQL_DEFAULT_POINTS = """
 SELECT ROUND(a.fLATITUDE, 5), ROUND(a.fLONGITUDE, 5)
@@ -448,6 +455,36 @@ def containers(conn: Any) -> tuple[tuple[ContainerLink, ...], dict[int, str]]:
         links.append(ContainerLink(int(r[0]), int(r[1]), _f(r[2]), _f(r[3])))
         names[int(r[1])] = _str(r[4])
     return tuple(links), names
+
+
+def container_links(connection_string: str) -> tuple[tuple[ContainerLink, ...], dict[int, str]]:
+    """Связи товар → тара ERP и названия тары (№87 п. 9: тара частичной доставки) — общий с /day кэш справочника
+    'containers' (_ref); нет в кэше — одно соединение и один SELECT. Для страницы необязательно — короткие таймауты:
+    недоступная ERP не держит страницу (частичные доставки — по доле веса)."""
+    def load() -> tuple[tuple[ContainerLink, ...], dict[int, str]]:
+        conn = erp.connect(connection_string, login_timeout=3, query_timeout=10)
+        try:
+            return containers(conn)
+        finally:
+            erp.close_quietly(conn)
+    return _ref(connection_string, 'containers', load)
+
+
+def customers_by_code(connection_string: str, codes: Sequence[str]) -> dict[str, tuple[int, str]]:
+    """Магазины ERP по коду: код → (fID, название); неизвестных кодов в ответе нет. Короткие таймауты, как
+    container_links."""
+    want = sorted({c.strip() for c in codes if c.strip()})
+    if not want:
+        return {}
+    conn = erp.connect(connection_string, login_timeout=3, query_timeout=10)
+    try:
+        out = {}
+        for chunk in _chunks(want):
+            for r in _select(conn, SQL_CUSTOMERS_BY_CODE.format(ph=_ph(len(chunk))), chunk):
+                out[_str(r[1])] = (int(r[0]), _str(r[2]))
+        return out
+    finally:
+        erp.close_quietly(conn)
 
 
 def default_point_keys(conn: Any) -> set[Point]:

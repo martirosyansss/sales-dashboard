@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400..700&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+Armenian:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=24">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_araqich.css') }}?v=2">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_araqich.css') }}?v=3">
 {% endblock %}
 
 {% block content %}
@@ -18,10 +18,12 @@
         <a href="/routes/optimize">Օպտիմալացում</a>
         <a href="/routes/dispatch">Առաքում</a>
         <a href="/routes/learning">Ուսուցում</a>
+        <a href="/routes/drivers">Վարորդներ</a>
         <a href="/routes/settings">Կարգավորումներ</a>
         <a href="/routes/garage">Ավտոտնակ</a>
         <a href="/routes/pay">Աշխատավարձ</a>
         <a href="/routes/araqich" aria-current="page">Առաքիչների KPI</a>
+        <a href="/routes/cost">Առաքման արժեք</a>
     </nav>
 </div>
 <!-- «Առաքիչների KPI» (route_optimizer/crew_kpi.py): показатели առաքիչ за месяц по ERP; только администратору -->
@@ -35,8 +37,9 @@
                 <select id="kpMonth" class="rt-select kp-month"></select>
             </div>
         </div>
-        <p class="rt-head-lead">Ով քանի խանութ և տոննա է առաքում, որքան է կատարում նորմը և որքան արժե մեկ տոննայի առաքումը՝ ըստ ERP-ի
-            անցկացված ապրանքագրերի (նույն տվյալները, ինչ «Աշխատավարձ»-ում)։ Սեղմեք տողի վրա՝ օր առ օր տեսնելու համար։</p>
+        <p class="rt-head-lead">Առաքիչը գնահատվում է ըստ իրեն տրված պլանի կատարման՝ առանց մերժման և պակասի, ժամանակին,
+            բեռնաթափումը՝ նորմով, օրը՝ պլանով։ Քանի խանութ և տոննա կլինի օրվա մեջ, որոշում է լոգիստը, ուստի ներքևի ERP-ի
+            ծավալը ցույց է տրված առանց գնահատականի։</p>
     </header>
 
     <div id="kpStatus" class="rt-sr-only" role="status" aria-live="polite"></div>
@@ -50,6 +53,36 @@
         <span id="kpWarnText" class="rt-alert-text"></span>
     </div>
 
+    <!-- Балл по выполнению плана (№88): «Վարորդներ», роль helper — /api/routes/drivers/scorecard -->
+    <section class="rt-card" aria-labelledby="kpPlanTitle" id="kpPlanCard">
+        <div class="rt-card-head">
+            <h2 class="rt-card-title" id="kpPlanTitle"><i class="fas fa-ranking-star" aria-hidden="true"></i>Գնահատական՝ ըստ պլանի կատարման</h2>
+            <span id="kpPlanSub" class="kp-sub"></span>
+        </div>
+        <div id="kpPlanLoading" class="rt-loading"><div class="rt-spinner"></div>Հաշվում եմ…</div>
+        <p id="kpPlanEmpty" class="rt-empty" hidden>Այս ամսում առաքիչների տվյալներ դեռ չկան։ Առաքիչը երևում է, երբ մուտք է
+            գործում «Առաքիչ» հավելված իր PIN-ով (վարորդի հետ նույն տերմինալում) կամ «Առաքում» էջում նշանակված է մեքենային։</p>
+        <div id="kpPlanWrap" class="kp-scroll" hidden>
+            <table class="rt-numtable kp-table kp-plan">
+                <caption class="rt-sr-only">Առաքիչների միավորն ըստ պլանի կատարման</caption>
+                <thead>
+                    <tr>
+                        <th scope="col" class="kp-name">Առաքիչ</th>
+                        <th scope="col">Միավոր</th>
+                        <th scope="col">Օրեր</th>
+                        <th scope="col">Խանութներ</th>
+                        <th scope="col">Առանց խնդրի</th>
+                        <th scope="col">Ժամանակին</th>
+                        <th scope="col">Բեռնաթափում / նորմ</th>
+                        <th scope="col">Օր / պլան</th>
+                    </tr>
+                </thead>
+                <tbody id="kpPlanRows"></tbody>
+            </table>
+        </div>
+        <p id="kpPlanNote" class="rt-field-hint kp-legend"></p>
+    </section>
+
     <div id="kpLoading" class="rt-loading"><div class="rt-spinner"></div>Կարդում եմ ERP-ից՝ 6 ամիս…</div>
 
     <!-- Команда: 4 главные цифры месяца против прошлого (заполняет routes_araqich.js) -->
@@ -57,7 +90,7 @@
 
     <section class="rt-card" aria-labelledby="kpTableTitle" id="kpTableCard" hidden>
         <div class="rt-card-head">
-            <h2 class="rt-card-title" id="kpTableTitle"><i class="fas fa-ranking-star" aria-hidden="true"></i>Առաքիչներ</h2>
+            <h2 class="rt-card-title" id="kpTableTitle"><i class="fas fa-boxes-stacked" aria-hidden="true"></i>Ծավալ՝ ըստ ERP-ի (առանց գնահատականի)</h2>
             <span id="kpSub" class="kp-sub"></span>
         </div>
         <p id="kpEmpty" class="rt-empty" hidden>Այս ամսում առաքիչների ապրանքագրեր չկան։</p>
@@ -68,11 +101,9 @@
                 <tbody id="kpRows"></tbody>
             </table>
         </div>
-        <p class="rt-field-hint kp-legend">
-            <span class="rt-badge b-ok">ուժեղ</span> — կետ/օր-ը թիմի մեդիանից <span id="kpGood">10</span>%-ով և ավելի բարձր է,
-            <span class="rt-badge b-danger">հետ է մնում</span> — <span id="kpBad">20</span>%-ով և ավելի ցածր։
-            <span class="rt-badge b-none">քիչ օր</span> — ամսում <span id="kpMinDays">3</span> օրից պակաս, չի գնահատվում։
-            Սլաքը՝ նախորդ ամսվա համեմատ։</p>
+        <p class="rt-field-hint kp-legend">Քանի խանութ և տոննա կլինի օրվա մեջ, որոշում է լոգիստը, ուստի այստեղ գնահատական
+            չկա․ սա ծավալի պատմությունն է ERP-ի ապրանքագրերով (նույնը, ինչ «Աշխատավարձ»-ում)։ Սլաքը՝ նախորդ ամսվա համեմատ։
+            Սեղմեք տողի վրա՝ օր առ օր տեսնելու համար։</p>
     </section>
 
     <!-- День за днём выбранного человека и его полгода -->
@@ -92,6 +123,12 @@
     <details class="rt-fold" id="kpHow">
         <summary><span class="rt-fold-t"><i class="fas fa-calculator" aria-hidden="true"></i>Ինչպե՞ս է հաշվվում</span></summary>
         <div class="rt-fold-body kp-how">
+            <p><b>Միավոր</b> (0–100) — ըստ պլանի կատարման, ինչպես «Վարորդներ» էջում․ <span id="kpWeights">առանց խնդրի 30,
+                ժամանակին 25, բեռնաթափում 30, օր 15</span>։ <b>Առանց խնդրի</b>՝ փակված խանութներ առանց մերժման և պակասի։
+                <b>Ժամանակին</b>՝ մեքենան GPS-ով հասել է պլանի ժամին և ընդունման ժամին։ <b>Բեռնաթափում՝ նորմի</b>՝ խանութներում
+                բեռնաթափման րոպեները GPS-ով՝ «Առաքում»-ի նորմի նկատմամբ (100%՝ ինչպես նորմը)։ <b>Օրը՝ պլանի</b>՝ առաջին մեկնումից
+                մինչև վերջին վերադարձը՝ պլանի նկատմամբ։ Մեքենայի ցուցանիշները բաժանվում են մեքենայում եղած մարդկանց միջև ըստ
+                փակած խանութների։ <span id="kpPlanMinDays">3</span> օրից քիչ՝ միավոր չկա։ Գումարն ու տարան գրվում են վարորդին։</p>
             <p><b>Օրեր</b> — օրեր, երբ առաքիչն ունի անցկացված ապրանքագիր։ <b>Ներկայություն</b> — այդ օրերը ընկերության
                 աշխատանքային օրերի մեջ (ընթացիկ ամսում՝ մինչև այսօր)։</p>
             <p><b>Կետ/օր</b> — խանութներ մեկ աշխատանքային օրում (նույն օրը նույն խանութին մի քանի ապրանքագիր՝ 1 կետ)։</p>
@@ -101,8 +138,6 @@
                 աշխատած օրերով։</p>
             <p><b>֏/տոննա</b> — «Աշխատավարձ»-ի բանաձևով հաշվված վարձը մեկ տոննայի համար (ընթացիկ ամսում՝ մինչև այսօր
                 հաշվեգրվածը)։ Որքան ցածր, այնքան էժան է առաքումը։</p>
-            <p><b>Մեդիանի նկատմամբ</b> — կետ/օր-ը թիմի մեդիանի նկատմամբ․ մեդիանը հաշվվում է միայն նրանցով, ովքեր ամսում
-                աշխատել են առնվազն <span id="kpMinDays2">3</span> օր։</p>
             <p class="rt-fold-foot">Գծերը և առաքիչները, որոնք «Աշխատավարձ»-ի պարամետրերում չեն հաշվվում, այստեղ նույնպես չեն
                 հաշվվում։ ERP-ում ոչինչ չի փոխվում։</p>
         </div>
@@ -111,5 +146,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/routes_araqich.js') }}?v=2"></script>
+<script src="{{ url_for('static', filename='js/routes_araqich.js') }}?v=4"></script>
 {% endblock %}

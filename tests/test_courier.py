@@ -3329,7 +3329,7 @@ def test_migration_v7_to_v8_keeps_rows_and_backfills_terminal_log(tmp_path, now)
     migrated = Store(path)
     assert [t.id for t in migrated.list_terminals()] == [t1.id, t2.id]
     with closing(sqlite3.connect(path)) as conn:
-        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0] == str(SCHEMA_VERSION) == '8'
+        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0] == str(SCHEMA_VERSION) == '9'   # 7 → 8 → 9
         assert {t: conn.execute(f'SELECT COUNT(*) FROM {t}').fetchone()[0] for t in counts} == counts
     assert migrated.terminal_log(t1.id) == [{'kind': 'created', 'car_code': 'CAR1', 'at': t1.created_at, 'by': 'admin'}]
     assert migrated.terminal_log(t2.id) == [{'kind': 'created', 'car_code': 'CAR2', 'at': t2.created_at, 'by': 'boss'}]

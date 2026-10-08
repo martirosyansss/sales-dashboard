@@ -1,0 +1,121 @@
+/* «Տարա» /courier/tare — баланс тары магазинов (№87 п. 9). Токены, кнопки, таблица — из routes.css (.rt-page), здесь
+   только своё (ct-*): шапка, сводка, фильтры, правка начального остатка в строке, диалоги истории и импорта. */
+
+.ct-page { max-width: 1440px; margin: 0 auto; padding-bottom: 40px; }
+
+/* ---------- шапка ---------- */
+.ct-head { margin-bottom: 16px; }
+.rt-page .ct-back {
+    display: inline-flex; align-items: center; gap: 7px; margin-bottom: 10px;
+    font-size: .875rem; font-weight: 600; color: var(--rt-fg-dim); text-decoration: none;
+}
+.rt-page .ct-back:hover { color: var(--rt-acc); }
+.ct-head-row { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 14px 24px; }
+.ct-head-title { min-width: 0; flex: 1 1 420px; }
+.ct-sub { margin: 8px 0 0; color: var(--rt-fg-dim); font-size: 1rem; line-height: 1.55; max-width: 76ch; }
+.ct-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.ct-tools .rt-btn { display: inline-flex; align-items: center; gap: 7px; text-decoration: none; }
+.ct-iconbtn { border-radius: 999px; }
+.ct-iconbtn.is-busy i { animation: rt-spin .8s linear infinite; }
+.ct-period { margin: 12px 0 0; font-size: .875rem; color: var(--rt-fg-mute); }
+.ct-note {
+    display: flex; align-items: flex-start; gap: 8px; margin: 0 0 10px; padding: 10px 14px; border-radius: var(--rt-radius-sm);
+    color: var(--rt-warn); background: var(--rt-warn-bg); border: 1px solid var(--rt-warn-line); font-size: .9375rem;
+}
+.ct-note i { margin-top: 3px; }
+
+/* ---------- сводка ---------- */
+.ct-kpis { display: grid; grid-template-columns: minmax(200px, 1fr) minmax(0, 3fr); gap: 12px; margin-bottom: 14px; }
+.ct-kpi {
+    min-width: 0; display: flex; flex-direction: column; gap: 8px;
+    background: var(--rt-panel); border: 1px solid var(--rt-line); border-radius: var(--rt-radius); padding: 14px 18px;
+}
+.ct-kpi-l { font-size: .875rem; font-weight: 500; color: var(--rt-fg-dim); }
+.ct-kpi-v { font-size: clamp(1.25rem, .9rem + 1vw, 1.75rem); font-weight: 700; color: var(--rt-fg); }
+.ct-kpi-kinds, .ct-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.ct-chip {
+    display: inline-flex; align-items: baseline; gap: 6px; padding: 4px 10px; border-radius: 999px; font-size: .875rem;
+    color: var(--rt-fg-dim); background: var(--rt-inset); border: 1px solid var(--rt-line);
+}
+.ct-chip b { color: var(--rt-fg); font-family: var(--rt-mono); }
+.ct-mute { color: var(--rt-fg-mute); }
+
+/* ---------- фильтры ---------- */
+.ct-bar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px 12px; margin: 4px 0 14px; }
+.ct-search { position: relative; flex: 1 1 240px; max-width: 360px; }
+.ct-search i { position: absolute; left: 13px; top: 50%; transform: translateY(-50%); color: var(--rt-fg-mute); font-size: .85rem; pointer-events: none; }
+.ct-search .rt-input { width: 100%; padding-left: 36px; border-radius: 999px; }
+.ct-pick { display: flex; flex-direction: column; gap: 4px; margin: 0; font-size: .75rem; color: var(--rt-fg-mute); }
+.ct-pick .rt-select { min-width: 150px; max-width: 220px; }
+.ct-check { display: inline-flex; align-items: center; gap: 8px; margin: 0 0 10px; font-size: .9rem; color: var(--rt-fg-dim); cursor: pointer; }
+
+/* ---------- таблица ---------- */
+.ct-tablewrap { background: var(--rt-panel); border: 1px solid var(--rt-line); border-radius: var(--rt-radius); }
+.ct-table .num { text-align: right; white-space: nowrap; font-family: var(--rt-mono); }
+.ct-table thead th.num { font-family: var(--rt-font); }
+.ct-store {
+    padding: 0; border: none; background: none; color: var(--rt-fg); font-weight: 600; text-align: left; cursor: pointer;
+    text-decoration: underline; text-decoration-color: var(--rt-line); text-underline-offset: 3px;
+}
+.ct-store:hover, .ct-store:focus-visible { color: var(--rt-acc); text-decoration-color: currentColor; }
+.ct-code { display: block; font-family: var(--rt-mono); font-size: .75rem; color: var(--rt-fg-mute); }
+.ct-open small { display: block; font-family: var(--rt-font); font-size: .75rem; color: var(--rt-fg-mute); }
+.ct-edit {
+    margin-left: 6px; width: 28px; height: 28px; border-radius: 8px; border: 1px solid transparent; background: none;
+    color: var(--rt-fg-mute); cursor: pointer; vertical-align: middle;
+}
+.ct-edit:hover, .ct-edit:focus-visible { color: var(--rt-acc); border-color: var(--rt-line); }
+.ct-bal { font-weight: 700; font-size: 1rem; }
+.ct-bal.is-out { color: var(--rt-warn); }
+.ct-bal.is-neg { color: var(--rt-danger); }
+.ct-bal.is-zero { color: var(--rt-fg-mute); font-weight: 500; }
+.ct-empty { text-align: center; color: var(--rt-fg-mute); padding: 28px 10px !important; }
+.ct-more { margin: 10px 0 0; display: flex; align-items: center; gap: 10px; color: var(--rt-fg-dim); font-size: .875rem; }
+.ct-oform { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; min-width: 260px; }
+.ct-oform .rt-input { width: 120px; height: 34px; }
+.ct-oform .rt-input[type="date"] { width: 150px; color-scheme: dark; }
+.ct-ferr { flex: 1 1 100%; margin: 4px 0 0; color: var(--rt-danger); font-size: .875rem; text-align: left; font-family: var(--rt-font); }
+.ct-ferr:empty { display: none; }
+.ct-howto { margin-top: 18px; }
+.ct-terms dt { font-weight: 700; color: var(--rt-fg); margin-top: 8px; }
+.ct-terms dd { margin: 2px 0 0; color: var(--rt-fg-dim); }
+
+/* ---------- диалоги ---------- */
+.ct-dlg {
+    width: min(960px, calc(100vw - 32px)); max-height: calc(100vh - 48px); padding: 0; overflow: hidden;
+    color: var(--rt-fg); background: var(--rt-panel); border: 1px solid var(--rt-line); border-radius: var(--rt-radius);
+    box-shadow: var(--rt-shadow);
+}
+.ct-dlg[open] { display: flex; flex-direction: column; }
+.ct-dlg::backdrop { background: rgba(0, 0, 0, .55); }
+.ct-dlg-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--rt-line); margin: 0; }
+.ct-dlg-head h2 { margin: 0; font-size: 1.125rem; font-weight: 700; overflow-wrap: anywhere; }
+.ct-dlg-body { padding: 14px 18px; overflow: auto; }
+.ct-dlg-body h3 { margin: 18px 0 8px; font-size: 1rem; font-weight: 700; }
+.ct-dlg-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--rt-line); }
+.ct-meta { margin: 0 0 10px; color: var(--rt-fg-dim); font-size: .9375rem; }
+.ct-olist { margin: 0 0 10px; padding-left: 18px; }
+.ct-olist li { margin: 2px 0; }
+.ct-addform { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 10px; }
+.ct-addform label { display: flex; flex-direction: column; gap: 4px; margin: 0; font-size: .75rem; color: var(--rt-fg-mute); }
+.ct-addform .rt-input, .ct-addform .rt-select { height: 38px; }
+.ct-addform .rt-input[type="date"] { color-scheme: dark; }
+.ct-hist .num, .ct-prev .num { text-align: right; font-family: var(--rt-mono); white-space: nowrap; }
+.ct-prev { max-height: 40vh; margin-top: 8px; }
+
+/* ---------- телефон: строки таблицы — карточками ---------- */
+@media (max-width: 760px) {
+    .ct-kpis { grid-template-columns: 1fr; }
+    .ct-pick { flex: 1 1 140px; }
+    .ct-pick .rt-select { min-width: 0; max-width: none; width: 100%; }
+    .ct-table thead { display: none; }
+    .ct-table, .ct-table tbody, .ct-table tr, .ct-table td { display: block; width: 100%; }
+    .ct-table tbody tr { padding: 10px 12px; border-bottom: 1px solid var(--rt-line); }
+    .ct-table tbody td { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0; border: none; text-align: right; }
+    .ct-table tbody td::before { content: attr(data-label); color: var(--rt-fg-mute); font-size: .8125rem; text-align: left; }
+    .ct-table tbody td.rt-cell-name { display: block; text-align: left; }
+    .ct-table tbody td.rt-cell-name::before { content: none; }
+    .ct-table tbody td.ct-empty { display: block; }
+    .ct-table tbody td.ct-empty::before { content: none; }
+    .ct-oform { min-width: 0; }
+}
