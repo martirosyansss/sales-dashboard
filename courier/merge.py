@@ -179,6 +179,7 @@ class _Line:
     product_id: Any
     qty: Decimal
     price: Decimal
+    gift: bool = False   # v1.2.4: строка-подарок ERP (`gift: true`, цена 0) — не «товар» правил (в), (г) и остатка
 
 
 @dataclass(frozen=True)
@@ -234,8 +235,9 @@ def _parse_stop(m: Mapping[str, Any]) -> _Stop:
         lid = str(ln['line_id'])
         if any(x.line_id == lid for x in lines):
             raise MergeInputError(f'{sid}: строка {lid} повторяется')
-        lines.append(_Line(lid, ln.get('product_id'), _dec(ln.get('qty'), f'{sid}/{lid}.qty'),
-                           _dec(ln.get('price'), f'{sid}/{lid}.price')))
+        price = _dec(ln.get('price'), f'{sid}/{lid}.price')
+        lines.append(_Line(lid, ln.get('product_id'), _dec(ln.get('qty'), f'{sid}/{lid}.qty'), price,
+                           ln.get('gift') is True and price == 0))
     # неизвестный collect — подсказка ask (п. 12), поэтому хранится как есть
     return _Stop(sid, source, collect if isinstance(collect, str) else '', current, replaces, tuple(lines))
 
@@ -265,7 +267,7 @@ class _Statement:
     event: _Event
     stop: _Stop
     delivered: Mapping[str, Decimal]   # строка точки → доставлено (нет в заявлении — 0)
-    products: frozenset[Any]           # товары строк, названных в заявлении (любое кол-во, в том числе 0)
+    products: frozenset[Any]           # товары строк, названных в заявлении (любое кол-во, в том числе 0), кроме подарков
 
     @property
     def source(self) -> str:
@@ -301,7 +303,7 @@ def _statement(e: _Event, stop: _Stop) -> _Statement:
             raise MergeInputError(f'{e.id}: неверная строка доставки {item!r}')
         qty[str(item.get('line_id'))] = _dec(item.get('qty'), f'{e.id}.qty')
     return _Statement(e, stop, {ln.line_id: qty.get(ln.line_id, ZERO) for ln in stop.lines},
-                      frozenset(ln.product_id for ln in stop.lines if ln.line_id in qty))
+                      frozenset(ln.product_id for ln in stop.lines if ln.line_id in qty and not ln.gift))
 
 
 def _latest(stops: Mapping[str, _Stop], events: list[_Event]) -> dict[str, _Statement]:
@@ -417,10 +419,10 @@ def _view(stop: _Stop, status: Status, due: Decimal, paid: Decimal, flags: Itera
 
 def _sum_of_orders(owner: _Stop, stmts: list[_Statement]) -> tuple[Status, Decimal, list[_Statement]]:
     """«Сумма заказов»: заявления заказов + «остаток» — строки владельца с кол-вом > 0, чей товар не назван ни в одном
-    заявлении заказа."""
+    заявлении заказа; строка-подарок (v1.2.4) — не остаток: подарок только накладной точку открытой не держит."""
     orders = [s for s in stmts if s.source == 'order']
     covered = frozenset().union(*(s.products for s in orders))
-    rest = [ln for ln in owner.lines if ln.qty > 0 and ln.product_id not in covered]
+    rest = [ln for ln in owner.lines if ln.qty > 0 and not ln.gift and ln.product_id not in covered]
     due = sum((s.amount() for s in orders), ZERO) + sum((ln.qty * ln.price for ln in rest), ZERO)
     if rest:
         return 'in_progress', due, orders
@@ -437,7 +439,10 @@ def merge(stops: Iterable[Mapping[str, Any]], events: Iterable[Mapping[str, Any]
 
     stops — все известные точки дня: {stop_id, source: invoice|order, collect (cash|cash_ecr|none|ask, прочее = ask),
     current: bool (есть ли в последнем /day), replaces: [stop_id] (только у накладной), lines: [{line_id,
-    product_id, qty, price}] — строки той версии, по которой записаны события}; лишние поля игнорируются.
+    product_id, qty, price, gift?}] — строки той версии, по которой записаны события}; лишние поля игнорируются.
+    v1.2.4 (подарки ERP, контракт §11): строка с gift = true и ценой 0 — подарок: её товар не считается товаром
+    заявления (правила (в), «покрытые товары»), строкой остатка и товаром владельца в (г); в статусе и деньгах —
+    обычная строка (цена 0).
     events — все принятые события точек дня, любого типа: {id, type, stop_id, at, payload}. Любое событие, кроме
     arrived и geo_suggest, делает точку «со своими событиями»; в деньгах и статусе участвуют только delivery
     ({lines: [{line_id, qty}], supersedes?}) и payment ({amount, kind: invoice|debt, cancel_of?}) — у них at
@@ -513,7 +518,7 @@ def merge(stops: Iterable[Mapping[str, Any]], events: Iterable[Mapping[str, Any]
             else:
                 conflict = conflict or any(not s.products <= last.products for s in stmts if s is not last)   # (в)
                 if last.stop.stop_id != owner.stop_id:                                             # (г)
-                    own = {ln.product_id for ln in owner.lines if ln.qty > 0}
+                    own = {ln.product_id for ln in owner.lines if ln.qty > 0 and not ln.gift}
                     conflict = conflict or not own <= last.products
             status: Status
             if conflict:

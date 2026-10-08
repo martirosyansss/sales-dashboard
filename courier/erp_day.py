@@ -148,6 +148,95 @@ def compose_debts(ids: Sequence[int], debit: Mapping[int, float],
     return out
 
 
+# --- Правило подарка (ответ владельца №90: «APK сам пересчитывает» подарок при частичной доставке) ---
+
+@dataclass(frozen=True)
+class GiftPromo:
+    """Строка GIFTPROMOTIONS (не закрытая, база 'Qnt'): кому (customer_type '0' все / '1' группа group / '2' клиент
+    customer_id), за что (product_type '2' — товар product_id, '1' — «условный товар» code: все товары с этим
+    PRODUCTS.fGIFTPROMOTIONCONDITIONALPRODUCT), на каждые per штук — gift_qty штук товара gift_id; действует [start, until]."""
+    customer_type: str
+    customer_id: int | None
+    group: str
+    product_type: str
+    product_id: int | None
+    code: str
+    per: float
+    gift_id: int
+    gift_qty: float
+    start: date
+    until: date
+
+
+@dataclass(frozen=True)
+class GiftRule:
+    """Правило строки-подарка для терминала: подарок = floor(Σ доставлено base_product_ids / per) × qty, не больше
+    подарка документа (контракт §11 п. 5)."""
+    base_product_ids: tuple[int, ...]
+    per: float
+    qty: float
+
+
+_LEVEL = {'2': 2, '1': 1, '0': 0}
+_EPS = 1e-9
+
+
+def gift_rules(lines: Sequence[Line], customer_id: int, group: str, day: date, promos: Sequence[GiftPromo],
+               codes: Mapping[int, str]) -> dict[int, GiftRule]:
+    """Правило каждой строки-подарка документа: fROWNUM подарка → GiftRule; подарка без правила в ответе нет (терминал
+    оставляет его ручным, как до №90).
+
+    Как ERP выбирает акцию (проверено 08.10.2026 на заказах и накладных 01.09–08.10.2026, только SELECT; 3 064 документа
+    с подарками): по каждому условию (товар или «условный товар») из действующих на день акций клиента (уровни: клиент,
+    его группа CUSTOMERS.fGIFTPROMOTIONGROUP, все) берётся акция с самой поздней fDATE, при равной — более узкий уровень:
+    клиентские «1000 → 1» 2021 года (фактически «без подарка») перекрыты групповой «10 → 1» 2025 года — так ERP и дал
+    подарки (по уровню без даты не сошлось бы 8 документов). Подарок = floor(Σ количество по условию / fCALCULATIONVALUE)
+    × fGIFTQUANTITY. Так воспроизведено 2 976 из 3 064 документов (97,1 %); остальные — подарок без действующей акции
+    (клиенты без группы: 60 документов) или количество правили после подарка (накладная 9 бутылей с подарком заказа на 10).
+    GIFTPROMOTIONDETAILS (12 строк) — без заголовка в GIFTPROMOTIONS и дат, в подарках не видны: не читаются.
+
+    Правило отдаётся, только если оно точно воспроизводит подарок документа из его же строк: у товара подарка одна
+    строка-подарок, одна акция с этим подарком, floor(Σ / per) × qty = количеству подарка. Иначе — без правила: ручной
+    подарок офиса или правка количества не пересчитываются по чужой формуле."""
+    sold = [ln for ln in lines if not ln.gift]
+    gifts = [ln for ln in lines if ln.gift]
+    if not gifts:
+        return {}
+    best: dict[tuple[str, Any], tuple[tuple[date, int], set[GiftPromo]]] = {}
+    for p in promos:
+        if not p.start <= day <= p.until or p.per <= 0 or p.gift_qty <= 0:
+            continue
+        if p.customer_type not in _LEVEL or (p.customer_type == '2' and p.customer_id != customer_id) \
+                or (p.customer_type == '1' and (not group or p.group != group)):
+            continue
+        key = ('P', p.product_id) if p.product_type == '2' else ('C', p.code)
+        rank = (p.start, _LEVEL[p.customer_type])
+        cur = best.get(key)
+        if cur is None or rank > cur[0]:
+            best[key] = (rank, {p})
+        elif rank == cur[0]:
+            cur[1].add(p)
+    by_gift: dict[int, list[tuple[GiftPromo, tuple[int, ...]]]] = {}
+    for key, (_, ps) in best.items():
+        if len({(p.per, p.gift_id, p.gift_qty) for p in ps}) != 1:
+            continue                      # разные акции одного уровня и даты — неоднозначно (в данных такого нет)
+        p = next(iter(ps))
+        base = tuple(sorted({ln.product_id for ln in sold if (key[0] == 'P' and ln.product_id == key[1])
+                             or (key[0] == 'C' and key[1] and codes.get(ln.product_id) == key[1])}))
+        by_gift.setdefault(p.gift_id, []).append((p, base))
+    out: dict[int, GiftRule] = {}
+    for g in gifts:
+        same = [x for x in gifts if x.product_id == g.product_id]
+        cands = by_gift.get(g.product_id, [])
+        if len(same) != 1 or len(cands) != 1 or not cands[0][1]:
+            continue
+        p, base = cands[0]
+        total = math.fsum(ln.qty for ln in sold if ln.product_id in base)
+        if abs(math.floor(total / p.per + _EPS) * p.gift_qty - g.qty) <= _EPS:
+            out[g.rownum] = GiftRule(base, p.per, p.gift_qty)
+    return out
+
+
 # --- Данные дня ---
 
 @dataclass(frozen=True)
@@ -214,6 +303,7 @@ class DayData:
     gps: dict[int, Point]                # медиана GPS визитов клиента (≥ 3 точных визита за год)
     debts: dict[int, float] | None       # None — посчитать не удалось
     gtin_units: dict[int, dict[str, float | None]] = field(default_factory=dict)
+    gift_rules: dict[tuple[str, int], GiftRule] = field(default_factory=dict)   # (fISN, fROWNUM подарка) → правило
 
 
 # --- Запросы (все — SELECT с WITH (NOLOCK); {ph} — только плейсхолдеры `?`) ---
@@ -260,6 +350,29 @@ SQL_DOC_GIFTS = """
 SELECT CAST(g.fISN AS nvarchar(36)), g.fROWNUM, g.fPRODUCTID, g.fQUANTITY
 FROM SALEDOCGIFTS g WITH (NOLOCK)
 WHERE g.fISN IN ({ph})
+"""
+
+# Акции подарков (gift_rules): все не закрытые с базой «количество» — 982 строки на 08.10.2026, справочник кэшируется
+SQL_GIFT_PROMOTIONS = """
+SELECT g.fCUSTOMERTYPE, g.fCUSTOMERID, RTRIM(ISNULL(g.fCUSTOMERGIFTPROMOTIONGROUP, '')), g.fPRODUCTTYPE, g.fPRODUCTID,
+       RTRIM(ISNULL(g.fGIFTPROMOTIONCONDITIONALPRODUCT, '')), g.fCALCULATIONVALUE, g.fGIFTID, g.fGIFTQUANTITY,
+       CAST(g.fDATE AS date), CAST(g.fVALIDUNTIL AS date)
+FROM GIFTPROMOTIONS g WITH (NOLOCK)
+WHERE g.fCLOSE = 0 AND RTRIM(g.fCALCULATIONBASE) = 'Qnt'
+"""
+
+# Группа акций клиента (CUSTOMERS.fGIFTPROMOTIONGROUP; 08.10.2026: '034' — 5 832, '033' — 1 776, пусто — 2 444)
+SQL_CUSTOMER_GIFT_GROUPS = """
+SELECT c.fID, RTRIM(ISNULL(c.fGIFTPROMOTIONGROUP, ''))
+FROM CUSTOMERS c WITH (NOLOCK)
+WHERE c.fID IN ({ph})
+"""
+
+# «Условный товар» акций (PRODUCTS.fGIFTPROMOTIONCONDITIONALPRODUCT, напр. '001' — бутылки 0,5–10 л)
+SQL_PRODUCT_GIFT_CODES = """
+SELECT p.fID, RTRIM(ISNULL(p.fGIFTPROMOTIONCONDITIONALPRODUCT, ''))
+FROM PRODUCTS p WITH (NOLOCK)
+WHERE p.fID IN ({ph})
 """
 
 SQL_PRODUCTS = """
@@ -470,6 +583,35 @@ def gtins(conn: Any, ids: Sequence[int]) -> dict[int, tuple[str, ...]]:
     return barcode_data(conn, ids)[0]
 
 
+def gift_promos(conn: Any) -> tuple[GiftPromo, ...]:
+    return tuple(GiftPromo(_str(r[0]), int(r[1]) if r[1] is not None else None, _str(r[2]), _str(r[3]),
+                           int(r[4]) if r[4] is not None else None, _str(r[5]), _f(r[6]), int(r[7]), _f(r[8]),
+                           erp._day(r[9]), erp._day(r[10]))
+                 for r in _select(conn, SQL_GIFT_PROMOTIONS))
+
+
+def day_gift_rules(conn: Any, connection_string: str, docs: Sequence[Doc], lines: Mapping[str, Sequence[Line]],
+                   day: date) -> dict[tuple[str, int], GiftRule]:
+    """Правила строк-подарков документов дня (gift_rules): акции — из кэша справочников, группы клиентов и «условные
+    товары» — только документов с подарками. Подарков нет — ни одного запроса."""
+    with_gifts = [d for d in docs if any(ln.gift for ln in lines.get(d.isn, ()))]
+    if not with_gifts:
+        return {}
+    promos = _ref(connection_string, 'gift_promos', lambda: gift_promos(conn))
+    groups: dict[int, str] = {}
+    for chunk in _chunks(sorted({d.customer_id for d in with_gifts})):
+        for r in _select(conn, SQL_CUSTOMER_GIFT_GROUPS.format(ph=_ph(len(chunk))), chunk):
+            groups[int(r[0])] = _str(r[1])
+    codes: dict[int, str] = {}
+    if any(p.product_type != '2' for p in promos):
+        for chunk in _chunks(sorted({ln.product_id for d in with_gifts for ln in lines.get(d.isn, ())})):
+            for r in _select(conn, SQL_PRODUCT_GIFT_CODES.format(ph=_ph(len(chunk))), chunk):
+                codes[int(r[0])] = _str(r[1])
+    return {(d.isn, rownum): rule for d in with_gifts
+            for rownum, rule in gift_rules(lines.get(d.isn, ()), d.customer_id, groups.get(d.customer_id, ''), day,
+                                           promos, codes).items()}
+
+
 def containers(conn: Any) -> tuple[tuple[ContainerLink, ...], dict[int, str]]:
     links, names = [], {}
     for r in _select(conn, SQL_CONTAINERS):
@@ -595,9 +737,15 @@ def load_day(connection_string: str, car_code: str, day: date, orders_window: tu
         except erp.ErpError:
             logger.warning('[Courier] Долг клиентов не посчитан (%s, %s)', car_code, day, exc_info=True)
             debts = None
+        rules: dict[tuple[str, int], GiftRule]
+        try:   # правило подарка — подсказка терминалу: не прочиталось — подарки ручные, как до №90
+            rules = day_gift_rules(conn, connection_string, docs, lines, day)
+        except erp.ErpError:
+            logger.warning('[Courier] Правила подарков не прочитаны (%s, %s)', car_code, day, exc_info=True)
+            rules = {}
         return DayData(car_code=car_code, day=day, car_name=car.name if car else '', docs=tuple(docs), lines=lines,
                        products=prods, gtins=codes, customers=infos, agents=agents, containers=links,
-                       tare_names=tare_names, gps=gps, debts=debts, gtin_units=code_units)
+                       tare_names=tare_names, gps=gps, debts=debts, gtin_units=code_units, gift_rules=rules)
     finally:
         erp.close_quietly(conn)
 

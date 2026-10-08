@@ -10,6 +10,7 @@
 это, скорее всего, разные люди-тёзки: строки раздельные, а в предупреждении — их коды (overlapping_codes).
 Клиенто-день кода учитывается, только если в нём есть вес или сумма (kg > KEEP_KG или Σ fTOTALSUM > KEEP_SUM — не шум
 float): документ из одних нулей или минусов (возврат) не создаёт ни точки, ни рабочего дня, ни тонн, ни кода в строке.
+Тонны — с подарками ERP (ответ владельца №90: груз), но клиенто-день из одних подарков не учитывается (не продажа).
 Отдельные документы возврата ERP не читаются — возвраты пока не вычитаются (минусовые строки внутри накладной — как в ERP).
     days    — разных дней с учтёнными клиенто-днями (по всем кодам человека);
     points  — разных (день, клиент): несколько накладных одному магазину в день — 1 точка;
@@ -129,7 +130,8 @@ class Invoice:
     customer_id: int
     line_id: int        # SALES.fSALESAGENTID — менеджер (линия) накладной
     total: float        # Σ SALES.fTOTALSUM
-    kg: float
+    kg: float           # груз: строки и подарки (erp._KG_APPLY)
+    gift_kg: float = 0.0   # из kg — подарки SALEDOCGIFTS (№90): клиенто-день из одних подарков — не точка оплаты
 
 
 @dataclass(frozen=True)
@@ -220,15 +222,18 @@ def _kept(data: CrewData, p: Params) -> tuple[Cells, set[int], tuple[str, ...]]:
     people = {aid for c in excl_people for aid in by_code.get(c, ())}
     unknown = tuple(c for c in (*excl_lines, *excl_people) if c not in by_code)
 
-    # клиенто-день кода: [кг, сумма] по всем линиям; дальше — только с весом или суммой
-    cells: dict[int, dict[tuple[date, int], list[float]]] = defaultdict(lambda: defaultdict(lambda: [0.0, 0.0]))
+    # клиенто-день кода: [кг, сумма, кг подарков] по всем линиям; дальше — только с весом проданного или суммой: одни
+    # подарки (№90; за 01.09–08.10.2026 таких накладных не было) — не продажа и не точка оплаты
+    cells: dict[int, dict[tuple[date, int], list[float]]] = defaultdict(lambda: defaultdict(lambda: [0.0, 0.0, 0.0]))
     for inv in data.invoices:
         if not inv.van_id or inv.van_id == inv.line_id or inv.line_id in lines or inv.van_id in people:
             continue
         cell = cells[inv.van_id][(inv.day, inv.customer_id)]
         cell[0] += inv.kg
         cell[1] += inv.total
-    kept = {aid: {dc: c for dc, c in per.items() if c[0] > KEEP_KG or c[1] > KEEP_SUM} for aid, per in cells.items()}
+        cell[2] += inv.gift_kg
+    kept = {aid: {dc: c[:2] for dc, c in per.items() if c[0] - c[2] > KEEP_KG or c[1] > KEEP_SUM}
+            for aid, per in cells.items()}
     return {aid: per for aid, per in kept.items() if per}, people, unknown
 
 

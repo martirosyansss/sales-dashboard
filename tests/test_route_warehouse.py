@@ -250,6 +250,11 @@ def test_warehouse_goods_rows_of_trip(client, monkeypatch):
                       f"&rev={d['rev'] - 1}").status_code == 409
     assert client.get(f"/api/routes/warehouse/goods?date={DAY}&truck=ZZZ&trip=1&rev={d['rev']}").status_code == 409
     assert client.get(f"/api/routes/warehouse/goods?date={DAY}&truck=CAR1&trip=x&rev=1").status_code == 400
+    # №90: подарки ERP — в количестве строки, gift — сколько из них подарки (поле только у строк с подарками)
+    state.waybill_loader = lambda isns: wb.Lines({i.upper(): ((10, 30.0),) for i in isns}, frozenset(), products,
+                                                 gifts={i.upper(): ((10, 3.0),) for i in isns})
+    (row,) = client.get('/api/routes/warehouse/goods' + q).get_json()['rows']
+    assert (row['qty'], row['gift'], row['kg']) == (33 * n, 3 * n, round(33 * n * 1.05, 1))
 
 
 def _as_warehouse(dispatch_waybill):

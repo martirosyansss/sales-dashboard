@@ -251,6 +251,11 @@ _KG_APPLY = """OUTER APPLY (SELECT SUM(x.qty * pr.fWEIGHT) AS kg
                    WHERE g.fISN = {doc}.fISN) x
              JOIN PRODUCTS pr WITH (NOLOCK) ON pr.fID = x.pid) k"""
 _KG_S = _KG_APPLY.format(doc='s')   # накладная SALES s
+# Из них только подарки накладной (crew_pay: клиенто-день из одних подарков — не точка оплаты)
+_GIFT_KG_S = """OUTER APPLY (SELECT SUM(g.fQUANTITY * pr.fWEIGHT) AS kg
+             FROM SALEDOCGIFTS g WITH (NOLOCK)
+             JOIN PRODUCTS pr WITH (NOLOCK) ON pr.fID = g.fPRODUCTID
+             WHERE g.fISN = s.fISN) gk"""
 _KG_O = _KG_APPLY.format(doc='o')   # заказ ORDERS o
 
 SQL_SALES_DOCS = f"""
@@ -440,9 +445,10 @@ WHERE s.fSTATE = 2 AND s.fDATE >= ? AND s.fDATE < ?
 # дню, клиенту и линии (менеджеру): сумма и кг (вес — как в SQL_SHIPPED). Линии и люди-исключения — в crew_pay.compute.
 SQL_CREW_PAY = f"""
 SELECT s.fVANAGENTID, CAST(s.fDATE AS date), s.fCUSTOMERID, ISNULL(s.fSALESAGENTID, 0), SUM(s.fTOTALSUM),
-       SUM(ISNULL(k.kg, 0))
+       SUM(ISNULL(k.kg, 0)), SUM(ISNULL(gk.kg, 0))
 FROM SALES s WITH (NOLOCK)
 {_KG_S}
+{_GIFT_KG_S}
 WHERE s.fSTATE = 2 AND s.fDATE >= ? AND s.fDATE < ?
   AND ISNULL(s.fVANAGENTID, 0) <> 0 AND s.fVANAGENTID <> ISNULL(s.fSALESAGENTID, 0)
 GROUP BY s.fVANAGENTID, CAST(s.fDATE AS date), s.fCUSTOMERID, ISNULL(s.fSALESAGENTID, 0)
@@ -818,7 +824,7 @@ def load_crew_pay(connection_string: str, since: date, until: date) -> CrewData:
     conn = connect(connection_string)
     try:
         invoices = tuple(Invoice(int(r[0]), _day(r[1]), int(r[2] or 0), int(r[3] or 0), float(r[4] or 0),
-                                 float(r[5] or 0))
+                                 float(r[5] or 0), float(r[6] or 0))
                          for r in _select(conn, SQL_CREW_PAY, (since, until)))
         return CrewData(invoices, {a.id: (a.code, ' '.join(a.name.split())) for a in agents(conn).values()})
     finally:

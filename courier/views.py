@@ -370,7 +370,7 @@ def _moment(e: Mapping[str, Any]) -> datetime | None:
 
 def _rule_lines(data: Mapping[str, Any]) -> list[dict[str, Any]]:
     return [{'line_id': ln.get('line_id'), 'product_id': ln.get('product_id'), 'qty': ln.get('qty'),
-             'price': ln.get('price')} for ln in data.get('lines') or () if isinstance(ln, dict)]
+             'price': ln.get('price'), 'gift': ln.get('gift') is True} for ln in data.get('lines') or () if isinstance(ln, dict)]
 
 
 def day_model(ds: str, events: list[dict[str, Any]]) -> DayModel:

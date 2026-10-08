@@ -65,6 +65,17 @@ def test_points_are_distinct_store_days():
     assert [d.points for d in r.by_day] == [1, 1]
 
 
+
+def test_gift_kg_is_cargo_but_gift_only_store_day_is_no_point():
+    """№90: подарки ERP — груз (тонны с ними, владелец подтвердил 08.10), но клиенто-день из одних подарков (сумма 0,
+    весь вес — подарки) — не продажа: ни точки, ни дня, ни тонн."""
+    with_gift = cp.Invoice(KORYUN, date(2026, 9, 1), 1, LINE, 1000.0, 130.0, gift_kg=12.06)
+    gift_only = cp.Invoice(KORYUN, date(2026, 9, 2), 2, LINE, 0.0, 12.06, gift_kg=12.06)
+    r = row(cp.compute(data(with_gift, gift_only), cp.Params()), KORYUN)
+    assert (r.points, r.days, round(r.tonnes, 5)) == (1, 1, 0.13)
+    zero_price = cp.Invoice(KORYUN, date(2026, 9, 2), 2, LINE, 0.0, 12.06)   # проданное по цене 0 — как прежде, точка
+    assert row(cp.compute(data(with_gift, zero_price), cp.Params()), KORYUN).points == 2
+
 def test_proration_by_days_and_minimum_applied():
     """Աղվան работал 1 день из 3: фикс 1/3; норма 12 × 3 = 36, у него 6 точек — минимум 1/6, и он больше фикса + сдельной."""
     invoices = [inv(KORYUN, d, 100 + d) for d in (1, 2, 3)] + [inv(AGHVAN, 2, c) for c in range(6)]
@@ -125,8 +136,9 @@ def test_check_params():
 
 def test_sql_is_read_only():
     check_sql(SQL_CREW_PAY)                    # read-only guard пропускает
-    # SALES, SALEDOCDETAILS, SALEDOCGIFTS (подарки — тоже груз, №90), PRODUCTS
-    assert SQL_CREW_PAY.count('WITH (NOLOCK)') == 4 and SQL_CREW_PAY.count('?') == 2 and 'SALEDOCGIFTS' in SQL_CREW_PAY
+    # SALES, SALEDOCDETAILS + SALEDOCGIFTS + PRODUCTS (груз с подарками, №90), SALEDOCGIFTS + PRODUCTS (кг подарков)
+    assert SQL_CREW_PAY.count('WITH (NOLOCK)') == 6 and SQL_CREW_PAY.count('?') == 2
+    assert SQL_CREW_PAY.count('SALEDOCGIFTS g WITH (NOLOCK)') == 2 and 'SUM(ISNULL(gk.kg, 0))' in SQL_CREW_PAY
 
 
 def test_one_person_who_switched_code_is_one_row():

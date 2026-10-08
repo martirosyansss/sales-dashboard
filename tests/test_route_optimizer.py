@@ -1301,7 +1301,7 @@ def test_erp_physical_kg_includes_gifts_revenue_does_not():
     kg = ('SQL_SALES_DOCS', 'SQL_CAR_DAYS', 'SQL_DISPATCH_ORDERS', 'SQL_SHIPPED', 'SQL_CREW_PAY', 'SQL_COST_SALES')
     for name in kg:
         sql = getattr(erp, name)
-        assert sql.count('SALEDOCGIFTS g WITH (NOLOCK)') == 1 and 'UNION ALL' in sql, name
+        assert sql.count('SALEDOCGIFTS g WITH (NOLOCK)') >= 1 and 'UNION ALL' in sql, name
         assert 'g.fISN = s.fISN' in sql or 'g.fISN = o.fISN' in sql, name
     assert 'g.fISN = o.fISN' in erp.SQL_DISPATCH_ORDERS                # заказ — подарки самого заказа
     others = [n for n in dir(erp) if n.startswith('SQL_') and n not in kg]
