@@ -151,6 +151,7 @@ M_PER_DEG_LON = 111320.0            # …и долготы на экваторе
 HOVER_SPEED_S = 60.0                # подсказка линии трека: скорость терминала ближайшей по времени точки не дальше 60 с…
 HOVER_STEP_S = 120.0                # …нет — смещение между соседними точками трека не дольше 2 мин
 HOVER_DEV_MAX_M = 5000.0            # расстояние до плановой линии ищется до 5 км (дальше — -1: «больше 5 км»)…
+GAP_S = tl.GAP_S                    # перерыв трека в подсказке линии — как разрыв кусков track_line
 HOVER_DEV_CELL_M = 500.0            # …по индексу плана с ячейкой не меньше 500 м (свой, помнится в RouteGeometry)
 
 
@@ -802,7 +803,7 @@ class RouteGeometry:
                     fit = tl._fit([(p[0], p[1], float(i)) for i, p in enumerate(t)], keep, per)
                     where = {int(p[2]): k for k, p in enumerate(fit)}
                     lines.append([[round(p[0], 6), round(p[1], 6)] for p in fit])
-                    cuts.append([where[c] for c in sorted(keep)])
+                    cuts.append([where[c] for c in cut if 0 <= c < len(t)])   # по порядку, с повторами (магазины в одной точке)
                 self._shown = (lines, cuts)
             return self._shown
 
@@ -913,7 +914,9 @@ def track_hover(line: Sequence[tl.TPoint], parts: Sequence[tl.Chunk], pts: Seque
       концами сегментов — по времени; последняя вершина — км карточки;
     - track_dev_m — только вершины внутри отклонений (deviation_runs, по моменту): [индекс вершины, м до участков плана по
       дорогам] (-1 — дальше HOVER_DEV_MAX_M); линии по дорогам нет (отклонение не считается) — None. Не 1:1: вне
-      отклонений расстояние не нужно, а 1 500 «null» — лишние 7 КБ каждого опроса.
+      отклонений расстояние не нужно, а 1 500 «null» — лишние 7 КБ каждого опроса;
+    - track_gaps — индексы i участков (i, i + 1) линии дольше GAP_S без единой точки трека pts внутри («տվյալ չկա»);
+      машина стояла в пробке (точки есть, в линию не попали как дрожание) — не перерыв.
     Стоянка (где, с какого по какое время) — у страницы из самой линии (две одинаковые точки подряд) и точек дня."""
     stays: dict[tuple[float, float], list[tuple[float, float]]] = {}
     for c in parts:
@@ -970,10 +973,14 @@ def track_hover(line: Sequence[tl.TPoint], parts: Sequence[tl.Chunk], pts: Seque
             if any(a <= p[2] <= b for a, b in spans):
                 d = index.distance((p[0], p[1]), HOVER_DEV_MAX_M)
                 dev.append([i, round(d) if d is not None else -1])
+    # перерывы трека: участок линии дольше GAP_S без единой точки трека внутри (стоял в пробке — точки есть, выброшены как
+    # дрожание: не перерыв)
+    gaps = [i for i, (p, q) in enumerate(zip(line, line[1:]))
+            if q[2] - p[2] > GAP_S and bisect.bisect_right(at, p[2]) >= bisect.bisect_left(at, q[2])]
     km = [round(km_at(p[2]), 1) for p in line]
     if km and cum:
         km[-1] = round(cum[-1], 1)   # последняя вершина — км карточки (стоянка в конце дня может кончиться раньше сегмента)
-    return {'track_v': [speed(p) for p in line], 'track_km': km, 'track_dev_m': dev}
+    return {'track_v': [speed(p) for p in line], 'track_km': km, 'track_dev_m': dev, 'track_gaps': gaps}
 
 
 # --- карточка машины ---

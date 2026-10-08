@@ -307,14 +307,13 @@
     // Факт: t.track_v (км/ч; 0 — стоянка; null — данных нет) и t.track_km — 1:1 с t.track; t.track_dev_m — [индекс, м]
     // только у точек внутри отклонения (-1 — дальше 5 км). Стоянка — две одинаковые точки линии подряд (track_line): где —
     // GPS-визит магазина в это время, иначе магазин дня или склад в радиусе (thresholds); перерыв трека (между соседними
-    // точками дольше GAP_S) — «տվյալ չկա». План: t.route.trip_nos — номера магазинов каждой линии рейса, trip_cuts —
+    // точками дольше GAP_S без точек трека внутри — t.track_gaps) — «տվյալ չկա». План: t.route.trip_nos — номера магазинов каждой линии рейса, trip_cuts —
     // индексы концов участков в ней (склад, магазины, склад). Мышь — над линией (невидимая широкая линия поверх), телефон —
     // касание; подсказка — у ближайшей к курсору линии выбранной машины (путь или план), точка — по экрану (ближайший
     // участок), момент и км — между соседними точками.
     const HOVER_PX = 24;   // курсор дальше от линии — подсказки нет (после опроса — снова, только если линия рядом)
     const STAY_PX = 14;    // у точки стоянки ближе — подсказка стоянки (номер магазина на карте — 12 px радиус)
     const TRACK_PX = 2;    // путь и план рядом — у пути преимущество в 2 px (план — где курсор явно ближе к нему)
-    const GAP_S = 180;     // перерыв трека (track_line.GAP_S): между точками прямая без данных
     const hmOf = (sec) => clockOf(sec).slice(0, 5);
     const metres = (a, b) => Math.hypot((b[0] - a[0]) * 110540, (b[1] - a[1]) * 111320 * Math.cos(a[0] * Math.PI / 180));
     const same = (a, b) => !!a && !!b && a[0] === b[0] && a[1] === b[1];
@@ -378,7 +377,7 @@
         return 'անհայտ վայր';
     }
 
-    function trackInfo(t, n, devOf, stay) {
+    function trackInfo(t, n, devOf, stay, gapOf) {
         const tr = t.track, tt = t.track_t, th = (state.data && state.data.thresholds) || {};
         const one = (a) => Array.isArray(a) && a.length === tr.length;
         const i = n.i, j = i + 1, k = n.f < 0.5 ? i : j;   // k — ближайшая точка участка
@@ -391,7 +390,7 @@
             return { ll: tr[s], lines: [['Կանգառ՝ ' + stayPlace(t, tr[s], a, b)],
                 [hmOf(a) + '–' + hmOf(b) + ' · ' + Math.max(0, Math.round((b - a) / 60)) + ' րոպե'], ...kmLine(kmAt(s))] };
         }
-        if (tt[j] - tt[i] > GAP_S) {   // перерыв трека: что было между точками — неизвестно
+        if (gapOf.has(i)) {   // перерыв трека (сервер: без точек внутри; стоял в пробке — не перерыв): что было — неизвестно
             return { ll: along(tr, n), lines: [['տվյալ չկա'], [hmOf(tt[i]) + '–' + hmOf(tt[j]) + ' · GPS կետեր չկան', 'is-mute']] };
         }
         const x = tt[i] + n.f * (tt[j] - tt[i]);
@@ -416,12 +415,13 @@
         const cache = { key: '', pts: [] };
         const devOf = new Map((Array.isArray(t.track_dev_m) ? t.track_dev_m : []).filter(x => Array.isArray(x) && x.length === 2));
         const stays = t.track.map((p, i) => i).filter(i => same(t.track[i], t.track[i + 1]));
+        const gapOf = new Set(Array.isArray(t.track_gaps) ? t.track_gaps : []);
         return (p) => {
             const n = nearestSeg(t.track, cache, p);
             if (n.d > HOVER_PX) return null;
             let stay = null, best = STAY_PX;   // ближайшая к курсору точка стоянки на экране
             for (const i of stays) { const q = cache.pts[i], d = Math.hypot(q.x - p.x, q.y - p.y); if (d <= best) { best = d; stay = i; } }
-            return { d: n.d - TRACK_PX, ...trackInfo(t, n, devOf, stay) };
+            return { d: n.d - TRACK_PX, ...trackInfo(t, n, devOf, stay, gapOf) };
         };
     }
 

@@ -1718,7 +1718,7 @@ def test_track_line_changes_nothing_but_the_line():
         plain = live.car_view(DAY, now, f, [], TRUCK, DEPOT, RULES, ROAD, True, None, _route())
         snapped = live.car_view(DAY, now, f, [], TRUCK, DEPOT, RULES, ROAD, True, None, _route(), snap)
         assert snapped['track'] != plain['track'] and len(snapped['track']) == len(snapped['track_t'])
-        rest = ('track', 'track_t', 'track_v', 'track_km', 'track_dev_m')   # линия и подсказка её точек
+        rest = ('track', 'track_t', 'track_v', 'track_km', 'track_dev_m', 'track_gaps')   # линия и подсказка её точек
         assert {k: v for k, v in snapped.items() if k not in rest} == {k: v for k, v in plain.items() if k not in rest}
         brief = live.car_view(DAY, now, f, [], TRUCK, DEPOT, RULES, ROAD, False, None, _route())
         rest = ('deviation', 'route')   # у деталей — ещё линии плана и отклонений
@@ -2443,3 +2443,34 @@ def test_track_hover_distance_index_cell_not_below_500(monkeypatch):
     assert set(route.geo._index) == {100.0, live.HOVER_DEV_CELL_M} and card['track_dev_m']
     for i, m in card['track_dev_m']:
         assert m == pytest.approx(min(live.polyline_m(tuple(card['track'][i]), x) for x in PLAN_LINE), abs=2)
+
+
+def test_track_gaps_only_without_fixes_inside():
+    """track_gaps — участки линии дольше GAP_S без единой точки трека внутри («տվյալ չկա»); машина стояла 4 мин в пробке
+    (точки есть, в линию не попали) — не перерыв, хотя участок линии тоже дольше GAP_S."""
+    jam = Track().park(DEPOT, 5).drive(A)
+    jam.park(A, 4)                                   # стоит в пробке: точка раз в минуту, скорость 0 (не стоянка дня)
+    jam.drive(B)
+    card = view(facts(jam.pts, [], [T0, jam.t]), jam.t, detail=True)
+    tt = card['track_t']
+    assert any(b - a > live.GAP_S for a, b in zip(tt, tt[1:])) and card['track_gaps'] == []
+    gap = Track().park(DEPOT, 5).drive(A)
+    gap.t += timedelta(minutes=10)                   # 10 минут без данных
+    gap.drive(B)
+    card = view(facts(gap.pts, [], [T0, gap.t]), gap.t, detail=True)
+    tt = card['track_t']
+    assert card['track_gaps'] and all(tt[i + 1] - tt[i] > live.GAP_S for i in card['track_gaps'])
+    assert any(tt[i + 1] - tt[i] >= 600 for i in card['track_gaps'])
+    assert view(facts(), T0, detail=True)['track_gaps'] == []
+
+
+def test_plan_cuts_keep_order_and_repeats():
+    """Концы участков — по порядку и с повторами: два магазина в одной точке не выбрасывают подсказку участков рейса
+    (число концов = магазины + 2 склада)."""
+    from route_optimizer import views
+    lines = ((DEPOT, A, A, B, DEPOT),)               # два магазина в одной точке
+    geo = views._plan_geometry(FakeLineRoads(), {'CAR1': (lines, (), 'map-1')})['CAR1']
+    cuts = geo.shown_cuts()[0]
+    assert len(cuts) == 5 and [geo.shown()[0][i] for i in cuts] == [[round(p[0], 6), round(p[1], 6)] for p in lines[0]]
+    rep = live.RouteGeometry(((DEPOT, A, B, DEPOT),), (), (), cuts=((0, 1, 1, 2, 3),))   # конец участка дважды
+    assert rep.shown_cuts() == [[0, 1, 1, 2, 3]]
