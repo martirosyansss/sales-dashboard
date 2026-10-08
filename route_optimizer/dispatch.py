@@ -79,6 +79,10 @@
   перенесённые (views._carried, courier.routes_link: later_carried по планам LATER_SCAN_DAYS дней до него); сам — только
   по последнему решению о нём (не в два дня); не довезли — виден в «Նախորդ օրերից». «Չգիտեմ» — как раньше, заказы
   прошлых дней — «Չտանել» (dismissed), сам день — в «Նախորդ օրերից».
+- «Մինչև ժամը» (владелец 08.10): срок магазина — окно вида «до» только на этот день (store.customer_day_until, в ctx —
+  вместо его окна) или постоянное. После сохранения рейсы с магазином переставляются под окна (fit_until, _fit_windows),
+  кроме закреплённых логистом, загруженных и уже грузящихся — у них только пометка window_miss; не успеть и так —
+  window_miss и подсказка машины, которая успела бы (_until_hint).
 """
 from __future__ import annotations
 
@@ -2067,7 +2071,9 @@ def apply_edit(ctx: DayContext, stops: Sequence[Stop], draft: Draft, edit: Mappi
     edit:
       {"action": "move", "customer_id", "from_trip": id|null, "to_trip": id|null, "truck": код|null}
           — перенести клиента в другой рейс; to_trip = null и truck — новый рейс этой машины;
-            to_trip = null и truck = null — убрать из рейсов («ещё не в рейсах»);
+            to_trip = null и truck = null — убрать из рейсов («ещё не в рейсах»); "fit": true (подсказка «Մինչև ժամը») —
+            тем же путём, что и подсказка (_until_move: вставка и порядок рейса под окна, рейс, откуда взяли, не
+            переставляется; новый рейс сегодня — не раньше now_min);
       {"action": "trip_stops", "trip": id, "add": [customer_id, …], "remove": [customer_id, …]} — быстрая правка
           состава рейса (_trip_stops): убранные — «ещё не в рейсах», добавленные — из «ещё не в рейсах» или из
           других рейсов; одна правка — одна «Չեղարկել» (Draft.undo, как resize);
@@ -2211,6 +2217,17 @@ def apply_edit(ctx: DayContext, stops: Sequence[Stop], draft: Draft, edit: Mappi
         _require_vehicle(ctx, [cid], target_truck)
     if dst is not None and dst is src:
         return draft
+    if edit.get('fit') is True:   # перенос по подсказке «Մինչև ժամը» — тем же путём, что и подсказка (_until_move)
+        if dst is None and truck is None:
+            raise DispatchError('Սերվերը չընդունեց հարցումը — թարմացրեք էջը')
+        if dst is None:   # новый рейс машины — сегодня не раньше «сейчас», как в подсказке
+            dst = DraftTrip(draft.next_id, truck, [],
+                            not_before=float(ctx.work_start_min + now_min) if now_min is not None else None)
+        draft.trips, _ = _until_move(ctx, draft.trips, routable, cid, src.id if src is not None else None, dst)
+        draft.next_id = max(draft.next_id, dst.id + 1)
+        for left in (draft.no_room, draft.no_window, draft.no_center, draft.no_vehicle):
+            left.discard(cid)
+        return draft
     if src is not None:
         src.stops.remove(cid)
     if dst is None and truck is not None:
@@ -2270,6 +2287,149 @@ def place_added(ctx: DayContext, stops: Sequence[Stop], draft: Draft, cids: Sequ
                 placed[cid] = r.id
                 break
     return placed
+
+
+# --- «Մինչև ժամը»: магазин — не позже срока, только в этот день или всегда (владелец 08.10) ---
+
+def _late_of(ctx: DayContext, trips: Sequence[DraftTrip], stops: Mapping[int, Stop], shares: Mapping[int, int]
+             ) -> set[tuple[int, int]]:
+    """Опоздания рейсов trips (машины — подряд, _timeline): (рейс, клиент) точек, куда машина приезжает позже окна."""
+    tl = _timeline(ctx, trips, stops, shares)
+    return {(t.id, c) for t in trips if t.id in tl
+            for c, at in zip([c for c in t.stops if c in stops], tl[t.id][2]) if at > _span(ctx, c)[1] + _EPS}
+
+
+def _fit_windows(ctx: DayContext, trips: Sequence[DraftTrip], stops: Mapping[int, Stop], trip: DraftTrip
+                 ) -> list[int] | None:
+    """Порядок рейса trip, при котором машина успевает в окна приёма (владелец 08.10: «программа сама переставит
+    магазины рейса»): пока в рейсе есть опоздание, опаздывающая точка встаёт раньше. Инвариант: ход принимается, только
+    если опоздания машины за день после него — часть прежних и их меньше (магазин, который успевал, опаздывать не
+    начинает); из таких — меньше опозданий, затем раньше конец дня машины, короче км рейса. Затем 2-opt с выезда рейса
+    (_route) — если опоздания — часть прежних и конец дня не позже. Рейсы машины — подряд, как в плане (_timeline: выезд,
+    обед, ожидание окон); trips — рейсы, среди которых trip (сам он здесь не меняется). Меньше опозданий не стало — None."""
+    shares = _shares(trips)
+    mine = [t for t in trips if t.truck == trip.truck]
+
+    def run(order: list[int]) -> tuple[tuple[int, float, float], set[tuple[int, int]]]:
+        """((опозданий у машины, конец её дня, км рейса), опоздания машины (рейс, клиент)) при порядке order."""
+        trial = [replace(t, stops=order) if t is trip else t for t in mine]
+        tl = _timeline(ctx, trial, stops, shares)
+        late = {(t.id, c) for t in trial if t.id in tl
+                for c, at in zip([c for c in t.stops if c in stops], tl[t.id][2]) if at > _span(ctx, c)[1] + _EPS}
+        end = max((d + m for d, m, _ in tl.values()), default=0.0)
+        return (len(late), end, _closed_km(ctx, order, stops)), late
+
+    order = [c for c in trip.stops if c in stops]
+    cur, late = run(order)
+    first = late
+    while True:
+        best: tuple[tuple[int, float, float], set[tuple[int, int]], list[int]] | None = None
+        for k in [k for k, c in enumerate(order) if (trip.id, c) in late]:
+            for i in range(k):
+                cand = order[:i] + [order[k]] + order[i:k] + order[k + 1:]
+                score, got = run(cand)
+                if got < late and (best is None or score < best[0]):
+                    best = (score, got, cand)
+        if best is None:
+            break
+        cur, late, order = best
+    if late == first:
+        return None
+    start = _timeline(ctx, [replace(t, stops=order) if t is trip else t for t in mine], stops, shares)[trip.id][0]
+    two, *_ = _route(ctx, order, stops, shares, reorder=True, start=start, truck=trip.truck)
+    score, got = run(two)
+    return two if got <= late and score[1] <= cur[1] + _EPS else order
+
+
+def _until_move(ctx: DayContext, trips: Sequence[DraftTrip], stops: Mapping[int, Stop], cid: int, src: int | None,
+                dst: DraftTrip) -> tuple[list[DraftTrip], DraftTrip]:
+    """Перенос магазина cid из рейса src в рейс dst (новый — dst, которого нет среди trips) по подсказке «Մինչև ժամը»:
+    вставка с наименьшим объездом (_moved), затем порядок dst под окна (_fit_windows). Одним путём идут подсказка
+    (_until_hint) и сам перенос (apply_edit: move с "fit") — прибытие после переноса то, что обещала подсказка.
+    (копия рейсов после переноса, рейс dst в ней)."""
+    trial = _moved(ctx, trips, stops, cid, src, dst)
+    new = next(t for t in trial if t.id == dst.id)
+    order = _fit_windows(ctx, trial, stops, new)
+    if order is not None:
+        new.stops = order
+    return trial, new
+
+
+def _until_hint(ctx: DayContext, routable: Mapping[int, Stop], draft: Draft, cid: int, src: DraftTrip,
+                frozen: Collection[int], now_min: float | None = None) -> dict[str, Any] | None:
+    """Магазин cid опаздывает в рейсе src и после перестановки: куда перенести, чтобы успел, — рейс машины дня, который
+    можно менять (_movable), или её новый рейс (как place_added: сегодня — не раньше «сейчас», now_min): груз в пределе
+    (_can_carry), магазин успевает и не раньше now_min (перенос — _until_move), у машины опозданий не больше и конец дня не
+    позже предела (или её прежнего конца). Из подходящих — меньше прибавка км (с платой за точку Еревана на большой
+    машине, №68). {'truck', 'name', 'trip' — рейс или None (новый рейс машины), 'eta' — прибытие к магазину} или None."""
+    sel = _selected(ctx, draft.trucks)
+    codes = [t.car_code for t in sel]
+    shares = _shares(draft.trips)
+    over = ctx.overtime_minutes if draft.overtime_ok and ctx.overtime_minutes is not None else None
+    not_before = float(ctx.work_start_min + now_min) if now_min is not None else None
+    options = [*(t for t in draft.trips if t.id != src.id and t.truck in codes and _movable(draft, t, frozen)),
+               *(DraftTrip(draft.next_id, code, [], not_before=not_before) for code in codes)]
+    best: tuple[tuple[float, bool, str, int], DraftTrip, float] | None = None
+    for r in options:
+        if not _can_carry(ctx, sel, r.truck, [*r.stops, cid], routable, shares):
+            continue
+        _, end0, miss0 = _truck_day(ctx, draft.trips, routable, shares, r.truck)
+        trial, dst = _until_move(ctx, draft.trips, routable, cid, src.id, r)
+        got = _shares(trial)
+        tl = _timeline(ctx, [t for t in trial if t.truck == r.truck], routable, got)
+        at = tl[dst.id][2][dst.stops.index(cid)]
+        _, end1, miss1 = _truck_day(ctx, trial, routable, got, r.truck)
+        limit = over if over is not None else _end_limit(ctx, trial, routable, got, r.truck)
+        if (at > _span(ctx, cid)[1] + _EPS or (now_min is not None and at < now_min - _EPS) or miss1 > miss0
+                or end1 > max(limit, end0) + _EPS):
+            continue
+        key = (_closed_km(ctx, dst.stops, routable) - _closed_km(ctx, r.stops, routable)
+               + _yerevan_km(ctx, r.truck, routable[cid]), not r.stops, r.truck, r.id)
+        if best is None or key < best[0]:
+            best = (key, r, at)
+    if best is None:
+        return None
+    _, r, at = best
+    return {'truck': r.truck, 'name': ctx.trucks[r.truck].name, 'trip': r.id if r.stops else None,
+            'eta': _hhmm(ctx.work_start_min + at)}
+
+
+def fit_until(ctx: DayContext, stops: Sequence[Stop], draft: Draft, cid: int, now_min: float | None = None,
+              frozen: Collection[int] | None = None) -> dict[str, Any]:
+    """После «Մինչև ժամը» магазина cid (владелец 08.10; его окно этого дня — уже в ctx): рейс, где магазин опаздывает, если
+    его можно менять (_movable: не закреплён логистом, не загружен, сегодня ещё не грузится — frozen: начатые по плану до
+    правки; не дано — по ctx и now_min), переставляется под окна (_fit_windows) — только если так магазин успевает; рейс,
+    где он и так успевает, не трогается (порядок логиста остаётся); закреплённый — как есть, опоздание видно в плане
+    (window_miss). Ответ: {'late' — магазин опаздывает хоть в одном рейсе, 'reordered' — рейсы с новым порядком, 'kept' —
+    рейсы, где он опаздывает, но их не меняли (закреплены, загружены, уже грузятся), 'split' — опаздывает, а его заказ
+    делится между рейсами (тяжёлый: переносят вручную), 'hint' — машина, которая успела бы (_until_hint; сегодня — не
+    раньше now_min): только если опаздывает рейс, который можно было переставить, и заказ не делится; иначе None}."""
+    routable = {s.customer_id: s for s in stops if s.point is not None}
+    _clean(draft, routable)
+    if frozen is None:
+        frozen = started_trips(ctx, list(routable.values()), draft, now_min) if now_min is not None else set()
+    shares = _shares(draft.trips)
+    reordered, kept = [], []
+    for t in draft.trips:
+        if (t.id, cid) not in _late_of(ctx, draft.trips, routable, shares):
+            continue
+        if not _movable(draft, t, frozen):
+            kept.append(t.id)
+            continue
+        order = _fit_windows(ctx, draft.trips, routable, t)
+        if order is None or order == t.stops:
+            continue
+        was, t.stops = t.stops, order
+        if (t.id, cid) in _late_of(ctx, draft.trips, routable, shares):   # сам магазин так и не успевает — как было
+            t.stops = was
+        else:
+            reordered.append(t.id)
+    late = _late_of(ctx, draft.trips, routable, shares)
+    late_trips = [t for t in draft.trips if (t.id, cid) in late]
+    src = next((t for t in late_trips if t.id not in kept), None)
+    split = bool(late_trips) and shares[cid] > 1
+    hint = _until_hint(ctx, routable, draft, cid, src, frozen, now_min) if src is not None and not split else None
+    return {'late': bool(late_trips), 'reordered': reordered, 'kept': kept, 'split': split, 'hint': hint}
 
 
 # --- Новые заказы дня: взять в сегодняшний развоз (ответ владельца №72) ---

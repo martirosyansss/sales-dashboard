@@ -150,7 +150,8 @@ def test_store_schema_24_rules_roundtrip_and_migration(tmp_path):
     b = st.Store(path).load()
     assert b.solo == frozenset() and b.vehicle_access[101].trucks == ('X',)
     with closing(sqlite3.connect(path)) as conn:
-        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() ==             (str(st.SCHEMA_VERSION),)                                          # 23 → 24 → … → текущая
+        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == \
+            (str(st.SCHEMA_VERSION),)                                          # 23 → 24 → … → текущая
         assert conn.execute('SELECT * FROM customer_vehicle_access').fetchall() == before
     assert 23 in st._MIGRATIONS and st._MIGRATIONS[23] == (st._CUSTOMER_RULE_TABLE,)
 

@@ -11,7 +11,7 @@
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=24">
 <!-- Страница на армянском (ответ владельца №31). Редизайн: тёмная спокойная тема (ответ владельца №51), свои стили поверх routes.css -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=66">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=67">
 {% endblock %}
 
 {% block content %}
@@ -454,7 +454,7 @@
         <p class="dp-dlg-lead" id="dpCondLead"></p>
         <p class="dp-unload-hint dp-cond-load" id="dpCondLoad" role="status"></p>
         <label for="dpCondKind" class="dp-picklabel">Ընդունման ժամ</label>
-        <select id="dpCondKind" class="rt-select" aria-describedby="dpCondTimeHint dpCondErr">
+        <select id="dpCondKind" class="rt-select" aria-describedby="dpCondTimeHint dpCondDayNote dpCondErr">
             <option value="">Առանց սահմանափակման</option>
             <option value="at">Որոշակի ժամի</option>
             <option value="between">Միջակայքում</option>
@@ -467,6 +467,8 @@
             <label id="dpCondTolerance" hidden><span>Թույլատրելի շեղում, ± րոպե</span><input id="dpCondTol" class="rt-input" type="number" min="0" max="120" step="1" inputmode="numeric" value="0" aria-describedby="dpCondErr"></label>
         </div>
         <p class="dp-unload-hint" id="dpCondTimeHint">Խանութում ժամանման և բեռնաթափման սկզբի ժամը։</p>
+        <!-- «Մինչև ժամը» этого дня: в этот день конец окна — он (страница пишет, до скольки) -->
+        <p class="dp-unload-hint dp-cond-daynote" id="dpCondDayNote" hidden></p>
         <label for="dpCondMode" class="dp-picklabel dp-cond-label">Որ մեքենաները կարող են սպասարկել</label>
         <select id="dpCondMode" class="rt-select" aria-describedby="dpCondVehicleHint">
             <option value="">Բոլոր մեքենաները</option>
@@ -486,6 +488,26 @@
         <div class="dp-dlg-btns">
             <button type="button" id="dpCondSave" class="rt-btn rt-btn-primary"><i class="fas fa-check" aria-hidden="true"></i><span>Պահպանել</span></button>
             <button type="button" id="dpCondCancel" class="rt-btn rt-btn-ghost">Չեղարկել</button>
+        </div>
+    </dialog>
+    <!-- «Մինչև ժամը» (владелец 08.10): привезти магазин не позже времени — только в этот день (по умолчанию) или всегда;
+         программа сама переставляет магазины рейса, закреплённый рейс — нет -->
+    <dialog id="dpUntilDlg" class="dp-dlg dp-unload-dlg dp-until-dlg" aria-labelledby="dpUntilTitle" aria-describedby="dpUntilLead dpUntilHint">
+        <h2 class="dp-dlg-t" id="dpUntilTitle">Մինչև ժամը</h2>
+        <p class="dp-dlg-lead" id="dpUntilLead"></p>
+        <label for="dpUntilTime" class="dp-picklabel">Հասցնել մինչև</label>
+        <input id="dpUntilTime" class="rt-input" type="time" step="60" autocomplete="off" aria-describedby="dpUntilErr">
+        <fieldset class="dp-until-opts">
+            <legend class="rt-sr-only">Որ օրերի համար</legend>
+            <label class="dp-crew-day"><input type="radio" name="dpUntilScope" id="dpUntilDay" checked><span id="dpUntilDayT">Միայն այսօր</span></label>
+            <label class="dp-crew-day"><input type="radio" name="dpUntilScope" id="dpUntilAlways"><span>Միշտ</span></label>
+        </fieldset>
+        <p class="dp-unload-hint" id="dpUntilHint" role="status"></p>
+        <div class="rt-ferr" id="dpUntilErr" role="alert"></div>
+        <div class="dp-dlg-btns">
+            <button type="button" id="dpUntilSave" class="rt-btn rt-btn-primary"><i class="fas fa-check" aria-hidden="true"></i><span>Պահպանել</span></button>
+            <button type="button" id="dpUntilClear" class="rt-btn rt-btn-ghost"><i class="fas fa-rotate-left" aria-hidden="true"></i><span>Հանել</span></button>
+            <button type="button" id="dpUntilCancel" class="rt-btn rt-btn-ghost">Չեղարկել</button>
         </div>
     </dialog>
     <!-- Новые заказы дня (ответ владельца №72): список, варианты «как везти сегодня» и «Թողնել վաղվան» -->
@@ -588,5 +610,5 @@
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=1" data-yandex-key="{{ yandex_tiles_key }}"></script>
 <!-- панель «Հարցրու AI-ին» — до страницы: init подключает её (RoutesDispatchAI.attach) -->
 <script src="{{ url_for('static', filename='js/routes_dispatch_ai.js') }}?v=3"></script>
-<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=107"></script>
+<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=108"></script>
 {% endblock %}
