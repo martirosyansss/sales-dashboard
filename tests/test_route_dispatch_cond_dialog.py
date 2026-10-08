@@ -102,3 +102,40 @@ def test_dialog_js_review_fixes():
     assert "$('dpCondTol').validity.badInput" in read and 'Թույլատրելի շեղումը՝ 0-ից մինչև 120 րոպե։' in read
     assert "e.key === 'Enter' && e.target instanceof HTMLInputElement" in js
     assert "[': не удалось сохранить водителя машины', '" in js
+
+
+def test_add_dialog_rule_button_opens_conditions_over_it():
+    """Владелец 08.10: «Փոխել կանոնը» у запрещённого магазина в «Ավելացնել խանութներ» — не ссылка в настройки, а окно
+    условий поверх окна добавления; после сохранения списки того же рейса — заново по новому правилу."""
+    js = _js()
+    assert '/routes/settings?customer=' not in js
+    reason = js[js.index('function addBlockReason('):js.index('function openAddStops(')]
+    assert "const link = { cond: true, label: 'Փոխել կանոնը' }" in reason and 'href' not in reason
+    render = js[js.index('function renderAddList('):js.index('function addSummary(')]
+    i = render.index('c.why.link.cond')
+    block = render[i:i + 700]
+    assert "document.createElement('button')" in block and "ln.type = 'button'" in block
+    assert "ln.className = 'rt-linkbtn'" in block and "ln.setAttribute('aria-label'" in block
+    assert "ln.addEventListener('click', () => openCond(s))" in block
+    assert 'ln.textContent = c.why.link.label' in block and '.innerHTML' not in render   # данные ERP — textContent
+    css = (ROOT / 'static' / 'css' / 'routes_dispatch.css').read_text(encoding='utf-8')
+    assert '.dp-add-why .rt-linkbtn' in css and '.dp-add-why a ' not in css
+    # окно добавления не держит state.busy — openCond поверх него не блокируется
+    open_add = js[js.index('function openAddStops('):js.index('function refreshAddStops(')]
+    assert 'state.busy = true' not in open_add and 'state.busy = true' not in render
+
+
+def test_add_dialog_refreshes_after_conditions_saved():
+    js = _js()
+    save = _function(js, 'saveCond')
+    assert save.index('await reloadQuiet()') < save.index('refreshAddStops(stop.customer_id)')
+    assert "if ($('dpAddDlg').open) $('dpAddErr').textContent = e.message;" in save
+    fn = js[js.index('function refreshAddStops('):js.index('function renderAddList(')]
+    assert "if (!a || !$('dpAddDlg').open) return;" in fn
+    assert "if (!tr) { $('dpAddDlg').close(); return; }" in fn                 # рейса больше нет — окно закрыть
+    assert 'addCandidates(t, tr)' in fn and 'renderAddList()' in fn
+    assert 'picked: new Set([...a.picked].filter(id => ok.has(id)))' in fn    # отмеченные — только ещё доступные
+    assert "$('dpAddFind').value" not in fn                                   # поиск остаётся
+    # подпись окна — из текущих списков (после обновления тоже)
+    render = js[js.index('function renderAddList('):js.index('function addSummary(')]
+    assert "$('dpAddLead').textContent = (a.list.length" in render

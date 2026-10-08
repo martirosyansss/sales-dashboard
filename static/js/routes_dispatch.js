@@ -1981,7 +1981,13 @@
         }
         $('dpCondDlg').close();
         toast('«' + (stop.name || stop.code) + '»՝ առաքման պայմանները պահպանված են բոլոր օրերի համար։' + (state.data.plan ? ' ' + UNLOAD_REBUILD : ''));
-        try { await reloadQuiet(); } catch (e) { showActionError(e); }   // плашки допуска, окна и центра у точек
+        try {
+            await reloadQuiet();                    // плашки допуска, окна и центра у точек
+            refreshAddStops(stop.customer_id);      // открыто «Ավելացնել խանութներ» — его списки по новому правилу
+        } catch (e) {
+            showActionError(e);
+            if ($('dpAddDlg').open) $('dpAddErr').textContent = e.message;   // ошибка под страницей не видна за окном
+        }
     }
 
     // ---------- Заказы прошлых дней и исключённые ----------
@@ -2939,11 +2945,12 @@
         blocked.sort(order);
         return { list, blocked };
     }
-    // Почему магазин нельзя добавить в рейс этой машины — текст для оператора и ссылка, где правило поменять
+    // Почему магазин нельзя добавить в рейс этой машины — текст для оператора и кнопка «Փոխել կանոնը»: окно условий
+    // магазина поверх этого окна (владелец 08.10 — не уходя со страницы)
     function addBlockReason(s, code) {
         const rule = s.vehicle_access;
         if (!vehicleAllowed(s, code)) {
-            const link = { href: '/routes/settings?customer=' + s.customer_id + '#rsCustomerSettings', label: 'Փոխել կանոնը' };
+            const link = { cond: true, label: 'Փոխել կանոնը' };
             if (rule.mode === 'allow' && !rule.trucks.length) return { text: 'Ոչ մի մեքենա թույլատրված չէ այս խանութի համար', link };
             if (rule.mode === 'allow') return { text: 'Այս խանութը տանում են միայն՝ ' + rule.trucks.map(c => truckLabel(truckBy(c))).join(', '), link };
             return { text: '«' + truckLabel(truckBy(code)) + '»-ին արգելված է այս խանութը (' + vehicleText(rule) + ')', link };
@@ -2956,17 +2963,36 @@
         const { list, blocked } = addCandidates(t, tr);
         state.addFor = { trip: tr.id, kg: num(tr.kg) || 0, capacity: num(truckBy(t.car_code).capacity_kg), list, blocked, picked: new Set() };
         $('dpAddTitle').textContent = 'Ավելացնել խանութներ՝ ' + truckLabel(t) + ', երթ ' + (i + 1);
-        $('dpAddLead').textContent = (list.length
-            ? 'Նշեք խանութները՝ վերևում «Դեռ երթերում չեն», հետո՝ այլ երթերից, ըստ մոտիկության։ Երթի հերթականությունը կվերահաշվարկվի։'
-            : 'Ավելացնելու խանութ չկա։') + (blocked.length ? ' Ներքևում՝ ինչու որոշները չի կարելի ավելացնել։' : '');
         $('dpAddFind').value = '';
         $('dpAddErr').textContent = '';
         renderAddList();
         $('dpAddDlg').showModal();
         (list.length ? $('dpAddFind') : $('dpAddCancel')).focus();
     }
+    // Условия магазина сохранены поверх «Ավելացնել խանութներ» (saveCond → reloadQuiet): списки того же рейса — заново из
+    // свежих данных; отмеченные остаются, кроме исчезнувших и ставших запрещёнными; поиск — тот же. Фокус — на строку
+    // этого магазина (кнопки «Փոխել կանոնը» после перерисовки нет). Рейса больше нет — окно закрывается, как при 409.
+    function refreshAddStops(cid) {
+        const a = state.addFor;
+        if (!a || !$('dpAddDlg').open) return;
+        const plan = state.data && state.data.plan;
+        const t = plan && plan.trucks.find(x => x.trips.some(o => o.id === a.trip));
+        const tr = t && t.trips.find(o => o.id === a.trip);
+        if (!tr) { $('dpAddDlg').close(); return; }
+        const { list, blocked } = addCandidates(t, tr);
+        const ok = new Set(list.map(c => c.stop.customer_id));
+        Object.assign(a, { kg: num(tr.kg) || 0, capacity: num(truckBy(t.car_code).capacity_kg), list, blocked,
+            picked: new Set([...a.picked].filter(id => ok.has(id))) });
+        renderAddList();
+        const row = $('dpAddList').querySelector('.dp-add-row[data-cid="' + cid + '"]');
+        const el = (row && row.querySelector('input, button')) || $('dpAddFind');
+        if (!$('dpAddDlg').contains(document.activeElement)) el.focus();
+    }
     function renderAddList() {
         const a = state.addFor;
+        $('dpAddLead').textContent = (a.list.length
+            ? 'Նշեք խանութները՝ վերևում «Դեռ երթերում չեն», հետո՝ այլ երթերից, ըստ մոտիկության։ Երթի հերթականությունը կվերահաշվարկվի։'
+            : 'Ավելացնելու խանութ չկա։') + (a.blocked.length ? ' Ներքևում՝ ինչու որոշները չի կարելի ավելացնել։' : '');
         const box = $('dpAddList');
         box.textContent = '';
         const q = $('dpAddFind').value.trim().toLowerCase();
@@ -2986,6 +3012,7 @@
             const s = c.stop;
             const row = document.createElement('label');
             row.className = 'dp-add-row';
+            row.dataset.cid = String(s.customer_id);
             const cb = document.createElement('input');
             cb.type = 'checkbox';
             cb.checked = a.picked.has(s.customer_id);
@@ -3019,6 +3046,7 @@
             const s = c.stop;
             const row = document.createElement('div');
             row.className = 'dp-add-row is-off';
+            row.dataset.cid = String(s.customer_id);
             const ico = document.createElement('i');
             ico.className = 'fas fa-ban';
             ico.setAttribute('aria-hidden', 'true');
@@ -3032,12 +3060,14 @@
             const why = document.createElement('span');
             why.className = 'dp-add-why';
             why.textContent = c.why.text;
-            if (c.why.link) {
-                const ln = document.createElement('a');
-                ln.href = c.why.link.href;
-                ln.target = '_blank';
-                ln.rel = 'noopener';
+            if (c.why.link && c.why.link.cond) {
+                // «Առաքման պայմաններ» — вторым окном поверх этого; Esc/«Չեղարկել» закрывают только его
+                const ln = document.createElement('button');
+                ln.type = 'button';
+                ln.className = 'rt-linkbtn';
                 ln.textContent = c.why.link.label;
+                ln.setAttribute('aria-label', c.why.link.label + '՝ «' + (s.name || s.code) + '»');
+                ln.addEventListener('click', () => openCond(s));
                 why.append(' · ', ln);
             }
             main.append(b, sub, why);

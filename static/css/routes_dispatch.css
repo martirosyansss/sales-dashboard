@@ -1332,7 +1332,8 @@ body.dp-ws-on .rt-secbar .rt-tabs a { padding-top: 3px; padding-bottom: 3px; }
 .dp-add-row.is-off > i { margin-top: 3px; color: var(--rt-fg-mute); text-align: center; }
 .dp-add-row.is-off b, .dp-add-row.is-off .dp-add-kg { color: var(--rt-fg-dim); }
 .dp-add-why { font-size: .8125rem; color: var(--rt-warn); line-height: 1.45; overflow-wrap: anywhere; }
-.dp-add-why a { color: var(--rt-acc); }
+/* «Փոխել կանոնը» — кнопка-ссылка (окно условий поверх), вес текста — как у прежней ссылки */
+.dp-add-why .rt-linkbtn { font-weight: 400; }
 /* владелец 07.10: нажали точку на карте — карточка магазина у точки: заказы и «Հանել երթից» */
 .dp-stoppop .leaflet-popup-content { min-width: 240px; }
 .dp-stopcard .rt-pop-t { padding-right: 18px; }
