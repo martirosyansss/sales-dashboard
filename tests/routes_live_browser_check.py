@@ -631,6 +631,16 @@ def main() -> int:
                 page.locator(f'.lv-item[data-car="{cars[1]}"]').click()
                 page.wait_for_timeout(1200)
                 check('Երկար կանգառ' in page.inner_text('#lvActive'), 'машина 2: активная тревога «долгая стоянка»')
+                # 08.10 «очень чётко покажи остановки вне маршрута»: плашка с минутами на карте, таблица в карточке, кнопка к точке
+                check(page.locator('.leaflet-marker-pane .lv-spin.is-long').count() >= 1,
+                      'машина 2: долгая стоянка не у магазина — красной плашкой с минутами на карте')
+                check(page.is_visible('#lvOffBox') and page.locator('#lvOff tr').count() >= 1
+                      and 'Կանգառներ ոչ խանութում' in page.inner_text('#lvStats'),
+                      'машина 2: «Կանգառներ ոչ խանութում» — таблица в карточке и строка в показателях дня')
+                page.locator('#lvOff .lv-off-go').first.click()
+                page.wait_for_timeout(500)
+                check('Կանգառ ոչ խանութում՝' in page.inner_text('.leaflet-tooltip-pane'),
+                      'машина 2: кнопка строки показывает стоянку на карте')
                 check('Շեղում երթուղուց' in page.inner_text('#lvActive'), 'машина 2: активная тревога «Շեղում երթուղուց»')
                 check('Շեղում երթուղուց' in page.inner_text('#lvProbList'), '«Խնդիրներ հիմա»: отклонение машины 2')
                 check(page.locator('.leaflet-overlay-pane path.lv-l-dev').count() >= 1,

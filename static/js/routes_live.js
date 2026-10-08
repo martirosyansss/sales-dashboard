@@ -768,6 +768,55 @@
             .bindTooltip(tip('Ճանապարհի սկիզբը' + at)).addTo(layer);
     }
 
+    // ---------- стоянки не по плану (владелец 08.10 «очень чётко покажи, где были остановки вне маршрута») ----------
+    // t.stops_off (live.off_stays): ≥ 5 мин вне склада и точек дня. На карте — плашка с минутами поверх всего: янтарная —
+    // короткая, красная — длиннее порога тревоги (long), серая с вилкой — обед; красное кольцо — вне плановой линии
+    // (off_line), пульс — стоит там сейчас. В карточке — таблица «Կանգառներ ոչ խանութում» с кнопкой к точке на карте.
+    const offStops = (t) => (Array.isArray(t.stops_off) ? t.stops_off.filter(s => num(s.lat) !== null && num(s.lon) !== null) : []);
+    const offWhere = (s) => (s.off_line === true ? 'երթուղուց դուրս' : s.off_line === false ? 'պլանային երթուղու վրա' : null);
+    const offText = (s) => ['Կանգառ ոչ խանութում՝ ' + s.minutes + ' րոպե',
+        hm(s.from) + '–' + (s.to ? hm(s.to) : 'հիմա'), offWhere(s), s.lunch ? 'ճաշ' : null,
+        s.long ? 'ահազանգ (երկար կանգառ)' : null].filter(Boolean).join(' · ');
+
+    function offIcon(s) {
+        const cls = 'lv-spin' + (s.lunch && !s.long ? ' is-lunch' : s.long ? ' is-long' : '') + (s.off_line ? ' is-off' : '')
+            + (s.ongoing ? ' is-now' : '');
+        const el = h('span', { class: 'lv-spin-box' }, h('span', { class: cls },
+            icon(s.lunch && !s.long ? 'fa-utensils' : 'fa-square-parking'), h('b', { text: s.minutes + ' ր' })));
+        return L.divIcon({ html: el.outerHTML, className: '', iconSize: [64, 26], iconAnchor: [32, 13] });
+    }
+
+    function drawOffStops(t, layer) {
+        for (const s of offStops(t)) {
+            L.marker([s.lat, s.lon], { icon: offIcon(s), keyboard: false, zIndexOffset: 800, riseOnHover: true })
+                .bindTooltip(tip(offText(s)), { direction: 'top', offset: [0, -12] }).addTo(layer);
+        }
+    }
+
+    // карточка: таблица стоянок не по плану, строка — кнопка к точке на карте
+    function renderOffStops(t) {
+        const list = offStops(t);
+        $('lvOffBox').hidden = !Array.isArray(t.stops_off);
+        $('lvOffNote').textContent = list.length
+            ? list.length + ' կանգառ · ընդամենը ' + dur(list.reduce((m, s) => m + (num(s.minutes) || 0), 0))
+                + (list.some(s => s.off_line) ? ' · երթուղուց դուրս՝ ' + list.filter(s => s.off_line).length : '')
+                + ' · 5 րոպեից երկար, պահեստից և այս օրվա խանութներից դուրս'
+            : 'Խանութներից և պահեստից դուրս 5 րոպեից երկար կանգառ չի եղել';
+        const cell = (text, cls) => h('td', { class: cls || null, text });
+        $('lvOff').replaceChildren(...list.map((s, i) => {
+            const go = h('button', { type: 'button', class: 'lv-linkbtn lv-off-go', title: 'Ցույց տալ քարտեզում',
+                'aria-label': 'Կանգառ ' + (i + 1) + '՝ ցույց տալ քարտեզում' }, icon('fa-location-dot'));
+            go.addEventListener('click', () => showPoint(s.lat, s.lon, offText(s)));
+            const note = [s.ongoing ? 'հիմա այնտեղ է' : null, s.lunch ? 'ճաշ' : null, s.long ? 'ահազանգ' : null].filter(Boolean).join(' · ');
+            return h('tr', null,
+                cell(String(i + 1), 'is-num'), cell(hm(s.from) + '–' + (s.to ? hm(s.to) : 'հիմա'), 'lv-nowrap'),
+                cell(String(s.minutes), 'is-num' + (s.long ? ' is-bad' : '')),
+                h('td', null, h('span', { class: s.off_line ? 'is-bad' : s.off_line === false ? null : 'is-mute', text: offWhere(s) || '—' }),
+                    note ? h('small', { text: note }) : null),
+                h('td', null, go));
+        }));
+    }
+
     // плановая линия (что водитель получил): широкий полупрозрачный коридор по рейсам — под фактическим путём
     function drawPlan(t, layer) {
         const r = t.route;
@@ -831,8 +880,10 @@
                 : L.circleMarker([s.lat, s.lon], { radius: 7, color: lt ? '#ff6b79' : '#0e1116', weight: lt ? 3 : 2, fillColor: color, fillOpacity: 1 }))
                 .bindTooltip(tip((s.plan_no ? '№' + s.plan_no + ' · ' : '') + text)).addTo(state.layer);
         }
+        drawOffStops(t, state.layer);
         for (const a of t.alerts_log || []) {
             if (num(a.lat) === null || num(a.lon) === null) continue;
+            if (a.kind === 'stop' && Array.isArray(t.stops_off)) continue;   // долгая стоянка — значком стоянки (drawOffStops)
             L.circleMarker([a.lat, a.lon], { radius: 5, color: '#ff6b79', weight: 2, fill: false })
                 .bindTooltip(tip((ALERT[a.kind] || ['', a.kind])[1] + ' · ' + hm(a.from))).addTo(state.layer);
         }
@@ -1000,6 +1051,7 @@
             return h('li', { class: cls || null }, icon((ALERT[a.kind] || ['fa-bell'])[0]), h('span', { text }), h('span', { class: 'when', text: when }), act);
         }) : [h('li', null, h('span'), h('span', { text: 'Ահազանգ չկա' }), h('span'))]));
         renderDetour(t);
+        renderOffStops(t);
     }
 
     // ---------- показатели дня, плановая линия, отклонение (08.10) ----------
@@ -1174,6 +1226,13 @@
             num(st.avg_kmh) !== null ? null : 'is-mute'));
         rows.push(field('Ընթացքում / կանգնած', num(st.moving_min) !== null ? dur(st.moving_min) + ' / ' + dur(st.stopped_min) : NO_DATA,
             st.nodata_min ? 'առանց տվյալի՝ ' + dur(st.nodata_min) : null, num(st.moving_min) !== null ? null : 'is-mute'));
+        const off = offStops(t);
+        if (Array.isArray(t.stops_off)) {
+            rows.push(field('Կանգառներ ոչ խանութում', off.length ? off.length + ' · ' + dur(off.reduce((m, s) => m + (num(s.minutes) || 0), 0)) : 'չկա',
+                off.length ? [off.some(s => s.off_line) ? 'երթուղուց դուրս՝ ' + off.filter(s => s.off_line).length : null,
+                    off.some(s => s.long) ? 'երկար (ահազանգ)՝ ' + off.filter(s => s.long).length : null].filter(Boolean).join(' · ') || null : null,
+                off.some(s => s.long || s.off_line) ? 'is-warn' : 'is-ok'));
+        }
         const ov = st.overspeed;
         rows.push(field('Արագության գերազանցում', ov ? (ov.count ? ov.count + ' անգամ · ' + dur(ov.minutes) : 'չկա') : NO_DATA,
             th ? 'ավելի, քան ' + fmt(th.speed_kmh) + ' կմ/ժ՝ ' + fmt(th.speed_sec) + ' վ-ից երկար' : null,
@@ -1239,6 +1298,7 @@
                 .bindTooltip(tip('Պահեստ')).addTo(state.layer);
         }
         drawPlan(t, state.layer);   // плановая линия — и при воспроизведении (сравнить путь с планом)
+        drawOffStops(t, state.layer);   // стоянки не по плану — и при воспроизведении
         L.polyline(t.track, { color: LN.track, weight: LINE_W, opacity: 0.3, interactive: false }).addTo(state.layer);   // весь день — тускло
         rp.prefix = cased([], LN.track, 'lv-l-track', state.layer, { interactive: false });   // пройденное — с обводкой
         setArrows(t.track);

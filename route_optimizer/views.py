@@ -4957,7 +4957,7 @@ def api_live() -> Any:
         return _bad_request({'_': '«Առաքիչ» բաժինը միացված չէ — տվյալներ չկան'})
     ctx, now, _, cards = _live_cards(state, day)
     return jsonify({**_live_head(ctx, day, now),
-                    'trucks': [{k: v for k, v in card.items() if k != 'alerts_log'} for card in cards.values()]})
+                    'trucks': [{k: v for k, v in card.items() if k not in ('alerts_log', 'stops_off')} for card in cards.values()]})
 
 
 @bp.get('/api/routes/live/truck')
