@@ -136,6 +136,11 @@ class FactsSource:
                         'delivered_at': delivery.get('at') if delivery is not None else None})
         return {'track': track, 'stops': out}
 
+    def reorders(self, car_code: str, day: str) -> list[dict[str, Any]]:
+        """Смены порядка водителем машины за день (№93, Store.reorders: at, trip, order, moved, reason) по моменту —
+        порядок объезда «Վարորդներ» (route_optimizer.actuals.reordered_changes)."""
+        return self.store.reorders(day, car_code) if self._exists() else []
+
     def refuels(self, since: str = '') -> list[dict[str, Any]]:
         """Заправки (Store.refuels; since — с этого дня, пусто — все): с флагами, признаком superseded и моментом
         исходной заправки (eff_*)."""

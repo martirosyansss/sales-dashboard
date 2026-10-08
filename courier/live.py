@@ -143,11 +143,14 @@ class LiveSource:
         - returns — возвраты товара машины за день (событие return, №76 этап 2): [{at ISO, kg или None — вес неизвестен,
           stop_id}] по возрастанию момента;
         - refuels — заправки машины за последние REFUEL_DAYS дней (Store.refuels: id, car_code, date, at_utc, payload,
-          superseded, eff_at_utc) — сверка расчёта топлива с фактом.
+          superseded, eff_at_utc) — сверка расчёта топлива с фактом;
+        - reorders — смены порядка водителем «Գնալ առաջինը» (№93, Store.reorders: at, trip, order, moved, reason) по
+          моменту — эталон порядка объезда карты.
         Машины — с событиями или точками /day на этот день."""
         from .views import _moment, day_model   # views импортирует facts; здесь — только в запросе (без цикла при импорте)
         events = self.store.events_for_day(day, skip_track=True)   # heartbeat-ы трека правилу дня не нужны
         refuels = self.store.refuels((date.fromisoformat(day) - timedelta(days=REFUEL_DAYS)).isoformat())
+        moves = self.store.reorders(day)
         beats = self.store.heartbeats_for_day(day)
         model = day_model(day, events)
         inputs_by_id = {e['id']: e for e in model.inputs}
@@ -178,7 +181,8 @@ class LiveSource:
             out[car] = {'stops': stops, 'track': self.store.track(car, day), 'drivers': [], 'last_contact': None,
                         'contacts': [], 'device': None, 'devices': [], 'closed_at': None,
                         'returns': [],
-                        'refuels': [r for r in refuels if r['car_code'] == car]}
+                        'refuels': [r for r in refuels if r['car_code'] == car],
+                        'reorders': [r for r in moves if r['car_code'] == car]}
         for e in events:   # возвраты: вес — по строкам точки возврата, нет — по любой точке машины (_return_kg)
             if e['type'] == 'return' and e['car_code'] in out and e['id'] in inputs_by_id:
                 kg = _return_kg(e['payload'], model.data.get(e['stop_id']), units[e['car_code']])

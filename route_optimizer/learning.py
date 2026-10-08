@@ -1436,6 +1436,11 @@ class FleetFacts(Protocol):
         payload, flags, superseded."""
         ...
 
+    def reorders(self, car_code: str, day: str) -> list[dict[str, Any]]:
+        """Смены порядка водителем за день (№93, событие APK reorder): [{at, trip, order, moved, reason}] по моменту.
+        Необязателен: у источника без него читатели («Վարորդներ») считают, что смен не было."""
+        ...
+
 
 def track_fixes(track: Iterable[Sequence[Any]]) -> list[ac.TrackFix]:
     """(at_ms, lat, lon, acc, spd?) → actuals.TrackFix (момент — Ереван; скорость терминала — если прислана)."""

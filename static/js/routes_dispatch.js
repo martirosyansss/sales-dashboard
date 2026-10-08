@@ -2080,7 +2080,9 @@
         const what = name + '՝ ' + (time === null ? (scope === 'day' ? 'այս օրվա ժամը հանված է' : 'մշտական ժամը հանված է')
             : 'մինչև ' + time + ' · ' + (scope === 'day' ? untilDayWord() : 'միշտ')) + '։ ';
         if (!u.late) {
-            toast(what + (Array.isArray(u.reordered) && u.reordered.length ? 'Երթի հերթականությունը փոխվեց՝ մեքենան հասցնում է։' : 'Մեքենան հասցնում է։'));
+            // №93: в срок, но позже срока с запасом (until_buffer_min) — «քիչ ժամանակ կա»
+            toast(what + (Array.isArray(u.reordered) && u.reordered.length ? 'Երթի հերթականությունը փոխվեց՝ մեքենան հասցնում է' : 'Մեքենան հասցնում է')
+                + (u.tight ? ', բայց քիչ ժամանակ կա (պաշարից ուշ)։' : '։'));
             return;
         }
         const h = isObj(u.hint) ? u.hint : null;
@@ -3281,9 +3283,12 @@
             tags.appendChild(bd);
         };
         const win = windowText(stop.window);
-        // «Մինչև ժամը» только этого дня (владелец 08.10) — своя плашка вместо постоянного окна
-        if (win && isMin(stop.until_day)) tag(stop.window_miss ? 'b-danger' : 'dp-b-until', (stop.window_miss ? 'չի հասցնում՝ ' : '') + win + ' · ' + untilDayWord(), 'fa-clock');
-        else if (win) tag(stop.window_miss ? 'b-danger' : 'b-gps', (stop.window_miss ? 'չի հասցնում՝ ' : 'ընդունում է՝ ') + win, 'fa-door-open');
+        // «Մինչև ժամը» только этого дня (владелец 08.10) — своя плашка вместо постоянного окна; №93: в срок, но позже срока с
+        // запасом (window_tight) — жёлтая «քիչ ժամանակ կա», мимо срока — красная «չի հասցնում»
+        const winCls = (calm) => (stop.window_miss ? 'b-danger' : stop.window_tight ? 'b-warn' : calm);
+        const winWord = (calm) => (stop.window_miss ? 'չի հասցնում՝ ' : stop.window_tight ? 'քիչ ժամանակ կա՝ ' : calm);
+        if (win && isMin(stop.until_day)) tag(winCls('dp-b-until'), winWord('') + win + ' · ' + untilDayWord(), 'fa-clock');
+        else if (win) tag(winCls('b-gps'), winWord('ընդունում է՝ ') + win, 'fa-door-open');
         // своё время у магазина (№50) — только у магазинов, где оно задано; у остальных — общая норма
         const own = ownUnload(stop);
         if (own !== null) {

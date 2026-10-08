@@ -24,11 +24,18 @@
   своей таре (товар 200 «19լ» с тарой 202 — среди подарков сентября). У подарка, который акция ERP воспроизводит точно,
   — `gift_rule` {base_product_ids, per, qty} (erp_day.gift_rules): терминал пересчитывает подарок по доставленному
   (ответ владельца №90 «APK сам пересчитывает»); нет правила — подарок ручной.
+- срок магазина у водителя (ответ владельца №93, контракт §12): у точки `until` / `until_from` — конец и начало окна
+  приёма дня («HH:MM» или null; в version — точка); `trips` — рейсы машины по плану с матрицей для пересчёта порядка на
+  терминале офлайн (trips_json, _matrix: склад и точки рейса, секунды и метры по дорожной модели «Развоза», время у
+  магазина; нет модели — matrix null), `until_buffer_min` — запас до срока настроек «Развоза». trips и until_buffer_min
+  в version не входят (не точки).
 """
 from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import math
 import threading
 import time
 from dataclasses import dataclass
@@ -45,10 +52,13 @@ from .order import order_customers
 from .routes_link import RoutesView, distance_fn, invoice_owner, orders_window, pick_orders
 from .store import MarkSetting, Store
 
+logger = logging.getLogger(__name__)
+
 GIFT_LABEL = 'նվեր'   # к названию строки-подарка (№90): «Գառնի կրիստալլայն 6լ (նվեր)»
 
 DAY_TTL_SECONDS = 60
 DAY_CACHE_MAX = 64
+MATRIX_MAX_STOPS = 40   # точек с координатой в рейсе больше — матрицы нет (ответ /day не раздувается, №93)
 
 DEMO_CAR = 'TEST'
 DEMO_DAY = date(2000, 1, 1)
@@ -103,9 +113,19 @@ def _line_json(line: Line, product: Product | None, gtins: tuple[str, ...], mark
     return out
 
 
+def _hm(minutes: float) -> str | None:
+    """Минуты от полуночи → «HH:MM»; края окна нет (±бесконечность) — None."""
+    if not math.isfinite(minutes):
+        return None
+    m = int(round(minutes))
+    return f'{m // 60 % 24:02d}:{m % 60:02d}'
+
+
 def build_stops(data: DayData, order: list[int], points: Mapping[int, Point | None],
-                marks: Mapping[int, MarkSetting]) -> list[dict[str, Any]]:
-    """Точки в порядке объезда (клиенты order; у клиента — накладные по номеру), seq с 1."""
+                marks: Mapping[int, MarkSetting],
+                windows: Mapping[int, tuple[float, float]] | None = None) -> list[dict[str, Any]]:
+    """Точки в порядке объезда (клиенты order; у клиента — накладные по номеру), seq с 1. windows — окна приёма дня
+    (клиент → (не раньше, не позже), минуты): срок магазина until и начало окна until_from (№93), нет — null."""
     by_customer: dict[int, list[Doc]] = {}
     for d in data.docs:
         by_customer.setdefault(d.customer_id, []).append(d)
@@ -126,6 +146,9 @@ def build_stops(data: DayData, order: list[int], points: Mapping[int, Point | No
                              'phone': info.phone, 'tax_id': info.tax_id},
                 'lat': round(point[0], 6) if point else None,
                 'lon': round(point[1], 6) if point else None,
+                # срок магазина на этот день (№93, контракт §12): конец окна приёма дня и его начало
+                'until': _hm((windows or {}).get(cid, (-math.inf, math.inf))[1]),
+                'until_from': _hm((windows or {}).get(cid, (-math.inf, math.inf))[0]),
                 'agent_name': data.agents.get(doc.agent_id, ''),
                 'pay_type': doc.pay_type or None,
                 'collect': collect_for(doc.pay_type),
@@ -144,6 +167,71 @@ def build_stops(data: DayData, order: list[int], points: Mapping[int, Point | No
     return stops
 
 
+def trips_json(stops: list[dict[str, Any]], view: RoutesView, car_code: str) -> list[dict[str, Any]]:
+    """Рейсы машины для пересчёта порядка на терминале (№93, контракт §12): точка — в первом рейсе выпущенного плана, где
+    есть её магазин (как карта машин, route_optimizer.live.trip_of); вне плана и без плана — рейс 1; номера — рейсы машины
+    в плане с 1, рейс без точек /day не выдаётся. Матрица — _matrix; дорожная модель — одна на машину (view.road), её сбой
+    — matrix null у всех рейсов (терминал не пересчитывает порядок)."""
+    plan = [cids for truck, cids in view.trips if truck == car_code] if view.released else []
+    first: dict[int, int] = {}
+    for k, cids in enumerate(plan):
+        for c in cids:
+            first.setdefault(c, k)
+    by_trip: dict[int, list[dict[str, Any]]] = {}
+    for s in stops:
+        by_trip.setdefault(first.get(s['customer']['id'], 0), []).append(s)
+    points = {s['customer']['id']: (s['lat'], s['lon']) for s in stops if s['lat'] is not None and s['lon'] is not None}
+    road = None
+    if view.road is not None and view.depot is not None and points:
+        try:
+            road = view.road(points)
+        except Exception:   # матрица — дополнение: /day без неё работает (APK не пересчитывает порядок)
+            logger.warning('[Courier] Дорожная модель рейсов машины %s не собрана — матрицы нет', car_code, exc_info=True)
+    departs = view.departs.get(car_code, ())
+    return [{'trip': k + 1, 'stop_ids': [s['stop_id'] for s in xs],
+             'matrix': _matrix(xs, view.depot, road, departs[k] if k < len(departs) else None, view.work_start_min)}
+            for k, xs in sorted(by_trip.items())]
+
+
+def _matrix(stops: list[dict[str, Any]], depot: Point | None, road: Any, depart: float | None,
+            work_start: float) -> dict[str, Any] | None:
+    """Матрица рейса (№93): узлы — склад и точки рейса с координатой по seq; направленные секунды и метры участков по
+    дорожной модели «Развоза» (live.Road.drive: дороги, нет пары — по прямой × извилистость, source model) на плановый
+    выезд рейса (нет — начало дня машины); время у точки — разгрузка магазина по норме плана (Road.unload: введённое или
+    выученное время магазина, иначе норма на точку и тонну) на вес всех его точек рейса — у первой его точки, у остальных
+    0. Модели нет, точек нет или больше MATRIX_MAX_STOPS, сбой расчёта — None."""
+    nodes = [s for s in stops if s['lat'] is not None and s['lon'] is not None]
+    if road is None or depot is None or road.unload is None or not nodes or len(nodes) > MATRIX_MAX_STOPS:
+        return None
+    minute = depart if depart is not None else work_start
+    pts = [depot, *((s['lat'], s['lon']) for s in nodes)]
+    kg: dict[int, float] = {}
+    for s in nodes:
+        kg[s['customer']['id']] = kg.get(s['customer']['id'], 0.0) + float(s.get('weight_kg') or 0.0)
+    durations, distances, by_road = [], [], True
+    try:
+        for a in pts:
+            row_s, row_m = [], []
+            for b in pts:
+                km, minutes, ok = (0.0, 0.0, True) if a == b else road.drive(a, b, minute)
+                by_road = by_road and ok
+                row_s.append(round(minutes * 60))
+                row_m.append(round(km * 1000))
+            durations.append(row_s)
+            distances.append(row_m)
+        service, seen = [0], set()
+        for s, p in zip(nodes, pts[1:]):
+            cid = s['customer']['id']
+            service.append(0 if cid in seen else round(road.unload(p, kg[cid]) * 60))
+            seen.add(cid)
+    except Exception:   # матрица — дополнение: сбой дорог не роняет /day
+        logger.warning('[Courier] Матрица рейса не посчитана', exc_info=True)
+        return None
+    return {'nodes': ['depot', *(s['stop_id'] for s in nodes)], 'durations_s': durations, 'distances_m': distances,
+            'service_s': service, 'depart': _hm(depart) if depart is not None else None,
+            'source': 'road' if by_road else 'model'}
+
+
 def stops_version(stops: list[dict[str, Any]]) -> str:
     raw = json.dumps(stops, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
     return hashlib.sha1(raw.encode('utf-8')).hexdigest()
@@ -154,7 +242,7 @@ def day_payload(data: DayData, view: RoutesView, store: Store, loaded_at: dateti
     dist = distance_fn(view, [p for p in points.values() if p is not None] + ([view.depot] if view.depot else []))
     # №80: порядок плана — только выпущенного (до утверждения — как без плана)
     order, source = order_customers(points, view.depot, view.car_customers(data.car_code) if view.released else [], dist)
-    stops = build_stops(data, order, points, store.mark_settings())
+    stops = build_stops(data, order, points, store.mark_settings(), view.windows)
     tare_types = [{'tare_id': f'erp:{tid}', 'name': name} for tid, name in sorted(data.tare_names.items())]
     tare_types += [{'tare_id': f'custom:{t["id"]}', 'name': t['name']} for t in store.tare_custom()]
     return {
@@ -169,6 +257,9 @@ def day_payload(data: DayData, view: RoutesView, store: Store, loaded_at: dateti
         'refuse_reasons': [{'id': r['id'], 'text': r['text']} for r in store.reasons('refuse')],
         'return_reasons': [{'id': r['id'], 'text': r['text']} for r in store.reasons('return')],
         'plan': 'approved' if view.released else 'pending',   # №80: план дня ещё не утверждён — точек из плана нет
+        # №93 (контракт §12): рейсы с матрицей для «Գնալ առաջինը» офлайн и запас до срока — добавочные поля
+        'trips': trips_json(stops, view, data.car_code),
+        'until_buffer_min': view.until_buffer_min,
     }
 
 

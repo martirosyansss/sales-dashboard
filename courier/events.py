@@ -52,6 +52,9 @@
   learning.REFUEL_KM_PER_DAY км за сутки); заправка принимается. Флаг ставится один раз при приёме и потом не меняется — офис и
   обучение пересчитывают правило сами по всем действующим заправкам машины (опоздавшее событие или исправление меняют
   их вывод, а не сохранённый флаг);
+- `reorder` (v1.8 §12, ответ владельца №93, без stop_id): смена порядка рейса водителем — номер рейса, оставшиеся точки в
+  новом порядке (первая — нажатая «Գնալ առաջինը»), причина; «срок под риском» у точки без срока — `driver` с флагом
+  `no_deadline` (_reorder). Действующий порядок рейса — последний reorder машины, дня и рейса по `at` (читатели);
 - `helper_id` (v1.4 §8, необязательное поле события): второй человек в машине. Кто был помощником, решает терминал в
   момент события; сервер только проверяет подтверждение PIN на этом терминале (_helper). Не подтверждён — событие
   принимается без помощника с флагом `helper_unconfirmed`. Деньги, сканы и их отмена — по-прежнему по водителю сессии.
@@ -67,6 +70,7 @@ from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time, timedelta
 from typing import Any, Iterable, Mapping, Sequence
 
+from route_optimizer.actuals import REORDER_REASONS
 from route_optimizer.geo import is_valid_point
 from route_optimizer.learning import REFUEL_WINDOW_DAYS, REFUEL_WINDOW_MAX, odometer_plausible
 
@@ -81,8 +85,8 @@ SQLITE_INT_MAX = 2 ** 63 - 1   # helper_id больше — не id челове
 MAX_PAYLOAD_BYTES = 20_000
 MAX_TRACK_PAYLOAD_BYTES = 40_000   # track: 100 точек с полной точностью double ≈ 19 КБ — запас вдвое (§7 п. 1)
 EVENT_TYPES = ('delivery', 'payment', 'tare', 'return', 'scan', 'scan_cancel', 'unreadable', 'arrived', 'day_closed',
-               'geo_suggest', 'track', 'refuel')
-STOPLESS_TYPES = ('day_closed', 'scan_cancel', 'track', 'refuel')   # stop_id не обязателен
+               'geo_suggest', 'track', 'refuel', 'reorder')
+STOPLESS_TYPES = ('day_closed', 'scan_cancel', 'track', 'refuel', 'reorder')   # stop_id не обязателен
 SUPERSEDABLE = ('delivery', 'tare', 'refuel')   # `supersedes` — исправление прежнего события того же типа
 MONEY_MAX = 1e9
 QTY_MAX = 1e6
@@ -104,6 +108,8 @@ DEVICE_GPS = ('on', 'off', 'no_permission')    # track.device.gps (№76)
 DEVICE_NET = ('wifi', 'cell', 'none')           # track.device.net
 DEVICE_EXIT = frozenset({'closed', 'shutdown'})  # track.device.exit (APK 2.2.5): закрыто смахиванием / телефон выключается
 DEVICE_APP_RE = re.compile(r'^[0-9A-Za-z.+-]{1,20}$')   # track.device.app — версия APK («2.2.0»)
+REORDER_TRIP_MAX = 50       # reorder (v1.8 §12): номер рейса машины за день — 1…50
+REORDER_ORDER_MAX = 200     # …и точек в новом порядке — не больше, чем в пачке событий
 REFUEL_MAX_LITERS = 400.0
 REFUEL_MAX_ODOMETER = 2_000_000
 
@@ -468,6 +474,40 @@ def _arrived(p: Mapping[str, Any]) -> None:
         raise Reject('accuracy՝ սխալ արժեք')
 
 
+def _stop_id(v: Any) -> str | None:
+    """stop_id из payload: «S:»/«O:» + uuid (верхний регистр, как stop_id события) или None — не точка."""
+    return v[:2] + v[2:].upper() if isinstance(v, str) and STOP_RE.match(v) else None
+
+
+def _reorder(tx: EventTx, p: Mapping[str, Any], day: str, car_code: str) -> tuple[dict[str, Any], list[str]]:
+    """Смена порядка рейса водителем «Գնալ առաջինը» (контракт v1.8 §12, ответ владельца №93): trip — номер рейса /day
+    (1…REORDER_TRIP_MAX), order — оставшиеся точки рейса в новом порядке (1…REORDER_ORDER_MAX разных stop_id), первая —
+    moved; reason — 'until' (у moved срок под риском) | 'driver'. 'until', а у moved в /day (действующая версия точки)
+    срока нет или точка неизвестна — хранится как 'driver' (reason_sent 'until', флаг no_deadline): без срока перенос —
+    нарушение порядка (ответ владельца). → (сохраняемый payload, флаги)."""
+    trip = p.get('trip')
+    if not isinstance(trip, int) or isinstance(trip, bool) or not 1 <= trip <= REORDER_TRIP_MAX:
+        raise Reject(f'trip՝ ամբողջ թիվ 1-ից {REORDER_TRIP_MAX}')
+    raw = p.get('order')
+    order = [_stop_id(x) for x in raw] if isinstance(raw, list) else []
+    if not 1 <= len(order) <= REORDER_ORDER_MAX or None in order:
+        raise Reject(f'order՝ 1-ից {REORDER_ORDER_MAX} կետ (stop_id)')
+    if len(set(order)) != len(order):
+        raise Reject('order՝ կետը կրկնվում է')
+    if _stop_id(p.get('moved')) != order[0]:
+        raise Reject('moved՝ պետք է լինի order-ի առաջին կետը')
+    reason = p.get('reason')
+    if reason not in REORDER_REASONS:
+        raise Reject("reason՝ 'until' կամ 'driver'")
+    stored: dict[str, Any] = {'trip': trip, 'order': order, 'moved': order[0], 'reason': reason}
+    if reason == 'until':
+        data = _stop_ctx(tx, order[0], day, car_code)[0].data
+        if not (data or {}).get('until'):
+            stored.update(reason='driver', reason_sent='until')
+            return stored, ['no_deadline']
+    return stored, []
+
+
 def _geo_suggest(p: Mapping[str, Any]) -> None:
     """Предложение водителя «точка неверная — здесь» (контракт v1.2): как arrived, но точка в Армении, точность
     обязательна (0 < accuracy ≤ SUGGEST_MAX_ACCURACY_M), комментарий — до SUGGEST_NOTE_MAX символов."""
@@ -721,6 +761,9 @@ def _check(tx: EventTx, raw: Mapping[str, Any], event_id: str, who: Who, cars: C
         stored = {'points': len(payload['points']), 'kept': len(track), 'dropped': dropped}   # точки — в track_points
         if (device := track_device(payload.get('device'))) is not None:
             stored['device'] = device   # №76: состояние терминала — в событии (без новой таблицы и схемы courier.db)
+    elif etype == 'reorder':
+        stored, more = _reorder(tx, payload, ev['date'], who.car_code)
+        flags += more
     elif etype == 'refuel':
         flags += _refuel(tx, payload, at, who.car_code, supersedes, event_id)
         stored.setdefault('full_tank', True)   # §7 п. 2: по умолчанию «до полного бака»

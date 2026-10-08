@@ -1275,13 +1275,17 @@ def _dispatch_ctx(state: RoutesState, snap: Snapshot, bundle: Bundle, day: date,
     norms, tn, trucks, eff = _with_learned(state, norms, tn, trucks, customers or {}, journal, bundle.unload_min)
     # №78: вне сезона утренней погрузки первые рейсы загружены с вечера; запас в конце дня — горизонт сборки
     tn = replace(tn, preload=not dp.morning_loading(day, s))
+    # №93: срок магазина — с запасом until_buffer_min (настоящие концы окон — until_real)
+    windows, until_real = dp.deadline_windows({cid: w.span() for cid, w in bundle.windows_on(day).items()},
+                                              float(s['until_buffer_min']))
     return dp.DayContext(day, bundle.depot, trucks, norms, tn, h * 60 + m,
                          float(h2 * 60 + m2 - (h * 60 + m)), float(s['min_trip_revenue']),
-                         {cid: w.span() for cid, w in bundle.windows_on(day).items()}, zone,
+                         windows, zone,
                          vehicle_access=bundle.vehicle_access,
                          model=_model_note(s, calib, norms, eff, [p for p in points if p is not None], trucks),
                          end_reserve_min=float(s['truck_end_reserve_min']), solo=bundle.solo,
-                         center_allow=bundle.center_allow, solo_spare_max_pct=float(s['solo_spare_max_pct']))
+                         center_allow=bundle.center_allow, solo_spare_max_pct=float(s['solo_spare_max_pct']),
+                         until_real=until_real)
 
 
 def _model_note(s: Mapping[str, Any], calib: evaluate.Calibration, norms: Any, eff: learning.InEffect,
@@ -2262,7 +2266,9 @@ def _until_edit(state: RoutesState, bundle: Bundle, dd: _DispatchDay,
         mine.pop(cid, None)
     day_until = {**bundle.day_until, dd.day: mine} if mine else {d: v for d, v in bundle.day_until.items() if d != dd.day}
     new = replace(bundle, windows=windows, day_until=day_until)
-    ctx = replace(dd.ctx, windows={c: w.span() for c, w in new.windows_on(dd.day).items()})
+    windows, until_real = dp.deadline_windows({c: w.span() for c, w in new.windows_on(dd.day).items()},
+                                              float(bundle.settings['until_buffer_min']))   # №93: запас до срока
+    ctx = replace(dd.ctx, windows=windows, until_real=until_real)
     draft = dd.draft
     draft.undo = None
     now_min = _today_min(dd)
@@ -4793,6 +4799,26 @@ def _live_wear(state: RoutesState, bundle: Bundle, day: date) -> dict[str, float
     return out
 
 
+def _base_road(s: Mapping[str, Any], calib: Any) -> live.Road:
+    """Запасная модель пути (по прямой × извилистость, скорости зон) — действующие нормы настроек и GPS-калибровки."""
+    norms = evaluate.road_norms(s, calib)
+    return live.Road(norms['detour_factor'][0], norms['speed_city_kmh'][0], norms['speed_region_kmh'][0],
+                     (float(s['city_center_lat']), float(s['city_center_lon'])), float(s['city_radius_km']))
+
+
+def trip_road(state: RoutesState, day: date, customers: Mapping[int, Point]) -> live.Road:
+    """Дорожная модель «Развоза» дня для матрицы рейса терминала «Առաքիչ» (ответ владельца №93, courier.day): та же, что у
+    ETA карты машин (_live_road_build — дороги в объезд малого центра, часовой профиль пробок, выученные поправки, время у
+    магазина №50/№60), по точкам customers (клиент → точка) и складу; собирается сразу, без кэша карты (ответ /day
+    кэширует сам курьерский раздел). Снимка ERP в памяти нет — без дорог (Road.pair None: участки по прямой ×
+    извилистость), время у магазина — нормы и введённое время. Ошибки — наружу (терминал получает matrix null)."""
+    bundle = state.store.load()
+    s = bundle.settings
+    snap = state.snapshots.peek()
+    calib = _calibration(state, snap, s) if snap is not None else None
+    return _live_road_build(state, bundle, snap, calib, day, _base_road(s, calib), customers)
+
+
 def _live_context(state: RoutesState, day: date,
                   fleet: Mapping[str, Mapping[str, Any]] | None = None, lines_now: bool = False) -> _LiveContext:
     """Настройки, нормы машин, план «Развоза» на день и экипажи — для live.car_view (ERP не читается). fleet — факт
@@ -4802,9 +4828,7 @@ def _live_context(state: RoutesState, day: date,
     s = bundle.settings
     snap = state.snapshots.peek()
     calib = _calibration(state, snap, s) if snap is not None else None
-    norms = evaluate.road_norms(s, calib)
-    road = live.Road(norms['detour_factor'][0], norms['speed_city_kmh'][0], norms['speed_region_kmh'][0],
-                     (float(s['city_center_lat']), float(s['city_center_lon'])), float(s['city_radius_km']))
+    road = _base_road(s, calib)
     customers = {x['customer_id']: (x['lat'], x['lon']) for facts in (fleet or {}).values()
                  for x in facts.get('stops') or () if isinstance(x.get('customer_id'), int)
                  and x.get('lat') is not None and x.get('lon') is not None}
@@ -5393,6 +5417,14 @@ def _scorecard_cars(state: RoutesState, bundle: Bundle, day: date, rules: live.R
                 _bounded(state.scorecard_track, (car, ds), ((version, rkey), (speed, offroute)),
                          SCORECARD_CACHE_CAR_DAYS)
         vm = ac.visit_metrics(actual, stops, day)
+        order = (vm.order_changes, vm.ordered) if vm.ordered else None
+        moves = getattr(facts, 'reorders', None)   # №93: смены порядка водителем (FleetFacts.reorders — необязателен)
+        reorders = (ac.reorders_of(moves(car, ds), {s.key: s.customer_id for s in stops})
+                    if moves is not None and vm.ordered else [])
+        if reorders:   # эталон порядка — план со сменами: 'until' без штрафа, 'driver' — за перенесённый (ac.reordered_changes)
+            trips = [[c for c in t.get('stops') or () if isinstance(c, int) and not isinstance(c, bool)]
+                     for t in (draft or {}).get('trips') or () if isinstance(t, dict) and t.get('truck') == car]
+            order = ac.reordered_changes(actual, stops, trips, reorders)
         first, _ = _plan_etas(draft, car, day)
         prediction = (((draft or {}).get('prediction') or {}).get('trucks') or {}).get(car)
         prediction = prediction if isinstance(prediction, Mapping) else None
@@ -5405,8 +5437,7 @@ def _scorecard_cars(state: RoutesState, bundle: Bundle, day: date, rules: live.R
             norm = math.fsum(unload_norm.minutes(o, big, points) for o in obs)
             if obs and norm > 0:
                 unload = (round(math.fsum(o.minutes for o in obs), 1), round(norm, 1))
-        out[car] = sc.CarDay(actual.km_gps, ac.stop_marks(actual, stops, day), first, speed, offroute,
-                             (vm.order_changes, vm.ordered) if vm.ordered else None,
+        out[car] = sc.CarDay(actual.km_gps, ac.stop_marks(actual, stops, day), first, speed, offroute, order,
                              _stop_etas(draft, car, day, stops, actual), unload,
                              _day_span(actual, prediction, day, _yerevan_now().date()))
     return out

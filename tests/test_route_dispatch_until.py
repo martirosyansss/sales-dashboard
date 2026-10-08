@@ -384,7 +384,9 @@ def test_api_day_scope_reorders_saves_only_this_day(client, monkeypatch):
     r = _until(client, body)
     assert r.status_code == 200, r.get_json()
     d = r.get_json()
-    assert d['until'] == {'late': False, 'reordered': [_trip_of(body, 104)['id']], 'kept': [], 'split': False, 'hint': None}
+    # запас до срока (№93, until_buffer_min 15 по умолчанию): у магазина со сроком — и tight
+    assert d['until'] == {'late': False, 'reordered': [_trip_of(body, 104)['id']], 'kept': [], 'split': False, 'hint': None,
+                          'tight': False}
     s = _stop(d, 104)
     assert s['window'] == {'kind': 'before', 't1': 580, 't2': None, 'tol': None} and s['until_day'] == 580
     assert s['eta'] <= '09:40' and s['window_miss'] is False and d['plan']['summary']['window_miss'] == 0
@@ -503,7 +505,8 @@ def test_api_locked_trip_not_reordered_marked_red(client, monkeypatch):
                                                           'trip': trip['id'], 'truck': 'CAR1'}).get_json()
     order = [s['customer_id'] for s in _trip_of(body, 104)['stops']]
     d = _until(client, body).get_json()
-    assert d['until'] == {'late': True, 'reordered': [], 'kept': [trip['id']], 'split': False, 'hint': None}
+    assert d['until'] == {'late': True, 'reordered': [], 'kept': [trip['id']], 'split': False, 'hint': None,
+                          'tight': False}   # запас до срока (№93): ключ у магазина со сроком
     assert [s['customer_id'] for s in _trip_of(d, 104)['stops']] == order
     assert _stop(d, 104)['window_miss'] is True and _bundle(client).day_until == {D1: {104: 580}}   # срок сохранён
 
