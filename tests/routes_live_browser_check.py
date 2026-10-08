@@ -26,6 +26,13 @@
 скорость — кнопка к точке на карте); машина 2 уехала от плана к стоянке — активная тревога «Շեղում երթուղուց», красная
 линия отклонения.
 
+«Профессионально» (владелец 08.10): у машины 1 крюк между магазинами 1 и 2 — «փոքր շեղում» (серым в журнале, тонкой
+линией на карте, не в «Խնդիրներ հիմա»); у машины 2 план — сначала магазин 2, а она обслужила магазин 1 — пропущенный
+магазин (тревога «Խանութներ բաց են թողնված»), и уехала далеко от плана — таблица «Ավելորդ վազք» и оранжевый участок на
+карте; «Բացատրել» в «Խնդիրներ հիմա» открывает диалог (<dialog>, клавиатура: пробел выбирает причину, Escape закрывает и
+возвращает фокус), объяснённая тревога — серой с причиной в журнале и уходит из «Խնդիրներ հիմա», «Չեղարկել» её
+возвращает. Администратор — g.user_role (гейта app_v2 в проверке нет).
+
 Проверяется: список и маркеры всех машин, состояние и счётчик тревог, карточка выбранной машины (поля №76), путь и
 магазины на карте, нет горизонтальной прокрутки на телефоне, опрос раз в 15 с, нет ошибок страницы и консоли (кроме сетевых
 ошибок внешних ресурсов: шрифты, CDN, плитки).
@@ -48,7 +55,7 @@ sys.path.insert(0, str(ROOT))
 os.environ['ROUTES_OSM_PATH'] = str(Path(tempfile.gettempdir()) / 'live-check-no-map.osm.pbf')   # карты дорог нет
 os.environ.pop('COURIER_DEMO', None)
 
-from flask import Flask  # noqa: E402
+from flask import Flask, g  # noqa: E402
 from playwright.sync_api import sync_playwright  # noqa: E402
 from werkzeug.serving import make_server  # noqa: E402
 
@@ -86,6 +93,7 @@ def build_app(tmp: Path) -> Flask:
     route_optimizer.init_app(app, FakeDb(), db_path=str(tmp / 'route_optimizer.db'))
     courier.init_app(app, FakeDb(), db_path=str(tmp / 'courier.db'))
     route_optimizer.attach_live_facts(app, courier.live_facts(app))
+    app.before_request(lambda: setattr(g, 'user_role', 'admin'))   # «Բացատրել» — администратору (гейта app_v2 нет)
     app.extensions['route_optimizer'].roads = StraightRoads()
     from route_optimizer import views
     views.LIVE_ROAD_BACKGROUND = False   # линии плана — сразу (иначе первые 10 с кэша карточек — «по прямой»)
@@ -127,7 +135,8 @@ def seed(app: Flask) -> list[str]:
     for n, car in enumerate(cars):
         mine = [shops[(n * 2 + k) % len(shops)] for k in range(3)]
         cids = [900000 + n * 10 + k for k in range(3)]
-        trips.append(dp.DraftTrip(n + 1, car, cids))
+        # машина 2: по плану сначала магазин 2 — она обслужит магазин 1 раньше (пропущенный магазин, 08.10)
+        trips.append(dp.DraftTrip(n + 1, car, [cids[1], cids[0], cids[2]] if n == 1 else cids))
         start = now - timedelta(hours=2)
         pred[car] = {'trips': [{'depart': (start + timedelta(minutes=10)).strftime('%H:%M'),
                                 'stops': [[c, (start + timedelta(minutes=35 + 30 * k)).strftime('%H:%M')]
@@ -196,7 +205,12 @@ def seed(app: Flask) -> list[str]:
     b, t = path([depot, (s[0]['lat'], s[0]['lon'])], t)
     c, t = park((s[0]['lat'], s[0]['lon']), t, 9)
     t_a = t
-    d, t = path([(s[0]['lat'], s[0]['lon']), (s[1]['lat'], s[1]['lon'])], t, speed=27.0)
+    # крюк в сторону на 900 м между магазинами 1 и 2 (туда — с превышением скорости): отклонение есть, перепробег меньше
+    # 1 км — «փոքր շեղում» (08.10)
+    via = ((s[0]['lat'] + s[1]['lat']) / 2, (s[0]['lon'] + s[1]['lon']) / 2 + 0.9 / (111.32 * math.cos(math.radians(40.18))))
+    d, t = path([(s[0]['lat'], s[0]['lon']), via], t, speed=27.0)
+    d2, t = path([via, (s[1]['lat'], s[1]['lon'])], t)
+    d += d2
     e, t = park((s[1]['lat'], s[1]['lon']), t, 8)
     t_b = t
     mid = ((s[1]['lat'] + s[2]['lat']) / 2, (s[1]['lon'] + s[2]['lon']) / 2)
@@ -212,7 +226,7 @@ def seed(app: Flask) -> list[str]:
     send(cars[0], a + b + c + d + e + f, extra, dev)
     # 2) долгая стоянка не у магазина (идёт сейчас), батарея низкая
     s = stops_of[cars[1]]
-    away = (40.1725, 44.5390)
+    away = (40.1450, 44.5800)   # далеко от плана: перепробег идущего участка больше порога — отклонение-тревога
     a, t = park(depot, t0, 10)
     b, t = path([depot, (s[0]['lat'], s[0]['lon'])], t)
     c, t = park((s[0]['lat'], s[0]['lon']), t, 6)
@@ -329,8 +343,15 @@ def main() -> int:
                              'Միջին արագություն ընթացքում', 'Ընթացքում / կանգնած', 'Արագության գերազանցում'):
                     check(need in stats, f'«Օրվա ցուցանիշներ»: «{need}»')
                 st_text = page.inner_text('#lvStats')
-                check('1 երթ · 3 խանութ' in st_text and 'ճանապարհներով' in st_text and 'չկա' in st_text,
-                      f'план: 1 рейс, 3 магазина, по дорогам; отклонений у машины 1 нет ({st_text[:160]!r})')
+                check('1 երթ · 3 խանութ' in st_text and 'ճանապարհներով' in st_text and 'փոքր՝ 1' in st_text,
+                      f'план: 1 рейс, 3 магазина, по дорогам; у машины 1 — одна «փոքր շեղում» ({st_text[:200]!r})')
+                for need in ('Երթուղուն հետևում', 'Ավելորդ վազք', 'Հերթականություն'):
+                    check(need in stats, f'08.10: «Օրվա ցուցանիշներ» — «{need}»')
+                check('Ըստ պլանի' in st_text and '%' in st_text, '08.10: машина 1 — порядок по плану, следование плану в %')
+                check(page.locator('.leaflet-overlay-pane path[stroke-dasharray="2 6"]').count() == 1,
+                      '08.10: «փոքր շեղում» на карте — тонкой пунктирной линией')
+                check(f'{cars[0]} · Շեղում' not in page.inner_text('#lvProbList'),
+                      '08.10: «փոքր շեղում» машины 1 — не в «Խնդիրներ հիմա»')
                 page.locator('#lvStats .lv-linkbtn').click()
                 page.wait_for_timeout(500)
                 check('Առավելագույն արագություն' in page.inner_text('.leaflet-tooltip-pane'),
@@ -343,6 +364,9 @@ def main() -> int:
                 check(page.locator(dashed).count() == 1, '«Պլանային երթուղի» включён снова')
                 page.locator('#lvLogBox summary').click()
                 check('Արագության գերազանցում' in page.inner_text('#lvLog'), 'журнал: превышение скорости')
+                minor = page.locator('#lvLog li.is-minor')
+                check(minor.count() == 1 and 'Փոքր շեղում' in minor.inner_text() and minor.locator('.lv-explain').count() == 1,
+                      '08.10: журнал — «Փոքր շեղում» серой строкой (и её можно объяснить)')
                 page.screenshot(path=str(SHOTS / 'live_desktop.png'), full_page=False)
                 page.locator(f'.lv-item[data-car="{cars[1]}"]').click()
                 page.wait_for_timeout(1200)
@@ -352,7 +376,47 @@ def main() -> int:
                 check(page.locator('.leaflet-overlay-pane path[stroke="#ff6b79"][stroke-width="6"]').count() >= 1,
                       'машина 2: линия отклонения красным')
                 check('հիմա երթուղուց դուրս է' in page.inner_text('#lvStats'), 'машина 2: «հիմա երթուղուց դուրս է»')
+                check('Խանութներ բաց են թողնված' in page.inner_text('#lvActive'), '08.10: машина 2 — пропущенный магазин')
+                check('Բաց թողնված՝ 1' in page.inner_text('#lvStats'), '08.10: «Հերթականություն» — «Բաց թողնված՝ 1»')
+                check(page.is_visible('#lvDetourBox'), '08.10: машина 2 — «Ավելորդ վազք՝ հատվածներ»')
+                page.locator('#lvDetourBox summary').click()
+                legs = page.inner_text('#lvDetour')
+                check('ընթացքում' in legs and '+' in legs, f'08.10: таблица перепробега — идущий участок ({legs[:120]!r})')
+                check(page.locator('.leaflet-overlay-pane path[stroke="#ffb547"]').count() >= 1,
+                      '08.10: участок с перепробегом — оранжевым на карте')
                 page.screenshot(path=str(SHOTS / 'live_desktop_stop.png'))
+                # «Բացատրել» из «Խնդիրներ հիմա»: диалог, клавиатура, сохранение, «Չեղարկել»
+                row = page.locator('#lvProbList li.lv-prob-row', has_text='Խանութներ բաց են թողնված')
+                check(row.count() == 1, '08.10: «Խնդիրներ հիմա» — пропущенный магазин с «Բացատրել»')
+                opener = row.locator('.lv-explain')
+                opener.click()
+                check(page.is_visible('#lvExplainDlg') and page.evaluate("document.activeElement.name") == 'lvExplainReason'
+                      and page.is_disabled('#lvExplainSave'), '«Բացատրել»: диалог открыт, фокус на причине, «Պահպանել» неактивна')
+                page.keyboard.press('Escape')
+                check(not page.is_visible('#lvExplainDlg') and page.evaluate(
+                    "document.activeElement && document.activeElement.classList.contains('lv-explain')"),
+                      '«Բացատրել»: Escape закрывает, фокус — обратно на кнопку')
+                opener.click()
+                page.keyboard.press('Space')                        # первая причина — «Լիցքավորում»
+                page.fill('#lvExplainNote', 'Լիցքավորում Ծաղկաձորում')
+                check(not page.is_disabled('#lvExplainSave'), '«Բացատրել»: причина выбрана — «Պահպանել» активна')
+                page.screenshot(path=str(SHOTS / 'live_explain_dialog.png'))
+                page.click('#lvExplainSave')
+                page.wait_for_timeout(1500)
+                check(not page.is_visible('#lvExplainDlg'), '«Բացատրել»: сохранено, диалог закрыт')
+                check('Խանութներ բաց են թողնված' not in page.inner_text('#lvProbList'),
+                      '«Բացատրել»: объяснённая тревога ушла из «Խնդիրներ հիմա»')
+                if not page.is_visible('#lvLog'):
+                    page.locator('#lvLogBox summary').click()
+                done = page.locator('#lvLog li.is-explained')
+                check(done.count() == 1 and 'բացատրված՝ Լիցքավորում' in done.inner_text() and 'Ծաղկաձորում' in done.inner_text(),
+                      '«Բացատրել»: в журнале — серой строкой с причиной и заметкой')
+                page.screenshot(path=str(SHOTS / 'live_desktop_explained.png'))
+                done.locator('.lv-explain.is-undo').click()
+                page.wait_for_timeout(1500)
+                check(page.locator('#lvLog li.is-explained').count() == 0
+                      and 'Խանութներ բաց են թողնված' in page.inner_text('#lvProbList'),
+                      '«Չեղարկել»: объяснение снято — тревога снова в «Խնդիրներ հիմա»')
                 page.locator(f'.lv-item[data-car="{cars[2]}"]').click()
                 page.wait_for_timeout(1200)
                 act = page.inner_text('#lvActive')
@@ -389,6 +453,13 @@ def main() -> int:
                 wide = phone.evaluate('document.documentElement.scrollWidth > window.innerWidth + 1')
                 check(not wide, 'телефон: нет горизонтальной прокрутки')
                 phone.screenshot(path=str(SHOTS / 'live_phone.png'), full_page=True)
+                phone.locator(f'.lv-item[data-car="{cars[1]}"]').click()
+                phone.wait_for_timeout(1500)
+                phone.locator('#lvDetourBox summary').click()
+                phone.locator('#lvLogBox summary').click()
+                wide = phone.evaluate('document.documentElement.scrollWidth > window.innerWidth + 1')
+                check(not wide, '08.10: телефон, машина 2 (перепробег, журнал с «Բացատրել») — нет горизонтальной прокрутки')
+                phone.locator('#lvCard').screenshot(path=str(SHOTS / 'live_phone_card2.png'))
                 browser.close()
         finally:
             server.shutdown()

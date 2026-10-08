@@ -8,7 +8,12 @@
    только то, что требует внимания; воспроизведение дня по t.track_t (своя отрисовка, опрос её не трогает).
    Плановая линия и отклонение (владелец 08.10): t.route — что водитель получил (отправленный план «Развоза»), пунктиром,
    номера магазинов — место в плане (s.plan_no, route.points); t.deviation.runs — отклонения дальше порога (красным);
-   «Օրվա ցուցանիշներ» — t.stats (максимальная скорость — кнопка к точке на карте). Нет данных — «տվյալ չկա», не нули. */
+   «Օրվա ցուցանիշներ» — t.stats (максимальная скорость — кнопка к точке на карте). Нет данных — «տվյալ չկա», не нули.
+   «Профессионально» (владелец 08.10): t.sequence — пропущенные магазины рейса (тревога sequence), t.detour — перепробег
+   по участкам фактического порядка («Ավելորդ վազք», таблица участков, оранжевым на карте), t.deviation.adherence_pct —
+   следование плану; отклонение с малым перепробегом — «փոքր շեղում» (серым, тонкой линией, не в «Խնդիրներ հիմա»);
+   «Բացատրել» (только администратор, data.can_explain; сервер проверяет сам) — причина и заметка в диалоге <dialog>,
+   объяснённая тревога — серой с причиной, «Չեղարկել» снимает объяснение. */
 (function () {
     'use strict';
 
@@ -30,7 +35,16 @@
         no_contact: ['fa-tower-broadcast', 'Կապ չկա'], gps: ['fa-location-crosshairs', 'GPS-ն անջատված է'],
         center: ['fa-ban', 'Փոքր կենտրոնում (մուտքը թույլատրված չէ)'],
         late: ['fa-hourglass-half', 'Չի հասցնում ժամանակին'], deviation: ['fa-route', 'Շեղում երթուղուց'],
+        sequence: ['fa-shuffle', 'Խանութներ բաց են թողնված'],
     };
+    // «Բացատրել»: причины (store.LIVE_EXPLAIN_REASONS) и какие тревоги объясняются
+    const REASON = { refuel: 'Լիցքավորում', repair: 'Վերանորոգում', customer: 'Հաճախորդի խնդրանքով',
+        road: 'Փակ ճանապարհ / խցանում', other: 'Այլ' };
+    const EXPLAINS = ['deviation', 'sequence'];
+    const canExplain = () => !!(state.data && state.data.can_explain);
+    // магазин в тексте: «№11 Название» (номер — место в плане машины за день)
+    const storeName = (x) => [x.no ? '№' + x.no : null, x.name || x.stop_id].filter(Boolean).join(' ');
+    const amd = (v) => (num(v) === null ? null : '≈ ' + fmt(v) + ' ֏');
     // №87: «не успеет» — на сколько позже окна приёма или плана; машина — возврат на склад после конца рабочего дня
     const lateText = (x) => (x.late_kind === 'return' ? 'Չի հասցնում վերադառնալ պահեստ՝ +' + x.over_min + ' րոպե'
         : (x.late_kind === 'window' ? 'Կուշանա պատուհանից ' : 'Կուշանա պլանից ') + x.over_min + ' րոպեով');
@@ -74,9 +88,15 @@
     function showError(text) { $('lvAlert').hidden = !text; $('lvAlertText').textContent = text || ''; }
 
     // Ответы дашборда (вход, доступ) — по-русски: свой армянский текст по коду ответа
-    async function api(url) {
+    async function api(url, payload) {
         let resp;
-        try { resp = await fetch(url, { credentials: 'same-origin', cache: 'no-store', headers: { Accept: 'application/json' } }); }
+        const init = { credentials: 'same-origin', cache: 'no-store', headers: { Accept: 'application/json' } };
+        if (payload !== undefined) {   // POST раздела — только JSON (защита от CSRF на сервере: _json_body)
+            init.method = 'POST';
+            init.headers['Content-Type'] = 'application/json';
+            init.body = JSON.stringify(payload);
+        }
+        try { resp = await fetch(url, init); }
         catch (e) { throw new Error('Սերվերը հասանելի չէ։ Ստուգեք կապը։'); }
         if (resp.status === 401) {
             window.location.assign('/login?next=' + encodeURIComponent('/routes/live'));
@@ -86,7 +106,7 @@
         try { body = await resp.json(); } catch (e) { /* не JSON */ }
         if (!resp.ok || !body || body.success === false) {
             const text = body && typeof body.error === 'string' && /[Ա-֏]/.test(body.error) ? body.error : null;
-            if (resp.status === 403) throw new Error('Մուտքն արգելված է։');
+            if (resp.status === 403) throw new Error(body && body.error === 'csrf' ? 'Էջը հնացել է՝ թարմացրեք այն և կրկնեք։' : 'Մուտքն արգելված է։');
             throw new Error(text || 'Սերվերի սխալ (' + resp.status + ')։ Կրկնեք մի փոքր ուշ։');
         }
         return body;
@@ -202,7 +222,10 @@
         const rows = [];
         for (const t of trucks) {
             for (const k of t.alerts.active || []) {
-                if (k !== 'late' && k !== 'no_contact') rows.push([0, t, (ALERT[k] || ['fa-bell'])[0], (ALERT[k] || ['', k])[1]]);
+                if (k === 'late' || k === 'no_contact') continue;
+                // отклонение и порядок объезда — с кнопкой «Բացատրել» (администратор): тревога — из t.explainable
+                const ex = EXPLAINS.includes(k) && canExplain() ? (t.explainable || []).find(x => x.kind === k) : null;
+                rows.push([0, t, (ALERT[k] || ['fa-bell'])[0], (ALERT[k] || ['', k])[1], ex]);
             }
             if (noContact(t)) {
                 rows.push([1, t, ALERT.no_contact[0], ('Կապ չկա ' + silentFor(silentAge(t))).trim()
@@ -212,11 +235,11 @@
             if (t.stores.unmarked) rows.push([3, t, 'fa-location-dot', t.stores.unmarked + ' խանութ GPS-ով այցելած է, բայց չնշված']);
         }
         rows.sort((a, b) => a[0] - b[0] || a[1].car_code.localeCompare(b[1].car_code));
-        $('lvProbList').replaceChildren(...(rows.length ? rows.map(([sev, t, ico, text]) => {
+        $('lvProbList').replaceChildren(...(rows.length ? rows.map(([sev, t, ico, text, ex]) => {
             const btn = h('button', { type: 'button', class: 'lv-prob is-sev' + sev },
                 icon(ico), h('b', { text: t.car_code }), h('span', { text }));
             btn.addEventListener('click', () => { if (state.selected !== t.car_code) select(t.car_code); else focusCard(); });
-            return h('li', null, btn);
+            return h('li', { class: ex ? 'lv-prob-row' : null }, btn, ex ? explainButton(t.car_code, ex, t.car_code + ' · ' + text) : null);
         }) : [h('li', null, h('div', { class: 'lv-prob is-none' }, icon('fa-circle-check'), h('span', { text: 'Խնդիրներ չկան' })))]));
     }
 
@@ -320,14 +343,23 @@
                 .bindTooltip(tip('Պահեստ')).addTo(state.layer);
         }
         drawPlan(t, state.layer);
+        // участки с перепробегом — широкой оранжевой подложкой под путём
+        for (const x of (t.detour && t.detour.items) || []) {
+            if (!x.over || !Array.isArray(x.line) || x.line.length < 2) continue;
+            L.polyline(x.line, { color: '#ffb547', weight: 12, opacity: 0.35 })
+                .bindTooltip(tip('Ավելորդ վազք՝ +' + fmt(x.excess_km, 1) + ' կմ · ' + legName(x))).addTo(state.layer);
+        }
         if (t.track && t.track.length > 1) {
             L.polyline(t.track, { color: '#38bdf8', weight: 4, opacity: 0.85 }).addTo(state.layer);
         }
-        // отклонения от плановой линии — красным поверх пути
+        // отклонения от плановой линии — красным поверх пути; «փոքր շեղում» — тонкой линией, объяснённое — серым
         for (const r of (t.deviation && t.deviation.runs) || []) {
             if (!Array.isArray(r.line) || r.line.length < 2) continue;
-            L.polyline(r.line, { color: '#ff6b79', weight: 6, opacity: 0.95 })
-                .bindTooltip(tip('Շեղում երթուղուց՝ ' + fmt(r.km, 1) + ' կմ · ' + hm(r.from) + (r.to ? '–' + hm(r.to) : ' — հիմա')))
+            const style = r.explained ? { color: '#8693a5', weight: 4, opacity: 0.9 }
+                : r.minor ? { color: '#ff6b79', weight: 3, opacity: 0.7, dashArray: '2 6' } : { color: '#ff6b79', weight: 6, opacity: 0.95 };
+            L.polyline(r.line, style)
+                .bindTooltip(tip((r.minor ? 'Փոքր շեղում՝ ' : 'Շեղում երթուղուց՝ ') + fmt(r.km, 1) + ' կմ · ' + hm(r.from)
+                    + (r.to ? '–' + hm(r.to) : ' — հիմա') + (r.explained ? ' · բացատրված՝ ' + (REASON[r.explained.reason] || '') : '')))
                 .addTo(state.layer);
         }
         // магазины плана, которых нет у терминала, — пустой номер (только вместе с плановой линией)
@@ -374,11 +406,22 @@
         else if (a.kind === 'stop') more = ', ' + a.minutes + ' րոպե' + (a.lunch ? ' (ճաշի ժամին)' : '');
         else if (a.kind === 'no_contact') more = ', ' + a.minutes + ' րոպե';
         else if (a.kind === 'gps') more = a.gps === 'no_permission' ? ' (թույլտվություն չկա)' : '';
-        else if (a.kind === 'deviation') more = ', ' + fmt(a.km, 1) + ' կմ';
+        else if (a.kind === 'deviation') {
+            more = ', ' + fmt(a.km, 1) + ' կմ' + (num(a.excess_km) !== null && a.excess_km > 0 ? ' · ավելորդ վազք +' + fmt(a.excess_km, 1) + ' կմ' : '');
+            if (a.minor) return ['Փոքր շեղում' + more + explainedText(a), when];
+        } else if (a.kind === 'sequence') {
+            more = '՝ ' + (a.skipped || []).map(storeName).join(', ') + (a.jump ? ' (նախքան դրանք՝ ' + storeName(a.jump) + ')' : '');
+        }
+        if (a.explained) return [title + more + explainedText(a), when];
         // прогноз «не успеет»: что и насколько; время — прогноз прибытия (возврата), не начало события
         if (a.kind === 'late') return [lateText(a) + (a.name ? ' — ' + a.name : ''), '≈ ' + hm(a.eta) + ' (մինչև ' + hm(a.limit) + ')'];
         return [title + more, when];
     }
+
+    const explainedText = (a) => (a.explained ? ' · բացատրված՝ ' + (REASON[a.explained.reason] || a.explained.reason)
+        + (a.explained.note ? ' («' + a.explained.note + '»)' : '') : '');
+    const legEnd = (e) => (e.kind === 'depot' ? 'Պահեստ' : storeName(e) + (e.stops > 1 ? ' (+' + (e.stops - 1) + ')' : ''));
+    const legName = (x) => legEnd(x.from) + ' → ' + legEnd(x.to) + (x.ongoing ? ' (ընթացքում)' : '');
 
     function renderCard() {
         const t = state.detail || (state.data && state.data.trucks.find(x => x.car_code === state.selected));
@@ -501,8 +544,12 @@
         $('lvLogBox').hidden = !t.stops;
         $('lvLog').replaceChildren(...(log.length ? log.map(a => {
             const [text, when] = alertText(a);
-            return h('li', { class: a.active ? 'is-active' : null }, icon((ALERT[a.kind] || ['fa-bell'])[0]), h('span', { text }), h('span', { class: 'when', text: when }));
+            const cls = [a.active ? 'is-active' : null, a.minor ? 'is-minor' : null, a.explained ? 'is-explained' : null].filter(Boolean).join(' ');
+            let act = null;
+            if (canExplain() && EXPLAINS.includes(a.kind)) act = a.explained ? undoButton(a) : explainButton(t.car_code, a, text);
+            return h('li', { class: cls || null }, icon((ALERT[a.kind] || ['fa-bell'])[0]), h('span', { text }), h('span', { class: 'when', text: when }), act);
         }) : [h('li', null, h('span'), h('span', { text: 'Ահազանգ չկա' }), h('span'))]));
+        renderDetour(t);
     }
 
     // ---------- показатели дня, плановая линия, отклонение (08.10) ----------
@@ -528,9 +575,114 @@
         if (!t.route) return ['—', noRouteText(t), 'is-mute'];
         if (!d) return ['չի հաշվվում', 'ճանապարհներով պլանային երթուղին դեռ պատրաստ չէ (ուղիղ գծով՝ ոչ)', 'is-mute'];
         if (!t.position) return [NO_DATA, 'GPS կետեր չկան', 'is-mute'];
-        const sub = 'պլանային երթուղուց ավելի հեռու, քան ' + fmt(d.threshold_m) + ' մ' + (d.active ? ' · հիմա երթուղուց դուրս է' : '');
-        return d.count ? [d.count + ' անգամ · ' + fmt(d.km, 1) + ' կմ', sub, d.active ? 'is-bad' : 'is-warn'] : ['չկա', sub, 'is-ok'];
+        const parts = [d.minor ? 'փոքր՝ ' + d.minor : null, d.explained ? 'բացատրված՝ ' + d.explained : null].filter(Boolean);
+        const sub = 'պլանային երթուղուց ավելի հեռու, քան ' + fmt(d.threshold_m) + ' մ' + (parts.length ? ' · ' + parts.join(', ') : '')
+            + (d.active ? ' · հիմա երթուղուց դուրս է' : '');
+        return d.count ? [d.count + ' անգամ · ' + fmt(d.km, 1) + ' կմ', sub, d.active ? 'is-bad' : d.alerts ? 'is-warn' : 'is-mute']
+            : ['չկա', sub, 'is-ok'];
     }
+
+    // следование плану: доля км езды в коридоре плановой линии (объяснённые отклонения не считаются)
+    function adherenceText(t) {
+        const d = t.deviation, p = d ? num(d.adherence_pct) : null;
+        if (!d) return ['—', t.route ? 'ճանապարհներով պլանային երթուղին դեռ պատրաստ չէ' : noRouteText(t), 'is-mute'];
+        if (p === null) return [NO_DATA, 'երթուղու վրա դեռ քիչ կմ կա', 'is-mute'];
+        return [fmt(p, 1) + '%', fmt(d.counted_km, 1) + ' կմ-ից երթուղուց դուրս՝ ' + fmt(d.off_km, 1) + ' կմ (բացատրվածները՝ ոչ)',
+            p >= 95 ? 'is-ok' : p >= 80 ? 'is-warn' : 'is-bad'];
+    }
+    // перепробег: сумма по участкам фактического порядка с перепробегом не меньше порога настроек
+    function detourText(t) {
+        const d = t.detour;
+        if (!d) return ['—', t.planned ? 'պլանը հայտնի չէ' : 'մեքենան այս օրվա պլանում չէ', 'is-mute'];
+        if (!d.legs) return [NO_DATA, 'պլանի հատվածներ GPS-ով դեռ չկան', 'is-mute'];
+        const rule = 'հատվածի ավելորդ կմ-ը՝ ' + fmt(d.threshold_km, 1) + ' կմ-ից';
+        if (!d.legs_over) return ['չկա', fmt(d.legs) + ' հատված · ' + rule, 'is-ok'];
+        return ['+' + fmt(d.excess_km, 1) + ' կմ · +' + dur(d.excess_min),
+            [amd(d.cost_amd) ? amd(d.cost_amd) + (d.fuel_price_estimated ? ' (վառելիքի գինը՝ լռելյայն)' : '') : 'արժեքը՝ անհայտ (մեքենայի ծախսը նշված չէ)',
+                d.legs_over + ' հատված ' + d.legs + '-ից', d.approx ? 'պլանի կմ-ը՝ մոտավոր' : null].filter(Boolean).join(' · '),
+            d.excess_km >= 5 ? 'is-bad' : 'is-warn'];
+    }
+    // порядок объезда: пропущенные сейчас магазины рейса и пары «обслужен раньше, хотя в плане позже»
+    function sequenceText(t) {
+        const q = t.sequence;
+        if (!q) return ['—', 'պլանը հայտնի չէ', 'is-mute'];
+        if (q.skipped.length) {
+            return ['Բաց թողնված՝ ' + q.skipped.length, q.skipped.map(storeName).join(', ')
+                + (q.pairs.length ? ' · պլանից շեղված՝ ' + q.pairs.length + ' անգամ' : ''), 'is-bad'];
+        }
+        if (q.pairs.length) {
+            return ['Պլանից շեղված՝ ' + q.pairs.length + ' անգամ',
+                q.pairs.map(x => storeName(x.first) + '-ը՝ ' + storeName(x.then) + '-ից առաջ').join(' · '), 'is-warn'];
+        }
+        return ['Ըստ պլանի', 'խանութները սպասարկվում են պլանի հերթականությամբ', 'is-ok'];
+    }
+
+    // «Ավելորդ վազք»: участки с перепробегом — откуда → куда, км факт / план, лишние км и минуты, ≈ ֏
+    function renderDetour(t) {
+        const d = t.detour, items = (d && d.items) || [];
+        $('lvDetourBox').hidden = !items.length;
+        if (!items.length) return;
+        const over = items.filter(x => x.over);
+        $('lvDetourNote').textContent = items.length + ' հատված (պահեստ → խանութներ → պահեստ՝ փաստացի հերթականությամբ) · '
+            + 'ավելորդ է, եթե GPS-ով կմ-ը պլանից ավելի է առնվազն ' + fmt(d.threshold_km, 1) + ' կմ-ով';
+        const cell = (text, cls) => h('td', { class: cls || null, text });
+        $('lvDetour').replaceChildren(...(over.length ? over.map(x => h('tr', null,
+            h('td', { class: 'lv-stop-name' }, h('span', { text: legName(x) }),
+                h('small', { text: hm(x.from.at) + '–' + (x.to.at ? hm(x.to.at) : 'հիմա') + (x.consecutive ? '' : ' · պլանում հաջորդը չէ') })),
+            cell('+' + fmt(x.excess_km, 1), 'is-num is-bad'),
+            cell(fmt(x.km, 1) + ' / ' + (x.approx ? '≈ ' : '') + fmt(x.plan_km, 1), 'is-num'),   // план по прямой — «≈»
+            cell(num(x.excess_min) > 0 ? '+' + fmt(x.excess_min) : fmt(x.excess_min), 'is-num'),
+            cell(num(x.cost_amd) === null ? '—' : fmt(x.cost_amd), 'is-num')))
+            : [h('tr', null, h('td', { colspan: '5', class: 'is-mute', text: 'Ավելորդ վազքով հատված չկա' }))]));
+    }
+
+    // ---------- «Բացատրել» (администратор): причина и заметка; сервер находит тревогу по виду и времени ----------
+    let explaining = null;
+    function explainButton(car, a, text) {
+        const b = h('button', { type: 'button', class: 'lv-explain', 'aria-haspopup': 'dialog' }, icon('fa-comment-dots'), h('span', { text: 'Բացատրել' }));
+        b.addEventListener('click', (e) => { e.stopPropagation(); openExplain(car, a, text, b); });
+        return b;
+    }
+    function undoButton(a) {
+        const b = h('button', { type: 'button', class: 'lv-explain is-undo' }, icon('fa-rotate-left'), h('span', { text: 'Չեղարկել' }));
+        b.addEventListener('click', async () => {
+            b.disabled = true;
+            try { await api('/api/routes/live/unexplain', { id: a.explained.id }); showError(''); refresh(); }
+            catch (e) { b.disabled = false; showError(e.message); }
+        });
+        return b;
+    }
+    function openExplain(car, a, text, opener) {
+        explaining = { car, kind: a.kind, from: a.from, to: a.to || null, opener };
+        $('lvExplainLead').textContent = text;
+        $('lvExplainOpts').querySelectorAll('input[type="radio"]').forEach(r => { r.checked = false; });
+        $('lvExplainNote').value = '';
+        $('lvExplainErr').textContent = '';
+        $('lvExplainSave').disabled = true;
+        $('lvExplainDlg').showModal();
+        $('lvExplainOpts').querySelector('input[type="radio"]').focus();
+    }
+    $('lvExplainOpts').addEventListener('change', () => { $('lvExplainSave').disabled = !$('lvExplainOpts').querySelector('input:checked'); });
+    $('lvExplainClose').addEventListener('click', () => $('lvExplainDlg').close());
+    $('lvExplainDlg').addEventListener('close', () => {
+        const o = explaining && explaining.opener;
+        explaining = null;
+        if (o && o.isConnected) o.focus({ preventScroll: true });
+    });
+    $('lvExplainSave').addEventListener('click', async () => {
+        const x = explaining, pick = $('lvExplainOpts').querySelector('input:checked');
+        if (!x || !pick) return;
+        $('lvExplainSave').disabled = true;
+        try {
+            await api('/api/routes/live/explain', { date: state.date || state.data.date, car: x.car, kind: x.kind, from: x.from,
+                to: x.to, reason: pick.value, note: $('lvExplainNote').value.trim() });
+            $('lvExplainDlg').close();
+            refresh();
+        } catch (e) {
+            $('lvExplainErr').textContent = e.message;
+            $('lvExplainSave').disabled = false;
+        }
+    });
 
     // точка максимальной скорости на карте: отдельный слой (опрос слой машины перерисовывает)
     function showPoint(lat, lon, text) {
@@ -556,6 +708,9 @@
         rows.push(field('Կմ՝ փաստ / պլան', km, kmSub, kmCls));
         const [dv, dvSub, dvCls] = deviationText(t);
         rows.push(field('Շեղում երթուղուց', dv, dvSub, dvCls));
+        rows.push(field('Երթուղուն հետևում', ...adherenceText(t)));
+        rows.push(field('Ավելորդ վազք', ...detourText(t)));
+        rows.push(field('Հերթականություն', ...sequenceText(t), true));
         const ms = st.max_speed;
         let top = NO_DATA;
         if (ms) {

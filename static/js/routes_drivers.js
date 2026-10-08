@@ -18,6 +18,7 @@
         stops: ['Կանգառներ խանութից դուրս', ' ր/օր'], liters: ['Վառելիք՝ նորմից', '%'],
         clean: ['Առանց խնդրի (առանց մերժման և պակասի)', '%'], unload: ['Բեռնաթափում՝ նորմի նկատմամբ', '%'],
         day: ['Օրվա տևողություն՝ պլանի նկատմամբ', '%'],
+        route: ['Երթուղուն հետևում (պլանային երթուղու կմ-ի բաժինը)', '%'],   // 08.10: live.adherence, բացատրվածները՝ ոչ
     };
 
     const state = { data: null, sort: { key: 'score', dir: -1 }, open: new Set(), seq: 0, today: null,
@@ -204,7 +205,7 @@
     }
     function detailTable(r) {
         const head = ['Ամսաթիվ', 'Մեքենա', 'Խանութներ', 'Ժամանակին', 'Միջին ուշացում', 'Հերթականություն', 'Արագություն',
-            'Կանգառ խանութից դուրս', 'Վառելիք՝ նորմից', 'Մասնակի / Հրաժարում', 'Կմ'].concat(state.cash ? ['Կանխիկ'] : [], ['Տարա', 'Ուշացած խանութներ']);
+            'Կանգառ խանութից դուրս', 'Վառելիք՝ նորմից', 'Երթուղուն հետևում', 'Մասնակի / Հրաժարում', 'Կմ'].concat(state.cash ? ['Կանխիկ'] : [], ['Տարա', 'Ուշացած խանութներ']);
         return h('table', { class: 'dr-days' },
             h('caption', { text: r.name + ' — ըստ օրերի' }),
             h('thead', {}, h('tr', {}, head.map((t, i) => h('th', { scope: 'col', class: i >= 2 && i < head.length - 1 ? 'num' : null, text: t })))),
@@ -218,6 +219,7 @@
                 speedCell(d.speed_events, null),
                 stopCell(d.offroute_min, null),
                 fuelCell(d.liters_vs_norm_pct, d.fuel_fact_l, d.fuel_norm_l),
+                h('td', { class: 'num' + (num(d.route_pct) === null ? ' is-mute' : ''), text: num(d.route_pct) === null ? '—' : fmt(d.route_pct, 1) + '%' }),
                 prCell(d.partial, d.refused),
                 kmCell(d.km),
                 state.cash ? cashCell(d.cash) : null,
@@ -325,6 +327,9 @@
             if (f.uncovered) parts.push('GPS-ը քիչ է ծածկում լիցքավորումների միջև կմ-ը՝ ' + fmt(f.uncovered) + ' մեքենա-օր։');
             if (f.no_norm) parts.push('Մեքենայի նորմը նշված չէ՝ ' + fmt(f.no_norm) + ' մեքենա-օր։');
         }
+        const rc = c.route || {};
+        if (num(rc.pending) > 0) parts.push('Երթուղուն հետևումը դեռ հաշվվում է՝ ' + fmt(rc.pending) + ' օր (թարմացրեք մի փոքր ուշ)։');
+        if (num(rc.no_roads) > 0) parts.push('Երթուղուն հետևումը չի հաշվվում՝ ճանապարհների քարտեզը պատրաստ չէ (' + fmt(rc.no_roads) + ' օր)։');
         if (!d.gps) parts.push('GPS-ի տվյալները միացված չեն․ կմ-ն, «Ժամանակին»-ը, արագությունն ու կանգառները չեն հաշվվում։');
         $('drCoverage').textContent = parts.join(' ');
         const r = d.rules || {};

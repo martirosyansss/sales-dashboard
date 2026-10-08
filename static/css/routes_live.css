@@ -63,6 +63,41 @@ button.lv-prob:focus-visible { outline: 2px solid var(--rt-acc); outline-offset:
 .lv-prob.is-sev2 i { color: var(--rt-warn); }
 .lv-prob.is-sev3 i { color: var(--lv-unmarked); }
 .lv-prob.is-none { grid-template-columns: 16px minmax(0, 1fr); color: var(--rt-ok); background: var(--rt-ok-bg); }
+/* строка проблемы с «Բացատրել» (администратор): кнопка выбора машины и кнопка объяснения рядом */
+.lv-prob-row { display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: stretch; justify-content: flex-end; }
+.lv-prob-row > .lv-prob { flex: 1 1 220px; min-width: 0; }   /* узкий блок — «Բացատրել» переносится под строку */
+
+/* «Բացատրել» / «Չեղարկել» — в журнале тревог и в «Խնդիրներ հիմա» */
+.lv-explain {
+    display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 2px 10px; border-radius: 999px;
+    background: transparent; border: 1px solid var(--rt-line); color: var(--rt-acc); font: inherit; font-size: .8125rem;
+    font-weight: 600; cursor: pointer; white-space: nowrap;
+}
+.lv-explain:hover { border-color: var(--rt-acc-dim); }
+.lv-explain:focus-visible { outline: 2px solid var(--rt-acc); outline-offset: 1px; }
+.lv-explain:disabled { opacity: .55; cursor: default; }
+.lv-explain.is-undo { color: var(--rt-fg-dim); }
+
+/* диалог «Բացատրել ահազանգը» — как диалоги «Развоза» (.dp-dlg) */
+.lv-dlg {
+    width: min(520px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow: auto; padding: 22px;
+    color: var(--rt-fg); background: var(--rt-panel); border: 1px solid var(--rt-line); border-radius: 20px;
+    box-shadow: 0 24px 64px rgba(0, 0, 0, .55); font-family: var(--rt-font);
+}
+.lv-dlg::backdrop { background: rgba(5, 7, 10, .7); backdrop-filter: blur(2px); }
+.lv-dlg-t { margin: 0 0 6px; font-size: 1.25rem; font-weight: 700; overflow-wrap: anywhere; }
+.lv-dlg-lead { margin: 0 0 12px; color: var(--rt-fg-dim); line-height: 1.5; overflow-wrap: anywhere; }
+.lv-dlg-label { display: block; margin: 0 0 6px; font-size: .8125rem; font-weight: 600; color: var(--rt-fg-mute); }
+.lv-why { margin: 0 0 12px; padding: 0; border: 0; display: grid; gap: 6px; }
+.lv-why label {
+    display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 6px 12px; border-radius: 12px; cursor: pointer;
+    border: 1px solid var(--rt-line); background: var(--rt-inset);
+}
+.lv-why label:hover { border-color: var(--rt-acc-dim); }
+.lv-why label:has(input:checked) { border-color: var(--rt-acc); background: var(--rt-acc-glow); }
+.lv-why input { width: 18px; height: 18px; margin: 0; accent-color: var(--rt-acc); }
+.lv-dlg-note { width: 100%; resize: vertical; min-height: 56px; }
+.lv-dlg-btns { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
 
 /* Сводка парка: машин в пути / стоят / тревога / нет связи */
 .lv-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
@@ -207,6 +242,11 @@ button.lv-prob:focus-visible { outline: 2px solid var(--rt-acc); outline-offset:
 }
 .lv-log li .when { color: var(--rt-fg-mute); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .lv-log li.is-active { border: 1px solid var(--rt-danger-line); }
+/* «փոքր շեղում» и объяснённая тревога — серым: в журнале есть, внимания не требуют */
+.lv-log li.is-minor, .lv-log li.is-explained { color: var(--rt-fg-mute); }
+.lv-log li.is-minor i, .lv-log li.is-explained i { color: var(--rt-fg-mute); }
+/* «Բացատրել» / «Չեղարկել» — своей строкой под текстом тревоги (карточка на ПК узкая) */
+.lv-log li .lv-explain { grid-column: 2 / -1; justify-self: start; }
 
 /* Магазины: план — факт. Таблица прокручивается внутри карточки (страница на телефоне — без горизонтальной прокрутки) */
 .lv-table-wrap { margin-top: 6px; overflow-x: auto; border-radius: 9px; border: 1px solid var(--rt-line-soft); }
@@ -248,6 +288,9 @@ button.lv-prob:focus-visible { outline: 2px solid var(--rt-acc); outline-offset:
 .lv-ln { display: inline-block; width: 20px; height: 0; border-top: 3px solid #38bdf8; }
 .lv-ln.is-plan { border-top: 3px dashed #e8edf4; opacity: .8; }
 .lv-ln.is-dev { border-top: 4px solid #ff6b79; }
+.lv-ln.is-minor { border-top: 2px dotted #ff6b79; }
+.lv-ln.is-over { border-top: 8px solid rgba(255, 181, 71, .45); }
+.lv-legs { min-width: 420px; }
 .lv-npin {
     display: grid; place-items: center; width: 24px; height: 24px; box-sizing: border-box; border-radius: 50%;
     border: 2px solid #0e1116; background: #8693a5; color: #0e1116; box-shadow: 0 1px 4px rgba(0, 0, 0, .5);

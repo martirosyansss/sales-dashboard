@@ -13,7 +13,7 @@
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=22">
 <!-- Машины на карте сейчас (№76): тема «Развоза», свои классы .lv-*; новые файлы статики — и в _PUBLIC_STATIC app_v2 -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_live.css') }}?v=6">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_live.css') }}?v=7">
 {% endblock %}
 
 {% block content %}
@@ -82,6 +82,8 @@
                     <span><i class="lv-ln is-track"></i>անցած ճանապարհը</span>
                     <span><i class="lv-ln is-plan"></i>պլանային երթուղի</span>
                     <span><i class="lv-ln is-dev"></i>շեղում երթուղուց</span>
+                    <span><i class="lv-ln is-minor"></i>փոքր շեղում</span>
+                    <span><i class="lv-ln is-over"></i>ավելորդ վազք</span>
                     <span><i class="lv-dot is-moving"></i>ընթացքի մեջ</span>
                     <span><i class="lv-dot is-standing"></i>կանգնած</span>
                     <span><i class="lv-dot is-alert"></i>ահազանգ</span>
@@ -144,6 +146,20 @@
                     </table>
                 </div>
             </details>
+            <!-- «Ավելորդ վազք» (владелец 08.10): участки фактического порядка с перепробегом — км факт / план, лишние км, минуты, ≈ ֏ -->
+            <details class="lv-more" id="lvDetourBox" hidden>
+                <summary>Ավելորդ վազք՝ հատվածներ</summary>
+                <p class="lv-pf" id="lvDetourNote"></p>
+                <div class="lv-table-wrap">
+                    <table class="lv-stops lv-legs">
+                        <thead>
+                            <tr><th scope="col">Հատված</th><th scope="col">Ավելորդ, կմ</th><th scope="col">Կմ՝ փաստ / պլան</th>
+                                <th scope="col">Ավելորդ, ր</th><th scope="col">≈ ֏</th></tr>
+                        </thead>
+                        <tbody id="lvDetour"></tbody>
+                    </table>
+                </div>
+            </details>
             <details class="lv-more" id="lvLogBox">
                 <summary>Այսօրվա ահազանգերը</summary>
                 <ul class="lv-log" id="lvLog"></ul>
@@ -154,9 +170,32 @@
                 խանութում կանգառի ժամանակը և ճաշը․ մեքենայի դիրքից առաջին հատվածը՝ Valhalla-ով, եթե այն պատրաստ է։
                 Պլանային երթուղին՝ վարորդին ուղարկված պլանը, ճանապարհներով (փոքր կենտրոնի շրջանցումով), ինչպես «Առաքում» էջում․
                 շեղում է, եթե մեքենան երթուղուց կարգավորումներում նշված մետրից հեռու անցել է առնվազն 0,5 կմ և 1 րոպե
-                (պահեստի և խանութների մոտ, ճաշի կանգառով՝ ոչ)։</p>
+                (պահեստի և խանութների մոտ, ճաշի կանգառով՝ ոչ)։ Շեղումը ահազանգ է, եթե իր հատվածում (պահեստ / խանութ →
+                հաջորդ խանութ / պահեստ՝ փաստացի հերթականությամբ) GPS-ով կմ-ը պլանից ավելի է կարգավորումներում նշված կմ-ով,
+                մնացածը՝ «փոքր շեղում»։ Ավելորդ վազքի ֏՝ ինչպես «Առաքում» էջում (վառելիք ըստ բեռի + մեքենայի մաշվածություն)։</p>
         </section>
     </div>
+
+    <!-- «Բացատրել» (владелец 08.10): причина отклонения или пропущенных магазинов — только администратор -->
+    <dialog id="lvExplainDlg" class="lv-dlg" aria-labelledby="lvExplainTitle" aria-describedby="lvExplainLead">
+        <h2 class="lv-dlg-t" id="lvExplainTitle">Բացատրել ահազանգը</h2>
+        <p class="lv-dlg-lead" id="lvExplainLead"></p>
+        <fieldset class="lv-why" id="lvExplainOpts">
+            <legend class="lv-dlg-label">Պատճառը</legend>
+            <label><input type="radio" name="lvExplainReason" value="refuel">Լիցքավորում</label>
+            <label><input type="radio" name="lvExplainReason" value="repair">Վերանորոգում</label>
+            <label><input type="radio" name="lvExplainReason" value="customer">Հաճախորդի խնդրանքով</label>
+            <label><input type="radio" name="lvExplainReason" value="road">Փակ ճանապարհ / խցանում</label>
+            <label><input type="radio" name="lvExplainReason" value="other">Այլ</label>
+        </fieldset>
+        <label for="lvExplainNote" class="lv-dlg-label">Նշում (ոչ պարտադիր, մինչև 200 նիշ)</label>
+        <textarea id="lvExplainNote" class="rt-input lv-dlg-note" maxlength="200" rows="2" autocomplete="off"></textarea>
+        <div class="rt-ferr" id="lvExplainErr" role="alert"></div>
+        <div class="lv-dlg-btns">
+            <button type="button" id="lvExplainSave" class="rt-btn rt-btn-primary" disabled><i class="fas fa-check" aria-hidden="true"></i><span>Պահպանել</span></button>
+            <button type="button" id="lvExplainClose" class="rt-btn rt-btn-ghost">Փակել</button>
+        </div>
+    </dialog>
 </div>
 {% endblock %}
 
@@ -165,5 +204,5 @@
         integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
 <!-- подложка — Яндекс, как на остальных картах (решение владельца 06.10, см. live_page) -->
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=1" data-yandex-key="{{ yandex_tiles_key }}"></script>
-<script src="{{ url_for('static', filename='js/routes_live.js') }}?v=11"></script>
+<script src="{{ url_for('static', filename='js/routes_live.js') }}?v=12"></script>
 {% endblock %}
