@@ -5,7 +5,9 @@
 записи tg_message / tg_kv (store, схема 27), два потока процесса (__init__.start_live_alerts):
 - проход tick (каждые INTERVAL_S): тревоги карты (live_alerts.plan) → отправка, правка, ответы «не успеет»; эскалация
   (live_alerts.due_escalations): ответ в группе на исходное сообщение со звуком и упоминанием людей escalate_to + личное
-  сообщение каждому с теми же кнопками (403 — человек не нажимал /start у бота — в журнал, рассылку не останавливает);
+  сообщение каждому с теми же кнопками (403 — человек не нажимал /start у бота — в журнал, рассылку не останавливает;
+  очередь Telegram, 429, сеть — копия отложена, как и правка «✔ Տեսավ» и закрепление отчёта: _pending, следующим
+  проходом);
   отчёты по событию: план дня — как только план сегодня выпущен водителям (Draft.released), изменили — правка того же
   сообщения со строкой «Թարմացված՝ HH:MM», закреплён; неделя — с первым планом недели (только в первый рабочий день
   недели); итог дня — когда все машины плана вернулись на склад (карточка closed), но не позже tg_summary_at, закреплён
@@ -357,12 +359,18 @@ class TgBot:
         return True
 
     def _pin(self, rec: Rec, unpin: Rec | None = None) -> None:
-        """Закрепить сообщение отчёта без звука (и открепить прежнее); нет прав — одна строка в журнале, не сбой."""
+        """Закрепить сообщение отчёта без звука (и открепить прежнее). Нет прав — одна строка в журнале, не сбой;
+        очередь, 429, сеть — отметка pin в записи (снять закрепление — unpin), повтор следующим проходом (_pending)."""
         try:
             if unpin is not None and unpin.message_id is not None:
                 self.api('unpinChatMessage', chat_id=unpin.chat, message_id=unpin.message_id)
             self.api('pinChatMessage', chat_id=rec.chat, message_id=rec.message_id, disable_notification=True)
+            rec.payload.pop('pin', None)
         except TelegramError as e:
+            if tg_api.throttled(e):
+                rec.payload['pin'] = {'unpin': unpin.key if unpin is not None and unpin.message_id is not None else None}
+                return
+            rec.payload.pop('pin', None)
             if not self.pin_warned:
                 logger.warning('[Routes] Telegram-бот: не закреплено (%s) — нужны права администратора «Закреплять '
                                'сообщения»', e)
@@ -371,7 +379,12 @@ class TgBot:
     def _failed(self, e: TelegramError, sig: tuple[Any, ...]) -> None:
         """Сбой отправки в группу: пауза с ростом (429 — не меньше retry_after) или остановка после CLIENT_ERRORS_MAX
         ошибок всего чата подряд (tg_api.chat_wide: токен, бота убрали, чата нет; ошибка одного сообщения сюда не
-        попадает — _rejected)."""
+        попадает — _rejected). Своя очередь (e.local: под замком ждать нельзя) — не сбой: пауза ровно retry_after, без
+        счёта сбоев и роста паузы."""
+        if e.local:
+            self.retry_at = self.monotonic() + (e.retry_after or la.INTERVAL_S)
+            logger.info('[Routes] Telegram-бот: очередь Telegram занята — продолжу через %.0f с', e.retry_after or 0)
+            return
         self.failures += 1
         self.client_errors = self.client_errors + 1 if chat_wide(e) else 0
         if self.client_errors >= la.CLIENT_ERRORS_MAX:
@@ -476,12 +489,43 @@ class TgBot:
                 self._idle()
                 with self.lock, tg_api.no_wait():
                     done += self._guard(rec.key, lambda rec=rec: self._escalate(rec.key, tg, now), None, now)
+            with self.lock:   # отложенное из-за очереди Telegram: правка «Տեսա», личные копии, закрепление
+                pending = [k for k, r in self.records.items() if r.payload.get('ack_edit')
+                           or r.payload.get('copies_pending') or r.payload.get('pin')]
+            for key in pending:
+                self._idle()
+                with self.lock, tg_api.no_wait():
+                    done += self._pending(key)
             if inputs is not None:
                 self._idle()
                 with self.lock, tg_api.no_wait():
                     done += self._reports(inputs, day, now, rules, tg, cards, fleet)
         except TelegramError as e:   # сеть, Telegram, ошибка всего чата: повтор позже (несделанное не записано)
             self._failed(e, sig)
+        return done
+
+    def _pending(self, key: str) -> int:
+        """Доделать отложенное очередью Telegram (429, своя очередь, сеть): правку «✔ Տեսավ» (ack_edit), личные копии
+        эскалации (copies_pending), закрепление отчёта (pin). Ограничение частоты — наверх (пауза прохода, отметки
+        остаются); отказ именно этого сообщения — отметка снимается, в журнал."""
+        rec = self.records.get(key)
+        if rec is None:
+            return 0
+        done = 0
+        if rec.payload.get('ack_edit'):
+            try:
+                done += int(self._edit(rec))
+            except TelegramError as e:
+                if tg_api.throttled(e):
+                    raise
+                logger.warning('[Routes] Telegram-бот: «Տեսա» %s так и не показана (%s)', key, e)
+            rec.payload.pop('ack_edit', None)
+            self._persist(rec)
+        if rec.payload.get('copies_pending'):
+            done += self._send_copies(rec)
+        if rec.payload.get('pin'):
+            self._pin(rec, unpin=self.records.get(str(rec.payload['pin'].get('unpin') or '')))
+            self._persist(rec)
         return done
 
     def _idle(self) -> None:
@@ -618,39 +662,67 @@ class TgBot:
         """Эскалация 🔴 (один раз): ответ в группе со звуком и упоминанием + личные копии с кнопками. Запись берётся
         заново под замком: «Տեսա», нажатую между решением и отправкой, эскалация не перекрывает."""
         rec = self.records.get(key)
-        if rec is None or rec.acked_by is not None or rec.escalated_at is not None or rec.phase != 'active':
+        if rec is None or rec.escalated_at is not None or rec.phase != 'active' or self._acked(rec):
             return 0
-        with self.pending_lock:
-            if rec.id in self.pending_acks:   # «Տեսա» уже нажата (ждёт записи) — эскалации нет
-                return 0
         n = int(tg.escalate_min)
         mention = ', '.join(f'<a href="tg://user?id={uid}">{la.esc(self.names.get(str(uid)) or "ղեկավար")}</a>'
                             for uid in tg.escalate_to)
         what = f'{la.EMOJI["critical"]} {la.esc(la.TITLE.get(rec.kind, rec.kind))} · <b>{la.esc(rec.car or "")}</b>'
+        text = f'❗ <b>{n} րոպե առանց պատասխանի</b>\n{what}' + (f'\n{mention}' if mention else '')
+        if self._acked(rec):   # перепроверка вплотную к отправке: «Տեսա» могла прийти, пока собирали текст
+            return 0
         sent = 1
         try:
-            self._send(rec.chat or self.chat, f'❗ <b>{n} րոպե առանց պատասխանի</b>\n{what}' + (f'\n{mention}' if mention else ''),
-                       thread=rec.thread_id, reply_to=rec.message_id)
+            self._send(rec.chat or self.chat, text, thread=rec.thread_id, reply_to=rec.message_id)
         except TelegramError as e:   # ответ в группе отвергнут — личные копии всё равно (ради них эскалация)
             if not per_message(e):
                 raise
             logger.warning('[Routes] Telegram-бот: эскалация %s в группе отклонена (%s) — только лично', rec.key, e)
             sent = 0
-        rec = replace(rec, escalated_at=now.isoformat(), payload=dict(rec.payload))
-        self._persist(rec)   # ответ в группе ушёл — повторов не будет, даже если личные не дойдут
-        copies = []
-        for uid in tg.escalate_to:
+        # ответ в группе ушёл — повторов не будет; личные — списком «кому ещё» (очередь, 429, сеть — следующим проходом)
+        rec = replace(rec, escalated_at=now.isoformat(), payload={**rec.payload, 'esc_min': n,
+                                                                  'copies_pending': [str(u) for u in tg.escalate_to]})
+        self._persist(rec)
+        return sent + self._send_copies(rec)
+
+    def _acked(self, rec: Rec) -> bool:
+        """«Տեսա» записана или нажата и ждёт записи (pending_acks)."""
+        if rec.acked_by is not None:
+            return True
+        with self.pending_lock:
+            return rec.id in self.pending_acks
+
+    def _send_copies(self, rec: Rec) -> int:
+        """Личные копии эскалации тем, кому ещё не ушли (payload.copies_pending). 403 — человек не нажимал /start у бота
+        (больше не пробуем, в журнал); ограничение частоты и сеть — остаётся в списке, повтор следующим проходом;
+        прочие отказы — в журнал. Запись подтвердили — копий больше не шлём."""
+        n = rec.payload.get('esc_min', 10)
+        sent = 0
+        for uid in list(rec.payload.get('copies_pending') or ()):
+            if self._acked(rec):
+                rec.payload['copies_pending'] = []
+                break
             try:
-                msg = self._send(str(uid), la.render(rec) + f'\n❗ {n} րոպե առանց պատասխանի',
+                msg = self._send(uid, la.render(rec) + f'\n❗ {n} րոպե առանց պատասխանի',
                                  markup=la.keyboard(rec, self.sign))
-                copies.append([str(uid), msg.get('message_id')])
-            except TelegramError as e:   # 403: человек не нажимал /start у бота — остальным всё равно шлём
-                logger.warning('[Routes] Telegram-бот: эскалация %s лично %s не доставлена (%s) — человеку нужно '
-                               'открыть бота и нажать /start', rec.key, uid, e)
-        if copies:
-            rec.payload['copies'] = copies
-            self._persist(rec)
-        return sent + len(copies)
+            except TelegramError as e:
+                if tg_api.throttled(e):
+                    break   # остальные — следующим проходом
+                rec.payload['copies_pending'].remove(uid)
+                if e.status == 403:
+                    logger.warning('[Routes] Telegram-бот: эскалация %s лично %s не доставлена (%s) — человеку нужно '
+                                   'открыть бота и нажать /start', rec.key, uid, e)
+                else:
+                    logger.warning('[Routes] Telegram-бот: эскалация %s лично %s отклонена (%s)', rec.key, uid, e)
+                continue
+            msg = msg if isinstance(msg, dict) else {}
+            rec.payload['copies_pending'].remove(uid)
+            rec.payload['copies'] = [*(rec.payload.get('copies') or []), [uid, msg.get('message_id')]]
+            sent += 1
+        if not rec.payload.get('copies_pending'):
+            rec.payload.pop('copies_pending', None)
+        self._persist(rec)
+        return sent
 
     def _report_inputs(self, day: date, now: datetime, settings: Mapping[str, Any], rules: Rules, tg: la.TgRules,
                        cards: Mapping[str, Mapping[str, Any]]) -> dict[str, Any] | None:
@@ -711,6 +783,8 @@ class TgBot:
         self._persist(rec)
         if pin:
             self._pin(rec, unpin=self.records.get(f'plan:{key.split(":", 1)[1]}') if kind == 'summary' else None)
+            if rec.payload.get('pin'):   # не закрепилось из-за очереди — повтор следующим проходом
+                self._persist(rec)
         return rec
 
     def _plan_report(self, plan: Mapping[str, Any], ds: str, now: datetime, quiet: bool) -> int:
@@ -935,8 +1009,9 @@ class TgBot:
             self._answer(cq, None)
 
     def _ack(self, rid: int, user: Mapping[str, Any]) -> str:
-        """«Տեսա»: кто и когда — в запись, сообщение правится (строка «✔ Տեսավ …», без кнопки). Правка не удалась — нажатие
-        всё равно записано (эскалации не будет)."""
+        """«Տեսա»: кто и когда — в запись, сообщение правится (строка «✔ Տեսավ …», без кнопки). Правка не удалась —
+        нажатие всё равно записано (эскалации не будет); очередь, 429, сеть — отметка ack_edit, правка следующим
+        проходом (_pending)."""
         old = next((r for r in self.records.values() if r.id == rid), None)
         if old is None or old.phase not in ('active', 'ended'):   # номера сообщения может не быть — кнопка его записи
             return 'Հնացած է'
@@ -947,6 +1022,9 @@ class TgBot:
         try:
             self._edit(rec)
         except TelegramError as e:
-            logger.warning('[Routes] Telegram-бот: «Տեսա» записано, сообщение не исправлено (%s)', e)
+            if tg_api.throttled(e):
+                rec.payload['ack_edit'] = True
+            logger.warning('[Routes] Telegram-бот: «Տեսա» записано, сообщение не исправлено (%s)%s', e,
+                           ' — повтор следующим проходом' if tg_api.throttled(e) else '')
         self._persist(rec)
         return ACKED

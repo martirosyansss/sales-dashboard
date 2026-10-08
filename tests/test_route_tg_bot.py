@@ -1169,6 +1169,88 @@ def test_review4_closed_topic_is_remembered(tmp_path, caplog):
     assert api.sent()[-1].get('message_thread_id') == h.bot.topics['violations']   # потом — снова в тему
 
 
+# ============================== ревью 5 ==============================
+
+def local429(seconds=5.0):
+    return tg_api.TelegramError('HTTP 429: очередь', 429, retry_after=seconds, description='rate limit (local queue)',
+                                local=True)
+
+
+def test_review5_ack_edit_hit_by_queue_is_redone_next_pass(tmp_path):
+    h = Harness(tmp_path, gps_card(), NOW)
+    h.tick()
+    rec = h.rec('alert:')
+    h.api.fail['editMessageText'] = [local429()]
+    h.bot.handle(callback(h, h.bot.sign(f'a:{rec.id}')))
+    assert h.rec('alert:').acked_by == 7 and h.rec('alert:').payload.get('ack_edit') is True
+    assert '✔ Տեսավ' not in h.api.text('-100', rec.message_id)
+    h.tick()
+    assert h.api.text('-100', rec.message_id).endswith('✔ Տեսավ Գոռ · 11:00') and 'ack_edit' not in h.rec('alert:').payload
+    assert la.ACK_TEXT not in h.api.buttons('-100', rec.message_id)
+
+
+def test_review5_private_copy_hit_by_queue_is_resent_and_only_403_means_no_start(tmp_path, caplog):
+    h = Harness(tmp_path, gps_card(), NOW, settings={'tg_escalate_to': [OWNER, 5]})
+    h.tick()
+    h.set(now=NOW + timedelta(minutes=10))
+    # группа; владелец — очередь (и при доделке в том же проходе — снова очередь)
+    h.api.fail['sendMessage'] = [None, local429(), local429()]
+    h.tick()
+    rec = h.rec('alert:')
+    assert rec.payload['copies_pending'] == [str(OWNER), '5'] and '/start' not in caplog.text
+    assert h.bot.failures == 0
+    h.tick()
+    rec = h.rec('alert:')
+    assert 'copies_pending' not in rec.payload and [c[0] for c in rec.payload['copies']] == [str(OWNER), '5']
+    assert len([t for t in h.api.texts('-100') if t.startswith('❗')]) == 1  # в группе — один раз
+
+
+def test_review5_local_queue_error_is_not_a_failure(tmp_path, caplog):
+    h = Harness(tmp_path, gps_card(), NOW)
+    h.api.fail['sendMessage'] = [local429(7)]
+    assert h.tick() == 0 and h.bot.failures == 0 and h.bot.client_errors == 0
+    assert h.bot.retry_at == pytest.approx(h.clock[0] + 7) and 'не отправлено' not in caplog.text
+    h.clock[0] += 8
+    assert h.tick() == 1
+
+
+def test_review5_ack_right_before_send_stops_escalation(tmp_path):
+    h = Harness(tmp_path, gps_card(), NOW)
+    h.tick()
+    rec = h.rec('alert:')
+
+    class Names(dict):
+        def get(self, k, default=None):     # пока собирается текст эскалации, человек нажимает «Տեսա»
+            h.bot.pending_acks.add(rec.id)
+            return super().get(k, default)
+    h.bot.names = Names()
+    h.set(now=NOW + timedelta(minutes=11))
+    assert h.tick() == 0 and not [t for t in h.api.texts() if t.startswith('❗')]
+    assert h.rec('alert:').escalated_at is None
+
+
+def test_review5_odd_reply_to_private_copy_does_not_crash(tmp_path):
+    api = FakeTelegram()
+    real = api._sendMessage
+    api._sendMessage = lambda p: True if str(p['chat_id']) == str(OWNER) else real(p)
+    h = Harness(tmp_path, gps_card(), NOW, api=api)
+    h.tick()
+    h.set(now=NOW + timedelta(minutes=10))
+    assert h.tick() == 2 and h.rec('alert:').payload['copies'] == [[str(OWNER), None]]
+
+
+def test_review5_pin_hit_by_queue_is_retried(tmp_path):
+    h = Harness(tmp_path, {}, NOW)
+    h.set(plan=plan_of())
+    h.api.fail['pinChatMessage'] = [local429()]
+    h.tick()
+    rec = h.rec('plan:')
+    assert rec.payload.get('pin') == {'unpin': None} and h.bot.pin_warned is False
+    h.tick()
+    assert 'pin' not in h.rec('plan:').payload and h.api.of('pinChatMessage')[-1]['message_id'] == rec.message_id
+    assert len(h.api.of('pinChatMessage')) == 2
+
+
 def test_settings_page_has_telegram_block():
     js = (ROOT / 'static' / 'js' / 'routes_settings.js').read_text(encoding='utf-8')
     assert all(f"key: '{k}'" in js for k in ('tg_levels', 'tg_sim_installed', 'tg_escalate_min', 'tg_escalate_to',

@@ -37,15 +37,22 @@ LIMITED = frozenset({'sendMessage', 'editMessageText', 'editMessageReplyMarkup',
 
 class TelegramError(RuntimeError):
     """Сбой вызова Bot API; текст — код и description Telegram, без токена. status — код HTTP (или error_code ответа),
-    retry_after — секунды паузы при 429, migrate_to — новый id группы (стала супергруппой)."""
+    retry_after — секунды паузы при 429, migrate_to — новый id группы (стала супергруппой), local — «429» своей очереди
+    (no_wait: ждать под замком нельзя), Telegram не вызывался."""
 
     def __init__(self, text: str, status: int | None = None, retry_after: float | None = None,
-                 description: str = '', migrate_to: int | None = None):
+                 description: str = '', migrate_to: int | None = None, local: bool = False):
         super().__init__(text)
         self.status = status
         self.retry_after = retry_after
         self.description = description
         self.migrate_to = migrate_to
+        self.local = local
+
+
+def throttled(e: TelegramError) -> bool:
+    """Ограничение частоты (429 Telegram или своя очередь) и сбой сети без кода: сообщение не отвергнуто — повторить."""
+    return e.status == 429 or e.local or e.status is None or e.status >= 500
 
 
 class _Local(threading.local):
@@ -116,7 +123,7 @@ class RateLimiter:
             ahead = self.ready_in(chat)
             if ahead > NO_WAIT_MAX_S:
                 raise TelegramError(f'HTTP 429: очередь {ahead:.0f} с', 429, retry_after=ahead,
-                                    description='rate limit (local queue)')
+                                    description='rate limit (local queue)', local=True)
         delay = self.slot(chat)
         if delay > 0:
             self.sleep(delay)
@@ -127,7 +134,8 @@ class RateLimiter:
             delay = self.paused_until - self.clock()
         if delay > 0:
             if _local.no_wait and delay > NO_WAIT_MAX_S:
-                raise TelegramError('HTTP 429: пауза', 429, retry_after=delay, description='rate limit (paused)')
+                raise TelegramError('HTTP 429: пауза', 429, retry_after=delay, description='rate limit (paused)',
+                                    local=True)
             self.sleep(delay)
 
     def pause(self, seconds: float) -> None:
