@@ -1,8 +1,8 @@
 {
- "version": "1.2.3",
- "about": "Контрольные примеры правила §5.12 (v1.2) контракта «Առաքիչ»: объединение, разделение, пропавшие и пересозданные накладные, отмена оплат, supersedes. Сервер (tests/fixtures/courier_merge_vectors.json) и приложение (app/src/test/resources/courier_merge_vectors.json) обязаны давать РОВНО эти ответы. Файл менять только синхронно в обоих репозиториях.",
+ "version": "1.2.4",
+ "about": "Контрольные примеры правила §5.12 (v1.2) контракта «Առաքիչ»: объединение, разделение, пропавшие и пересозданные накладные, отмена оплат, supersedes; v1.2.4 — подарки ERP (строка с gift: true и ценой 0, контракт §11). Сервер (tests/fixtures/courier_merge_vectors.json) и приложение (app/src/test/resources/courier_merge_vectors.json) обязаны давать РОВНО эти ответы. Файл менять только синхронно в обоих репозиториях.",
  "input_format": {
-  "stops": "известные точки дня: stop_id, source (invoice|order), collect (cash|cash_ecr|none|ask; любое другое значение = ask), current, replaces (только у invoice; учитываются только ссылки на известные точки-ЗАКАЗЫ, остальные игнорируются), lines [{line_id, product_id, qty, price}] — строки той версии, по которой записаны события (п. 16); price отсутствует = 0",
+  "stops": "известные точки дня: stop_id, source (invoice|order), collect (cash|cash_ecr|none|ask; любое другое значение = ask), current, replaces (только у invoice; учитываются только ссылки на известные точки-ЗАКАЗЫ, остальные игнорируются), lines [{line_id, product_id, qty, price, gift?}] — строки той версии, по которой записаны события (п. 16); price отсутствует = 0; v1.2.4: строка с gift = true и ценой 0 — подарок: её товар не «товар заявления» (правило (в), покрытые товары суммы заказов), не остаток и не товар владельца в (г); в статусе и деньгах — обычная строка",
   "events": "все принятые события точек дня. В расчёте денег и статуса участвуют только delivery и payment. Точку «со своими событиями» (активной) делает любое событие, КРОМЕ arrived и geo_suggest (события GPS из §6). delivery.payload = {lines:[{line_id, qty}], supersedes?}; payment.payload = {amount, kind: invoice|debt, cancel_of?}"
  },
  "output_format": {
@@ -2352,6 +2352,473 @@
      "instruction": {
       "kind": "take",
       "amount": 1000
+     }
+    }
+   }
+  },
+  {
+   "name": "29_two_lines_one_product",
+   "stops": [
+    {
+     "stop_id": "S:A",
+     "source": "invoice",
+     "collect": "cash",
+     "current": true,
+     "replaces": [],
+     "lines": [
+      {
+       "line_id": "s1",
+       "product_id": 100,
+       "qty": 10,
+       "price": 100
+      },
+      {
+       "line_id": "s2",
+       "product_id": 100,
+       "qty": 5,
+       "price": 100
+      }
+     ]
+    }
+   ],
+   "events": [
+    {
+     "id": "d1",
+     "type": "delivery",
+     "stop_id": "S:A",
+     "at": "2026-10-02T09:00:00.000+04:00",
+     "payload": {
+      "lines": [
+       {
+        "line_id": "s1",
+        "qty": 10
+       },
+       {
+        "line_id": "s2",
+        "qty": 0
+       }
+      ]
+     }
+    },
+    {
+     "id": "p1",
+     "type": "payment",
+     "stop_id": "S:A",
+     "at": "2026-10-02T09:01:00.000+04:00",
+     "payload": {
+      "amount": 1000,
+      "kind": "invoice"
+     }
+    }
+   ],
+   "expected": {
+    "S:A": {
+     "removed": false,
+     "status": "partial",
+     "due": 1000.0,
+     "paid": 1000.0,
+     "flags": [],
+     "instruction": {
+      "kind": "paid",
+      "amount": null
+     }
+    }
+   }
+  },
+  {
+   "name": "30_gift_line_zero_price_partial",
+   "stops": [
+    {
+     "stop_id": "S:A",
+     "source": "invoice",
+     "collect": "cash",
+     "current": true,
+     "replaces": [],
+     "lines": [
+      {
+       "line_id": "s1",
+       "product_id": 100,
+       "qty": 20,
+       "price": 100
+      },
+      {
+       "line_id": "sg",
+       "product_id": 100,
+       "qty": 2,
+       "price": 0,
+       "gift": true
+      }
+     ]
+    }
+   ],
+   "events": [
+    {
+     "id": "d1",
+     "type": "delivery",
+     "stop_id": "S:A",
+     "at": "2026-10-02T09:00:00.000+04:00",
+     "payload": {
+      "lines": [
+       {
+        "line_id": "s1",
+        "qty": 10
+       },
+       {
+        "line_id": "sg",
+        "qty": 1
+       }
+      ]
+     }
+    }
+   ],
+   "expected": {
+    "S:A": {
+     "removed": false,
+     "status": "partial",
+     "due": 1000.0,
+     "paid": 0.0,
+     "flags": [],
+     "instruction": {
+      "kind": "take",
+      "amount": 1000.0
+     }
+    }
+   }
+  },
+  {
+   "name": "31_gift_order_full_to_invoice",
+   "stops": [
+    {
+     "stop_id": "O:1",
+     "source": "order",
+     "collect": "cash",
+     "current": false,
+     "lines": [
+      {
+       "line_id": "o1",
+       "product_id": 100,
+       "qty": 20,
+       "price": 100
+      },
+      {
+       "line_id": "og",
+       "product_id": 100,
+       "qty": 2,
+       "price": 0,
+       "gift": true
+      }
+     ]
+    },
+    {
+     "stop_id": "S:A",
+     "source": "invoice",
+     "collect": "cash",
+     "current": true,
+     "replaces": [
+      "O:1"
+     ],
+     "lines": [
+      {
+       "line_id": "s1",
+       "product_id": 100,
+       "qty": 20,
+       "price": 100
+      },
+      {
+       "line_id": "sg",
+       "product_id": 100,
+       "qty": 2,
+       "price": 0,
+       "gift": true
+      }
+     ]
+    }
+   ],
+   "events": [
+    {
+     "id": "d1",
+     "type": "delivery",
+     "stop_id": "O:1",
+     "at": "2026-10-02T09:00:00.000+04:00",
+     "payload": {
+      "lines": [
+       {
+        "line_id": "o1",
+        "qty": 20
+       },
+       {
+        "line_id": "og",
+        "qty": 2
+       }
+      ]
+     }
+    },
+    {
+     "id": "p1",
+     "type": "payment",
+     "stop_id": "O:1",
+     "at": "2026-10-02T09:01:00.000+04:00",
+     "payload": {
+      "amount": 2000,
+      "kind": "invoice"
+     }
+    }
+   ],
+   "expected": {
+    "S:A": {
+     "removed": false,
+     "status": "full",
+     "due": 2000.0,
+     "paid": 2000.0,
+     "flags": [],
+     "instruction": {
+      "kind": "paid",
+      "amount": null
+     }
+    }
+   }
+  },
+  {
+   "name": "32_gift_order_gift_refused_to_invoice",
+   "stops": [
+    {
+     "stop_id": "O:1",
+     "source": "order",
+     "collect": "cash",
+     "current": false,
+     "lines": [
+      {
+       "line_id": "o1",
+       "product_id": 100,
+       "qty": 20,
+       "price": 100
+      },
+      {
+       "line_id": "og",
+       "product_id": 100,
+       "qty": 2,
+       "price": 0,
+       "gift": true
+      }
+     ]
+    },
+    {
+     "stop_id": "S:A",
+     "source": "invoice",
+     "collect": "cash",
+     "current": true,
+     "replaces": [
+      "O:1"
+     ],
+     "lines": [
+      {
+       "line_id": "s1",
+       "product_id": 100,
+       "qty": 20,
+       "price": 100
+      },
+      {
+       "line_id": "sg",
+       "product_id": 100,
+       "qty": 2,
+       "price": 0,
+       "gift": true
+      }
+     ]
+    }
+   ],
+   "events": [
+    {
+     "id": "d1",
+     "type": "delivery",
+     "stop_id": "O:1",
+     "at": "2026-10-02T09:00:00.000+04:00",
+     "payload": {
+      "lines": [
+       {
+        "line_id": "o1",
+        "qty": 20
+       },
+       {
+        "line_id": "og",
+        "qty": 0
+       }
+      ]
+     }
+    }
+   ],
+   "expected": {
+    "S:A": {
+     "removed": false,
+     "status": "partial",
+     "due": 2000.0,
+     "paid": 0.0,
+     "flags": [],
+     "instruction": {
+      "kind": "take",
+      "amount": 2000.0
+     }
+    }
+   }
+  },
+  {
+   "name": "33_gift_only_on_invoice",
+   "stops": [
+    {
+     "stop_id": "O:1",
+     "source": "order",
+     "collect": "cash",
+     "current": false,
+     "lines": [
+      {
+       "line_id": "o1",
+       "product_id": 100,
+       "qty": 20,
+       "price": 100
+      }
+     ]
+    },
+    {
+     "stop_id": "S:A",
+     "source": "invoice",
+     "collect": "cash",
+     "current": true,
+     "replaces": [
+      "O:1"
+     ],
+     "lines": [
+      {
+       "line_id": "s1",
+       "product_id": 100,
+       "qty": 20,
+       "price": 100
+      },
+      {
+       "line_id": "sg",
+       "product_id": 300,
+       "qty": 1,
+       "price": 0,
+       "gift": true
+      }
+     ]
+    }
+   ],
+   "events": [
+    {
+     "id": "d1",
+     "type": "delivery",
+     "stop_id": "O:1",
+     "at": "2026-10-02T09:00:00.000+04:00",
+     "payload": {
+      "lines": [
+       {
+        "line_id": "o1",
+        "qty": 20
+       }
+      ]
+     }
+    }
+   ],
+   "expected": {
+    "S:A": {
+     "removed": false,
+     "status": "full",
+     "due": 2000.0,
+     "paid": 0.0,
+     "flags": [],
+     "instruction": {
+      "kind": "take",
+      "amount": 2000.0
+     }
+    }
+   }
+  },
+  {
+   "name": "34_gift_of_order_dropped_on_invoice",
+   "stops": [
+    {
+     "stop_id": "O:1",
+     "source": "order",
+     "collect": "cash",
+     "current": false,
+     "lines": [
+      {
+       "line_id": "o1",
+       "product_id": 100,
+       "qty": 20,
+       "price": 100
+      },
+      {
+       "line_id": "og",
+       "product_id": 300,
+       "qty": 1,
+       "price": 0,
+       "gift": true
+      }
+     ]
+    },
+    {
+     "stop_id": "S:A",
+     "source": "invoice",
+     "collect": "cash",
+     "current": true,
+     "replaces": [
+      "O:1"
+     ],
+     "lines": [
+      {
+       "line_id": "s1",
+       "product_id": 100,
+       "qty": 20,
+       "price": 100
+      }
+     ]
+    }
+   ],
+   "events": [
+    {
+     "id": "d1",
+     "type": "delivery",
+     "stop_id": "O:1",
+     "at": "2026-10-02T09:00:00.000+04:00",
+     "payload": {
+      "lines": [
+       {
+        "line_id": "o1",
+        "qty": 20
+       },
+       {
+        "line_id": "og",
+        "qty": 0
+       }
+      ]
+     }
+    },
+    {
+     "id": "d2",
+     "type": "delivery",
+     "stop_id": "S:A",
+     "at": "2026-10-02T10:00:00.000+04:00",
+     "payload": {
+      "lines": [
+       {
+        "line_id": "s1",
+        "qty": 20
+       }
+      ]
+     }
+    }
+   ],
+   "expected": {
+    "S:A": {
+     "removed": false,
+     "status": "full",
+     "due": 2000.0,
+     "paid": 0.0,
+     "flags": [],
+     "instruction": {
+      "kind": "take",
+      "amount": 2000.0
      }
     }
    }

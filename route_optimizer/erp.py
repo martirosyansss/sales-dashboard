@@ -237,7 +237,28 @@ SELECT a.fID, a.fCUSTOMERID, a.fLATITUDE, a.fLONGITUDE, a.fDEFAULT, a.fCLOSED
 FROM CUSTOMERDELIVERYADDRESSES a WITH (NOLOCK)
 """
 
-SQL_SALES_DOCS = """
+# Вес документа, кг (что машина физически везёт): Σ количество × вес товара (PRODUCTS.fWEIGHT) по строкам SALEDOCDETAILS
+# и подаркам SALEDOCGIFTS того же fISN (ответ владельца №90 «учесть везде»). Проверено 08.10.2026 (только SELECT): ERP
+# пишет подарки акций (GIFTPROMOTIONS: напр. на каждые 10 «Գառնի 6լ» — 1 такой же) отдельной таблицей SALEDOCGIFTS (fISN,
+# fPRODUCTID, fQUANTITY, fROWNUM) — и у заказов (ORDERS), и у накладных (SALES); в SALEDOCDETAILS их нет. Цены у подарка нет
+# (fTOTALSUM документа не меняется) — меняется только вес: заказы сентября 2026 — 15,8 т подарков к 813 т строк, у 109 из 126
+# машино-дней есть подарки, в среднем +98 кг, максимум +544 кг. Выручка и статистика продаж из SALEDOCDETAILS — без подарков.
+_KG_APPLY = """OUTER APPLY (SELECT SUM(x.qty * pr.fWEIGHT) AS kg
+             FROM (SELECT sd.fPRODUCTID AS pid, sd.fQUANTITY AS qty FROM SALEDOCDETAILS sd WITH (NOLOCK)
+                   WHERE sd.fISN = {doc}.fISN
+                   UNION ALL
+                   SELECT g.fPRODUCTID, g.fQUANTITY FROM SALEDOCGIFTS g WITH (NOLOCK)
+                   WHERE g.fISN = {doc}.fISN) x
+             JOIN PRODUCTS pr WITH (NOLOCK) ON pr.fID = x.pid) k"""
+_KG_S = _KG_APPLY.format(doc='s')   # накладная SALES s
+# Из них только подарки накладной (crew_pay: клиенто-день из одних подарков — не точка оплаты)
+_GIFT_KG_S = """OUTER APPLY (SELECT SUM(g.fQUANTITY * pr.fWEIGHT) AS kg
+             FROM SALEDOCGIFTS g WITH (NOLOCK)
+             JOIN PRODUCTS pr WITH (NOLOCK) ON pr.fID = g.fPRODUCTID
+             WHERE g.fISN = s.fISN) gk"""
+_KG_O = _KG_APPLY.format(doc='o')   # заказ ORDERS o
+
+SQL_SALES_DOCS = f"""
 SELECT s.fCUSTOMERID, s.fSALESAGENTID, CAST(s.fDATE AS date), od.order_date,
        s.fTOTALSUM, ISNULL(k.kg, 0)
 FROM SALES s WITH (NOLOCK)
@@ -245,10 +266,7 @@ OUTER APPLY (SELECT MIN(CAST(o.fDATE AS date)) AS order_date
              FROM DOCPARENTS p WITH (NOLOCK)
              JOIN ORDERS o WITH (NOLOCK) ON o.fISN = p.fPARENTISN
              WHERE p.fISN = s.fISN AND p.fPARENTDOCTYPE = 1) od
-OUTER APPLY (SELECT SUM(sd.fQUANTITY * pr.fWEIGHT) AS kg
-             FROM SALEDOCDETAILS sd WITH (NOLOCK)
-             JOIN PRODUCTS pr WITH (NOLOCK) ON pr.fID = sd.fPRODUCTID
-             WHERE sd.fISN = s.fISN) k
+{_KG_S}
 WHERE s.fSTATE = 2 AND s.fDATE >= ? AND s.fDATE < ?
 """
 
@@ -322,13 +340,10 @@ GROUP BY r.fCUSTOMERID
 """
 
 # Сколько везла машина в день: документов и кг (вес — как в SQL_SALES_DOCS: количество × вес товара)
-SQL_CAR_DAYS = """
+SQL_CAR_DAYS = f"""
 SELECT LTRIM(RTRIM(s.fDELIVERYCAR)), CAST(s.fDATE AS date), COUNT(*), SUM(ISNULL(k.kg, 0))
 FROM SALES s WITH (NOLOCK)
-OUTER APPLY (SELECT SUM(sd.fQUANTITY * pr.fWEIGHT) AS kg
-             FROM SALEDOCDETAILS sd WITH (NOLOCK)
-             JOIN PRODUCTS pr WITH (NOLOCK) ON pr.fID = sd.fPRODUCTID
-             WHERE sd.fISN = s.fISN) k
+{_KG_S}
 WHERE s.fSTATE = 2 AND s.fDATE >= ? AND s.fDATE < ? AND LTRIM(RTRIM(s.fDELIVERYCAR)) <> ''
 GROUP BY LTRIM(RTRIM(s.fDELIVERYCAR)), CAST(s.fDATE AS date)
 """
@@ -343,7 +358,7 @@ GROUP BY LTRIM(RTRIM(s.fDELIVERYCAR)), CAST(s.fDATE AS date)
 # - fVANAGENTID = fSALESAGENTID — менеджер развозит сам (A000, A008/6 «19 литров»): не для машин парка;
 # - день ввода заказа — DOCUMENTS.fCREATIONDATE того же fISN (SQL_ORDER_CREATED): заведён раньше своей даты — заказ на
 #   эту дату (ответ владельца №79, dispatch.DispatchOrder.predated); документа нет — NULL, заказ как обычный.
-SQL_DISPATCH_ORDERS = """
+SQL_DISPATCH_ORDERS = f"""
 SELECT CAST(o.fISN AS nvarchar(36)), RTRIM(o.fDOCNUM), CAST(o.fDATE AS date), o.fCUSTOMERID,
        o.fSALESAGENTID, LTRIM(RTRIM(ISNULL(o.fDELIVERYCAR, ''))), o.fTOTALSUM, ISNULL(k.kg, 0), sh.shipped,
        o.fVANAGENTID, cr.entered
@@ -351,10 +366,7 @@ FROM ORDERS o WITH (NOLOCK)
 OUTER APPLY (SELECT MIN(CAST(d.fCREATIONDATE AS date)) AS entered
              FROM DOCUMENTS d WITH (NOLOCK)
              WHERE d.fISN = o.fISN) cr
-OUTER APPLY (SELECT SUM(sd.fQUANTITY * pr.fWEIGHT) AS kg
-             FROM SALEDOCDETAILS sd WITH (NOLOCK)
-             JOIN PRODUCTS pr WITH (NOLOCK) ON pr.fID = sd.fPRODUCTID
-             WHERE sd.fISN = o.fISN) k
+{_KG_O}
 OUTER APPLY (SELECT MIN(CAST(s.fDATE AS date)) AS shipped
              FROM DOCPARENTS p WITH (NOLOCK)
              JOIN SALES s WITH (NOLOCK) ON s.fISN = p.fISN
@@ -421,27 +433,22 @@ GROUP BY s.fSALESAGENTID, x.car, CASE WHEN x.car = '' THEN s.fVANAGENTID ELSE 0 
 """
 
 # Факт развоза за дату: проведённые реализации с машиной, кг и суммой («план и факт»)
-SQL_SHIPPED = """
+SQL_SHIPPED = f"""
 SELECT s.fCUSTOMERID, s.fSALESAGENTID, LTRIM(RTRIM(ISNULL(s.fDELIVERYCAR, ''))), s.fTOTALSUM, ISNULL(k.kg, 0),
        s.fVANAGENTID
 FROM SALES s WITH (NOLOCK)
-OUTER APPLY (SELECT SUM(sd.fQUANTITY * pr.fWEIGHT) AS kg
-             FROM SALEDOCDETAILS sd WITH (NOLOCK)
-             JOIN PRODUCTS pr WITH (NOLOCK) ON pr.fID = sd.fPRODUCTID
-             WHERE sd.fISN = s.fISN) k
+{_KG_S}
 WHERE s.fSTATE = 2 AND s.fDATE >= ? AND s.fDATE < ?
 """
 
 # «Աշխատավարձ» (09-crew-pay.md): проведённые реализации, которые вёз экспедитор, а не сам менеджер, — по экспедитору,
 # дню, клиенту и линии (менеджеру): сумма и кг (вес — как в SQL_SHIPPED). Линии и люди-исключения — в crew_pay.compute.
-SQL_CREW_PAY = """
+SQL_CREW_PAY = f"""
 SELECT s.fVANAGENTID, CAST(s.fDATE AS date), s.fCUSTOMERID, ISNULL(s.fSALESAGENTID, 0), SUM(s.fTOTALSUM),
-       SUM(ISNULL(k.kg, 0))
+       SUM(ISNULL(k.kg, 0)), SUM(ISNULL(gk.kg, 0))
 FROM SALES s WITH (NOLOCK)
-OUTER APPLY (SELECT SUM(sd.fQUANTITY * pr.fWEIGHT) AS kg
-             FROM SALEDOCDETAILS sd WITH (NOLOCK)
-             JOIN PRODUCTS pr WITH (NOLOCK) ON pr.fID = sd.fPRODUCTID
-             WHERE sd.fISN = s.fISN) k
+{_KG_S}
+{_GIFT_KG_S}
 WHERE s.fSTATE = 2 AND s.fDATE >= ? AND s.fDATE < ?
   AND ISNULL(s.fVANAGENTID, 0) <> 0 AND s.fVANAGENTID <> ISNULL(s.fSALESAGENTID, 0)
 GROUP BY s.fVANAGENTID, CAST(s.fDATE AS date), s.fCUSTOMERID, ISNULL(s.fSALESAGENTID, 0)
@@ -450,14 +457,11 @@ GROUP BY s.fVANAGENTID, CAST(s.fDATE AS date), s.fCUSTOMERID, ISNULL(s.fSALESAGE
 # «Առաքման արժեք» (№87, п. 6; cost_to_serve): все проведённые накладные за период по дню, клиенту, линии (менеджеру) и
 # экспедитору — сумма и кг (вес — как в SQL_SHIPPED). Продажи магазина — все строки; груз и точки экипажа — строки, которые
 # вёз экспедитор (≠ 0 и ≠ менеджер), по правилам «Աշխատավարձ» (cost_to_serve.deliveries).
-SQL_COST_SALES = """
+SQL_COST_SALES = f"""
 SELECT CAST(s.fDATE AS date), s.fCUSTOMERID, ISNULL(s.fSALESAGENTID, 0), ISNULL(s.fVANAGENTID, 0),
        SUM(s.fTOTALSUM), SUM(ISNULL(k.kg, 0))
 FROM SALES s WITH (NOLOCK)
-OUTER APPLY (SELECT SUM(sd.fQUANTITY * pr.fWEIGHT) AS kg
-             FROM SALEDOCDETAILS sd WITH (NOLOCK)
-             JOIN PRODUCTS pr WITH (NOLOCK) ON pr.fID = sd.fPRODUCTID
-             WHERE sd.fISN = s.fISN) k
+{_KG_S}
 WHERE s.fSTATE = 2 AND s.fDATE >= ? AND s.fDATE < ?
 GROUP BY CAST(s.fDATE AS date), s.fCUSTOMERID, ISNULL(s.fSALESAGENTID, 0), ISNULL(s.fVANAGENTID, 0)
 """
@@ -820,7 +824,7 @@ def load_crew_pay(connection_string: str, since: date, until: date) -> CrewData:
     conn = connect(connection_string)
     try:
         invoices = tuple(Invoice(int(r[0]), _day(r[1]), int(r[2] or 0), int(r[3] or 0), float(r[4] or 0),
-                                 float(r[5] or 0))
+                                 float(r[5] or 0), float(r[6] or 0))
                          for r in _select(conn, SQL_CREW_PAY, (since, until)))
         return CrewData(invoices, {a.id: (a.code, ' '.join(a.name.split())) for a in agents(conn).values()})
     finally:
