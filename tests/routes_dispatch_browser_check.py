@@ -407,81 +407,89 @@ def main() -> int:
                 real_clock, real_yerevan = views._clock, views._yerevan_now
                 views._clock = lambda: datetime(2026, 9, 30, 18, 0)
                 views._yerevan_now = lambda: datetime(2026, 9, 30, 18, 0, tzinfo=ZoneInfo('Asia/Yerevan'))
-                open_cond()                                      # правило ставим тем же диалогом: только другая машина
-                page.select_option('#dpCondMode', 'allow')
-                page.locator('#dpCondTrucks input[type=checkbox]').evaluate_all('els => els.forEach(i => { i.checked = false; })')
-                page.locator(f'#dpCondTrucks input[value="{code_a}"]').check()
-                page.click('#dpCondSave')
-                page.wait_for_function("(n) => !document.getElementById('dpCondDlg').open && [...document.querySelectorAll('.dp-trip .dp-stop')]"
-                                       ".some(li => li.textContent.includes(n) && li.textContent.includes('Միայն՝'))", arg=name, timeout=10000)
-                check(store.load().vehicle_access[cid].to_json() == {'mode': 'allow', 'trucks': [code_a]},
-                      f'L rule set through the dialog: only {code_a}')
-                page.locator(f'#dpTruckCards .dp-trip[data-trip="{trip_b}"] .dp-addbtn').click()
-                page.wait_for_selector('#dpAddDlg[open]', timeout=5000)
-                off_row = f'#dpAddList .dp-add-row.is-off[data-cid="{cid}"]'
-                ok_row = f'#dpAddList .dp-add-row:not(.is-off)[data-cid="{cid}"]'
-                rule_btn = page.locator(off_row + ' button.rt-linkbtn')
-                others = page.locator('#dpAddList .dp-add-row:not(.is-off) input[type=checkbox]')
-                kept = None
-                if others.count():                               # отметка оператора должна пережить обновление списков
-                    others.first.check()
-                    kept = others.first.evaluate("el => el.closest('.dp-add-row').dataset.cid")
-                page.fill('#dpAddFind', name)
-                check(rule_btn.count() == 1 and rule_btn.inner_text() == 'Փոխել կանոնը'
-                      and rule_btn.get_attribute('type') == 'button' and name in (rule_btn.get_attribute('aria-label') or '')
-                      and page.locator('#dpAddList a').count() == 0 and page.locator(ok_row).count() == 0,
-                      f'L add dialog on {code_b}: «{name}» blocked with a «Փոխել կանոնը» button (no link), picked {kept}')
-                url_before = page.url
-                rule_btn.click()
-                page.wait_for_selector('#dpCondDlg[open]', timeout=5000)
-                page.wait_for_function("() => !document.getElementById('dpCondKind').disabled", timeout=10000)
-                top = page.evaluate("""() => {
-                    const r = document.getElementById('dpCondDlg').getBoundingClientRect();
-                    const el = document.elementFromPoint(r.left + r.width / 2, r.top + 20);
-                    return !!el && document.getElementById('dpCondDlg').contains(el);
-                }""")
-                check(page.url == url_before and vis('#dpAddDlg') and vis('#dpCondDlg') and top and name in page.inner_text('#dpCondLead')
-                      and page.input_value('#dpCondMode') == 'allow', f'L conditions dialog over the add dialog, URL unchanged: {page.url}')
-                page.keyboard.press('Escape')
-                page.wait_for_function("() => !document.getElementById('dpCondDlg').open", timeout=5000)
-                page.wait_for_timeout(200)
-                focus = page.evaluate("() => { const a = document.activeElement; const r = a && a.closest('.dp-add-row');"
-                                      " return [a && a.tagName, a && a.textContent, r && r.dataset.cid]; }")
-                check(page.locator('#dpAddDlg[open]').count() == 1 and focus == ['BUTTON', 'Փոխել կանոնը', str(cid)],
-                      f'L Escape closes only the conditions dialog, focus back on «Փոխել կանոնը»: {focus}')
-                rule_btn.click()
-                page.wait_for_selector('#dpCondDlg[open]', timeout=5000)
-                page.wait_for_function("() => !document.getElementById('dpCondKind').disabled", timeout=10000)
-                page.click('#dpCondCancel')
-                page.wait_for_function("() => !document.getElementById('dpCondDlg').open", timeout=5000)
-                check(page.locator('#dpAddDlg[open]').count() == 1
-                      and page.evaluate("() => document.activeElement.textContent") == 'Փոխել կանոնը',
-                      'L «Չեղարկել» closes only the conditions dialog, focus back on the button')
-                rule_btn.click()
-                page.wait_for_selector('#dpCondDlg[open]', timeout=5000)
-                page.wait_for_function("() => !document.getElementById('dpCondKind').disabled", timeout=10000)
-                page.locator(f'#dpCondTrucks input[value="{code_b}"]').check()      # теперь и машине этого рейса
-                page.click('#dpCondSave')
-                page.wait_for_function("(sel) => !document.getElementById('dpCondDlg').open && !!document.querySelector(sel)",
-                                       arg=ok_row, timeout=10000)
-                picked = page.locator('#dpAddList .dp-add-row:not(.is-off) input:checked').evaluate_all(
-                    "els => els.map(el => el.closest('.dp-add-row').dataset.cid)")
-                focus_cid = page.evaluate("() => { const r = document.activeElement.closest('.dp-add-row'); return r && r.dataset.cid; }")
-                check(page.locator('#dpAddDlg[open]').count() == 1 and page.locator(off_row).count() == 0
-                      and page.locator(ok_row).count() == 1 and page.input_value('#dpAddFind') == name
-                      and picked == ([kept] if kept else []) and page.url == url_before and focus_cid == str(cid)
-                      and 'առաքման պայմանները պահպանված են' in page.text_content('#dpToast'),
-                      f'L saved → add dialog still open, «{name}» moved to selectable, search and picks kept {picked}, focus {focus_cid}')
-                check(sorted(store.load().vehicle_access[cid].trucks) == sorted([code_a, code_b]), 'L store: both trucks allowed')
-                page.click('#dpAddCancel')
-                page.wait_for_function("() => !document.getElementById('dpAddDlg').open", timeout=5000)
-                open_cond()                                      # как до блока L — тем же диалогом
-                page.select_option('#dpCondMode', '')
-                page.click('#dpCondSave')
-                page.wait_for_function("(n) => !document.getElementById('dpCondDlg').open && ![...document.querySelectorAll('.dp-trip .dp-stop')]"
-                                       ".some(li => li.textContent.includes(n) && li.textContent.includes('Միայն՝'))", arg=name, timeout=10000)
-                check(cid not in store.load().vehicle_access, 'L original rule (none) restored through the dialog')
-                views._clock, views._yerevan_now = real_clock, real_yerevan
+                try:
+                    open_cond()                                      # правило ставим тем же диалогом: только другая машина
+                    page.select_option('#dpCondMode', 'allow')
+                    page.locator('#dpCondTrucks input[type=checkbox]').evaluate_all('els => els.forEach(i => { i.checked = false; })')
+                    page.locator(f'#dpCondTrucks input[value="{code_a}"]').check()
+                    page.click('#dpCondSave')
+                    page.wait_for_function("(n) => !document.getElementById('dpCondDlg').open && [...document.querySelectorAll('.dp-trip .dp-stop')]"
+                                           ".some(li => li.textContent.includes(n) && li.textContent.includes('Միայն՝'))", arg=name, timeout=10000)
+                    check(store.load().vehicle_access[cid].to_json() == {'mode': 'allow', 'trucks': [code_a]},
+                          f'L rule set through the dialog: only {code_a}')
+                    page.locator(f'#dpTruckCards .dp-trip[data-trip="{trip_b}"] .dp-addbtn').click()
+                    page.wait_for_selector('#dpAddDlg[open]', timeout=5000)
+                    off_row = f'#dpAddList .dp-add-row.is-off[data-cid="{cid}"]'
+                    ok_row = f'#dpAddList .dp-add-row:not(.is-off)[data-cid="{cid}"]'
+                    rule_btn = page.locator(off_row + ' button.rt-linkbtn')
+                    others = page.locator('#dpAddList .dp-add-row:not(.is-off) input[type=checkbox]')
+                    kept = None
+                    if others.count():                               # отметка оператора должна пережить обновление списков
+                        others.first.check()
+                        kept = others.first.evaluate("el => el.closest('.dp-add-row').dataset.cid")
+                    page.fill('#dpAddFind', name)
+                    check(rule_btn.count() == 1 and rule_btn.inner_text() == 'Փոխել կանոնը'
+                          and rule_btn.get_attribute('type') == 'button' and name in (rule_btn.get_attribute('aria-label') or '')
+                          and page.locator('#dpAddList a').count() == 0 and page.locator(ok_row).count() == 0,
+                          f'L add dialog on {code_b}: «{name}» blocked with a «Փոխել կանոնը» button (no link), picked {kept}')
+                    url_before, title_before = page.url, page.inner_text('#dpAddTitle')
+                    rule_btn.click()
+                    page.wait_for_selector('#dpCondDlg[open]', timeout=5000)
+                    page.wait_for_function("() => !document.getElementById('dpCondKind').disabled", timeout=10000)
+                    top = page.evaluate("""() => {
+                        const r = document.getElementById('dpCondDlg').getBoundingClientRect();
+                        const el = document.elementFromPoint(r.left + r.width / 2, r.top + 20);
+                        return !!el && document.getElementById('dpCondDlg').contains(el);
+                    }""")
+                    check(page.url == url_before and vis('#dpAddDlg') and vis('#dpCondDlg') and top and name in page.inner_text('#dpCondLead')
+                          and page.input_value('#dpCondMode') == 'allow', f'L conditions dialog over the add dialog, URL unchanged: {page.url}')
+                    page.keyboard.press('Escape')
+                    page.wait_for_function("() => !document.getElementById('dpCondDlg').open", timeout=5000)
+                    page.wait_for_timeout(200)
+                    focus = page.evaluate("() => { const a = document.activeElement; const r = a && a.closest('.dp-add-row');"
+                                          " return [a && a.tagName, a && a.textContent, r && r.dataset.cid]; }")
+                    check(page.locator('#dpAddDlg[open]').count() == 1 and focus == ['BUTTON', 'Փոխել կանոնը', str(cid)],
+                          f'L Escape closes only the conditions dialog, focus back on «Փոխել կանոնը»: {focus}')
+                    rule_btn.click()
+                    page.wait_for_selector('#dpCondDlg[open]', timeout=5000)
+                    page.wait_for_function("() => !document.getElementById('dpCondKind').disabled", timeout=10000)
+                    page.click('#dpCondCancel')
+                    page.wait_for_function("() => !document.getElementById('dpCondDlg').open", timeout=5000)
+                    check(page.locator('#dpAddDlg[open]').count() == 1
+                          and page.evaluate("() => document.activeElement.textContent") == 'Փոխել կանոնը',
+                          'L «Չեղարկել» closes only the conditions dialog, focus back on the button')
+                    rule_btn.click()
+                    page.wait_for_selector('#dpCondDlg[open]', timeout=5000)
+                    page.wait_for_function("() => !document.getElementById('dpCondKind').disabled", timeout=10000)
+                    page.locator(f'#dpCondTrucks input[value="{code_b}"]').check()      # теперь и машине этого рейса
+                    page.click('#dpCondSave')
+                    page.wait_for_function("(sel) => !document.getElementById('dpCondDlg').open && !!document.querySelector(sel)",
+                                           arg=ok_row, timeout=10000)
+                    picked = page.locator('#dpAddList .dp-add-row:not(.is-off) input:checked').evaluate_all(
+                        "els => els.map(el => el.closest('.dp-add-row').dataset.cid)")
+                    focus_cid = page.evaluate("() => { const r = document.activeElement.closest('.dp-add-row'); return r && r.dataset.cid; }")
+                    check(page.locator('#dpAddDlg[open]').count() == 1 and page.locator(off_row).count() == 0
+                          and page.locator(ok_row).count() == 1 and page.input_value('#dpAddFind') == name
+                          and picked == ([kept] if kept else []) and page.url == url_before and focus_cid == str(cid)
+                          and 'առաքման պայմանները պահպանված են' in page.text_content('#dpToast')
+                          and 'առաքման պայմանները պահպանված են բոլոր օրերի համար։' in page.inner_text('#dpAddOk')
+                          and page.get_attribute('#dpAddOk', 'role') == 'status'
+                          and page.locator('#dpAddSave').is_enabled() == bool(kept) and page.inner_text('#dpAddTitle') == title_before,
+                          f'L saved → add dialog still open, «{name}» moved to selectable, search and picks kept {picked}, focus {focus_cid}, '
+                          'saved text in the dialog (role=status), title kept')
+                    check(sorted(store.load().vehicle_access[cid].trucks) == sorted([code_a, code_b]), 'L store: both trucks allowed')
+                    page.click('#dpAddCancel')
+                    page.wait_for_function("() => !document.getElementById('dpAddDlg').open", timeout=5000)
+                    open_cond()                                      # как до блока L — тем же диалогом
+                    page.select_option('#dpCondMode', '')
+                    page.click('#dpCondSave')
+                    page.wait_for_function("(n) => !document.getElementById('dpCondDlg').open && ![...document.querySelectorAll('.dp-trip .dp-stop')]"
+                                           ".some(li => li.textContent.includes(n) && li.textContent.includes('Միայն՝'))", arg=name, timeout=10000)
+                    check(cid not in store.load().vehicle_access, 'L original rule (none) restored through the dialog')
+                finally:                                         # провал посреди блока — часы и допуск как до него
+                    views._clock, views._yerevan_now = real_clock, real_yerevan
+                    if cid in store.load().vehicle_access:
+                        store.save_customer_vehicles(cid, None, 'qa')
             page.locator('.dp-editbtn[aria-expanded="true"]').first.click()
             page.wait_for_function("() => !document.querySelector('.dp-trip.is-editing')", timeout=5000)
 

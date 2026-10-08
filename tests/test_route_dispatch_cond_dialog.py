@@ -129,10 +129,23 @@ def test_add_dialog_refreshes_after_conditions_saved():
     js = _js()
     save = _function(js, 'saveCond')
     assert save.index('await reloadQuiet()') < save.index('refreshAddStops(stop.customer_id)')
-    assert "if ($('dpAddDlg').open) $('dpAddErr').textContent = e.message;" in save
+    # refreshAddStops — вне try перечитывания: его ошибка не выдаётся за ошибку загрузки
+    assert 'try { await reloadQuiet(); } catch (e) { failed = e; showActionError(e); }' in save
+    assert "if (failed) { $('dpAddErr').textContent = failed.message; addSummary(); return; }" in save
+    # «Ավելացնել» ждёт свежих списков: ответ перечитывания не затрёт правку, ушедшую раньше него
+    assert save.index('add.reloading = true') < save.index('await reloadQuiet()') < save.index('add.reloading = false')
+    assert "$('dpAddSave').disabled = !n || state.busy || !!a.reloading" in js
+    save_add = js[js.index('async function saveAddStops('):js.index('// Одна точка — строка расписания')]
+    assert 'if (!a || !a.picked.size || state.busy || a.reloading) return;' in save_add
+    # уведомление скрыто фоном окна — тот же текст в окне (role=status)
+    assert "$('dpAddOk').textContent = text" in save and 'toast(text)' in save
+    html = (ROOT / 'templates' / 'routes_dispatch.html').read_text(encoding='utf-8')
+    assert '<p class="dp-add-ok" id="dpAddOk" role="status"></p>' in html
     fn = js[js.index('function refreshAddStops('):js.index('function renderAddList(')]
     assert "if (!a || !$('dpAddDlg').open) return;" in fn
-    assert "if (!tr) { $('dpAddDlg').close(); return; }" in fn                 # рейса больше нет — окно закрыть
+    gone = fn[fn.index('if (!tr) {'):fn.index('return;', fn.index('if (!tr) {'))]
+    assert "$('dpAddDlg').close()" in gone and 'Այս երթն այլևս չկա' in gone and 'back.focus()' in gone
+    assert "$('dpAddTitle').textContent = addTitle(t, t.trips.indexOf(tr))" in fn
     assert 'addCandidates(t, tr)' in fn and 'renderAddList()' in fn
     assert 'picked: new Set([...a.picked].filter(id => ok.has(id)))' in fn    # отмеченные — только ещё доступные
     assert "$('dpAddFind').value" not in fn                                   # поиск остаётся
