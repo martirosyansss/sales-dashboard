@@ -17,7 +17,7 @@ D снова «×», затем «Խանութ» у рейса → окно: м�
 E окно и Esc → закрыто без запроса правки;
 M «Փոփոխել» → «Հանել երթից» в «Տեղափոխել…» → окно «Ինչու՞», «Չեղարկել» — ничего не отправлено;
 R «×» → «эта машина не может» → правка stop_rule deny_truck, подсказка «Կանոնը պահպանվեց», допуск магазина deny
-  [машина] сохранён; в окне «Խանութ» того рейса магазин в «Չի կարելի ավելացնել» с причиной и ссылкой на правило;
+  [машина] сохранён; в окне «Խանութ» того рейса магазин в «Չի կարելի ավելացնել» с причиной и кнопкой «Փոխել կանոնը»;
   «×» → «никогда» → stop_rule never, магазин ушёл из дня, id в settings.dispatch_customers_off;
 P прошедший день (часы на день позже): ни «×», ни «Խանութ»;
 H телефон 390×860, вкладка «Երթեր»: «×» видна, не меньше 36 px и внутри карточки, горизонтальной прокрутки нет.
@@ -225,8 +225,11 @@ def main() -> int:
             page.locator(f'#dpTruckCards .dp-trip[data-trip="{tr0["id"]}"] .dp-addbtn').click()
             off = page.locator('#dpAddList .dp-add-row.is-off', has_text=next(
                 s['name'] for s in data()['plan']['unassigned'] if s['customer_id'] == rc))
-            check(off.count() == 1 and 'արգելված' in off.inner_text() and off.locator('a').get_attribute('href')
-                  == f'/routes/settings?customer={rc}#rsCustomerSettings', 'R add dialog shows why it is blocked + link')
+            rule_btn = off.locator('button.rt-linkbtn')       # владелец 08.10: окно условий поверх, не ссылка в настройки
+            check(off.count() == 1 and 'արգելված' in off.inner_text() and off.locator('a').count() == 0
+                  and rule_btn.count() == 1 and rule_btn.inner_text() == 'Փոխել կանոնը'
+                  and rule_btn.get_attribute('type') == 'button',
+                  'R add dialog shows why it is blocked + «Փոխել կանոնը» button (no link)')
             page.locator('#dpAddDlg').screenshot(path=str(SHOTS / 'r-blocked.png'))
             page.keyboard.press('Escape')
             wait_idle()
