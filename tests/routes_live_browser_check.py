@@ -6,7 +6,7 @@
 папки (по умолчанию — корень проекта) копируются во временную папку через sqlite backup (только чтение источника);
 дальше всё пишется только в копию: синтетический план «Развоза» на сегодня и день четырёх машин парка копии (трек,
 доставки, состояние терминала): в пути с превышением скорости, долгая стоянка не у магазина, нет связи и GPS выключен,
-на складе до выезда. Порт 8771 на 127.0.0.1. Снимки — в _shots/ (ПК 1440×900 и телефон 390×860).
+на складе до выезда. Порт на 127.0.0.1 — свободный (LIVE_CHECK_PORT — свой). Снимки — в _shots/ (ПК 1440×900 и телефон 390×860).
 
 Этап 2 (06.10): у машины 1 — возврат товара и две заправки (интервал «полный бак → полный бак» против расчёта),
 у неё же карточка показывает «բեռնված այս երթում», возврат на борту, сверку топлива, источник ETA («ճանապարհներով» /
@@ -87,8 +87,9 @@ from route_optimizer import live  # noqa: E402
 from route_optimizer import store as st  # noqa: E402
 from route_optimizer.geo import haversine_km  # noqa: E402
 
-PORT = 8771
-BASE = f'http://127.0.0.1:{PORT}'
+# порт: LIVE_CHECK_PORT или свободный (0) — проверки соседних сессий на одном ПК не отвечают друг за друга (Windows
+# пускает два сервера на один порт)
+PORT = int(os.environ.get('LIVE_CHECK_PORT', '0'))
 SHOTS = ROOT / '_shots'
 EXTERNAL = ('cdn.jsdelivr.net', 'fonts.googleapis.com', 'fonts.gstatic.com', 'tile.openstreetmap.org', 'cdnjs.cloudflare.com')
 
@@ -501,6 +502,7 @@ def main() -> int:
         with app.app_context():
             cars = seed(app)
         server = make_server('127.0.0.1', PORT, app, threaded=True)
+        base = f'http://127.0.0.1:{server.server_port}'
         threading.Thread(target=server.serve_forever, daemon=True).start()
         SHOTS.mkdir(exist_ok=True)
         errors: list[str] = []
@@ -515,7 +517,7 @@ def main() -> int:
                 polls: list[str] = []
                 page.on('request', lambda r: polls.append(r.url) if ('/api/routes/live?' in r.url
                                                                      or r.url.endswith('/api/routes/live')) else None)
-                page.goto(BASE + '/routes/live')
+                page.goto(base + '/routes/live')
                 page.wait_for_selector('.lv-item')
                 items = page.locator('.lv-item')
                 check(items.count() == len(cars), f'в списке {len(cars)} машин ({items.count()})')
@@ -731,7 +733,7 @@ def main() -> int:
                 # «меньше движения»: новые — без анимации, обводка и «ՆՈՐ» (свой контекст — отметок «Տեսա» нет)
                 calm = browser.new_page(viewport={'width': 1440, 'height': 900}, reduced_motion='reduce')
                 calm.on('pageerror', lambda e: errors.append(str(e)))
-                calm.goto(BASE + '/routes/live')
+                calm.goto(base + '/routes/live')
                 calm.wait_for_selector('.lv-item')
                 calm.wait_for_timeout(500)
                 anims = calm.evaluate(ALARM_ANIMS_JS)
@@ -744,7 +746,7 @@ def main() -> int:
 
                 phone = browser.new_page(viewport={'width': 390, 'height': 860}, is_mobile=True, has_touch=True)
                 phone.on('pageerror', lambda e: errors.append(str(e)))
-                phone.goto(BASE + '/routes/live')
+                phone.goto(base + '/routes/live')
                 phone.wait_for_selector('.lv-item')
                 phone.wait_for_timeout(500)
                 check(phone.is_visible('#lvAlarm') and phone.evaluate(NO_SCROLL_JS),
@@ -767,6 +769,15 @@ def main() -> int:
                 wide = phone.evaluate('document.documentElement.scrollWidth > window.innerWidth + 1')
                 check(not wide, '08.10: телефон, машина 2 (перепробег, журнал с «Բացատրել») — нет горизонтальной прокрутки')
                 phone.locator('#lvCard').screenshot(path=str(SHOTS / 'live_phone_card2.png'))
+                # звук включён до перезагрузки: на телефоне жест — касание (pointerdown жестом не считается)
+                phone.evaluate("localStorage.setItem('lv.sound', '1')")
+                phone.reload()
+                phone.wait_for_selector('.lv-item')
+                locked = 'is-locked' in (phone.get_attribute('#lvSound', 'class') or '')
+                phone.locator('.rt-title').tap()
+                phone.wait_for_timeout(400)
+                check(locked and 'is-locked' not in (phone.get_attribute('#lvSound', 'class') or ''),
+                      'тревоги, телефон: звук после перезагрузки — касание страницы его включает')
                 browser.close()
         finally:
             server.shutdown()

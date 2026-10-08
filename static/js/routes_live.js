@@ -240,16 +240,19 @@
             return ctx.state === 'running' ? Promise.resolve() : ctx.resume().catch(() => { /* ждёт жеста */ });
         } catch (e) { return Promise.resolve(); }
     }
-    // звук был включён до перезагрузки — проснуться от первого касания или клавиши на странице
+    // звук был включён до перезагрузки — проснуться от жеста на странице; pointerdown на телефоне (Android Chrome, iOS
+    // Safari) жестом не считается — и pointerup / click / touchend / keydown; слушать, пока звук не готов
+    const WAKE_EVENTS = ['pointerdown', 'pointerup', 'click', 'touchend', 'keydown'];
     function armAudio() {
         if (!state.alarm.sound || audioReady()) return;
         const wake = () => {
-            document.removeEventListener('pointerdown', wake, true);
-            document.removeEventListener('keydown', wake, true);
-            wakeAudio().then(renderSound);
+            if (!state.alarm.sound) return;
+            wakeAudio().then(() => {
+                renderSound();
+                if (audioReady()) WAKE_EVENTS.forEach(e => document.removeEventListener(e, wake, true));
+            });
         };
-        document.addEventListener('pointerdown', wake, true);
-        document.addEventListener('keydown', wake, true);
+        WAKE_EVENTS.forEach(e => document.addEventListener(e, wake, true));
     }
 
     // два коротких тона (без файлов); контекст «спит» — тонов не ставим (иначе пачкой после пробуждения)
