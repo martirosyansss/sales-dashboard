@@ -21,6 +21,9 @@ U «Ժամանակ խանութում» (№50) у точки рейса в ре
   подсказкой, в базе — только время (окно и допуск магазина целы); снова диалог → «Հեռացնել» → плашки нет, в базе пусто;
   выученная норма 8,37 у магазина без GPS — «սովորական 8,4 րոպե», а не «ըստ փաստի»; 10 стоянок по GPS — время по факту;
   в подсказке — правило №60 (пока стоянок по GPS нет — введённое время, со 2-й — время из GPS), смеси с фактом нет;
+K «Առաքման պայմաններ» (владелец 08.10) у той же точки → диалог на странице (адрес не меняется) со свежим окном магазина;
+  без изменений — закрыт без запроса; неверный интервал — ошибка в диалоге; допуск + интервал + «Առանձին երթ» → POST без
+  unload_min, уведомление с «Վերակազմեք երթերը», в базе условия сохранены, а время у магазина (30 мин) осталось; плашка у точки;
 E ИИ-панель: кнопка открытия → панель с подсказками; подсказка → сообщение пользователя и ответ с пунктом списка,
   у клиента ровно один вызов (в данных дня <day_data); вопрос из поля по Enter → второй ответ с историей из
   двух реплик; Esc закрывает панель, фокус возвращается на кнопку открытия;
@@ -307,6 +310,76 @@ def main() -> int:
                   and 'սովորական' not in hint, f'U learned norm + 10 GPS stays → time from GPS (№60): {hint!r}')
             page.click('#dpUnloadCancel')
             store.save_learning_auto('unload', False, 'qa')      # дальше — нормы настроек, как до блока U
+
+            # K «Առաքման պայմաններ» (владелец 08.10): диалог на странице вместо перехода в /routes/settings
+            store.save_customer_unload(cid, 30.0, 'qa')          # время у магазина — диалог условий его не трогает
+            cond_bodies = []
+            page.on('request', lambda r: cond_bodies.append(r.post_data_json)
+                    if r.method == 'POST' and '/customer-vehicles' in r.url else None)
+            url_before = page.url
+
+            def open_cond():
+                page.locator('.dp-trip.is-editing .dp-stop').filter(has_text=name).locator('.dp-vehiclebtn').first.click()
+                page.wait_for_selector('#dpCondDlg[open]', timeout=5000)
+                page.wait_for_function("() => !document.getElementById('dpCondKind').disabled", timeout=10000)
+
+            open_cond()
+            check(page.url == url_before and page.inner_text('#dpCondTitle') == 'Խանութի առաքման պայմանները'
+                  and name in page.inner_text('#dpCondLead') and page.input_value('#dpCondKind') == 'before'
+                  and page.input_value('#dpCondT1') == '23:59' and vis('#dpCondT1') and not vis('#dpCondT2')
+                  and page.input_value('#dpCondMode') == '' and not vis('#dpCondTrucks') and not vis('#dpCondCenterRow')
+                  and page.locator('#dpCondTrucks input[type=checkbox]').count() > 0 and not vis('#dpCondLoad')
+                  and page.evaluate("() => document.activeElement.id") == 'dpCondKind',
+                  f'K dialog on the page with fresh window «մինչև 23:59», all trucks, focus on time kind: {page.url}')
+            page.click('#dpCondSave')                            # ничего не меняли — без запроса
+            page.wait_for_function("() => !document.getElementById('dpCondDlg').open", timeout=5000)
+            check(not cond_bodies, 'K nothing changed → dialog closes, no request')
+            open_cond()
+            page.select_option('#dpCondMode', 'allow')
+            check(vis('#dpCondTrucks') and vis('#dpCondCenterRow') and page.inner_text('#dpCondChoicesTitle') == 'Կարող են սպասարկել',
+                  'K «Միայն ընտրված» shows trucks and the center checkbox')
+            code = page.locator('#dpCondTrucks input[type=checkbox]').first.get_attribute('value')
+            page.locator('#dpCondTrucks input[type=checkbox]').first.check()
+            page.check('#dpCondSolo')
+            page.select_option('#dpCondKind', 'between')
+            page.fill('#dpCondT1', '10:00')
+            page.fill('#dpCondT2', '09:00')
+            page.click('#dpCondSave')
+            check(page.inner_text('#dpCondErr') == 'Միջակայքի վերջը պետք է լինի սկզբից ուշ։'
+                  and page.locator('#dpCondDlg[open]').count() == 1 and not cond_bodies,
+                  f'K bad interval → error in the dialog, nothing sent: {page.inner_text("#dpCondErr")!r}')
+            page.fill('#dpCondT2', '12:00')
+            page.click('#dpCondSave')
+            page.wait_for_function("() => !document.getElementById('dpCondDlg').open", timeout=10000)
+            page.wait_for_function("() => /առաքման պայմանները պահպանված են/.test((document.getElementById('dpToast') || {}).textContent || '')",
+                                   timeout=10000)
+            check('Վերակազմեք երթերը' in page.text_content('#dpToast'), 'K saved → toast asks to rebuild')
+            check(cond_bodies == [{'customer_id': cid, 'access': {'mode': 'allow', 'trucks': [code]},
+                                   'window': {'kind': 'between', 't1': 600, 't2': 720, 'tol': None}, 'solo': True, 'center': False}],
+                  f'K POST body without unload_min: {cond_bodies}')
+            saved = store.load()
+            check(saved.vehicle_access[cid].to_json() == {'mode': 'allow', 'trucks': [code]} and cid in saved.solo
+                  and saved.windows[cid] == st.CustomerWindow('between', 600, 720) and saved.unload_min.get(cid) == 30.0,
+                  'K store: access, window, solo saved; store time 30 min kept')
+            page.wait_for_function("(n) => [...document.querySelectorAll('.dp-trip .dp-stop')].some(li => li.textContent.includes(n)"
+                                   " && li.textContent.includes('Միայն՝'))", arg=name, timeout=10000)
+            check(True, 'K stop tag refreshed: «Միայն՝ …»')
+            # как до блока K — через тот же диалог: страница перечитывает день (за её спиной — устаревший чат в блоке E)
+            open_cond()
+            page.select_option('#dpCondMode', '')
+            page.uncheck('#dpCondSolo')
+            page.select_option('#dpCondKind', 'before')
+            page.fill('#dpCondT1', '23:59')
+            page.click('#dpCondSave')
+            page.wait_for_function("(n) => !document.getElementById('dpCondDlg').open && ![...document.querySelectorAll('.dp-trip .dp-stop')]"
+                                   ".some(li => li.textContent.includes(n) && li.textContent.includes('Միայն՝'))", arg=name, timeout=10000)
+            saved = store.load()
+            check(cid not in saved.vehicle_access and cid not in saved.solo and saved.windows[cid] == late
+                  and saved.unload_min.get(cid) == 30.0, 'K conditions reset through the dialog, store time still kept')
+            open_unload()                                        # время у магазина — тоже через диалог, как до блока K
+            page.click('#dpUnloadClear')
+            page.wait_for_function("() => !document.getElementById('dpUnloadDlg').open"
+                                   " && !document.querySelector('.dp-stop .rt-badge.dp-b-unload')", timeout=10000)
             page.locator('.dp-editbtn[aria-expanded="true"]').first.click()
             page.wait_for_function("() => !document.querySelector('.dp-trip.is-editing')", timeout=5000)
 

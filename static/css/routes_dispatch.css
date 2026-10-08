@@ -810,6 +810,28 @@
 .dp-unload-hint:empty { display: none; }
 .dp-unload-dlg .rt-ferr { margin-top: 8px; }
 
+/* «Առաքման պայմաններ» (владелец 08.10): условия магазина на странице — поля как в «Условиях магазина» /routes/settings */
+.dp-cond-dlg { width: min(600px, calc(100vw - 32px)); }
+.dp-cond-dlg .rt-select { width: 100%; }
+.dp-cond-dlg input[type="time"] { color-scheme: dark; }
+.dp-cond-load { margin: 0 0 12px; }
+.dp-cond-time { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.dp-cond-time label { display: grid; gap: 6px; min-width: 0; margin-top: 10px; font-size: .875rem; }
+.dp-cond-time label[hidden] { display: none; }
+.dp-cond-label { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--rt-line); }
+.dp-cond-sub { margin: 12px 0 6px; font-size: .875rem; font-weight: 600; }
+.dp-cond-trucks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; max-height: 240px; overflow-y: auto; padding: 2px; }
+.dp-cond-trucks[hidden] { display: none; }
+.dp-cond-truck {
+    display: flex; align-items: center; gap: 8px; padding: 8px; border: 1px solid var(--rt-line); border-radius: 10px;
+    cursor: pointer; font-size: .875rem; overflow-wrap: anywhere;
+}
+.dp-cond-truck input { flex: 0 0 auto; width: 18px; height: 18px; accent-color: var(--rt-acc); }
+.dp-cond-truck:has(input:checked) { border-color: var(--rt-acc); }
+.dp-cond-dlg .dp-crew-day { margin-top: 14px; color: var(--rt-fg); }
+.dp-cond-dlg .dp-unload-hint[hidden] { display: none; }
+@media (max-width: 480px) { .dp-cond-time, .dp-cond-trucks { grid-template-columns: minmax(0, 1fr); } }
+
 /* «Բեռնագիր» (ответ владельца №57): кнопки печати и Excel справа от шапки карточки машины, на телефоне — строкой под ней */
 .dp-ttop { display: flex; align-items: center; }
 .dp-ttop > .dp-thead-h { flex: 1 1 auto; min-width: 0; }

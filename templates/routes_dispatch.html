@@ -11,7 +11,7 @@
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=24">
 <!-- Страница на армянском (ответ владельца №31). Редизайн: тёмная спокойная тема (ответ владельца №51), свои стили поверх routes.css -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=63">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=64">
 {% endblock %}
 
 {% block content %}
@@ -460,6 +460,47 @@
             <button type="button" id="dpUnloadCancel" class="rt-btn rt-btn-ghost">Չեղարկել</button>
         </div>
     </dialog>
+    <!-- «Առաքման պայմաններ» (владелец 08.10): условия магазина, не уходя со страницы — те же поля, что в «Условиях магазина»
+         /routes/settings, кроме времени у магазина (у него свой диалог «Ժամանակ խանութում») -->
+    <dialog id="dpCondDlg" class="dp-dlg dp-cond-dlg" aria-labelledby="dpCondTitle" aria-describedby="dpCondLead">
+        <h2 class="dp-dlg-t" id="dpCondTitle">Խանութի առաքման պայմանները</h2>
+        <p class="dp-dlg-lead" id="dpCondLead"></p>
+        <p class="dp-unload-hint dp-cond-load" id="dpCondLoad" role="status"></p>
+        <label for="dpCondKind" class="dp-picklabel">Ընդունման ժամ</label>
+        <select id="dpCondKind" class="rt-select" aria-describedby="dpCondTimeHint dpCondErr">
+            <option value="">Առանց սահմանափակման</option>
+            <option value="at">Որոշակի ժամի</option>
+            <option value="between">Միջակայքում</option>
+            <option value="before">Մինչև նշված ժամը</option>
+            <option value="after">Նշված ժամից հետո</option>
+        </select>
+        <div class="dp-cond-time">
+            <label id="dpCondFirst" hidden><span id="dpCondFirstLabel">Ժամ</span><input id="dpCondT1" class="rt-input" type="time" step="60" aria-describedby="dpCondErr"></label>
+            <label id="dpCondLast" hidden><span>Մինչև</span><input id="dpCondT2" class="rt-input" type="time" step="60" aria-describedby="dpCondErr"></label>
+            <label id="dpCondTolerance" hidden><span>Թույլատրելի շեղում, ± րոպե</span><input id="dpCondTol" class="rt-input" type="number" min="0" max="120" step="1" inputmode="numeric" value="0" aria-describedby="dpCondErr"></label>
+        </div>
+        <p class="dp-unload-hint" id="dpCondTimeHint">Խանութում ժամանման և բեռնաթափման սկզբի ժամը։</p>
+        <label for="dpCondMode" class="dp-picklabel dp-cond-label">Որ մեքենաները կարող են սպասարկել</label>
+        <select id="dpCondMode" class="rt-select" aria-describedby="dpCondVehicleHint">
+            <option value="">Բոլոր մեքենաները</option>
+            <option value="allow">Միայն ընտրված մեքենաները</option>
+            <option value="deny">Բոլորը, բացի ընտրվածներից</option>
+        </select>
+        <p id="dpCondChoicesTitle" class="dp-cond-sub" hidden></p>
+        <div id="dpCondTrucks" class="dp-cond-trucks" role="group" aria-labelledby="dpCondChoicesTitle" hidden></div>
+        <p class="dp-unload-hint" id="dpCondVehicleHint"></p>
+        <!-- №78: выбранные машины допуска въезжают в малый центр ради этого магазина — только при «Միայն ընտրված» -->
+        <label id="dpCondCenterRow" class="dp-crew-day" hidden><input id="dpCondCenter" type="checkbox" aria-describedby="dpCondCenterHint"><span>Կենտրոն՝ թույլատրված մեքենաներին</span></label>
+        <p class="dp-unload-hint" id="dpCondCenterHint" hidden>Եթե խանութը փոքր կենտրոնում է, ընտրված մեքենաները կարող են մտնել կենտրոն միայն այս խանութի համար։ Մյուս խանութների համար կենտրոնի կանոնը նույնն է։</p>
+        <!-- №78: заказы магазина — отдельным рейсом, без других магазинов -->
+        <label class="dp-crew-day"><input id="dpCondSolo" type="checkbox" aria-describedby="dpCondSoloHint"><span>Առանձին երթ</span></label>
+        <p class="dp-unload-hint" id="dpCondSoloHint">Այս խանութի պատվերները գնում են առանձին երթով՝ պահեստ → խանութ → պահեստ, առանց այլ խանութների։ Մեքենան այդ օրը կարող է կատարել նաև այլ երթեր։</p>
+        <div class="rt-ferr" id="dpCondErr" role="alert"></div>
+        <div class="dp-dlg-btns">
+            <button type="button" id="dpCondSave" class="rt-btn rt-btn-primary"><i class="fas fa-check" aria-hidden="true"></i><span>Պահպանել</span></button>
+            <button type="button" id="dpCondCancel" class="rt-btn rt-btn-ghost">Չեղարկել</button>
+        </div>
+    </dialog>
     <!-- Новые заказы дня (ответ владельца №72): список, варианты «как везти сегодня» и «Թողնել վաղվան» -->
     <dialog id="dpSameDayDlg" class="dp-dlg dp-sd-dlg" aria-labelledby="dpSdTitle" aria-describedby="dpSdLead">
         <h2 class="dp-dlg-t" id="dpSdTitle">Այսօրվա նոր պատվերները</h2>
@@ -558,5 +599,5 @@
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=1" data-yandex-key="{{ yandex_tiles_key }}"></script>
 <!-- панель «Հարցրու AI-ին» — до страницы: init подключает её (RoutesDispatchAI.attach) -->
 <script src="{{ url_for('static', filename='js/routes_dispatch_ai.js') }}?v=3"></script>
-<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=104"></script>
+<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=105"></script>
 {% endblock %}

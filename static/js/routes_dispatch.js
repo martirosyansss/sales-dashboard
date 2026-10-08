@@ -6,6 +6,8 @@
    («Ընդունման ժամ», windows-center-plan.md) — POST /api/routes/customer-window. Точка любого магазина «Փոխել տեղը»
    — тот же POST /api/routes/geo-override (null — «авто»); предложения водителей (geo_suggestions в ответе дня,
    driver-geo-plan.md §5) — POST /api/routes/geo-suggest/decide. Рейсы после смены точки сами не пересобираются.
+   «Առաքման պայմաններ» у магазина (владелец 08.10) — диалог на странице: GET /api/routes/customer-vehicles?customer_id=…,
+   POST /api/routes/customer-vehicles {customer_id, access, window, solo, center} (без unload_min — время у магазина не трогается).
    Раз в 5 минут, пока страница открыта, — GET /api/routes/dispatch/status?date=…: «заказы ещё поступают»
    и сколько заказов пришло или ушло с последней сборки. Рейсы сами не пересобираются — только по кнопке.
    Безопасность: всё, что пришло из ERP (магазины, адреса, менеджеры, машины), выводится только через
@@ -113,6 +115,7 @@
         sugMap: null, sugLayer: null, sugSel: null,     // предложения водителей: карта и выбранное (event_id)
         geoChanged: null,                   // день, в котором после сборки меняли точку магазина — подсказать пересборку
         unloadStop: null, unloadInfo: null, unloadSeq: 0,   // «Ժամանակ խանութում»: магазин диалога, его данные с сервера, номер запроса
+        condStop: null, condInfo: null, condSeq: 0,         // «Առաքման պայմաններ»: то же для условий магазина
         stepsOpen: new Set(),               // шаги 1–2, раскрытые логистом после сборки (иначе свёрнуты в строку)
         open: new Set(),                    // раскрытые карточки машин (код машины)
         driverCar: null,                    // «Վարորդ»: машина открытого диалога
@@ -176,7 +179,9 @@
         [': не удалось сохранить точку клиента', 'Չհաջողվեց պահպանել խանութի կետը — կարգավորումների բազան հասանելի չէ'],
         [': не удалось сохранить план развоза', 'Չհաջողվեց պահպանել առաքման պլանը — կարգավորումների բազան հասանելի չէ'],
         [': не удалось сохранить время у магазина', 'Չհաջողվեց պահպանել ժամանակը խանութում — կարգավորումների բազան հասանելի չէ'],
-        [': не удалось сохранить водителя машины', 'Չհաջողվեց պահպանել վարորդին — կարգավորումների բազան հասանելի չէ'],
+        // условия магазина (store.save_customer_constraints): сам текст уже армянский, по-русски — только имя базы перед ним
+        [': չհաջողվեց պահպանել խանութի առաքման պայմանները', 'Չհաջողվեց պահպանել խանութի առաքման պայմանները — կարգավորումների բազան հասանելի չէ'],
+        [': не удалось сохранить водителя машины','Չհաջողվեց պահպանել վարորդին — կարգավորումների բազան հասանելի չէ'],
     ];
     function serverText(s) {
         const t = String(s).trim();
@@ -531,7 +536,7 @@
     // тогда обновляются только подсказки, а страница — при следующей проверке.
     const interacting = () => {
         const a = document.activeElement;
-        return state.pickCid !== null || state.dragging || !!state.mapDrag || (!!state.stopCard && state.stopCard.isOpen() && wsOn()) || $('dpGeoDlg').open || $('dpUnloadDlg').open || $('dpDriverDlg').open
+        return state.pickCid !== null || state.dragging || !!state.mapDrag || (!!state.stopCard && state.stopCard.isOpen() && wsOn()) || $('dpGeoDlg').open || $('dpUnloadDlg').open || $('dpCondDlg').open || $('dpDriverDlg').open
             || $('dpSameDayDlg').open || $('dpAbsentDlg').open || $('dpSendFirstDlg').open || $('dpAddDlg').open || $('dpWhyDlg').open
             || (!!a && $('dpBody').contains(a) && /^(SELECT|INPUT|TEXTAREA)$/.test(a.tagName));
     };
@@ -1839,6 +1844,142 @@
         try { await reloadQuiet(); } catch (e) { showActionError(e); }
     }
 
+    // ---------- Условия магазина «Առաքման պայմաններ» (владелец 08.10: «в модальном окне, не выходя с этой страницы») ----------
+    // Поля, тексты и проверки — как в «Условиях магазина» /routes/settings (routes_customer_settings.js), кроме времени у
+    // магазина: у него своя кнопка «Ժամանակ խանութում». Данные диалога — GET /api/routes/customer-vehicles?customer_id=…
+    // (свежие: окно, допуск, отдельный рейс, центр, список машин); сохраняется POST /api/routes/customer-vehicles
+    // {customer_id, access, window, solo, center} — без "unload_min" сервер оставляет время у магазина как есть.
+    // Рейсы сами не пересобираются — подсказка в уведомлении, как после смены времени.
+    const COND_FIRST = { at: 'Ժամ', between: 'Սկսած', before: 'Մինչև', after: 'Հետո' };
+    // «Չեղարկել» не блокируется — как в «Ժամանակ խանութում»
+    const lockCond = (on) => $('dpCondDlg').querySelectorAll('select, input, #dpCondSave').forEach(el => { el.disabled = on; });
+    function syncCondTime() {
+        const kind = $('dpCondKind').value;
+        $('dpCondFirst').hidden = !kind;
+        $('dpCondFirstLabel').textContent = COND_FIRST[kind] || 'Ժամ';
+        $('dpCondLast').hidden = kind !== 'between';
+        $('dpCondTolerance').hidden = kind !== 'at';
+        $('dpCondTimeHint').textContent = 'Խանութում ժամանման և բեռնաթափման սկզբի ժամը։'
+            + (kind === 'at' ? ' 0 րոպե շեղումը նշանակում է ճիշտ նշված ժամը։' : '');
+        $('dpCondErr').textContent = '';
+    }
+    function syncCondTrucks() {
+        const mode = $('dpCondMode').value;
+        $('dpCondTrucks').hidden = $('dpCondChoicesTitle').hidden = !mode;
+        $('dpCondChoicesTitle').textContent = mode === 'allow' ? 'Կարող են սպասարկել' : 'Չեն կարող սպասարկել';
+        $('dpCondCenterRow').hidden = $('dpCondCenterHint').hidden = mode !== 'allow';   // №78: только с «Միայն ընտրված»
+        $('dpCondVehicleHint').textContent = mode === 'allow'
+            ? 'Ընտրեք թույլատրված մեքենաները։ Եթե ոչ մեկն ընտրված չէ կամ այդ օրը չի աշխատում, խանութը կմնա առանց մեքենայի։'
+            : mode === 'deny' ? 'Ընտրված մեքենաները չեն կարող սպասարկել այս խանութը։ Մնացածը կարող են։'
+            : 'Կարող են սպասարկել բոլոր մեքենաները՝ հաշվի առնելով բեռնատարողությունը և մյուս սահմանափակումները։';
+        $('dpCondErr').textContent = '';
+    }
+    // окно приёма из полей (как readWindow «Условий магазина»); без ограничения — null
+    function readCondWindow() {
+        const kind = $('dpCondKind').value;
+        if (!kind) return null;
+        const minutes = (id) => {
+            const m = /^(\d{2}):(\d{2})$/.exec($(id).value || '');
+            return m && Number(m[1]) < 24 && Number(m[2]) < 60 ? Number(m[1]) * 60 + Number(m[2]) : null;
+        };
+        const t1 = minutes('dpCondT1'), t2 = minutes('dpCondT2');
+        const tol = $('dpCondTol').value.trim() === '' ? 0 : Number($('dpCondTol').value);
+        if (t1 === null || (kind === 'between' && t2 === null)) throw new Error('Նշեք ժամը։');
+        if (kind === 'between' && t2 <= t1) throw new Error('Միջակայքի վերջը պետք է լինի սկզբից ուշ։');
+        if (kind === 'at' && (!Number.isInteger(tol) || tol < 0 || tol > 120)) throw new Error('Թույլատրելի շեղումը՝ 0-ից մինչև 120 րոպե։');
+        return { kind, t1, t2: kind === 'between' ? t2 : null, tol: kind === 'at' ? tol : null };
+    }
+    // окно и допуск строкой — сравнить с открытым (порядок машин в допуске не важен)
+    const condWindowKey = (w) => (isObj(w) ? [w.kind, w.t1, w.t2 ?? null, w.tol ?? null].join('|') : '');
+    const condAccessKey = (a) => (isObj(a) && Array.isArray(a.trucks) ? a.mode + ':' + [...a.trucks].sort().join(',') : '');
+    async function openCond(stop) {
+        if (state.busy) return;
+        const seq = ++state.condSeq;
+        state.condStop = stop;
+        state.condInfo = null;
+        $('dpCondLead').textContent = '«' + (stop.name || stop.code) + '»' + (stop.address ? '՝ ' + stop.address : '');
+        $('dpCondKind').value = '';
+        $('dpCondMode').value = '';
+        $('dpCondSolo').checked = $('dpCondCenter').checked = false;
+        $('dpCondTrucks').textContent = '';
+        syncCondTime();
+        syncCondTrucks();
+        $('dpCondLoad').textContent = 'Բեռնում եմ խանութի տվյալները…';
+        lockCond(true);             // пока не пришли свежие условия магазина — сохранять нечего
+        $('dpCondDlg').showModal();
+        try {
+            const r = await api('GET', '/api/routes/customer-vehicles?customer_id=' + encodeURIComponent(stop.customer_id));
+            if (seq !== state.condSeq || !$('dpCondDlg').open) return;
+            const x = Array.isArray(r.customers) ? r.customers[0] : null;
+            // магазина нет в данных ERP раздела (новый) — сервер не сохранит и условия
+            if (!isObj(x)) throw new Error('Խանութը չի գտնվել — թարմացրեք էջը');
+            const w = isObj(x.window) ? x.window : null;
+            $('dpCondKind').value = w ? w.kind : '';
+            $('dpCondT1').value = w && isMin(w.t1) ? hhmm(w.t1) : '';
+            $('dpCondT2').value = w && isMin(w.t2) ? hhmm(w.t2) : '';
+            $('dpCondTol').value = String(w && Number.isInteger(w.tol) ? w.tol : 0);
+            const rule = isObj(x.vehicle_access) && Array.isArray(x.vehicle_access.trucks) ? x.vehicle_access : null;
+            $('dpCondMode').value = rule ? rule.mode : '';
+            $('dpCondSolo').checked = !!x.solo;      // №78: отдельный рейс
+            $('dpCondCenter').checked = !!x.center;  // №78: в центр — машинам допуска, ради этого магазина
+            // машины допуска, которых больше нет в списке, остаются отмеченными — как в «Условиях магазина»
+            const checked = new Set(rule ? rule.trucks : []);
+            const choices = (Array.isArray(r.vehicles) ? r.vehicles : []).filter(isObj);
+            checked.forEach(code => {
+                if (!choices.some(t => t.car_code === code)) choices.push({ car_code: code, name: 'Այլևս ցուցակում չէ' });
+            });
+            choices.forEach(t => {
+                const label = document.createElement('label');
+                label.className = 'dp-cond-truck';
+                const input = document.createElement('input');
+                input.type = 'checkbox';
+                input.value = t.car_code;
+                input.checked = checked.has(t.car_code);
+                const text = document.createElement('span');
+                text.textContent = truckLabel(t);
+                label.append(input, text);
+                $('dpCondTrucks').appendChild(label);
+            });
+            syncCondTime();
+            syncCondTrucks();
+            state.condInfo = x;
+            $('dpCondLoad').textContent = '';
+            lockCond(false);
+            $('dpCondKind').focus();
+        } catch (e) {
+            if (seq !== state.condSeq) return;
+            $('dpCondLoad').textContent = '';
+            $('dpCondErr').textContent = e.message;
+        }
+    }
+    // Ничего не изменилось — сохранять нечего: диалог закрывается без запроса и уведомления
+    async function saveCond() {
+        const stop = state.condStop, x = state.condInfo;
+        if (!stop || !x || state.busy) return;
+        let win;
+        try { win = readCondWindow(); } catch (e) { $('dpCondErr').textContent = e.message; return; }
+        const mode = $('dpCondMode').value;
+        const access = mode ? { mode, trucks: [...$('dpCondTrucks').querySelectorAll('input:checked')].map(i => i.value) } : null;
+        const solo = $('dpCondSolo').checked, center = mode === 'allow' && $('dpCondCenter').checked;
+        if (condWindowKey(win) === condWindowKey(x.window) && condAccessKey(access) === condAccessKey(x.vehicle_access)
+            && solo === !!x.solo && center === !!x.center) { $('dpCondDlg').close(); return; }
+        state.busy = true;
+        lockCond(true);
+        $('dpCondErr').textContent = '';
+        try {
+            await api('POST', '/api/routes/customer-vehicles', { customer_id: stop.customer_id, access, window: win, solo, center });
+        } catch (e) {
+            $('dpCondErr').textContent = e.message;
+            return;
+        } finally {
+            state.busy = false;
+            lockCond(false);
+        }
+        $('dpCondDlg').close();
+        toast('«' + (stop.name || stop.code) + '»՝ առաքման պայմանները պահպանված են։' + (state.data.plan ? ' ' + UNLOAD_REBUILD : ''));
+        try { await reloadQuiet(); } catch (e) { showActionError(e); }   // плашки допуска, окна и центра у точек
+    }
+
     // ---------- Заказы прошлых дней и исключённые ----------
     function orderLine(o, btnText, onClick) {
         const li = document.createElement('li');
@@ -3031,11 +3172,12 @@
             gb.innerHTML = '<i class="fas fa-location-dot" aria-hidden="true"></i><span>Փոխել տեղը</span>';
             gb.setAttribute('aria-label', 'Փոխել տեղը՝ ' + (stop.name || stop.code));
             gb.addEventListener('click', () => openGeo(stop));
-            const vb = document.createElement('a');
+            const vb = document.createElement('button');
+            vb.type = 'button';
             vb.className = 'rt-btn rt-btn-ghost rt-btn-sm dp-vehiclebtn';
             vb.innerHTML = '<i class="fas fa-truck" aria-hidden="true"></i><span>Առաքման պայմաններ</span>';
             vb.setAttribute('aria-label', 'Առաքման պայմաններ՝ ' + (stop.name || stop.code));
-            vb.href = '/routes/settings?customer=' + stop.customer_id + '#rsCustomerSettings';
+            vb.addEventListener('click', () => openCond(stop));
             const ub = document.createElement('button');
             ub.type = 'button';
             ub.className = 'rt-btn rt-btn-ghost rt-btn-sm dp-unloadbtn';
@@ -5415,6 +5557,13 @@
         $('dpUnloadDlg').addEventListener('cancel', (e) => { if (state.busy) e.preventDefault(); });
         $('dpUnloadMin').addEventListener('input', () => { $('dpUnloadErr').textContent = ''; markUnload(false); });
         $('dpUnloadMin').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); saveUnload(false); } });
+        $('dpCondSave').addEventListener('click', saveCond);
+        $('dpCondCancel').addEventListener('click', () => $('dpCondDlg').close());
+        $('dpCondKind').addEventListener('change', syncCondTime);
+        $('dpCondMode').addEventListener('change', syncCondTrucks);
+        ['dpCondT1', 'dpCondT2', 'dpCondTol'].forEach(id => $(id).addEventListener('input', () => { $('dpCondErr').textContent = ''; }));
+        $('dpCondDlg').addEventListener('close', () => { state.condStop = null; state.condInfo = null; });
+        $('dpCondDlg').addEventListener('cancel', (e) => { if (state.busy) e.preventDefault(); });
         $('dpMapBox').addEventListener('toggle', () => { if ($('dpMapBox').open && state.data && state.data.plan) drawMap(); });
         initTabs();
         initWs();
