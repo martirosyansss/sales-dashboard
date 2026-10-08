@@ -11,8 +11,9 @@
 - стоянки дня (actuals.reconstruct: склад, магазины, «не по плану») — линия проходит через одну точку (середину
   стоянки) дважды: в момент прибытия и в момент отъезда (воспроизведение: машина стоит на месте всю стоянку); точек
   изнутри стоянки нет. Стоянки, которые перекрываются, — одна (середина первой);
-- между стоянками — без дрожания на месте (как actuals._still, но от последней оставленной точки): не в линии точка
-  со скоростью терминала ниже actuals.STOP_MS (режим «стоит» APK); ближе к последней оставленной, чем max(STILL_M,
+- между стоянками — без дрожания на месте (как actuals._still, но от последней оставленной точки): точка дальше
+  actuals.STAND_JITTER_M от последней оставленной — всегда в линии (машина сдвинулась: ползком в пробке — линия шагом
+  ~75 м, не пропадает); ближе — не в линии точка со скоростью терминала ниже actuals.STOP_MS (режим «стоит» APK); ближе к последней оставленной, чем max(STILL_M,
   погрешность хуже из двух, но не больше STILL_ACC_MAX_M); медленнее STOP_MS от неё за max(прошло, MOVE_STEP_S) и не
   дальше STAND_JITTER_M; и, пока машина стоит (выброшена точка «стоит»: скорость ниже STOP_MS или её нет; после
   стоянки), — всё в STAND_JITTER_M от последней оставленной, какая бы ни была скорость: у стоящей машины скорость
@@ -90,15 +91,15 @@ def _still(k: tuple[float, float, float, float, float | None], f: tuple[float, f
            standing: bool) -> bool:
     """Точка f — дрожание на месте относительно последней оставленной k; standing — машина стоит (правила — в описании
     модуля)."""
+    d = _m(k, f)
+    if d > ac.STAND_JITTER_M:   # дальше дрожания стоя — машина сдвинулась (и ползком в пробке: линия — шагом ~75 м)
+        return False
     spd = f[4]
     if spd is not None and spd < ac.STOP_MS:
         return True
-    d = _m(k, f)
     if d < max(STILL_M, min(STILL_ACC_MAX_M, max(k[3], f[3]))):
         return True
-    if d <= ac.STAND_JITTER_M and (standing or d < ac.STOP_MS * max(f[2] - k[2], ac.MOVE_STEP_S)):
-        return True
-    return False
+    return standing or d < ac.STOP_MS * max(f[2] - k[2], ac.MOVE_STEP_S)
 
 
 def _despike(run: list[tuple[float, float, float, float, float | None]]) -> list[tuple[float, float, float, float, float | None]]:

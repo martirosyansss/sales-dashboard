@@ -130,6 +130,20 @@ def test_jitter_between_stays_dropped_by_speed_and_displacement():
         assert len([p for p in line if p[2] > stand_to.timestamp()]) == len(after) > 10    # езда к B — вся
 
 
+def test_sustained_crawl_in_traffic_keeps_a_line():
+    """Пробка: машина ползёт 0,9 м/с (ниже STOP_MS) 1 565 точек раз в 5 с (~7 км) — линия не пропадает: точка раз в
+    ~75 м, длина — как путь."""
+    tr = Trip().park(DEPOT, 5)
+    end = east(DEPOT, 1565 * 5 * 0.9)
+    tr.drive(end, speed_ms=0.9, step_s=5)
+    assert len(tr.fixes) - 6 > 1560 and all(f.spd == 0.9 for f in tr.fixes[6:])
+    line, _, _ = _line(tr.fixes)
+    path = tl._path_m(line)
+    straight = haversine_km(DEPOT, end) * 1000
+    assert 60 < len(line) < 120 and abs(path - straight) < 0.02 * straight
+    assert max(tl._m(a, b) for a, b in zip(line, line[1:])) < 100.0
+
+
 def test_small_spike_dropped_real_turn_kept():
     tr = Trip().park(DEPOT, 5).drive(A)
     base = len(tr.fixes)

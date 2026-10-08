@@ -4427,11 +4427,15 @@ class _LiveTracks:
             return serve()
 
     def _work(self) -> None:
-        """Фоновый поток: очередь — по порядку заказов, пока не опустеет."""
+        """Фоновый поток: очередь — по порядку заказов, пока не опустеет. «Свободен» — в той же критической секции, где
+        очередь увидена пустой: иначе заказ, пришедший между ними, видел бы «занят» и остался бы в очереди без потока."""
+        done = False
         try:
             while True:
                 with self._cond:
                     if not self._queue:
+                        self._busy, self._current, done = False, None, True
+                        self._cond.notify_all()
                         return
                     k, (chunk, match) = self._queue.popitem(last=False)
                     self._current = k
@@ -4446,10 +4450,11 @@ class _LiveTracks:
                         self._put(k, got[0])
                     self._cond.notify_all()
         finally:
-            with self._cond:
-                self._busy = False
-                self._current = None
-                self._cond.notify_all()
+            if not done:   # исключение мимо match (не должно быть) — поток всё равно освобождается
+                with self._cond:
+                    self._busy = False
+                    self._current = None
+                    self._cond.notify_all()
 
     def _put(self, k: tuple[date, str, Any], line: list[tl.TPoint]) -> None:
         """Под замком: кусок в кэш; прежняя версия хвоста машино-дня (тот же первый момент) — вон; предел вершин."""
