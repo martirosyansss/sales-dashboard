@@ -20,6 +20,11 @@
    «усталость от тревог»), late только к плану; 3 сведения (фиолетовая, не мигает) — stores.unmarked; неизвестный вид — 1.
    Активная и не отмеченная «Տեսա» — новая: мигает (1 Гц, только CSS), баннер, «(N) ⚠» во вкладке, звук (по желанию).
    «Տեսա» — по случаю: t.alerts.since (начало идущей тревоги вида, сервер); дребезг до 10 мин — тот же случай.
+   Тревоги, круг 2 (владелец 08.10 «fix all»: 11 миганий за 8 ч у одной машины, EEMUA ≤ 6/ч): жёлтые отклонение и «нет
+   связи» — новые только после задержки ON_DELAY_MS (ISA-18.2 on-delay; до неё — ровная приглушённая строка без «Տեսա»);
+   «Տեսա» общая — на сервере (POST /api/routes/live/ack, data.acks; lv.ack — запасная и для дребезга), у отмеченной строки —
+   «Տեսավ՝ кто HH:MM»; новая красная без ответа ESCALATE_MS — баннер сильнее, «N րոպե առանց պատասխանի», звук — повтор раз в
+   REBEEP_MS. Без выбранной машины на широком экране карта занимает и место карточки (.lv-layout.is-nocard).
    Подробно — в блоке «тревоги: важность и «Տեսա»» ниже. */
 (function () {
     'use strict';
@@ -75,7 +80,10 @@
         // подсказка точки линии: подсказка и точка на карте; at/car — где курсор (координаты: после опроса — снова), fns — линии
         hover: { tip: null, mark: null, at: null, car: null, fns: [] },
         // тревоги: проблемы сегодня, отметки «Տեսա», уже прозвучавшие красные и объявленные новые, звук
-        alarm: { probs: [], acks: loadAcks(), heard: new Set(), told: new Set(), sound: loadSound(), audio: null } };
+        alarm: { probs: [], acks: loadAcks(), heard: new Set(), told: new Set(), sound: loadSound(), audio: null,
+            // круг 2: отметки сервера (ключ проблемы → {car, key, since, user, at}), отправляемые, первый показ новой
+            // красной без since (ключ → мс), когда звучал сигнал
+            server: new Map(), posting: new Set(), first: new Map(), beepAt: 0 } };
 
     // «Պլանային երթուղի» на карте — удобство одного зрителя: помнится в браузере (нет хранилища — просто включено)
     function loadPlanToggle() { try { return window.localStorage.getItem('lv.plan') !== '0'; } catch (e) { return true; } }
@@ -95,6 +103,20 @@
     // только после жеста (после перезагрузки — первое касание или клавиша на странице; до того — подсказка на кнопке, тона
     // не ставятся, без очереди). Со звуком опрос идёт и в скрытой вкладке — раз в 60 с (schedule). Мигание — только CSS
     // (1 Гц; prefers-reduced-motion: reduce — без анимации: обводка и «ՆՈՐ»); слои карты по таймеру не перерисовываются.
+    // Круг 2 (владелец 08.10 «fix all»). Задержка (on-delay, ISA-18.2): жёлтая проблема вида из ON_DELAY_MS новая, только
+    // когда идёт не меньше порога (data.now − since; since нет — порог считается пройденным); до того — p.pending: ровная
+    // приглушённая строка «Խնդիրներ հիմա», ровный цвет в списке и на маркере, без «Տեսա», баннера и счётчика. «Տեսա» общая:
+    // отметка сервера (data.acks, схема 27) того же случая (since; без since — не старше ACK_GRACE_MS) или своя (lv.ack —
+    // запасная: нет связи с сервером, дребезг). Своя без серверной (дребезг с новым since, сбой отправки) и серверная без
+    // since старше ACK_REFRESH_MS — отправляются (postAcks) на опросе; «Տեսա», строка, «Տեսա բոլորը» — сразу, без ожидания
+    // ответа (ошибка — тихо: отметка своя, следующий опрос повторит). Эскалация: новая красная без ответа ESCALATE_MS
+    // (от since по часам сервера, без since — от первого показа на этой странице) — баннер .is-escalated и «N րոպե առանց
+    // պատասխանի»; со звуком — тоны снова не чаще раза в REBEEP_MS, пока такая есть.
+    const ON_DELAY_MS = { deviation: 5 * 60000, no_contact: 10 * 60000 };   // короткие отклонения и пропадания связи — шум
+    const ESCALATE_MS = 5 * 60000;
+    const REBEEP_MS = 2 * 60000;
+    const ACK_REFRESH_MS = 5 * 60000;
+    const ACK_BATCH = 50;   // store.LIVE_ACK_MAX
     const SEV = { 1: ['fa-triangle-exclamation', 'կրիտիկական'], 2: ['fa-circle-exclamation', 'զգուշացում'],
         3: ['fa-location-dot', 'տեղեկություն'] };
     const WARN_KINDS = ['stop', 'deviation', 'no_contact'];
@@ -102,7 +124,12 @@
     const alarmSev = (kind, late) => (kind === 'late'
         ? ((late || []).some(x => x.late_kind === 'window' || x.late_kind === 'return') ? 1 : 2)
         : (WARN_KINDS.includes(kind) ? 2 : 1));
-    const isNew = (p) => p.sev < 3 && !state.alarm.acks.has(p.key);
+    const isNew = (p) => p.sev < 3 && !p.pending && !state.alarm.acks.has(p.key);
+    // сколько мс прошло от момента iso по часам сервера (data.now)
+    const srvAge = (iso) => Date.parse(state.data.now) - Date.parse(iso);
+    // новая красная ждёт ответа: от since (сервер) или от первого показа на этой странице
+    const waitMs = (p) => (p.since !== null ? srvAge(p.since) : Date.now() - (state.alarm.first.get(p.key) || Date.now()));
+    const escalated = (ps) => ps.filter(p => p.sev === 1 && isNew(p) && waitMs(p) >= ESCALATE_MS);
     // порядок: новые красные, новые жёлтые, отмеченные красные, отмеченные жёлтые, сведения; внутри — номер машины
     const alarmRank = (p) => (isNew(p) ? p.sev - 1 : p.sev + 1);
     const byAlarm = (a, b) => alarmRank(a) - alarmRank(b) || a.t.car_code.localeCompare(b.t.car_code);
@@ -133,8 +160,12 @@
     // проблемы машины сегодня: тревоги (кроме «нет связи» и «не успеет») → нет связи → не успеет → не отмеченные GPS-визиты
     function problemsOf(t) {
         const since = (t.alerts && t.alerts.since) || {};
-        const one = (kind, sev, title, text, ex) => ({ key: state.data.date + '|' + t.car_code + '|' + kind, kind, t, sev, title, text,
-            since: typeof since[kind] === 'string' ? since[kind] : null, ex: ex || null });
+        const one = (kind, sev, title, text, ex) => {
+            const from = typeof since[kind] === 'string' ? since[kind] : null;
+            return { key: state.data.date + '|' + t.car_code + '|' + kind, kind, t, sev, title, text, since: from, ex: ex || null,
+                // задержка жёлтой: идёт меньше порога вида — ещё не новая
+                pending: sev === 2 && Object.hasOwn(ON_DELAY_MS, kind) && from !== null && srvAge(from) < ON_DELAY_MS[kind] };
+        };
         const out = [];
         for (const k of t.alerts.active || []) {
             if (k === 'late' || k === 'no_contact') continue;
@@ -165,21 +196,67 @@
         return a && ((p.since !== null && a.since === p.since) || now - a.seen <= ACK_GRACE_MS) ? a : null;
     }
 
-    // после опроса: проблемы, отметки, звук на новые красные, объявление новых для экранного диктора
+    // отметка сервера (схема 27): тот же случай (since); без since — отметка без since не старше ACK_GRACE_MS;
+    // «не успеет» к плану — и отметка «к окну»
+    function serverAck(p) {
+        const s = state.alarm.server;
+        const a = s.get(p.key) || (p.kind === 'late:plan' ? s.get(p.key.replace(/late:plan$/, 'late:window')) : null);
+        if (!a) return null;
+        return (p.since !== null ? a.since === p.since : a.since === null && srvAge(a.at) <= ACK_GRACE_MS) ? a : null;
+    }
+    const serverAcks = (date, acks) => new Map((acks || []).map(a => [date + '|' + a.car + '|' + a.key, a]));
+
+    // «Տեսա» — на сервер (другие зрители видят её на своём опросе); ответ — отметки дня. Ошибка — тихо: отметка остаётся
+    // своей (lv.ack), следующий опрос отправит снова. Уже отправляемые (ключ и since) — не дублируются.
+    function postAcks(ps) {
+        const al = state.alarm;
+        const todo = ps.filter(p => p.sev < 3 && !al.posting.has(p.key + '|' + p.since));
+        if (!todo.length || !state.data) return;
+        const date = state.data.date;
+        for (let i = 0; i < todo.length; i += ACK_BATCH) {
+            const part = todo.slice(i, i + ACK_BATCH), tags = part.map(p => p.key + '|' + p.since);
+            tags.forEach(t => al.posting.add(t));
+            api('/api/routes/live/ack', { date, items: part.map(p => ({ car: p.t.car_code, key: p.kind, since: p.since })) })
+                .then(body => {
+                    if (state.date || !state.data || state.data.date !== date) return;   // день сменили — ответ не наш
+                    al.server = serverAcks(date, body.acks);
+                    renderProblems();
+                })
+                .catch(() => { /* отметка своя; повтор — на следующем опросе */ })
+                .finally(() => tags.forEach(t => al.posting.delete(t)));
+        }
+    }
+
+    // после опроса: проблемы, отметки (сервер и свои), звук на новые красные и повтор при эскалации, объявление новых
+    // для экранного диктора
     function syncAlarms(data) {
         const al = state.alarm;
         if (state.date || data.date !== String(data.now || '').slice(0, 10)) { al.probs = []; return; }
         const now = Date.now();
+        al.server = serverAcks(data.date, data.acks);
         al.probs = data.trucks.flatMap(problemsOf);
         mergeAcks();
+        const post = [];
         for (const p of al.probs) {
-            if (ackOf(p, now)) al.acks.set(p.key, { since: p.since, seen: now }); else al.acks.delete(p.key);
+            const s = serverAck(p);
+            if (s || ackOf(p, now)) {
+                al.acks.set(p.key, { since: p.since, seen: now });
+                // своя без серверной (дребезг, сбой отправки) и серверная без since, которая скоро истечёт, — на сервер
+                if (!s || (p.since === null && srvAge(s.at) > ACK_REFRESH_MS)) post.push(p);
+            } else al.acks.delete(p.key);
         }
         const keys = new Set(al.probs.map(p => p.key));
         for (const [k, a] of al.acks) if (!keys.has(k) && now - a.seen > ACK_GRACE_MS) al.acks.delete(k);
         saveAcks();
+        postAcks(post);
         const fresh = al.probs.filter(isNew), red = fresh.filter(p => p.sev === 1).map(p => p.key);
-        if (al.sound && red.some(k => !al.heard.has(k))) beep();
+        for (const k of red) if (!al.first.has(k)) al.first.set(k, now);
+        for (const k of al.first.keys()) if (!red.includes(k)) al.first.delete(k);
+        // звук: новая красная — сразу; красная без ответа ESCALATE_MS — снова не чаще раза в REBEEP_MS
+        if (al.sound && (red.some(k => !al.heard.has(k)) || (escalated(fresh).length && now - al.beepAt >= REBEEP_MS))) {
+            beep();
+            al.beepAt = now;
+        }
         al.heard = new Set(red);
         // диктор — только когда новых прибавилось (не каждые 15 с)
         if (fresh.some(p => !al.told.has(p.key))) $('lvAlarmSr').textContent = alarmText(fresh);
@@ -206,6 +283,7 @@
             al.acks.set(k, { since: p ? p.since : null, seen: now });
         }
         saveAcks();
+        postAcks(al.probs.filter(p => keys.includes(p.key)));
         const trucks = state.data ? state.data.trucks : [];
         renderProblems();
         renderSummary(trucks);
@@ -221,7 +299,12 @@
         document.title = fresh.length ? '(' + fresh.length + ') ⚠ ' + BASE_TITLE : BASE_TITLE;
         if (!fresh.length) { $('lvAlarm').className = 'lv-alarm'; $('lvAlarmSr').textContent = ''; return; }
         const sev = fresh[0].sev;   // есть новая красная — баннер красный
-        $('lvAlarm').className = 'lv-alarm is-new lv-sev' + sev + ' lv-new' + sev;
+        // эскалация: красная без ответа ESCALATE_MS — баннер сильнее и сколько она ждёт (самая давняя)
+        const esc = escalated(fresh);
+        $('lvAlarm').className = 'lv-alarm is-new lv-sev' + sev + ' lv-new' + sev + (esc.length ? ' is-escalated' : '');
+        $('lvAlarmWait').hidden = !esc.length;
+        $('lvAlarmWait').textContent = esc.length
+            ? Math.floor(Math.max(...esc.map(waitMs)) / 60000) + ' րոպե առանց պատասխանի' : '';
         $('lvAlarmIco').className = 'fas ' + SEV[sev][0] + ' lv-alarm-ico';
         $('lvAlarmCount').textContent = fresh.length + ' նոր խնդիր';
         const items = fresh.slice(0, 3).map(p => h('li', null, icon(SEV[p.sev][0]), h('span', { text: p.t.car_code + ' · ' + p.title })));
@@ -453,8 +536,12 @@
 
     function problemRow(p) {
         const car = p.t.car_code, fresh = isNew(p);
-        const btn = h('button', { type: 'button', class: 'lv-prob lv-sev' + p.sev + (fresh ? ' is-new lv-new' + p.sev : '') },
-            icon(SEV[p.sev][0]), h('b', { text: car }), h('span', { text: p.text }),
+        // отмеченная на сервере — кто и когда увидел (у любого зрителя)
+        const by = !fresh && p.sev < 3 ? serverAck(p) : null;
+        const btn = h('button', { type: 'button', class: 'lv-prob lv-sev' + p.sev + (fresh ? ' is-new lv-new' + p.sev : '')
+            + (p.pending ? ' is-pending' : '') },
+            icon(SEV[p.sev][0]), h('b', { text: car }),
+            h('span', null, p.text, by ? h('small', { class: 'lv-seen-by', text: 'Տեսավ՝ ' + (by.user || '—') + ' ' + hm(by.at) }) : null),
             h('span', { class: 'rt-sr-only', text: SEV[p.sev][1] + (fresh ? ', նոր' : '') }),
             fresh ? h('em', { class: 'lv-new-tag', 'aria-hidden': 'true', text: 'ՆՈՐ' }) : null);
         // нажатие на строку — оператор проблему увидел
@@ -930,6 +1017,13 @@
     function renderCard() {
         const t = state.detail || (state.data && state.data.trucks.find(x => x.car_code === state.selected));
         $('lvCard').hidden = !t;
+        // широкий экран: без карточки карта занимает и её колонку; размер карты сменился — Leaflet пересчитывает (иначе
+        // серые плитки)
+        const lay = document.querySelector('.lv-layout');
+        if (lay.classList.contains('is-nocard') !== !t) {
+            lay.classList.toggle('is-nocard', !t);
+            if (state.map) state.map.invalidateSize({ pan: false });
+        }
         if (!t) return;
         const [baseLabel, cls] = STATE[t.state] || STATE.standing;
         const label = stateLabel(t, baseLabel);

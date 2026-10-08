@@ -26,6 +26,12 @@ CT115, и сообщений ПК не нужно.
   вернулась раньше — тот же случай (прогноз у порога не шлёт сообщение на каждом пересчёте). Новые строки одной машины
   за проход — одним сообщением. В тихие часы не шлётся и не отмечается: прогноз, который ещё в силе после них, уйдёт тогда. Окно повтора
   вида у машины к нему не применяется (иначе второй опаздывающий магазин той же машины пропал бы);
+- эскалация (владелец 08.10, «fix all» тревог карты; ISA-18.2): идущая красная тревога (RED_KINDS — как важность 1
+  routes_live.js alarmSev; «не успеет» — к окну приёма или возврату на склад, ключ страницы late:window), которую через
+  ESCALATE_MIN минут от начала никто не отметил «Տեսա» на сервере (store.live_acks, схема 27: та же машина, вид и начало;
+  у «не успеет» начала нет — отметка в силе ACK_GRACE_MIN от последнего подтверждения страницы, а начало — когда этот
+  поток её впервые увидел), — одно сообщение «⚠ Չի տեսել ոչ ոք N րոպե՝ …» на (день, машина, вид, начало). Тихие часы —
+  как у начала: срок, наступивший в них, не рассылается. Отметки прочитать не удалось — эскалации в этот проход нет;
 - сбой отправки (сеть, Telegram) — в журнал без токена, повтор со всё большей паузой (до BACKOFF_MAX_S); поток не падает.
   Тайм-аут ответа не значит «не доставлено»: сообщение, дошедшее без ответа, при повторе придёт второй раз (редкий дубль
   принят — потерять тревогу хуже). CLIENT_ERRORS_MAX ошибок 4xx подряд (токен отозван, бота убрали из группы) — рассылка
@@ -44,7 +50,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 from . import actuals as ac
 from .live import Rules
@@ -66,6 +72,11 @@ END_KINDS = ('no_contact', 'gps')   # окончание сообщается т
 MAP_URL = 'https://yandex.ru/maps/?pt={lon},{lat}&z=16&l=map'
 LATE_STEP_MIN = 15.0              # «не успеет»: повтор — при ухудшении прогноза на столько (и не меньше repeat_min)
 LATE_CLEAR_MIN = 15.0             # …и после стольких минут подряд без опоздания — запись снимается (новый случай)
+ESCALATE_MIN = 10.0               # красная тревога без «Տեսա» столько минут от начала — сообщение «никто не видел»
+ACK_GRACE_MIN = 10.0              # «Տեսա» без начала тревоги (у «не успеет») — в силе столько (routes_live.js ACK_GRACE_MS)
+# красные виды (важность 1) — как routes_live.js alarmSev; «не успеет» к окну / возврату — отдельно (ключ late:window)
+RED_KINDS = ('speed', 'center', 'gps', 'sequence')
+LATE_RED = ('window', 'return')
 
 TITLE = {'speed': 'Արագության գերազանցում', 'stop': 'Երկար կանգառ ոչ խանութում', 'no_contact': 'Կապ չկա',
          'gps': 'GPS-ն անջատված է', 'center': 'Փոքր կենտրոնում (մուտքը թույլատրված չէ)',
@@ -302,6 +313,84 @@ def _plan_late(car: str, card: Mapping[str, Any], rules: Rules, now: datetime, s
     return changed
 
 
+def _acked(acks: Sequence[Mapping[str, Any]], car: str, key: str, since: str | None, now: datetime) -> bool:
+    """Есть «Տեսա» на сервере: та же машина, вид и начало; без начала — отметка без начала не старше ACK_GRACE_MIN
+    (страница, у которой проблема отмечена, подтверждает её раньше)."""
+    for a in acks:
+        if a.get('car') == car and a.get('key') == key:
+            if since is not None:
+                return a.get('since') == since
+            at = _moment(a.get('at'))
+            return a.get('since') is None and at is not None and now - at <= timedelta(minutes=ACK_GRACE_MIN)
+    return False
+
+
+def escalation_text(card: Mapping[str, Any], a: Mapping[str, Any] | None, minutes: int, rules: Rules,
+                    now: datetime) -> str:
+    """«⚠ Չի տեսել ոչ ոք N րոպե՝ <что>», дальше — как у начала тревоги (build_text); «не успеет» (a None) — строки к окну
+    приёма и возврату на склад и где машина сейчас."""
+    if a is not None:
+        lines = build_text(card, a, 'start', rules).split('\n')
+    else:
+        lines = [TITLE['late'], 'Մեքենա՝ ' + ' · '.join(x for x in (card.get('car_code'), card.get('name')) if x)]
+        driver = card.get('driver') or next(iter(card.get('drivers') or ()), None)
+        if driver:
+            lines.append('Վարորդ՝ ' + str(driver))
+        lines += [late_line(x) for x in card.get('late') or () if isinstance(x, Mapping) and x.get('late_kind') in LATE_RED]
+        pos = card.get('position') or {}
+        if pos.get('lat') is not None and pos.get('lon') is not None:
+            lines.append('Որտեղ է հիմա՝ ' + MAP_URL.format(lat=pos['lat'], lon=pos['lon']))
+        lines.append('Ժամ՝ ' + now.astimezone(ac.YEREVAN).strftime('%H:%M'))
+    lines[0] = f'⚠ Չի տեսել ոչ ոք {minutes} րոպե՝ {lines[0]}'
+    return '\n'.join(lines)
+
+
+def _plan_escalation(car: str, card: Mapping[str, Any], rules: Rules, now: datetime, state: AlertState, quiet: bool,
+                     acks: Sequence[Mapping[str, Any]], out: list[Message]) -> bool:
+    """Эскалация красных тревог машины без «Տեսա» (правило — в описании модуля); True — состояние менялось. Запись
+    «esc|день|машина|вид|начало»: first — когда «не успеет» (без начала) впервые увидена, start — отправлено, skipped —
+    срок наступил в тихие часы."""
+    day = now.astimezone(ac.YEREVAN).date().isoformat()
+    since_of = (card.get('alerts') or {}).get('since') or {}
+    last: dict[str, Mapping[str, Any]] = {}   # вид → последняя идущая тревога (как alerts.since страницы)
+    for a in card.get('alerts_log') or ():
+        kind = a.get('kind')
+        if kind in RED_KINDS and kind in rules.alert_kinds and a.get('active') and a.get('from') \
+                and not a.get('minor') and not a.get('explained') and a['from'] >= last.get(kind, {}).get('from', ''):
+            last[kind] = a
+    red: dict[str, tuple[str | None, Mapping[str, Any] | None]] = {
+        k: (since_of.get(k) or a['from'], a) for k, a in last.items()}
+    if 'late' in rules.alert_kinds and any(isinstance(x, Mapping) and x.get('late_kind') in LATE_RED
+                                           for x in card.get('late') or ()):
+        red['late:window'] = (None, None)
+    changed = False
+    prefix = f'esc|{day}|{car}|'
+    for key, (since, a) in red.items():
+        sk = f'{prefix}{key}|{since or ""}'
+        rec = state.sent.get(sk)
+        if (rec is not None and (rec.get('start') or rec.get('skipped'))) or _acked(acks, car, key, since, now):
+            continue
+        start = _moment(since) if since else _moment((rec or {}).get('first'))
+        if start is None:   # «не успеет»: начала нет — отсчёт с того, как поток её увидел
+            state.sent[sk] = {'at': now.isoformat(), 'start': None, 'end': None, 'first': now.isoformat()}
+            changed = True
+            continue
+        if now - start < timedelta(minutes=ESCALATE_MIN):
+            continue
+        if quiet:
+            state.sent[sk] = {'at': now.isoformat(), 'start': None, 'end': None, 'skipped': 'quiet'}
+            changed = True
+            continue
+        out.append(Message(sk, 'esc', car, key,
+                           escalation_text(card, a, int((now - start).total_seconds() // 60), rules, now)))
+    # «не успеет» прошла, не дождавшись срока, — отсчёт снимается (вернётся — с начала)
+    for k in [k for k, v in state.sent.items() if k.startswith(prefix) and v.get('first') and not v.get('start')
+              and k[len(prefix):].split('|')[0] not in red]:
+        del state.sent[k]
+        changed = True
+    return changed
+
+
 def _plan_car(car: str, card: Mapping[str, Any], rules: Rules, now: datetime, state: AlertState, quiet: bool,
               repeat: timedelta, out: list[Message]) -> bool:
     """Решения по тревогам одной машины (plan_messages); True — состояние менялось."""
@@ -341,10 +430,11 @@ def _plan_car(car: str, card: Mapping[str, Any], rules: Rules, now: datetime, st
 
 
 def plan_messages(cards: Mapping[str, Mapping[str, Any]], rules: Rules, now: datetime,
-                  state: AlertState) -> tuple[list[Message], bool]:
+                  state: AlertState, acks: Sequence[Mapping[str, Any]] | None = None) -> tuple[list[Message], bool]:
     """Что слать сейчас: (сообщения по порядку, менялось ли состояние — пропущенные тревоги отмечаются сразу).
     Тревога без записи — начало: не «старая» (идёт или кончилась не раньше RECENT_MIN назад), не тихие часы, не в окне
-    повтора этого вида у этой машины; с записью «начало отправлено», у «нет связи»/GPS кончилась — окончание."""
+    повтора этого вида у этой машины; с записью «начало отправлено», у «нет связи»/GPS кончилась — окончание.
+    acks — отметки «Տեսա» дня (store.live_acks): с ними — и эскалация красных; None (не прочитаны) — без неё."""
     out: list[Message] = []
     changed = False
     quiet = in_quiet(rules, now)
@@ -352,6 +442,8 @@ def plan_messages(cards: Mapping[str, Mapping[str, Any]], rules: Rules, now: dat
     for car, card in cards.items():
         try:
             changed |= _plan_car(car, card, rules, now, state, quiet, repeat, out)
+            if acks is not None:
+                changed |= _plan_escalation(car, card, rules, now, state, quiet, acks, out)
         except Exception:   # битые данные одной машины не должны остановить тревоги остальных
             logger.exception('[Routes] Тревоги в Telegram: машина %s пропущена', car)
     return out, changed
@@ -359,12 +451,15 @@ def plan_messages(cards: Mapping[str, Mapping[str, Any]], rules: Rules, now: dat
 
 class LiveAlerter:
     """Один проход (tick) = решения plan_messages + отправка; состояние пишется после каждого сообщения. source() — (Rules,
-    момент, карточки флота) или None (флота нет); send(text) бросает исключение при сбое."""
+    момент, карточки флота) или None (флота нет); send(text) бросает исключение при сбое; acks(день) — отметки «Տեսա»
+    дня (store.live_acks; не задано — эскалации нет)."""
 
     def __init__(self, source: Callable[[], tuple[Rules, datetime, Mapping[str, Mapping[str, Any]]] | None],
-                 send: Callable[[str], None], state_path: str):
+                 send: Callable[[str], None], state_path: str,
+                 acks: Callable[[str], Sequence[Mapping[str, Any]]] | None = None):
         self.source = source
         self.send = send
+        self.acks = acks
         self.state = AlertState(state_path)
         self.failures = 0
         self.retry_at = 0.0
@@ -384,7 +479,13 @@ class LiveAlerter:
             if self.halted == sig:
                 return 0
             self.halted, self.client_errors = None, 0   # настройки тревог сменили — пробуем снова
-        messages, changed = plan_messages(cards, rules, now, self.state)
+        acks = None
+        if self.acks is not None:
+            try:
+                acks = self.acks(now.astimezone(ac.YEREVAN).date().isoformat())
+            except Exception:   # база недоступна — без эскалации (лучше промолчать, чем звать зря)
+                logger.exception('[Routes] Тревоги в Telegram: отметки «Տեսա» не прочитаны — эскалации нет')
+        messages, changed = plan_messages(cards, rules, now, self.state, acks)
         sent = 0
         for m in messages:
             try:

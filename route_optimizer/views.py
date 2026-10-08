@@ -43,7 +43,7 @@ from .geo import Point, haversine_km, in_city, in_polygon, is_valid_point
 from .roads import SNAP_MAX_KM, CenterBypassRoads, RoadDistances, RoadProvider, roads_version
 from .snapshot import CAR_IDLE_DAYS, MIN_REFRESH_SECONDS, ResultCache, Snapshot, SnapshotCache
 from .store import (CREW_TABLES, DEFAULT_MANAGER_FUEL, DEFAULT_SETTINGS, KEEP, Bundle, Decision, GarageError, Store, StoreError,
-                    big_auto, center_auto, check_driver_name, check_garage_entry, check_live_explanation,
+                    big_auto, center_auto, check_driver_name, check_garage_entry, check_live_acks, check_live_explanation,
                     check_unload_min, check_window, until_floor, validate_payload)
 from .valhalla_engine import (CAR_COSTING, PROFILE_CAR, PROFILE_TRUCK, TRUCK_TIME_MODEL, TRUCK_TIME_VALHALLA, ValhallaProvider,
                               ValhallaRoads, truck_costing, truck_leg_minutes, truck_time_source, valhalla_error)
@@ -4957,7 +4957,8 @@ def api_live() -> Any:
         return _bad_request({'_': '«Առաքիչ» բաժինը միացված չէ — տվյալներ չկան'})
     ctx, now, _, cards = _live_cards(state, day)
     return jsonify({**_live_head(ctx, day, now),
-                    'trucks': [{k: v for k, v in card.items() if k not in ('alerts_log', 'stops_off')} for card in cards.values()]})
+                    'trucks': [{k: v for k, v in card.items() if k not in ('alerts_log', 'stops_off')} for card in cards.values()],
+                    'acks': state.store.live_acks(day.isoformat())})   # «Տեսա» всех зрителей (схема 27)
 
 
 @bp.get('/api/routes/live/truck')
@@ -4977,7 +4978,8 @@ def api_live_truck() -> Any:
     if car not in cards:
         return jsonify({'success': False, 'error': 'Այս մեքենան այս օրը տվյալներ չունի'}), 404
     now = _yerevan_now()
-    return jsonify({**_live_head(ctx, day, now), 'truck': _live_card(ctx, day, now, car, fleet.get(car), True, True)})
+    return jsonify({**_live_head(ctx, day, now), 'truck': _live_card(ctx, day, now, car, fleet.get(car), True, True),
+                    'acks': [a for a in state.store.live_acks(day.isoformat()) if a['car'] == car]})
 
 
 # «Բացատրել» (владелец 08.10): диспетчер объясняет отклонение или нарушение порядка объезда — причина и заметка (схема 26).
@@ -5065,6 +5067,43 @@ def api_live_unexplain() -> Any:
         _live_forget(state, day)
     logger.info('[Routes] Карта машин: %s отменил объяснение #%d (%s %s)', session.get('username'), raw, gone[1], gone[0])
     return jsonify({'success': True})
+
+
+# «Տեսա» общая (владелец 08.10, «fix all» тревог карты; схема 27): ПК диспетчера и телефон владельца видят одни отметки.
+# Отмечает тот, кто может открыть карту, — администратор и «Гараж» (app_v2._garage_path_allowed пропускает «Гаражу» ровно
+# этот POST): отметка — только «видел», с именем вошедшего; ничего, кроме неё, не меняется. Только JSON (_json_body, как
+# «Բացատրել») и только за сегодня по Еревану.
+LIVE_ACK_ROLES = ('admin', 'garage')
+
+
+@bp.post('/api/routes/live/ack')
+@_api
+def api_live_ack() -> Any:
+    """{date?, items: [{car, key, since}]} — до store.LIVE_ACK_MAX отметок (check_live_acks), date — только сегодня (нет —
+    сегодня). → {success, acks: отметки дня [{car, key, since, user, at}]}: страница сразу показывает «Տեսավ՝ …»."""
+    if g.get('user_role') not in LIVE_ACK_ROLES:
+        logger.warning('[Routes] «Տեսա» карты машин: отказ роли %r', g.get('user_role'))
+        return jsonify({'success': False, 'error': 'Մուտքն արգելված է'}), 403
+    payload, error = _json_body()
+    if error is not None:
+        return error
+    if not isinstance(payload, dict):
+        return _bad_request({'_': 'Սերվերը չընդունեց հարցումը'})
+    now = _yerevan_now()
+    today = now.date()
+    errors: dict[str, str] = {}
+    if payload.get('date') is not None and _parse_day(payload.get('date')) != today:
+        errors['date'] = 'Միայն այսօրվա համար'
+    items, bad = check_live_acks(payload.get('items'))
+    if bad:
+        errors['items'] = bad
+    if errors:
+        return _bad_request(errors)
+    state = _state()
+    user = session.get('username')
+    state.store.save_live_acks(today.isoformat(), items, user, now.isoformat(timespec='seconds'))
+    logger.info('[Routes] Карта машин: «Տեսա» %s — %s', user, ', '.join(f'{c} {k}' for c, k, _ in items))
+    return jsonify({'success': True, 'acks': state.store.live_acks(today.isoformat())})
 
 
 # --- Ход дня на шкале «Развоза» (ответ владельца №82: как мониторинг Яндекса / Routific live) ---

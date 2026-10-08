@@ -161,7 +161,8 @@ def start_live_alerts(app: Flask, send: Any = None, interval_s: float = live_ale
         ctx, now, _, cards = _live_cards(state, datetime.now(YEREVAN).date())
         return ctx.rules, now, cards
 
-    alerter = live_alerts.LiveAlerter(source, send or (lambda text: live_alerts.send_telegram(token, chat, text)), path)
+    alerter = live_alerts.LiveAlerter(source, send or (lambda text: live_alerts.send_telegram(token, chat, text)), path,
+                                      acks=state.store.live_acks)   # эскалация красных без «Տեսա» (схема 27)
     stop = threading.Event()
 
     def loop() -> None:
