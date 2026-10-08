@@ -52,6 +52,7 @@ INVOICE_FIND_DAYS = 31                      # «Ապրանքագիր»: дат �
 INVOICE_FIND_ROWS = 500                     # и точек
 STOP_ID_MAX = 80                            # S:/O: + uuid — с запасом
 CASH_COLLECT = ('cash', 'cash_ecr')         # деньги берёт водитель — «Գումար» ждёт оплату
+INFO_FLAGS = frozenset({'no_deadline'})   # сведение, не нарушение (№93: «срок под риском» без срока — как «driver»)
 STATUSES = ('pending', 'in_progress', 'full', 'partial', 'refused', 'covered')   # контракт §5 п. 12
 PEPPER_MISSING_HY = 'Չի հաջողվում ստուգել PIN-ի կրկնությունը. վերականգնեք COURIER_PIN_PEPPER-ը'
 
@@ -556,7 +557,7 @@ def day_overview(day: date, load: bool = True) -> dict[str, Any]:
             row['unreadable'] += 1
         if 'foreign' in e['flags']:
             row['foreign'] += 1
-        if e['flags']:
+        if set(e['flags']) - INFO_FLAGS:
             row['flagged'] += 1
     # трек и заправки (контракт v1.3 §7): км движения по GPS за рабочий день (стоянки у точек дня и склада — 0 км);
     # заправки дня исходной заправки (исправление — у неё, а не в день исправления), и вытесненные (superseded)
@@ -621,7 +622,7 @@ def day_overview(day: date, load: bool = True) -> dict[str, Any]:
                 'customer': (s.get('customer') or {}).get('name'), 'at': e['at'], 'flags': e['flags'],
                 'photos': photos.get(e['id'], [])}
 
-    flagged = [brief(e) for e in events if e['flags']]
+    flagged = [brief(e) for e in events if set(e['flags']) - INFO_FLAGS]
     with_photos = [brief(e) for e in events if photos.get(e['id'])]
     return {'date': ds, 'cars': cars, 'flagged': flagged, 'photo_events': with_photos,
             'rejected': st.store.rejected_for_day(ds)}

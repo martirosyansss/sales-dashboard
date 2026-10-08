@@ -711,7 +711,7 @@ _NUMERIC: dict[str, tuple[float, float, bool]] = {
     'unload_min_per_tonne': (0, 120, False),
     'truck_lunch_min': (0, 120, False),
     'truck_end_reserve_min': (0, 120, False),
-    'until_buffer_min': (0, 120, False),
+    'until_buffer_min': (0, 120, False),     # и целое (validate_settings; /day отдаёт целым)
     'solo_spare_max_pct': (0, 100, False),
     'dispatch_buffer_pct': (50, 95, False),
     'big_truck_yerevan_min': (0, 120, False),
@@ -1569,7 +1569,7 @@ def validate_settings(values: Mapping[str, Any],
         else:
             out[key] = v
     # порог «не успеет» без окна (№87) и эскалация бота (№91) — целые минуты, как у полей страницы
-    for key in ('late_nowin_min', 'tg_escalate_min'):
+    for key in ('late_nowin_min', 'tg_escalate_min', 'until_buffer_min'):
         if key in out and not float(out[key]).is_integer():
             errors[key] = 'ամբողջ թիվ րոպեներով'
             del out[key]

@@ -1003,6 +1003,16 @@ def _real_end(ctx: DayContext, cid: int) -> float:
     return hi - ctx.work_start_min if hi is not None else _span(ctx, cid)[1]
 
 
+def _reachable(ctx: DayContext, routable: Mapping[int, Stop], cid: int, codes: Sequence[str]) -> bool:
+    """Хоть одна машина codes, выехав со склада в начале дня только к магазину cid, успевает к его настоящему сроку
+    (_real_end) — иначе пересборка с настоящим сроком ничего не даст (№93)."""
+    for code in codes:
+        trip = DraftTrip(0, code, [cid])
+        if _timeline(ctx, [trip], routable, {cid: 1})[0][2][0] <= _real_end(ctx, cid) + _EPS:
+            return True
+    return False
+
+
 def _relaxed(ctx: DayContext, cids: Collection[int]) -> DayContext:
     """Контекст, где у клиентов cids окно — до настоящего срока (запас до срока не выходит, №93)."""
     hit = [c for c in cids if c in ctx.until_real]
@@ -1324,8 +1334,9 @@ def build(ctx: DayContext, stops: Sequence[Stop], old: Draft | None, trucks: Seq
             if s.customer_id not in placed:
                 {'window': draft.no_window, 'center': draft.no_center, 'vehicle': draft.no_vehicle}.get(
                     reasons.get(i), draft.no_room).add(s.customer_id)
-    tight = draft.no_window & set(ctx.until_real)
-    if tight:   # №93: с запасом до срока магазин не поместился — сборка заново, у него окно до настоящего срока
+    # №93: с запасом до срока магазин не поместился, а к настоящему сроку машина успела бы — сборка заново с ним
+    tight = {c for c in draft.no_window & set(ctx.until_real) if _reachable(ctx, routable, c, sorted(codes))}
+    if tight:
         return build(_relaxed(ctx, tight), stops, old, trucks, now, iterations)
     return draft
 

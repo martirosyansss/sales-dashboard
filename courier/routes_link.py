@@ -65,7 +65,7 @@ class RoutesView:
     roads: Any = None                                      # RoadDistances | None
     # срок магазина (№93): окна приёма дня — клиент → (не раньше, не позже), минуты от полуночи (Bundle.windows_on)
     windows: Mapping[int, tuple[float, float]] = field(default_factory=dict)
-    until_buffer_min: float = 0.0                         # запас до срока — настройка «Развоза» (№93)
+    until_buffer_min: int = 0                             # запас до срока, мин — настройка «Развоза» (№93), целое
     work_start_min: float = 540.0                         # начало дня машины — выезд рейса без прогноза
     departs: Mapping[str, tuple[float | None, ...]] = field(default_factory=dict)   # машина → плановый выезд рейсов
     road: TripRoad | None = None                           # дорожная модель для матрицы рейса; нет — матрицы нет
@@ -111,7 +111,7 @@ def routes_view(state: Any, day: date) -> RoutesView:
     h, m = map(int, s['truck_work_start'].split(':'))
     # №93: срок магазина на день, запас и матрица рейса — для терминала (courier.day)
     timing = dict(windows={cid: w.span() for cid, w in bundle.windows_on(day).items()},
-                  until_buffer_min=float(s['until_buffer_min']), work_start_min=float(h * 60 + m),
+                  until_buffer_min=int(round(float(s['until_buffer_min']))), work_start_min=float(h * 60 + m),
                   road=lambda customers, car: _trip_road(state, day, customers, car))
     base = RoutesView(depot=bundle.depot, geo_overrides=dict(bundle.geo_overrides), workdays=workdays,
                       holidays=holidays, fleet=dp.FleetRule.from_settings(bundle.settings), roads=roads, **timing)

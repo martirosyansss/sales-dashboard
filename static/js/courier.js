@@ -24,7 +24,7 @@
     const COLLECT = { cash: 'Կանխիկ', cash_ecr: 'Կանխիկ ՀԴՄ', none: 'Չվերցնել', ask: 'Ճշտել' };
     const TYPE = { delivery: 'Առաքում', payment: 'Գումար', tare: 'Տարա', return: 'Վերադարձ', scan: 'Սկան', scan_cancel: 'Սկանի չեղարկում',
         unreadable: 'Կոդը չի կարդացվում', arrived: 'Ժամանում', day_closed: 'Օրվա ավարտ', geo_suggest: 'Կետի առաջարկ',
-        track: 'GPS երթուղի', refuel: 'Լիցքավորում' };
+        track: 'GPS երթուղի', refuel: 'Լիցքավորում', reorder: 'Հերթի փոփոխություն (Գնալ առաջինը)' };
     const FLAG = {
         foreign: 'Այլ մեքենայի կամ օրվա կետ', unknown_stop: 'Անհայտ կետ', duplicate_elsewhere: 'Կոդն արդեն տրվել է այլ տեղ',
         repeat: 'Կրկնակի սկան', scan_short: 'Մակնշման սկանը պակաս է', no_ecr_receipt: 'ՀԴՄ կտրոնի համարը չկա',
@@ -38,6 +38,7 @@
         odometer_suspicious: 'Օդոմետրի ցուցմունքը կասկածելի է',
         helper_unconfirmed: 'Առաքիչը PIN-ով հաստատված չէ',
         car_by_time: 'Մեքենան որոշվել է տերմինալի ժամով (մեքենան փոխվել էր)՝ ստուգել',
+        no_deadline: 'Խանութը ժամկետ չունի՝ հաշվվել է որպես վարորդի ընտրություն',   // №93: սա տեղեկություն է, ոչ խախտում
     };
     const statusBadge = (s) => (s.status ? badge(...(STATUS[s.status] || [s.status, 'b-none'])) : '—') + (s.removed ? ' ' + badge('Հանված է', 'b-none') : '');
     const tareText = (t) => (t && t.length ? ' <span class="cr-muted">Տարա՝ ' + fmt(t.reduce((a, x) => a + (num(x.qty) || 0), 0), 2) + '</span>' : '');

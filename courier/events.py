@@ -483,7 +483,8 @@ def _stop_id(v: Any) -> str | None:
 def _reorder(tx: EventTx, p: Mapping[str, Any], day: str, car_code: str) -> tuple[dict[str, Any], list[str]]:
     """Смена порядка рейса водителем «Գնալ առաջինը» (контракт v1.8 §12, ответ владельца №93): trip — номер рейса /day
     (1…REORDER_TRIP_MAX), order — оставшиеся точки рейса в новом порядке (1…REORDER_ORDER_MAX разных stop_id), первая —
-    moved; reason — 'until' (у moved срок под риском) | 'driver'; plan_version — версия рейса /day, на которой сделана
+    moved (точка другой машины или даты — флаг foreign, неизвестная — unknown_stop; «until» у них — как 'driver');
+    reason — 'until' (у moved срок под риском) | 'driver'; plan_version — версия рейса /day, на которой сделана
     смена (необязательна: смена на прежней версии рейса — не эталон). 'until', а у moved в /day (действующая версия точки)
     срока нет или точка неизвестна — хранится как 'driver' (reason_sent 'until', флаг no_deadline): без срока перенос —
     нарушение порядка (ответ владельца). → (сохраняемый payload, флаги)."""
@@ -505,12 +506,12 @@ def _reorder(tx: EventTx, p: Mapping[str, Any], day: str, car_code: str) -> tupl
     version = _text(p.get('plan_version'), PLAN_VERSION_MAX, 'plan_version')   # версия рейса из /day (необязательна)
     if version:
         stored['plan_version'] = version
-    if reason == 'until':
-        data = _stop_ctx(tx, order[0], day, car_code)[0].data
-        if not (data or {}).get('until'):
-            stored.update(reason='driver', reason_sent='until')
-            return stored, ['no_deadline']
-    return stored, []
+    stop, where = _stop_ctx(tx, order[0], day, car_code)   # чужая машина или дата — foreign, неизвестна — unknown_stop
+    flags = list(where)
+    if reason == 'until' and (where or not (stop.data or {}).get('until')):
+        stored.update(reason='driver', reason_sent='until')   # срок не свой или его нет — не «срок под риском»
+        flags.append('no_deadline')
+    return stored, flags
 
 
 def _geo_suggest(p: Mapping[str, Any]) -> None:

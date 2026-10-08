@@ -592,7 +592,8 @@ class Reorder:
     """Смена порядка рейса водителем (ответ владельца №93, событие APK reorder): с момента at эталон рейса trip (номер рейса
     машины в плане, с 0) — оставшиеся клиенты customers в этом порядке (первый — moved, нажатый «Գնալ առաջինը»; moved_stop
     — его точка /day). reason: 'until' — у moved срок под риском (не нарушение порядка), 'driver' — без срока (перенос —
-    нарушение порядка, как раньше; остальные — по новому порядку без штрафа)."""
+    нарушение порядка, как раньше; остальные — по новому порядку без штрафа); 'plan' — логист снова отправил рейс
+    (history_reorders: эталон — план, без штрафа)."""
     at: datetime
     trip: int
     customers: tuple[int, ...]
@@ -642,16 +643,30 @@ def current_reorders(reorders: Sequence[Reorder], trips: Sequence[Sequence[int]]
             or (r.trip < len(trips) and plan_version(trips[r.trip]) == r.plan_version)]
 
 
+def history_reorders(reorders: Sequence[Reorder], trips: Sequence[Sequence[int]], sent_at: datetime | None
+                     ) -> list[Reorder]:
+    """Смены порядка для оценки уже сделанного (тревога и балл «порядок», №93): все смены — и на прежней версии рейса
+    (логист после неё пересобрал рейс): до новой отправки плана (sent_at — Draft.sent['at']) смена водителя была эталоном,
+    её «until» не становится задним числом нарушением. С момента отправки эталон рейса со сменами на прежней версии —
+    снова план (смена 'plan': без штрафа и без «прыжка»). Вперёд (очередь ETA, линия, следующий магазин) —
+    current_reorders."""
+    live = current_reorders(reorders, trips)
+    stale = sorted({r.trip for r in reorders if r not in live and sent_at is not None and r.at < sent_at
+                    and r.trip < len(trips) and trips[r.trip]})
+    resets = [Reorder(sent_at, k, tuple(trips[k]), trips[k][0], '', 'plan') for k in stale]   # type: ignore[arg-type]
+    return sorted([*reorders, *resets], key=lambda x: x.at)
+
+
 def reorder_trip(ref: Sequence[int], r: Reorder, done: Collection[int]) -> list[int]:
-    """Эталон рейса (клиенты по порядку) после смены порядка r: клиенты рейса, обслуженные к смене (done) и не вошедшие в
-    новый порядок, — впереди, в прежнем порядке; затем новый порядок (только клиенты этого рейса); затем остальные
-    необслуженные (терминал их не переставлял — точка без координаты) в прежнем порядке. В новом порядке нет ни одного
-    клиента рейса — эталон прежний."""
-    ordered = [c for c in r.customers if c in ref]
-    if not ordered:
+    """Эталон рейса (клиенты по порядку) после смены порядка r: клиенты рейса, обслуженные к смене (done: отметка или
+    визит по GPS, даже если терминал их ещё считает открытыми и прислал в новом порядке), — впереди, в прежнем порядке;
+    затем новый порядок без них (только клиенты этого рейса); затем остальные необслуженные (терминал их не переставлял —
+    точка без координаты) в прежнем порядке. В новом порядке нет ни одного клиента рейса — эталон прежний."""
+    if not any(c in ref for c in r.customers):
         return list(ref)
-    rest = [c for c in ref if c not in set(ordered)]
-    return [c for c in rest if c in done] + ordered + [c for c in rest if c not in done]
+    ordered = [c for c in r.customers if c in ref and c not in done]
+    return ([c for c in ref if c in done] + ordered
+            + [c for c in ref if c not in done and c not in set(ordered)])
 
 
 def reslot(ref: Sequence[int], etas: Mapping[int, datetime], r: Reorder, done: Collection[int]

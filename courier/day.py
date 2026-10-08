@@ -60,6 +60,16 @@ GIFT_LABEL = 'նվեր'   # к названию строки-подарка (№
 DAY_TTL_SECONDS = 60
 DAY_CACHE_MAX = 64
 MATRIX_MAX_STOPS = 40   # точек с координатой в рейсе больше — матрицы нет (ответ /day не раздувается, №93)
+MATRIX_TTL_SECONDS = 600   # матрицы рейсов машины живут столько (карта и выученные нормы меняются редко), неудача — тоже
+MATRIX_CACHE_MAX = 64
+_matrices: dict[tuple[Any, ...], tuple[float, list[dict[str, Any] | None]]] = {}
+_matrices_lock = threading.Lock()
+
+
+def clear_matrix_cache() -> None:
+    """Кэш матриц рейсов (trips_json) — пустой: следующий /day считает их заново (тесты, смена карты)."""
+    with _matrices_lock:
+        _matrices.clear()
 
 DEMO_CAR = 'TEST'
 DEMO_DAY = date(2000, 1, 1)
@@ -115,11 +125,12 @@ def _line_json(line: Line, product: Product | None, gtins: tuple[str, ...], mark
 
 
 def _hm(minutes: float) -> str | None:
-    """Минуты от полуночи → «HH:MM»; края окна нет (±бесконечность) — None."""
+    """Минуты от полуночи → «HH:MM»; конец суток и позже — «24:00» (срок «до конца дня», не «00:00»); края окна нет
+    (±бесконечность) — None."""
     if not math.isfinite(minutes):
         return None
-    m = int(round(minutes))
-    return f'{m // 60 % 24:02d}:{m % 60:02d}'
+    m = min(int(round(minutes)), 24 * 60)
+    return f'{m // 60:02d}:{m % 60:02d}'
 
 
 def build_stops(data: DayData, order: list[int], points: Mapping[int, Point | None],
@@ -168,11 +179,14 @@ def build_stops(data: DayData, order: list[int], points: Mapping[int, Point | No
     return stops
 
 
-def trips_json(stops: list[dict[str, Any]], view: RoutesView, car_code: str) -> list[dict[str, Any]]:
+def trips_json(stops: list[dict[str, Any]], view: RoutesView, car_code: str, day: date | None = None
+               ) -> list[dict[str, Any]]:
     """Рейсы машины для пересчёта порядка на терминале (№93, контракт §12): точка — в первом рейсе выпущенного плана, где
     есть её магазин (как карта машин, route_optimizer.live.trip_of); вне плана и без плана — рейс 1; номера — рейсы машины
     в плане с 1, рейс без точек /day не выдаётся; plan_version — версия рейса плана (actuals.plan_version), без плана null. Матрица — _matrix; дорожная модель — одна на машину (view.road), её сбой
-    — matrix null у всех рейсов (терминал не пересчитывает порядок)."""
+    — matrix null у всех рейсов (терминал не пересчитывает порядок). Матрицы машины — из кэша на MATRIX_TTL_SECONDS по
+    (машина, день, точки рейсов с весом, склад, плановые выезды, рейсы плана): /day пересобирается каждые
+    DAY_TTL_SECONDS и у офиса, дорожная модель — нет; неудача тоже помнится (в журнал — раз на ключ)."""
     plan = [cids for truck, cids in view.trips if truck == car_code] if view.released else []
     first: dict[int, int] = {}
     for k, cids in enumerate(plan):
@@ -181,19 +195,34 @@ def trips_json(stops: list[dict[str, Any]], view: RoutesView, car_code: str) -> 
     by_trip: dict[int, list[dict[str, Any]]] = {}
     for s in stops:
         by_trip.setdefault(first.get(s['customer']['id'], 0), []).append(s)
-    points = {s['customer']['id']: (s['lat'], s['lon']) for s in stops if s['lat'] is not None and s['lon'] is not None}
-    road = None
-    if view.road is not None and view.depot is not None and points:
-        try:
-            road = view.road(points, car_code)
-        except Exception:   # матрица — дополнение: /day без неё работает (APK не пересчитывает порядок)
-            logger.warning('[Courier] Дорожная модель рейсов машины %s не собрана — матрицы нет', car_code, exc_info=True)
-    departs = view.departs.get(car_code, ())
+    departs = tuple(view.departs.get(car_code, ()))
+    key = (car_code, day, view.depot, departs, tuple(tuple(c) for c in plan), view.work_start_min,
+           tuple((k, s['stop_id'], s['customer']['id'], s['lat'], s['lon'], s.get('weight_kg'))
+                 for k, xs in sorted(by_trip.items()) for s in xs))
+    with _matrices_lock:
+        hit = _matrices.get(key)
+    if hit is not None and time.monotonic() - hit[0] < MATRIX_TTL_SECONDS:
+        matrices = hit[1]
+    else:
+        points = {s['customer']['id']: (s['lat'], s['lon']) for s in stops if s['lat'] is not None and s['lon'] is not None}
+        road = None
+        if view.road is not None and view.depot is not None and points:
+            try:
+                road = view.road(points, car_code)
+            except Exception:   # матрица — дополнение: /day без неё работает (APK не пересчитывает порядок)
+                logger.warning('[Courier] Дорожная модель рейсов машины %s не собрана — матрицы нет', car_code,
+                               exc_info=True)
+        matrices = [_matrix(xs, view.depot, road, departs[k] if k < len(departs) else None, view.work_start_min)
+                    for k, xs in sorted(by_trip.items())]
+        with _matrices_lock:
+            _matrices.pop(key, None)
+            _matrices[key] = (time.monotonic(), matrices)
+            while len(_matrices) > MATRIX_CACHE_MAX:
+                _matrices.pop(next(iter(_matrices)))
     return [{'trip': k + 1, 'stop_ids': [s['stop_id'] for s in xs],
              # версия рейса плана (логист пересобрал и отправил — другая): APK держит свой порядок только на своей версии
-             'plan_version': plan_version(plan[k]) if k < len(plan) else None,
-             'matrix': _matrix(xs, view.depot, road, departs[k] if k < len(departs) else None, view.work_start_min)}
-            for k, xs in sorted(by_trip.items())]
+             'plan_version': plan_version(plan[k]) if k < len(plan) else None, 'matrix': m}
+            for (k, xs), m in zip(sorted(by_trip.items()), matrices)]
 
 
 def _matrix(stops: list[dict[str, Any]], depot: Point | None, road: Any, depart: float | None,
@@ -261,7 +290,7 @@ def day_payload(data: DayData, view: RoutesView, store: Store, loaded_at: dateti
         'return_reasons': [{'id': r['id'], 'text': r['text']} for r in store.reasons('return')],
         'plan': 'approved' if view.released else 'pending',   # №80: план дня ещё не утверждён — точек из плана нет
         # №93 (контракт §12): рейсы с матрицей для «Գնալ առաջինը» офлайн и запас до срока — добавочные поля
-        'trips': trips_json(stops, view, data.car_code),
+        'trips': trips_json(stops, view, data.car_code, data.day),
         'until_buffer_min': view.until_buffer_min,
     }
 

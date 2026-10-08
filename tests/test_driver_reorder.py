@@ -12,6 +12,7 @@
 
 Синтетические данные, без ERP и без карты дорог. Запуск:  python -m pytest tests/test_driver_reorder.py -q
 """
+import json
 import math
 import sys
 from dataclasses import replace
@@ -37,6 +38,14 @@ from test_route_dispatch_until import HOWO, FORD, _info, _setup, _stops_of  # no
 from test_route_live import A, B, C, DAY as LDAY, DEPOT, T0, Track, facts, stop, view  # noqa: E402
 
 INF = math.inf
+
+
+@pytest.fixture(autouse=True)
+def _fresh_matrices():
+    """Кэш матриц рейсов /day (courier.day) — модульный: между тестами не переносится."""
+    dy.clear_matrix_cache()
+    yield
+    dy.clear_matrix_cache()
 D = (40.19, 44.52)   # четвёртый магазин карты
 
 
@@ -204,7 +213,7 @@ def _road(fail=False):
 
 def _demo(windows=None, plan=(), road=lambda customers, car: _road(), departs=None):
     data, base, loaded = dy.demo_data()
-    view_ = replace(base, windows=windows or {}, until_buffer_min=15.0, trips=tuple(plan), plan_exists=bool(plan),
+    view_ = replace(base, windows=windows or {}, until_buffer_min=15, trips=tuple(plan), plan_exists=bool(plan),
                     road=road, departs=departs or {})
     return data, view_, loaded
 
@@ -237,7 +246,11 @@ def test_day_until_fields_trips_and_matrix(tmp_path):
                               round((8 + 6 * by_cid[900001]['weight_kg'] / 1000) * 60)]
     assert t2['matrix']['depart'] is None and len(t2['matrix']['nodes']) == 2
     # trips и until_buffer_min — не точки: version от них не зависит
-    again = dy.day_payload(data, replace(view_, road=None, until_buffer_min=0.0), store, loaded)
+    assert '"until_buffer_min": 15}' in json.dumps(body) and '"service_s": [0, ' in json.dumps(body)   # целые (H1)
+    assert all(isinstance(x, int) for t in body['trips'] for m in [t['matrix']]
+               for row in (*m['durations_s'], *m['distances_m'], m['service_s']) for x in row)
+    dy.clear_matrix_cache()
+    again = dy.day_payload(data, replace(view_, road=None, until_buffer_min=0), store, loaded)
     assert again['version'] == body['version'] and [t['matrix'] for t in again['trips']] == [None, None]
 
 
@@ -251,9 +264,11 @@ def test_day_trip_rules_without_plan_and_degrade(tmp_path):
     assert all(s['until'] is None and s['until_from'] is None for s in body['stops'])
     # сбой дорожной модели (сборка или участок) — matrix null, /day живой
     for road in (lambda pts, car: 1 / 0, lambda pts, car: _road(fail=True)):
+        dy.clear_matrix_cache()
         got = dy.day_payload(data, replace(view_, road=road), store, loaded)
         assert got['trips'][0]['matrix'] is None and got['version'] == body['version']
     # точка вне плана — рейс 1; точек с координатой больше MATRIX_MAX_STOPS — без матрицы
+    dy.clear_matrix_cache()
     data2, view2, _ = _demo(plan=[('TEST', (900003,)), ('TEST', (900001,))])
     trips = dy.day_payload(data2, view2, store, loaded)['trips']
     assert [(t['trip'], len(t['stop_ids'])) for t in trips] == [(1, 2), (2, 1)]
@@ -700,3 +715,153 @@ def test_plan_lines_follow_driver_order(tmp_path, monkeypatch):
     monkeypatch.setattr(state.live_lines, 'get', lambda day, wanted, build: {'CAR1': plan_geo})
     route = views._live_plan_routes(state, bundle, None, LDAY, draft, {'CAR1': {'stops': stops, 'reorders': [move]}})['CAR1']
     assert route.geo is plan_geo and route.stale_since == T(15)
+
+
+# ============================== ревью: целые поля, 24:00, обслуженные в порядке водителя, прежние версии ==============================
+
+def test_until_buffer_integer_and_end_of_day():
+    base = dict(rst.DEFAULT_SETTINGS)
+    assert 'until_buffer_min' in rst.validate_settings({**base, 'until_buffer_min': 15.5}, None)[1]
+    assert rst.validate_settings({**base, 'until_buffer_min': 20.0}, None)[0]['until_buffer_min'] == 20
+    assert (dy._hm(1440.0), dy._hm(1439.6), dy._hm(1500.0), dy._hm(0.0)) == ('24:00', '24:00', '24:00', '00:00')
+
+
+def test_day_json_until_buffer_is_integer(term_until, client):
+    s, _, _ = term_until
+    raw = client.get(f'/api/courier/v1/day?date={DEMO}', headers=s).get_data(as_text=True).replace(' ', '')
+    assert '"until_buffer_min":0' in raw and '"until_buffer_min":0.0' not in raw
+
+
+def test_served_stop_inside_driver_order_keeps_its_place():
+    """S0 обслужена, S1 — визит по GPS в 09:20, но в APK ещё открыта; в 09:25 «Գնալ առաջինը» у S3 (срок): терминал
+    прислал S3, S1, S2. Обслуженная S1 — впереди эталона: ни штрафа «порядок», ни тревоги, ни пары."""
+    assert ac.reorder_trip([10, 11, 12, 13], _r(25, ['S3', 'S1', 'S2'], 'until'), {10, 11}) == [10, 11, 13, 12]
+    served = [('S0', 10), ('S1', 20), ('S3', 30), ('S2', 40)]
+    move = _r(25, ['S3', 'S1', 'S2'], 'until')
+    assert ac.reordered_changes(_actual(served), PSTOPS, PLAN, [move]) == (0, 4)
+    plan = [live.PlanTrip((10, 11, 12, 13), {10: T(10), 11: T(20), 12: T(30), 13: T(40)})]
+    stops = _seq_stops(['full', 'pending', 'pending', 'full'])
+    trips = live.trip_of(stops, plan)
+    touches = {'S0': T(10), 'S1': T(20), 'S3': T(30)}
+    assert live.sequence_check(stops, trips, plan, touches, NOS, True, [move]) == ([], {'skipped': [], 'pairs': []})
+    done = {**touches, 'S2': T(40)}
+    assert live.sequence_check(_seq_stops(['full'] * 4), trips, plan, done, NOS, True, [move]) == \
+        ([], {'skipped': [], 'pairs': []})
+    got = live.reordered_plan(plan, [move], stops, touches)[0]
+    assert got.customers == (10, 11, 13, 12) and got.etas == {10: T(10), 11: T(20), 13: T(30), 12: T(40)}
+
+
+def test_stale_until_move_stays_exempt_until_plan_resent():
+    """В 09:15 «until»-смена S3 на прежней версии рейса; логист пересобрал рейс и отправил в 10:00. Уже сделанное до
+    10:00 — по смене водителя (ни тревоги, ни штрафа), с 10:00 — эталон снова план; вперёд смена не действует."""
+    old = [10, 11, 12, 13]
+    stale = replace(_r(15, ['S3', 'S1', 'S2'], 'until'), plan_version=ac.plan_version([10, 12, 11, 13]))
+    assert ac.current_reorders([stale], [old]) == []
+    hist = ac.history_reorders([stale], [old], T(60))
+    assert hist[0] == stale and (hist[1].at, hist[1].reason, hist[1].customers) == (T(60), 'plan', tuple(old))
+    assert ac.history_reorders([stale], [old], None) == [stale]                 # отправки не знаем — без возврата к плану
+    plan = [live.PlanTrip(tuple(old), {})]
+    stops = _seq_stops(['full', 'pending', 'pending', 'full'])
+    trips = live.trip_of(stops, plan)
+    touches = {'S0': T(10), 'S3': T(30)}
+    assert live.sequence_check(stops, trips, plan, touches, NOS, True, hist) == ([], {'skipped': [], 'pairs': []})
+    served = [('S0', 10), ('S3', 30), ('S1', 70), ('S2', 80)]
+    assert ac.reordered_changes(_actual(served), PSTOPS, PLAN, hist) == (0, 4)
+    assert ac.reordered_changes(_actual(served), PSTOPS, PLAN, []) == (1, 4)   # без истории — штраф задним числом
+
+
+def test_car_view_stale_move_before_resend_no_alarm():
+    tr = Track().park(DEPOT, 10).drive(A)
+    at_a = tr.t
+    tr.park(A, 6).drive(D)
+    at_d = tr.t
+    tr.park(D, 6)
+    now = tr.t
+    stops = _seq_stops(['full', 'pending', 'pending', 'full'])
+    stops[0]['delivered_at'] = (at_a + timedelta(minutes=3)).isoformat()
+    stops[3]['delivered_at'] = (at_d + timedelta(minutes=3)).isoformat()
+    plan = [live.PlanTrip((10, 11, 12, 13), {}, T(10))]
+    f = facts(tr.pts, stops, [T0, now])
+    f['reorders'] = [{'at': (at_a + timedelta(minutes=7)).isoformat(), 'trip': 1, 'order': ['S3', 'S1', 'S2'],
+                      'moved': 'S3', 'reason': 'until', 'plan_version': ac.plan_version([10, 12, 11, 13])}]
+    resend = now + timedelta(minutes=1)
+    card = live.car_view(LDAY, now, f, plan, live.TruckSpec(), DEPOT, live.Rules(), live.Road(), False, sent_at=resend)
+    assert 'sequence' not in card['alerts']['active'] and card['sequence']['skipped'] == []
+    assert card['reorders'][0]['reason'] == 'until'                            # в журнале смен — и прежняя версия
+    bare = live.car_view(LDAY, now, f, plan, live.TruckSpec(), DEPOT, live.Rules(), live.Road(), False)
+    assert 'sequence' not in bare['alerts']['active']                          # отправки не знаем — смена в силе
+    # логист отправил новый рейс сразу после смены, а водитель всё равно поехал к S3 — это уже прыжок по плану
+    early = live.car_view(LDAY, now, f, plan, live.TruckSpec(), DEPOT, live.Rules(), live.Road(), False,
+                          sent_at=at_a + timedelta(minutes=8))
+    assert 'sequence' in early['alerts']['active']
+
+
+def test_build_does_not_rebuild_when_real_deadline_unreachable(monkeypatch):
+    ctx, stops, _, _ = _setup()
+    calls = []
+    real = dp.build
+
+    def counted(*a, **kw):
+        calls.append(1)
+        return real(*a, **kw)
+    monkeypatch.setattr(dp, 'build', counted)
+    soft = _with_deadline(ctx, 104, _first_eta(ctx, stops, 104) - 5)          # и к настоящему сроку не успеть
+    draft = dp.build(soft, stops, None, [HOWO.car_code, FORD.car_code], 'now')
+    assert 104 in draft.no_window and len(calls) == 1
+    calls.clear()
+    reach = _with_deadline(ctx, 104, _first_eta(ctx, stops, 104) + 8)
+    dp.build(reach, stops, None, [HOWO.car_code, FORD.car_code], 'now')
+    assert len(calls) == 2                                                      # пересборка с настоящим сроком
+
+
+def test_reorder_of_other_car_stop_is_foreign_driver(term_until, client, st):
+    s, _, cid = term_until
+    _, _, h2 = make_terminal(st, car='OTHER', pin='5678', name='Բաբկեն')
+    s2 = login(client, h2, pin='5678')
+    e = _reorder([cid[900001], cid[900002]])
+    assert post(client, s2, e)['accepted'] == [e['id']]
+    row = next(x for x in st.store.events_for_day(DEMO, 'reorder') if x['id'] == e['id'])
+    assert row['car_code'] == 'OTHER' and row['flags'] == ['foreign', 'no_deadline']
+    assert (row['payload']['reason'], row['payload']['reason_sent']) == ('driver', 'until')
+
+
+def test_no_deadline_is_info_not_flagged_problem(term_until, client, st):
+    s, _, cid = term_until
+    e = _reorder([cid[900002], cid[900003]])                                    # у 900002 срока нет
+    assert post(client, s, e)['accepted'] == [e['id']]
+    today = client.get(f'/api/courier/admin/today?date={DEMO}').get_json()
+    assert all(x['id'] != e['id'] for x in today['flagged'])
+    assert next(c for c in today['cars'] if c['car_code'] == 'TEST')['flagged'] == 0
+    js = (ROOT / 'static' / 'js' / 'courier.js').read_text(encoding='utf-8')
+    assert "reorder: 'Հերթի փոփոխություն" in js and 'no_deadline:' in js
+    assert "courier.js') }}?v=21" in (ROOT / 'templates' / 'courier.html').read_text(encoding='utf-8')
+
+
+def test_plan_lines_done_by_gps_and_latest_move(tmp_path, monkeypatch):
+    """Плановая линия: S1 посещена по GPS (не отмечена) до смены — впереди, как на карточке; stale_since — от последней
+    смены машины."""
+    from flask import Flask
+    import route_optimizer
+    from route_optimizer import views
+
+    class FakeDb:
+        connection_string = 'DRIVER={none};'
+    monkeypatch.setenv('ROUTES_OSM_PATH', str(tmp_path / 'no-map.osm.pbf'))
+    flask_app = Flask(__name__)
+    flask_app.secret_key = 'test'
+    route_optimizer.init_app(flask_app, FakeDb(), db_path=str(tmp_path / 'routes.db'))
+    state = flask_app.extensions['route_optimizer']
+    bundle = replace(state.store.load(), depot=DEPOT)
+    draft = dp.Draft(trucks=['CAR1'], trips=[dp.DraftTrip(1, 'CAR1', [10, 11, 12, 13])])
+    tr = Track().park(DEPOT, 5).drive(A).park(A, 6).drive(B).park(B, 6)
+    moved = tr.t + timedelta(minutes=1)
+    stops = _seq_stops(['full', 'pending', 'pending', 'pending'])
+    stops[0]['delivered_at'] = T(10).isoformat()
+    moves = [{'at': moved.isoformat(), 'trip': 1, 'order': ['S3', 'S1', 'S2'], 'moved': 'S3', 'reason': 'until'},
+             {'at': (moved + timedelta(minutes=5)).isoformat(), 'trip': 1, 'order': ['S2', 'S3'], 'moved': 'S2',
+              'reason': 'driver'}]
+    fleet = {'CAR1': {'stops': stops, 'reorders': moves[:1], 'track': tr.pts}}
+    route = views._live_plan_routes(state, bundle, None, LDAY, draft, fleet)['CAR1']
+    assert route.trip_stops == ((10, 11, 13, 12),)                            # S1 (GPS) впереди, затем S3
+    _, at = views._reordered_lines(draft, {'CAR1': {**fleet['CAR1'], 'reorders': moves}}, DEPOT)
+    assert at == {'CAR1': moved + timedelta(minutes=5)}

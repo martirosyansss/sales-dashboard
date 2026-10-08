@@ -4393,6 +4393,7 @@ class _LiveContext:
     tracks: Callable[[str, Sequence[tl.Chunk], float], tuple[Mapping[Any, Sequence[tl.TPoint]], bool]] | None = None
     # объяснения диспетчера за день (схема 26, store.live_explanations): машина → объяснения
     explained: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    sent_at: datetime | None = None   # план последний раз отправлен водителям (№93: смены на прежней версии рейса)
 
 
 LIVE_LINES_MAX = 300   # машино-дней плановых линий в памяти (кэш _LivePlanLines)
@@ -4693,7 +4694,7 @@ def _live_plan_routes(state: RoutesState, bundle: Bundle, snap: Any, day: date, 
     Смены порядка водителем (№93, факт reorders; действующие — ac.current_reorders): линия рейса — по плану со сменами
     (_reordered_lines; номера магазинов — по отправленному плану); линии строятся тем же путём (state.live_lines — по
     содержимому линий машины, новая смена — новая линия). Пока новой линии нет, а кэш отдаёт прежнюю, — stale_since:
-    отклонения с момента первой смены не считаются (live.car_view)."""
+    отклонения с момента последней смены не считаются (live.car_view)."""
     known = {x['customer_id']: (x['lat'], x['lon']) for facts in fleet.values() for x in facts.get('stops') or ()
              if isinstance(x.get('customer_id'), int) and x.get('lat') is not None and x.get('lon') is not None}
 
@@ -4708,7 +4709,7 @@ def _live_plan_routes(state: RoutesState, bundle: Bundle, snap: Any, day: date, 
     stops: dict[str, list[tuple[int, Point]]] = {}
     straight: dict[str, list[tuple[Point, ...]]] = {}
     legs: dict[str, list[tuple[int, ...]]] = {}   # клиенты каждой линии рейса (подсказка участка на карте)
-    order, moved_at = _reordered_lines(draft, fleet)
+    order, moved_at = _reordered_lines(draft, fleet, depot)
     for t in draft.trips:
         stops.setdefault(t.truck, []).extend((c, p) for c in t.stops if (p := where(c)) is not None)
         mine = order[t.truck][len(trips.get(t.truck, ()))]   # №93: порядок рейса со сменами водителя
@@ -4748,11 +4749,23 @@ def _live_plan_routes(state: RoutesState, bundle: Bundle, snap: Any, day: date, 
     return out
 
 
-def _reordered_lines(draft: dp.Draft, fleet: Mapping[str, Mapping[str, Any]]
+def _sent_at(sent: Any) -> datetime | None:
+    """Когда план последний раз отправлен водителям (Draft.sent['at'], №81: момент сервера без зоны — время Еревана, как
+    «Բեռնված է ժ. HH:MM»); не отправлен или не момент — None."""
+    raw = sent.get('at') if isinstance(sent, Mapping) else None
+    try:
+        at = datetime.fromisoformat(raw) if isinstance(raw, str) else None
+    except ValueError:
+        return None
+    return at.replace(tzinfo=ac.YEREVAN) if at is not None and at.utcoffset() is None else at
+
+
+def _reordered_lines(draft: dp.Draft, fleet: Mapping[str, Mapping[str, Any]], depot: Point | None = None
                      ) -> tuple[dict[str, list[list[int]]], dict[str, datetime]]:
     """Клиенты рейсов машин по порядку для плановой линии: отправленный план со сменами порядка водителем (№93, факт
-    терминала reorders, действующие — ac.current_reorders; обслужен к смене — отметка доставки до неё, live.reordered_plan).
-    (машина → рейсы, машина → момент её первой действующей смены)."""
+    терминала reorders, действующие — ac.current_reorders; обслужен к смене — визит по GPS (ac.reconstruct, как карточка
+    машины) или отметка доставки до неё, live.reordered_plan; трек читается только у машин со сменами).
+    (машина → рейсы, машина → момент её последней действующей смены)."""
     order: dict[str, list[list[int]]] = {}
     for t in draft.trips:
         order.setdefault(t.truck, []).append(list(t.stops))
@@ -4765,9 +4778,13 @@ def _reordered_lines(draft: dp.Draft, fleet: Mapping[str, Mapping[str, Any]]
         if not moves:
             continue
         touches = {x['stop_id']: t for x in xs if (t := live._moment(x.get('delivered_at'))) is not None}
+        points = [ac.PlanStop(x['stop_id'], x.get('customer_id'), (x['lat'], x['lon']) if x.get('lat') is not None
+                              and x.get('lon') is not None else None, float(x.get('weight_kg') or 0.0)) for x in xs]
+        for sid, t in ac.reconstruct(learning.track_fixes(facts.get('track') or ()), points, depot).visited.items():
+            touches[sid] = min(t, touches.get(sid, t))
         plan = live.reordered_plan([live.PlanTrip(tuple(c), {}) for c in lists], moves, xs, touches)
         order[car] = [list(p.customers) for p in plan]
-        moved_at[car] = moves[0].at
+        moved_at[car] = moves[-1].at   # последняя смена: отклонения до неё — по линиям, что тогда были
     return order, moved_at
 
 
@@ -4976,7 +4993,8 @@ def _live_context(state: RoutesState, day: date,
         return got, pending
     return _LiveContext(rules, road, bundle.depot, plans, trucks, names, crew, tuple(planned),
                         {cid: w.span() for cid, w in bundle.windows_on(day).items()}, routes,
-                        stored is not None and full.released is not None, tracks, state.store.live_explanations(ds))
+                        stored is not None and full.released is not None, tracks, state.store.live_explanations(ds),
+                        _sent_at(full.sent) if stored is not None else None)
 
 
 def _live_card(ctx: _LiveContext, day: date, now: datetime, car: str, facts: Mapping[str, Any] | None,
@@ -4996,7 +5014,7 @@ def _live_card(ctx: _LiveContext, day: date, now: datetime, car: str, facts: Map
             'planned': car in ctx.planned, 'plan_sent': ctx.sent,
             **live.car_view(day, now, facts or {}, ctx.plans.get(car, []), ctx.trucks.get(car, live.TruckSpec()),
                             ctx.depot, ctx.rules, ctx.road, detail, ctx.windows, ctx.routes.get(car),
-                            snapped if tracks is not None else None, ctx.explained.get(car, ()))}
+                            snapped if tracks is not None else None, ctx.explained.get(car, ()), ctx.sent_at)}
     if tracks is not None:
         card['track_pending'] = any(pending)
     return card
@@ -5500,6 +5518,8 @@ def _scorecard_cars(state: RoutesState, bundle: Bundle, day: date, rules: live.R
             _bounded(state.scorecard_track, (car, d), ((version, rkey), got), SCORECARD_CACHE_CAR_DAYS)
 
     versions: dict[tuple[str, str], Any] = {}
+    stored = state.store.load_dispatch(ds)
+    sent_at = _sent_at(stored[0].get('sent')) if stored is not None and isinstance(stored[0], Mapping) else None   # №93
     for car, _, stops, actual, draft, _, _ in _learning_days(state, bundle, day, day, remember, versions):
         version = versions[(car, ds)]   # отпечаток этой строки факта (не перечитанный кэш: его мог сменить поток)
         with state.scorecard_lock:
@@ -5516,8 +5536,9 @@ def _scorecard_cars(state: RoutesState, bundle: Bundle, day: date, rules: live.R
         moves = getattr(facts, 'reorders', None)   # №93: смены порядка водителем (FleetFacts.reorders — необязателен)
         trips = [[c for c in t.get('stops') or () if isinstance(c, int) and not isinstance(c, bool)]
                  for t in (draft or {}).get('trips') or () if isinstance(t, dict) and t.get('truck') == car]
-        reorders = (ac.current_reorders(ac.reorders_of(moves(car, ds), {s.key: s.customer_id for s in stops}), trips)
-                    if moves is not None and vm.ordered else [])
+        # уже сделанное — со сменами и на прежней версии рейса до новой отправки плана (ac.history_reorders)
+        reorders = (ac.history_reorders(ac.reorders_of(moves(car, ds), {s.key: s.customer_id for s in stops}), trips,
+                                        sent_at) if moves is not None and vm.ordered else [])
         if reorders:   # эталон порядка — план со сменами: 'until' без штрафа, 'driver' — за перенесённый (ac.reordered_changes)
             order = ac.reordered_changes(actual, stops, trips, reorders)
         first, _ = _plan_etas(draft, car, day)
@@ -5765,7 +5786,8 @@ def _route_day(state: RoutesState, ds: str) -> dict[str, tuple[float, float]] | 
         if not route.geo.road or car not in fleet:
             continue
         card = live.car_view(day, now, fleet[car], ctx.plans.get(car, []), ctx.trucks.get(car, live.TruckSpec()),
-                             ctx.depot, ctx.rules, ctx.road, False, ctx.windows, route, None, ctx.explained.get(car, ()))
+                             ctx.depot, ctx.rules, ctx.road, False, ctx.windows, route, None, ctx.explained.get(car, ()),
+                             ctx.sent_at)
         dev = card.get('deviation')
         if dev is not None and dev.get('adherence_pct') is not None:
             out[car] = (float(dev['counted_km']), float(dev['off_km']))
