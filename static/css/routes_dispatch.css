@@ -836,6 +836,13 @@
 .dp-cond-dlg .dp-unload-hint[hidden] { display: none; }
 @media (max-width: 480px) { .dp-cond-time, .dp-cond-trucks { grid-template-columns: minmax(0, 1fr); } }
 
+/* «Մինչև ժամը» (владелец 08.10): плашка срока только этого дня — акцентом, не как постоянное окно; диалог — как «Ժամանակ խանութում» */
+#rtDispatch .rt-badge.dp-b-until { color: var(--rt-acc); border-color: var(--rt-acc-dim); background: var(--rt-acc-glow); }
+.dp-until-dlg input[type="time"] { color-scheme: dark; }
+.dp-until-opts { margin: 6px 0 0; padding: 0; border: 0; min-width: 0; }
+.dp-until-opts .dp-crew-day { color: var(--rt-fg); }
+.dp-until-opts input { width: 18px; height: 18px; margin: 0; accent-color: var(--rt-acc); }
+
 /* «Բեռնագիր» (ответ владельца №57): кнопки печати и Excel справа от шапки карточки машины, на телефоне — строкой под ней */
 .dp-ttop { display: flex; align-items: center; }
 .dp-ttop > .dp-thead-h { flex: 1 1 auto; min-width: 0; }

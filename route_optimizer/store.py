@@ -29,7 +29,7 @@ from .patterns import parse_freq_key, parse_pattern_key, parse_plan_freq_key, pa
 from .running_costs import LOAD_COST_FIELDS, profile_fields
 from .vehicle_access import VehicleAccess, check_access
 
-SCHEMA_VERSION = 24
+SCHEMA_VERSION = 25
 CREW_PAY_KEY = 'crew_pay'   # строка settings с параметрами «Աշխատավարձ» (Store.crew_pay_params); не ключ DEFAULT_SETTINGS
 # строка settings: какие виды тревог карты знала программа, сохранившая live_alert_kinds (№87); не ключ
 # DEFAULT_SETTINGS — прежние версии её не читают. Нет строки — список сохранён до №87 (знали LIVE_ALERT_KINDS_V1)
@@ -201,6 +201,13 @@ _CUSTOMER_RULE_TABLE = (
     "solo INTEGER NOT NULL CHECK (solo IN (0, 1)), center INTEGER NOT NULL CHECK (center IN (0, 1)), "
     "updated_at TEXT NOT NULL, updated_by TEXT)")
 
+# Схема 25 (владелец 08.10, «Մինչև ժամը»): привезти магазин не позже t1 (минуты от полуночи) только в день day — в этот
+# день вместо его окна приёма (customer_window, Bundle.windows_on); «Միշտ» — само окно вида before. Строка на (день, клиент).
+_CUSTOMER_DAY_UNTIL_TABLE = (
+    "CREATE TABLE IF NOT EXISTS customer_day_until(day TEXT NOT NULL, "
+    "customer_id INTEGER NOT NULL CHECK (customer_id > 0), t1 INTEGER NOT NULL CHECK (t1 BETWEEN 0 AND 1439), "
+    "updated_at TEXT NOT NULL, updated_by TEXT, PRIMARY KEY (day, customer_id))")
+
 _MEASUREMENT_TABLE = (
     'CREATE TABLE IF NOT EXISTS route_measurement(day TEXT NOT NULL, car_code TEXT NOT NULL, '
     'data TEXT NOT NULL, updated_at TEXT NOT NULL, updated_by TEXT, PRIMARY KEY(day, car_code))')
@@ -279,6 +286,7 @@ _SCHEMA = (
     _TRUCK_HELPER_TABLE,
     _DRIVER_ABSENCE_TABLE,
     _CUSTOMER_RULE_TABLE,
+    _CUSTOMER_DAY_UNTIL_TABLE,
     _GEO_OVERRIDE_TABLE,
     _DISPATCH_TABLE,
     _TRUCKS_ONE_VAN,
@@ -427,6 +435,8 @@ _MIGRATIONS: dict[int, tuple[str, ...]] = {
     22: (_DRIVER_ABSENCE_TABLE,),
     # 23 → 24 (№78): только добавляем — магазины «отдельным рейсом»; прежние таблицы и значения не меняются.
     23: (_CUSTOMER_RULE_TABLE,),
+    # 24 → 25 (владелец 08.10, «Մինչև ժամը»): только добавляем — срок магазина на один день; прежнее не меняется.
+    24: (_CUSTOMER_DAY_UNTIL_TABLE,),
 }
 
 FUEL_TYPES = ('diesel', 'petrol', 'lpg')
@@ -1053,6 +1063,17 @@ class Bundle:
     # средняя модели или парка (garage.priors) машинам без своей готовой цены: в расчёте — только при пустом ручном
     # «Износ, драм/км» (resolved_trucks; 0 — задано). Добавляет views._bundle вместе с garage_wear; в отпечатке — так же
     garage_prior: dict[str, float] = field(default_factory=dict)
+    # «Մինչև ժամը» только на день (customer_day_until, владелец 08.10): день → клиент → прибыть не позже, минуты от полуночи.
+    # В этот день — вместо окна клиента (windows_on); в отпечаток не входит, как и окна
+    day_until: dict[date, dict[int, int]] = field(default_factory=dict)
+
+    def windows_on(self, day: date) -> dict[int, CustomerWindow]:
+        """Окна приёма дня day: срок «Մինչև ժամը» этого дня (day_until) — вместо постоянного окна клиента; другие дни и
+        клиенты без срока — постоянные окна (windows)."""
+        over = self.day_until.get(day)
+        if not over:
+            return self.windows
+        return {**self.windows, **{cid: CustomerWindow('before', t1) for cid, t1 in over.items()}}
 
     def profile(self, agent_id: int) -> ManagerProfile:
         return self.managers.get(agent_id) or ManagerProfile(agent_id)
@@ -1999,6 +2020,7 @@ class Store:
                         'SELECT customer_id, mode, trucks FROM customer_vehicle_access').fetchall()
                     unload_rows = conn.execute('SELECT customer_id, fixed_min FROM customer_unload').fetchall()
                     rule_rows = conn.execute('SELECT customer_id, solo, center FROM customer_rule').fetchall()
+                    until_rows = conn.execute('SELECT day, customer_id, t1 FROM customer_day_until').fetchall()
                     conn.execute('COMMIT')
                 except BaseException:
                     if conn.in_transaction:
@@ -2081,8 +2103,16 @@ class Store:
             unload[customer_id] = minutes
         if any(not _is_int(c) or not 0 < c < 2 ** 31 or a not in (0, 1) or b not in (0, 1) for c, a, b in rule_rows):
             raise StoreError(f'{self._name()}: վնասված են խանութների առաքման կանոնները{_FIX_HINT}')
+        until: dict[date, dict[int, int]] = {}
+        for ds, customer_id, t1 in until_rows:
+            day = _iso_day(ds)
+            if day is None or not _is_int(customer_id) or not 0 < customer_id < 2 ** 31 \
+                    or check_window({'kind': 'before', 't1': t1})[1]:
+                raise StoreError(f'{self._name()}: վնասված է {customer_id!r} հաճախորդի «Մինչև ժամը»{_FIX_HINT}')
+            until.setdefault(day, {})[customer_id] = t1
         return Bundle(settings, depot, trucks, managers, geo, windows, vehicle_access=access, unload_min=unload,
-                      solo=frozenset(c for c, a, _ in rule_rows if a), center_allow=frozenset(c for c, _, b in rule_rows if b))
+                      solo=frozenset(c for c, a, _ in rule_rows if a), center_allow=frozenset(c for c, _, b in rule_rows if b),
+                      day_until=until)
 
     def load_copy(self) -> tuple[Bundle, int | None]:
         """Настройки, не меняя саму базу: её копия (sqlite backup из соединения только на чтение) во временной папке,
@@ -2379,6 +2409,12 @@ class Store:
                           'не удалось сохранить окно приёма клиента')
 
     @staticmethod
+    def customer_window_in(conn: sqlite3.Connection, customer_id: int) -> CustomerWindow | None:
+        """Окно приёма магазина внутри чужой транзакции (сверка перед записью «Մինչև ժամը»: правку из карточки не затираем)."""
+        row = conn.execute('SELECT kind, t1, t2, tol FROM customer_window WHERE customer_id = ?', (customer_id,)).fetchone()
+        return None if row is None else CustomerWindow(*row)
+
+    @staticmethod
     def _write_customer_window(conn: sqlite3.Connection, customer_id: int,
                                window: CustomerWindow | None, user: str | None) -> None:
         if window is None:
@@ -2484,6 +2520,22 @@ class Store:
                          'VALUES(?, ?, ?, ?) ON CONFLICT(customer_id) DO UPDATE SET fixed_min = excluded.fixed_min, '
                          'updated_at = excluded.updated_at, updated_by = excluded.updated_by',
                          (customer_id, float(unload_min), _now(), user))
+
+    @staticmethod
+    def _write_customer_day_until(conn: sqlite3.Connection, day: date, customer_id: int, t1: int | None,
+                                  user: str | None) -> None:
+        """«Մինչև ժամը» магазина только на день day (схема 25) внутри чужой транзакции (план «Развоза» и срок — вместе):
+        t1 — минуты от полуночи (проверенные check_window), None — снять (в этот день снова постоянное окно)."""
+        if not _is_int(customer_id) or not 0 < customer_id < 2 ** 31:
+            raise ValueError('customer_id: положительное целое')
+        if t1 is None:
+            conn.execute('DELETE FROM customer_day_until WHERE day = ? AND customer_id = ?', (day.isoformat(), customer_id))
+            return
+        if check_window({'kind': 'before', 't1': t1})[1]:
+            raise ValueError('срок не прошёл проверку')
+        conn.execute('INSERT INTO customer_day_until(day, customer_id, t1, updated_at, updated_by) VALUES(?, ?, ?, ?, ?) '
+                     'ON CONFLICT(day, customer_id) DO UPDATE SET t1 = excluded.t1, updated_at = excluded.updated_at, '
+                     'updated_by = excluded.updated_by', (day.isoformat(), customer_id, t1, _now(), user))
 
     def truck_drivers(self, day: str, role: str = 'driver') -> tuple[dict[str, str], frozenset[str]]:
         """Водители (role='driver') или առաքիչ (role='helper') машин на день YYYY-MM-DD (№62): (машина → имя, машины с
