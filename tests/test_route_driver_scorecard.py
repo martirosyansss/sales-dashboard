@@ -328,7 +328,9 @@ def test_api_scorecard_for_admin(client, sc_app):
     assert [(x['stop_id'], x['reason'], x['name']) for x in late] == [('S:B', 'eta', 'Խանութ S:B')]
     h2 = rows['helper:2']
     assert (h2['role'], h2['name'], h2['stops'], h2['rated'], h2['on_time']) == ('helper', 'Բաբկեն', 2, 2, 1)
-    assert (h2['speed_events'], h2['offroute_min'], h2['order_pct'], h2['score'], h2['parts']) == (None, None, None, None, {})
+    assert (h2['speed_events'], h2['offroute_min'], h2['order_pct'], h2['score']) == (None, None, None, None)
+    # у առաքիչ — свой балл (№88): разбивка есть, балла нет — меньше MIN_DAYS дней
+    assert set(h2['parts']) == {'clean', 'on_time', 'unload'} and h2['enough_data'] is False and body['ranked_helpers'] == 0
     r3 = rows['driver:3']
     assert (r3['days'], r3['stops'], r3['rated'], r3['km'], r3['name']) == (2, 2, 0, None, 'Գոռ <script>')
     assert [d['date'] for d in r3['detail']] == [D2, D1]
@@ -351,7 +353,7 @@ def test_api_scorecard_for_admin(client, sc_app):
     assert sorted(crew.calls) == [D1, D1, D2, D2]
     page = client.get('/routes/drivers', base_url=LAN)
     html = page.get_data(as_text=True)
-    assert page.status_code == 200 and 'js/routes_drivers.js?v=3' in html and 'css/routes_drivers.css?v=2' in html
+    assert page.status_code == 200 and 'js/routes_drivers.js?v=4' in html and 'css/routes_drivers.css?v=2' in html
     assert 'data-key="cash"' in html and 'data-cash="1"' in html
     assert '<a href="/routes/drivers" aria-current="page">Վարորդներ</a>' in html
 
@@ -460,7 +462,8 @@ def test_sub_score_thresholds_and_renormalization():
 
 
 def test_min_days_rule_rank_ties_and_helpers():
-    """< 3 дней — «քիչ տվյալ»: без балла и места (разбивка есть); равный балл — одно место; առաքիչ — без места."""
+    """< 3 дней — «քիչ տվյալ»: без балла и места (разбивка есть); равный балл — одно место; առաքիչ — своё место среди
+    առաքիչ (№88), водителей оно не сдвигает."""
     plan = {1: (5, 0), 2: (4, 2), 3: (3, 2), 4: (2, 0)}   # водитель → (дней, точек не по порядку из 10)
     days = []
     for i in range(5):
@@ -473,8 +476,9 @@ def test_min_days_rule_rank_ties_and_helpers():
     assert [(rows[f'driver:{d}']['score'], rows[f'driver:{d}']['rank']) for d in plan] == [
         (100.0, 1), (75.0, 2), (75.0, 2), (None, None)]
     assert rows['driver:4']['enough_data'] is False and set(rows['driver:4']['parts']) == {'order'}
-    assert rows['helper:9']['days'] == 5 and (rows['helper:9']['score'], rows['helper:9']['rank']) == (None, None)
-    assert out['ranked'] == 3
+    assert rows['helper:9']['days'] == 5 and (rows['helper:9']['score'], rows['helper:9']['rank']) == (100.0, 1)
+    assert set(rows['helper:9']['parts']) == {'clean'}            # GPS и плана в этом наборе нет — только «без проблем»
+    assert out['ranked'] == 3 and out['ranked_helpers'] == 1
 
 
 def test_eta_accuracy_math():
@@ -854,3 +858,70 @@ def test_apk_score_failure_backoff_and_thread_start_failure(client, apk, monkeyp
     r = client.get(f'{API}/score?week=2026-09-28', headers=aram, base_url=LAN)
     assert r.status_code == 503 and r.get_json()['error'] == 'score'
     assert not apk.state.score_week_running and '2026-09-28' in apk.state.score_week_failed
+
+
+# ============================== балл առաքիչ (№88, «по выполнению плана») ==============================
+
+def test_helper_from_crew_of_the_day_when_event_has_none():
+    """Точки без helper_id — առաքիչ машины дня из «Развоза» (crew['helpers']); сам водитель точки — не առաքիչ."""
+    crew = {'stops': [cstop('S:1', 'CAR1', 'full', 1, None), cstop('S:2', 'CAR1', 'refused', 1, 7),
+                      cstop('S:3', 'CAR2', 'full', 3, None)],
+            'helpers': {'CAR1': 2, 'CAR2': 3}}
+    people = sc.day_summary(crew, {})['people']
+    assert people['helper:2']['stops'] == 1 and people['helper:7']['stops'] == 1   # у события свой helper_id — главнее
+    assert 'helper:3' not in people                                                 # водитель CAR2 сам себе не առաքիչ
+
+
+def test_helper_score_from_plan_execution():
+    """Разгрузка и день машины делятся по доле закрытых точек (как км); балл — HELPER_WEIGHTS по HELPER_SCALE."""
+    days = []
+    for i in range(3):
+        crew = {'stops': [cstop(f'S:{i}:{k}', 'CAR1', 'partial' if (i, k) == (0, 0) else 'full', 1, 2)
+                          for k in range(10)]}
+        cars = {'CAR1': sc.CarDay(20.0, unload=(60.0, 50.0), day=(500.0, 480.0))}
+        days.append((date(2026, 10, 5) + timedelta(days=i), sc.day_summary(crew, cars)))
+    out = sc.period(days, {1: 'Արամ', 2: 'Բաբկեն'})
+    h = next(r for r in out['drivers'] if r['key'] == 'helper:2')
+    assert (h['clean_pct'], h['unload_vs_norm_pct'], h['day_vs_plan_pct']) == (96.7, 120.0, 104.2)
+    p = h['parts']
+    assert set(p) == {'clean', 'unload', 'day'}                                     # плана ETA нет — «вовремя» выпал
+    assert p['clean']['score'] == pytest.approx(100 * (96.7 - 85) / 13, abs=0.1)
+    assert p['unload']['score'] == 60.0 and p['day']['score'] == pytest.approx(86.1, abs=0.1)
+    w = sc.HELPER_WEIGHTS
+    expect = (p['clean']['score'] * w['clean'] + 60.0 * w['unload'] + p['day']['score'] * w['day']) \
+        / (w['clean'] + w['unload'] + w['day'])
+    assert h['score'] == pytest.approx(expect, abs=0.1) and h['rank'] == 1 and out['ranked_helpers'] == 1
+    d = next(r for r in out['drivers'] if r['key'] == 'driver:1')
+    assert set(d['parts']) == set() and d['score'] is None                          # водителю — его веса, данных нет
+    assert sc.rules()['helper_weights'] == sc.HELPER_WEIGHTS
+
+
+def test_day_span_and_unload_norm():
+    from route_optimizer import actuals as ac
+    from route_optimizer import learning
+    from route_optimizer import views
+    t = lambda h, m=0: datetime(2026, 10, 5, h, m, tzinfo=Y)   # noqa: E731
+    trip = lambda dep, ret: ac.Trip(dep, ret, None, (), 0.0, 0.0)   # noqa: E731
+    actual = ac.DayActual(0, 0.0, None, None, trips=(trip(t(9, 10), t(12)), trip(t(13), t(17, 40))))
+    plan = {'trips': [{'depart': '09:00', 'return': '12:00'}, {'depart': '13:00', 'return': '17:00'}]}
+    assert views._day_span(actual, plan, date(2026, 10, 5)) == (510.0, 480.0)
+    assert views._day_span(actual, None, date(2026, 10, 5)) is None
+    assert views._day_span(ac.DayActual(0, 0.0, None, None, trips=(trip(None, t(12)),)), plan, date(2026, 10, 5)) is None
+    zone = ((40.0, 44.0), (40.0, 45.0), (41.0, 45.0), (41.0, 44.0))
+    norm = views._UnloadNorm(5.0, 10.0, {11: 4.0}, zone, 10.0)
+    o = learning.UnloadObs(date(2026, 10, 5), 2, 0.5, 30.0, (11, 12))
+    inside = {11: (40.5, 44.5), 12: (42.0, 44.5)}
+    assert norm.minutes(o, False, inside) == 5 * 2 + 10 * 0.5 + 4.0
+    assert norm.minutes(o, True, inside) == 5 * 2 + 10 * 0.5 + 4.0 + 10.0          # большая машина: 1 точка в Ереване
+
+
+def test_api_helper_from_dispatch_crew(client, sc_app):
+    """2 октября у события нет helper_id, а в «Развозе» у CAR1 — առաքիչ «Բաբկեն» (как в «Առաքիչ»): точка — ему."""
+    app_v2, _, _ = sc_app
+    state = app_v2.app.extensions['route_optimizer']
+    state.store.save_truck_crew('CAR1', D2, {'helper': ('Բաբկեն', True)}, 'qa')
+    _session_as(client, 'boss', LAN)
+    body = client.get(f'/api/routes/drivers/scorecard?from={D1}&to={D2}', base_url=LAN).get_json()
+    h2 = next(r for r in body['drivers'] if r['key'] == 'helper:2')
+    assert h2['days'] == 2 and h2['stops'] == 3
+    assert body['rules']['helper_weights'] == sc.HELPER_WEIGHTS

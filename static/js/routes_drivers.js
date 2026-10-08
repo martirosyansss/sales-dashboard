@@ -12,10 +12,12 @@
     const signed = (v, d = 0) => { const n = num(v); return n === null ? '—' : (n > 0 ? '+' : '') + fmt(n, d); };
     const ROLE = { helper: 'առաքիչ' };
     const REASON = { eta: 'պլանից ուշ', window: 'ընդունման ժամից ուշ', early: 'ընդունման ժամից շուտ' };
-    // составляющие балла (scorecard.WEIGHTS): подпись и единица значения
+    // составляющие балла (scorecard.WEIGHTS водителя, HELPER_WEIGHTS առաքիչ — №88): подпись и единица значения
     const PART = {
         on_time: ['Ժամանակին', '%'], order: ['Հերթականություն', '%'], speed: ['Արագություն', ' / 100 կմ'],
         stops: ['Կանգառներ խանութից դուրս', ' ր/օր'], liters: ['Վառելիք՝ նորմից', '%'],
+        clean: ['Առանց խնդրի (առանց մերժման և պակասի)', '%'], unload: ['Բեռնաթափում՝ նորմի նկատմամբ', '%'],
+        day: ['Օրվա տևողություն՝ պլանի նկատմամբ', '%'],
     };
 
     const state = { data: null, sort: { key: 'score', dir: -1 }, open: new Set(), seq: 0, today: null,
@@ -119,8 +121,9 @@
             num(norm) !== null ? h('small', { text: fmt(fact) + ' լ / նորմ ' + fmt(norm) + ' լ' }) : null);
     }
     const prCell = (p, r) => h('td', { class: 'num' }, h('span', { class: p + r ? '' : 'is-mute', text: fmt(p) + ' / ' + fmt(r) }));
-    // место по-армянски: 1-ին, 2-րդ, 3-րդ …
-    const place = (n) => fmt(n) + (num(n) === 1 ? '-ին' : '-րդ') + ' ' + fmt(state.data.ranked) + '-ից';
+    // место по-армянски: 1-ին, 2-րդ, 3-րդ … — среди своей роли (водители и առաքիչ — раздельно)
+    const place = (n, role) => fmt(n) + (num(n) === 1 ? '-ին' : '-րդ') + ' '
+        + fmt(role === 'helper' ? state.data.ranked_helpers : state.data.ranked) + '-ից';
     const kmCell = (km) => h('td', { class: 'num' + (num(km) === null ? ' is-mute' : ''), text: num(km) === null ? '—' : fmt(km) });
 
     // разбивка балла: «Ժամանակին 82% → 71 × 41%» для подсказки и раскрытой строки
@@ -129,7 +132,6 @@
         return label + '՝ ' + fmt(p.value, key === 'speed' ? 2 : 1) + unit + ' → ' + fmt(p.score) + ' միավոր × ' + fmt(p.share, 1) + '%';
     }
     function scoreTitle(r) {
-        if (r.role !== 'driver') return 'Առաքիչը միավոր չի ստանում';
         if (!r.enough_data) {
             return num(r.days) < num(state.data.rules.min_days)
                 ? 'Քիչ տվյալ՝ ' + fmt(r.days) + ' օր (պետք է առնվազն ' + fmt(state.data.rules.min_days) + ')'
@@ -141,10 +143,9 @@
     function scoreCell(r) {
         const s = num(r.score);
         const td = h('td', { class: 'num dr-score', title: scoreTitle(r) });
-        if (r.role !== 'driver') { td.textContent = '—'; return mute(td); }
         if (!r.enough_data) { td.append(h('span', { class: 'is-mute dr-few', text: 'քիչ տվյալ' })); return td; }
         td.append(h('span', { class: 'dr-score-val ' + scoreClass(s), text: s === null ? '—' : fmt(s) }));
-        if (num(r.rank) !== null) td.append(h('small', { text: place(r.rank) }));
+        if (num(r.rank) !== null) td.append(h('small', { text: place(r.rank, r.role) }));
         return td;
     }
 
@@ -158,6 +159,8 @@
     function sorted(rows) {
         const { key, dir } = state.sort;
         return rows.slice().sort((a, b) => {
+            // водители — сверху, առաքիչ — под ними: их баллы считаются по разным показателям и не сравниваются
+            if (a.role !== b.role) return a.role === 'driver' ? -1 : 1;
             const x = sortValue(a, key), y = sortValue(b, key);
             if (x === null && y === null) return a.name.localeCompare(b.name, 'hy');
             if (x === null) return 1;            // пусто — всегда внизу
@@ -188,10 +191,9 @@
         return i;
     }
     function partsBlock(r) {
-        if (r.role !== 'driver') return null;
         const items = Object.entries(r.parts || {});
         const head = !r.enough_data ? scoreTitle(r) + '։ Ցուցանիշները՝ տեղեկության համար։'
-            : 'Միավոր՝ ' + fmt(r.score) + (num(r.rank) !== null ? ' (' + place(r.rank) + ')' : '');
+            : 'Միավոր՝ ' + fmt(r.score) + (num(r.rank) !== null ? ' (' + place(r.rank, r.role) + ')' : '');
         return h('div', { class: 'dr-parts' }, h('p', { class: 'dr-parts-head', text: head }),
             items.length ? h('ul', {}, items.map(([k, p]) => h('li', {},
                 h('span', { class: 'l', text: (PART[k] || [k])[0] }),

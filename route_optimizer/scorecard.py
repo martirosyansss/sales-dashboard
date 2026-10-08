@@ -29,7 +29,19 @@ actuals.visit_metrics); литры к норме машино-дня счита�
   - Վառելիք — (литры по заправкам − норма) / норма за машино-дни с покрытыми треком заправками (views._scorecard_fuel);
 - Միավոր (0–100) — средневзвешенное подоценок WEIGHTS, каждая — линейно по SCALE; показатель без данных выпадает, веса
   остальных перенормируются; меньше MIN_DAYS дней или ни одного показателя с данными — «քիչ տվյալ» (enough_data
-  false): без балла и места (только водители);
+  false): без балла и места; место — среди своей роли;
+- балл առաքիչ (№88, «по выполнению плана»: առաքիչ ездит, куда поставит логист, поэтому объём дня — не его оценка) —
+  HELPER_WEIGHTS по HELPER_SCALE:
+  - Առանց խնդրի — доля закрытых точек без отказа и недовоза (full / covered);
+  - Ժամանակին — как у водителя (по точкам, где он был в экипаже);
+  - Բեռնաթափում — минуты разгрузки по GPS (learning.unload_obs: без ожидания окна, хвост после отметки) против нормы
+    «Развоза» на эти стоянки (views: мин на точку + мин на тонну + своё время магазинов + надбавка большой машины в
+    Ереване), %; 100 — как норма;
+  - Օրը պլանով — длительность дня машины (первый выезд → последнее возвращение) против плановой из прогноза сборки, %;
+  показатели машины (разгрузка, день) делятся между людьми экипажа по доле закрытых точек, как км. Деньги и тара
+  առաքիչ не пишутся (№75: они на водителе сессии) — в балл не входят;
+- առաքիչ точки — helper_id события; нет — առաքիչ машины дня из «Վարորդ/Առաքիչ» «Развоза» (вход по PIN в APK, логист,
+  ERP — №84; crew['helpers']: машина → id «Առաքիչ»), если он не водитель этой точки;
 - точность ETA (п. 7) — по точкам с плановым ETA и прибытием по GPS: |прибытие − ETA| ≤ ETA_OK_MIN — точно, медиана и
   P80 абсолютной ошибки, раньше и позже допуска.
 Неполные данные не выдумываются: нет GPS — км, «вовремя», скорость, стоянки нет; нет плана — точка не оценивается;
@@ -53,7 +65,15 @@ ROLES = ('driver', 'helper')
 
 # Итоговый балл 0–100 (решение №87 п. 3): вес показателя — в баллах из 100.
 WEIGHTS = {'on_time': 35, 'order': 15, 'speed': 20, 'stops': 15, 'liters': 15}
+# Балл առաքիչ (№88): выполнение плана машины-дня, где он был в экипаже.
+HELPER_WEIGHTS = {'clean': 30, 'on_time': 25, 'unload': 30, 'day': 15}
 # Подоценка 0–100: линейно между (значение «100 баллов», значение «0 баллов»), за пределами — 100 или 0.
+HELPER_SCALE = {
+    'clean': (98.0, 85.0),     # % точек без отказа и недовоза: 98 и выше — 100, 85 и ниже — 0
+    'on_time': (95.0, 50.0),   # как у водителя
+    'unload': (100.0, 150.0),  # % разгрузки к норме: не дольше нормы — 100, в 1,5 раза дольше — 0
+    'day': (100.0, 130.0),     # % длительности дня к плану: по плану и быстрее — 100, на 30 % дольше — 0
+}
 SCALE = {
     'on_time': (95.0, 50.0),   # % вовремя: 95 и выше — 100, 50 и ниже — 0
     'order': (90.0, 50.0),     # % точек в плановом порядке: 90 и выше — 100, 50 и ниже — 0
@@ -88,7 +108,8 @@ class CarDay:
     плановое ETA (первое появление клиента в плане); превышений скорости и минут стоянок вне магазинов (None — трека
     нет); порядок объезда — (точек не в плановом порядке, обслуженных с плановым местом) или None (сравнивать не с
     чем); stop_eta — плановое ETA точки в её рейсе (тяжёлый заказ в нескольких рейсах — своё ETA у каждого рейса),
-    главнее eta клиента."""
+    главнее eta клиента; unload — (минут разгрузки по GPS, минут по норме) учтённых стоянок или None; day — (минут
+    дня по GPS, минут по плану) или None (выезд, возвращение или план не видны)."""
     km: float
     marks: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
     eta: Mapping[int, datetime] = field(default_factory=dict)
@@ -96,6 +117,8 @@ class CarDay:
     offroute_min: float | None = None
     order: tuple[int, int] | None = None
     stop_eta: Mapping[str, datetime] = field(default_factory=dict)
+    unload: tuple[float, float] | None = None
+    day: tuple[float, float] | None = None
 
 
 def _hm(t: datetime | None) -> str | None:
@@ -126,7 +149,9 @@ def _entry() -> dict[str, Any]:
             'delay_sum': 0.0, 'late': [], 'km': None, 'cash': None, 'tare': 0.0,
             # показатели машин, где человек — водитель машины дня
             'speed_days': 0, 'speed_events': 0, 'speed_km': 0.0, 'stop_days': 0, 'offroute_min': 0.0,
-            'order_changes': 0, 'ordered': 0}
+            'order_changes': 0, 'ordered': 0,
+            # показатели машины, поделённые по доле закрытых точек (как км): разгрузка и длительность дня
+            'unload_fact': 0.0, 'unload_norm': 0.0, 'day_fact': 0.0, 'day_plan': 0.0}
 
 
 def day_summary(crew: Mapping[str, Any], cars: Mapping[str, CarDay], slack: float = LATE_SLACK_MIN) -> dict[str, Any]:
@@ -149,6 +174,7 @@ def day_summary(crew: Mapping[str, Any], cars: Mapping[str, CarDay], slack: floa
     def person(key: str) -> dict[str, Any]:
         return people.setdefault(key, _entry())
 
+    helpers = crew.get('helpers') or {}   # машина → առաքիչ дня по «Развозу» (для точек без helper_id)
     for s in closed:
         car = s['car_code']
         g = cars.get(car)
@@ -165,8 +191,9 @@ def day_summary(crew: Mapping[str, Any], cars: Mapping[str, CarDay], slack: floa
             cov['unattributed'] += 1
             continue
         keys = [f'driver:{did}']
-        if s.get('helper_id') is not None and s['helper_id'] != did:
-            keys.append(f'helper:{s["helper_id"]}')
+        hid = s.get('helper_id') if s.get('helper_id') is not None else helpers.get(car)
+        if hid is not None and hid != did:
+            keys.append(f'helper:{hid}')
         rated = None
         if mark is None:
             cov['no_gps'] += 1
@@ -209,6 +236,12 @@ def day_summary(crew: Mapping[str, Any], cars: Mapping[str, CarDay], slack: floa
             for key, n in (share.get((car, role)) or {}).items():
                 e = people[key]
                 e['km'] = (e['km'] or 0.0) + g.km * n / total
+                if g.unload is not None:
+                    e['unload_fact'] += g.unload[0] * n / total
+                    e['unload_norm'] += g.unload[1] * n / total
+                if g.day is not None:
+                    e['day_fact'] += g.day[0] * n / total
+                    e['day_plan'] += g.day[1] * n / total
         e = people[f'driver:{main[car]}']
         if g.speed_events is not None:
             e['speed_days'] += 1
@@ -233,7 +266,8 @@ def day_summary(crew: Mapping[str, Any], cars: Mapping[str, CarDay], slack: floa
 
 CASH_KEYS = ('expected', 'short', 'collected')
 SUMS = ('stops', 'partial', 'refused', 'rated', 'on_time', 'late_n', 'delay_sum', 'tare', 'speed_days', 'speed_events',
-        'speed_km', 'stop_days', 'offroute_min', 'order_changes', 'ordered')
+        'speed_km', 'stop_days', 'offroute_min', 'order_changes', 'ordered', 'unload_fact', 'unload_norm', 'day_fact',
+        'day_plan')
 
 
 def _pct(n: float, d: float) -> float | None:
@@ -266,24 +300,26 @@ def _cash_json(c: Mapping[str, Any] | None) -> dict[str, Any] | None:
             'handed_days': c.get('handed_days', 1 if c.get('handed') is not None else 0)}
 
 
-def sub_score(metric: str, value: float) -> float:
-    """Подоценка 0–100 показателя: линейно между SCALE[metric] = (значение «100», значение «0»), с отсечкой."""
-    full, zero = SCALE[metric]
+def sub_score(metric: str, value: float, scale: Mapping[str, tuple[float, float]] = SCALE) -> float:
+    """Подоценка 0–100 показателя: линейно между scale[metric] = (значение «100», значение «0»), с отсечкой."""
+    full, zero = scale[metric]
     t = (value - zero) / (full - zero)
     return 100.0 * min(1.0, max(0.0, t))
 
 
-def score(values: Mapping[str, float | None]) -> tuple[float | None, dict[str, dict[str, float]]]:
+def score(values: Mapping[str, float | None], weights: Mapping[str, int] = WEIGHTS,
+          scale: Mapping[str, tuple[float, float]] = SCALE) -> tuple[float | None, dict[str, dict[str, float]]]:
     """(балл 0–100 или None — ни одного показателя, разбивка: показатель → {value, score, weight, share}). Показатель
-    без значения (None) выпадает, веса остальных перенормируются: share — доля в балле, %."""
-    have = {k: float(v) for k, v in values.items() if k in WEIGHTS and v is not None}
-    total = sum(WEIGHTS[k] for k in have)
+    без значения (None) выпадает, веса остальных перенормируются: share — доля в балле, %. weights / scale — водителя
+    (WEIGHTS, SCALE) или առաքիչ (HELPER_WEIGHTS, HELPER_SCALE)."""
+    have = {k: float(v) for k, v in values.items() if k in weights and v is not None}
+    total = sum(weights[k] for k in have)
     if not total:
         return None, {}
-    raw = {k: sub_score(k, v) for k, v in have.items()}
-    parts = {k: {'value': round(have[k], 2), 'score': round(raw[k], 1), 'weight': WEIGHTS[k],
-                 'share': round(100.0 * WEIGHTS[k] / total, 1)} for k in WEIGHTS if k in have}
-    return round(sum(raw[k] * WEIGHTS[k] for k in have) / total, 1), parts
+    raw = {k: sub_score(k, v, scale) for k, v in have.items()}
+    parts = {k: {'value': round(have[k], 2), 'score': round(raw[k], 1), 'weight': weights[k],
+                 'share': round(100.0 * weights[k] / total, 1)} for k in weights if k in have}
+    return round(sum(raw[k] * weights[k] for k in have) / total, 1), parts
 
 
 def eta_accuracy(errors: Sequence[float], ok_min: float = ETA_OK_MIN) -> dict[str, Any]:
@@ -309,6 +345,9 @@ def _detail(day: date, e: Mapping[str, Any]) -> dict[str, Any]:
             'speed_events': e['speed_events'] if e['speed_days'] else None,
             'offroute_min': round(e['offroute_min']) if e['stop_days'] else None,
             'order_pct': _pct(e['ordered'] - e['order_changes'], e['ordered']), 'ordered': e['ordered'],
+            'clean_pct': _pct(e['stops'] - e['partial'] - e['refused'], e['stops']),
+            'unload_vs_norm_pct': _pct(e['unload_fact'], e['unload_norm']),
+            'day_vs_plan_pct': _pct(e['day_fact'], e['day_plan']),
             'liters_vs_norm_pct': None, 'late': list(e['late'])}
 
 
@@ -322,6 +361,9 @@ def _metrics(r: Mapping[str, Any]) -> dict[str, Any]:
             'speed_per_100km': round(100.0 * r['speed_events'] / r['speed_km'], 2) if r['speed_km'] > 0 else None,
             'offroute_min': round(r['offroute_min']) if r['stop_days'] else None,
             'offroute_min_per_day': round(r['offroute_min'] / r['stop_days'], 1) if r['stop_days'] else None,
+            'clean_pct': _pct(r['stops'] - r['partial'] - r['refused'], r['stops']),
+            'unload_vs_norm_pct': _pct(r['unload_fact'], r['unload_norm']),
+            'day_vs_plan_pct': _pct(r['day_fact'], r['day_plan']),
             'liters_vs_norm_pct': (round(100.0 * (r['fuel_fact_l'] - fuel_norm) / fuel_norm, 1)
                                    if fuel_norm > 0 else None)}
 
@@ -374,27 +416,36 @@ def period(days: Sequence[tuple[date, Mapping[str, Any]]], names: Mapping[int, s
                 d.update(fuel_fact_l=round(fact, 1), fuel_norm_l=round(norm, 1),
                          liters_vs_norm_pct=_pct(fact - norm, norm))
         m = _metrics(r)
-        total, parts = score({'on_time': m['on_time_pct'], 'order': m['order_pct'], 'speed': m['speed_per_100km'],
-                              'stops': m['offroute_min_per_day'], 'liters': m['liters_vs_norm_pct']}) \
-            if r['role'] == 'driver' else (None, {})
-        # хватает данных: не меньше MIN_DAYS дней и (у водителя) хотя бы один показатель балла с данными
-        enough = r['days'] >= MIN_DAYS and (r['role'] != 'driver' or total is not None)
+        if r['role'] == 'driver':
+            total, parts = score({'on_time': m['on_time_pct'], 'order': m['order_pct'], 'speed': m['speed_per_100km'],
+                                  'stops': m['offroute_min_per_day'], 'liters': m['liters_vs_norm_pct']})
+        else:
+            total, parts = score({'clean': m['clean_pct'], 'on_time': m['on_time_pct'],
+                                  'unload': m['unload_vs_norm_pct'], 'day': m['day_vs_plan_pct']},
+                                 HELPER_WEIGHTS, HELPER_SCALE)
+        # хватает данных: не меньше MIN_DAYS дней и хотя бы один показатель балла с данными
+        enough = r['days'] >= MIN_DAYS and total is not None
         late_n = r.pop('late_n')
         r.pop('delay_sum')
+        for k in ('unload_fact', 'unload_norm', 'day_fact', 'day_plan'):
+            r[k] = round(r[k], 1)
         out.append({**r, **m, 'late': late_n, 'km': _round(r['km']), 'cash': _cash_json(r['cash']),
                     'tare': round(r['tare'], 2), 'speed_km': round(r['speed_km'], 1),
                     'offroute_min': m['offroute_min'], 'speed_events': m['speed_events'],
                     'fuel_fact_l': round(r['fuel_fact_l'], 1), 'fuel_norm_l': round(r['fuel_norm_l'], 1),
                     'enough_data': enough, 'score': total if enough else None, 'parts': parts, 'rank': None})
-    ranked = [r for r in out if r['role'] == 'driver' and r['score'] is not None]
-    for r in ranked:
-        r['rank'] = 1 + sum(1 for x in ranked if x['score'] > r['score'])   # равный балл — одно место
+    ranked = {role: [r for r in out if r['role'] == role and r['score'] is not None] for role in ROLES}
+    for rows_ in ranked.values():   # место — среди своей роли; равный балл — одно место
+        for r in rows_:
+            r['rank'] = 1 + sum(1 for x in rows_ if x['score'] > r['score'])
     out.sort(key=lambda r: (r['role'] != 'driver', -r['stops'], r['name'], r['id']))
     coverage = {k: (round(v, 1) if isinstance(v, float) else v) for k, v in cov.items()}
-    return {'drivers': out, 'ranked': len(ranked), 'eta': eta_accuracy(errors), 'coverage': coverage}
+    return {'drivers': out, 'ranked': len(ranked['driver']), 'ranked_helpers': len(ranked['helper']),
+            'eta': eta_accuracy(errors), 'coverage': coverage}
 
 
 def rules() -> dict[str, Any]:
     """Правила для страницы и APK: допуски, пороги и веса балла."""
     return {'late_slack_min': LATE_SLACK_MIN, 'max_days': MAX_DAYS, 'min_days': MIN_DAYS, 'eta_ok_min': ETA_OK_MIN,
-            'weights': dict(WEIGHTS), 'scale': {k: list(v) for k, v in SCALE.items()}}
+            'weights': dict(WEIGHTS), 'scale': {k: list(v) for k, v in SCALE.items()},
+            'helper_weights': dict(HELPER_WEIGHTS), 'helper_scale': {k: list(v) for k, v in HELPER_SCALE.items()}}
