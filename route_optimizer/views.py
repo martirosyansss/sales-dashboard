@@ -44,7 +44,7 @@ from .roads import SNAP_MAX_KM, CenterBypassRoads, RoadDistances, RoadProvider, 
 from .snapshot import CAR_IDLE_DAYS, MIN_REFRESH_SECONDS, ResultCache, Snapshot, SnapshotCache
 from .store import (CREW_TABLES, DEFAULT_MANAGER_FUEL, DEFAULT_SETTINGS, KEEP, Bundle, Decision, GarageError, Store, StoreError,
                     big_auto, center_auto, check_driver_name, check_garage_entry, check_unload_min, check_window,
-                    validate_payload)
+                    until_floor, validate_payload)
 from .valhalla_engine import (CAR_COSTING, PROFILE_CAR, PROFILE_TRUCK, TRUCK_TIME_MODEL, TRUCK_TIME_VALHALLA, ValhallaProvider,
                               ValhallaRoads, truck_costing, truck_leg_minutes, truck_time_source, valhalla_error)
 from .vehicle_access import check_access
@@ -1262,7 +1262,7 @@ def _dispatch_ctx(state: RoutesState, snap: Snapshot, bundle: Bundle, day: date,
     tn = replace(tn, preload=not dp.morning_loading(day, s))
     return dp.DayContext(day, bundle.depot, trucks, norms, tn, h * 60 + m,
                          float(h2 * 60 + m2 - (h * 60 + m)), float(s['min_trip_revenue']),
-                         {cid: w.span() for cid, w in bundle.windows.items()}, zone,
+                         {cid: w.span() for cid, w in bundle.windows_on(day).items()}, zone,
                          vehicle_access=bundle.vehicle_access,
                          model=_model_note(s, calib, norms, eff, [p for p in points if p is not None], trucks),
                          end_reserve_min=float(s['truck_end_reserve_min']), solo=bundle.solo,
@@ -1613,7 +1613,8 @@ def _day_stops(dd: _DispatchDay, draft: dp.Draft) -> list[dp.Stop]:
 
 def _stop_info(dd: _DispatchDay) -> Callable[[dp.Stop], dict[str, Any]]:
     agents = dd.snap.agents
-    windows = dd.bundle.windows
+    windows = dd.bundle.windows_on(dd.day)   # окно, которое действует в этот день («Մինչև ժամը» дня — вместо постоянного)
+    until = dd.bundle.day_until.get(dd.day, {})
 
     def info(s: dp.Stop) -> dict[str, Any]:
         code, name = dd.data.customers.get(s.customer_id) or (
@@ -1631,6 +1632,8 @@ def _stop_info(dd: _DispatchDay) -> Callable[[dp.Stop], dict[str, Any]]:
             'window': windows[s.customer_id].to_json() if s.customer_id in windows else None,
             'vehicle_access': dd.bundle.vehicle_access[s.customer_id].to_json()
                               if s.customer_id in dd.bundle.vehicle_access else None,
+            # срок «Մինչև ժամը» только этого дня, минуты от полуночи (window — уже с ним)
+            **({'until_day': until[s.customer_id]} if s.customer_id in until else {}),
         }
     return info
 
@@ -2079,9 +2082,9 @@ RULE_REFUSED = 'Կարգավորումները չեն ընդունում այս 
 
 @dataclass
 class _StopRule:
-    """Правка «×» с причиной-правилом: черновик дня после неё, bundle с новым правилом (по нему день считается заново),
-    also — запись правила в транзакции плана (store.save_dispatch), kept — будущие дни, где «никогда» не применено:
-    магазин там уже в загруженной машине (№78)."""
+    """Правка «×» с причиной-правилом (и «Մինչև ժամը», _until_edit): черновик дня после неё, bundle с новым правилом (по
+    нему день считается заново), also — запись правила в транзакции плана (store.save_dispatch), kept — будущие дни, где
+    «никогда» не применено: магазин там уже в загруженной машине (№78)."""
     draft: dp.Draft
     bundle: Bundle
     also: Callable[[Any], None]
@@ -2187,6 +2190,84 @@ def _stop_rule_edit(state: RoutesState, bundle: Bundle, dd: _DispatchDay, payloa
         state.store._write_customer_vehicles(conn, cid, access, user)
         logger.info('[Routes] «Развоз» %s: допуск машин клиента %d: %s (%s)', dd.day, cid, access, user)
     return _StopRule(draft, replace(bundle, vehicle_access={**bundle.vehicle_access, cid: access}), also_access)
+
+
+UNTIL_SCOPES = ('day', 'always')
+_UNTIL_RE = re.compile(r'^(\d{2}):([0-5]\d)$')   # часы 24 и больше — ошибка check_window (минуты за пределом суток)
+PAST_DAY_UNTIL = 'Անցած օրվա պլանում ժամը չի փոխվում'
+UNTIL_GONE = 'Այս ժամն արդեն նշված չէ — թարմացրեք էջը'
+UNTIL_OTHER_KIND = 'Խանութի մշտական ընդունման ժամը «մինչև» չէ — այն փոխվում է «Առաքման պայմաններ»-ում'
+UNTIL_BEFORE_FLOOR = ('Խանութն ընդունում է {}-ից ոչ շուտ (մշտական ընդունման ժամը) — նշեք ավելի ուշ ժամ '
+                      'կամ փոխեք մշտական ժամը «Առաքման պայմաններ»-ում')
+
+
+def _until_edit(state: RoutesState, bundle: Bundle, dd: _DispatchDay,
+                payload: Mapping[str, Any]) -> tuple[_StopRule, dict[str, Any]]:
+    """«Մինչև ժամը» у магазина (владелец 08.10): {"action": "until", "customer_id", "time": "HH:MM" | null,
+    "scope": "day" | "always"}. day — срок только этого дня (store.customer_day_until: в этот день — вместо окна магазина);
+    always — постоянное окно «до» (store.customer_window; прежнее окно любого вида заменяется, срок этого дня снимается —
+    иначе он перекрыл бы новое окно). time null — снять: day — срок дня (снова постоянное окно), always — постоянное окно,
+    только если оно «до» (окна других видов меняют в «Առաքման պայմաններ»). Время проверяет check_window. Срок дня — конец
+    окна этого дня, начало постоянного окна остаётся (Bundle.windows_on): срок не позже начала — отказ. Рейс, где магазин
+    опаздывает, переставляется под окно (dp.fit_until; закреплённые логистом, загруженные и уже грузящиеся — нет). Ничего не
+    сохраняет сама: срок пишется в транзакции плана (_StopRule.also); «Չեղարկել» его не отменяет — undo у правки нет.
+    Второе значение — ответ fit_until (странице: успевает ли магазин, подсказка машины)."""
+    cid, raw, scope = payload.get('customer_id'), payload.get('time'), payload.get('scope')
+    if scope not in UNTIL_SCOPES or not dp._is_int(cid) or not (raw is None or isinstance(raw, str)):
+        raise dp.DispatchError('Սերվերը չընդունեց հարցումը — թարմացրեք էջը')
+    if dd.day < _clock().date():   # те же часы, что у is_past страницы
+        raise dp.DispatchError(PAST_DAY_UNTIL)
+    if all(s.customer_id != cid for s in dd.stops):
+        raise dp.DispatchError('Խանութն այս օրվա պատվերներում չէ — թարմացրեք էջը')
+    window = None
+    if raw is not None:
+        m = _UNTIL_RE.match(raw)
+        window, err = check_window({'kind': 'before', 't1': int(m[1]) * 60 + int(m[2]) if m else None})
+        if err:
+            raise dp.DispatchError(err)
+    old = bundle.windows.get(cid)
+    windows = dict(bundle.windows)
+    mine = dict(bundle.day_until.get(dd.day, {}))
+    if scope == 'day':
+        if window is None and cid not in mine:
+            raise dp.DispatchError(UNTIL_GONE)
+        floor = until_floor(old)
+        if window is not None and floor is not None and window.t1 <= floor:   # срок дня — конец окна, начало — постоянное
+            raise dp.DispatchError(UNTIL_BEFORE_FLOOR.format(f'{floor // 60:02d}:{floor % 60:02d}'))
+        if window is None:
+            del mine[cid]
+        else:
+            mine[cid] = window.t1
+    elif window is None:
+        if old is None or old.kind != 'before':
+            raise dp.DispatchError(UNTIL_OTHER_KIND if old is not None else UNTIL_GONE)
+        del windows[cid]
+    else:
+        windows[cid] = window
+        mine.pop(cid, None)
+    day_until = {**bundle.day_until, dd.day: mine} if mine else {d: v for d, v in bundle.day_until.items() if d != dd.day}
+    new = replace(bundle, windows=windows, day_until=day_until)
+    ctx = replace(dd.ctx, windows={c: w.span() for c, w in new.windows_on(dd.day).items()})
+    draft = dd.draft
+    draft.undo = None
+    now_min = _today_min(dd)
+    # начатые рейсы — по плану до правки (окна прежние): срок не делает рейс «ещё не грузящимся»
+    frozen = dp.started_trips(dd.ctx, dd.stops, draft, now_min) if now_min is not None else set()
+    fit = dp.fit_until(ctx, dd.stops, draft, cid, now_min=now_min, frozen=frozen)
+    user = session.get('username')
+
+    def also(conn: Any) -> None:
+        if scope == 'day':
+            Store._write_customer_day_until(conn, dd.day, cid, window.t1 if window is not None else None, user)
+        else:
+            if Store.customer_window_in(conn, cid) != old:   # окно сменили в «Առաքման պայմաններ» — не затираем
+                raise dp.DispatchError('Խանութի ընդունման ժամը հենց նոր փոխվել է — թարմացրեք էջը')
+            Store._write_customer_window(conn, cid, window, user)
+            if window is not None:
+                Store._write_customer_day_until(conn, dd.day, cid, None, user)
+        logger.info('[Routes] «Развоз» %s: клиент %d — «Մինչև ժամը» %s (%s), переставлены рейсы %s (%s)', dd.day, cid,
+                    raw, scope, fit['reordered'], user)
+    return _StopRule(draft, new, also), fit
 
 
 
@@ -2667,8 +2748,9 @@ def api_dispatch_build() -> Any:
 @bp.post('/api/routes/dispatch/edit')
 @_api
 def api_dispatch_edit() -> Any:
-    """Правка логиста: {"date", "rev", "action": move | trip_stops | stop_rule | pin | unpin | exclude | include | defer_store | agents | defer_trip | resize | undo, …}
-    (dispatch.apply_edit). rev — номер черновика, от которого правка: план изменён в другой вкладке — 409.
+    """Правка логиста: {"date", "rev", "action": move | trip_stops | stop_rule | until | pin | unpin | exclude | include | defer_store | agents | defer_trip | resize | undo, …}
+    (dispatch.apply_edit; until — «Մինչև ժամը», _until_edit: в ответе ещё until — dispatch.fit_until).
+    rev — номер черновика, от которого правка: план изменён в другой вкладке — 409.
     В ответе — день целиком и delta_km: как изменились км плана. resize с "preview": true — только подсказка во время
     перетаскивания (ничего не сохраняется): {"preview": {delta_km, stops — сколько точек у машины рейса прибавилось
     (минус — ушло), return — возвращение рейса «HH:MM» или null — рейса больше нет}}."""
@@ -2693,6 +2775,7 @@ def api_dispatch_edit() -> Any:
     cargo = dp.loaded_cargo(dd.draft, dd.stops)     # №78: что уже в машинах — до правки (правки меняют черновик на месте)
     confirmed = payload.get('confirm_loaded') is True
     rule: _StopRule | None = None   # «×» с правилом: правило пишется в транзакции черновика
+    until: dict[str, Any] | None = None   # «Մինչև ժամը»: успевает ли магазин, подсказка машины (dp.fit_until)
     try:
         if payload.get('action') == 'defer_trip':
             _check_defer_same_day(dd, payload.get('trip'))
@@ -2709,6 +2792,9 @@ def api_dispatch_edit() -> Any:
             draft = _apply_settings_edit(state, bundle, dd)
         elif payload.get('action') == 'stop_rule':        # «×» у магазина с причиной-правилом на все дни
             rule = _stop_rule_edit(state, bundle, dd, payload, confirmed)
+            draft, bundle = rule.draft, rule.bundle
+        elif payload.get('action') == 'until':            # «Մինչև ժամը»: срок магазина и порядок его рейсов под него
+            rule, until = _until_edit(state, bundle, dd, payload)
             draft, bundle = rule.draft, rule.bundle
         elif _is_same_day_edit(dd, payload):    # новые заказы дня (№72)
             draft = _same_day_edit(state, bundle, dd, payload)
@@ -2762,7 +2848,9 @@ def api_dispatch_edit() -> Any:
     if payload.get('action') == 'trip_stops' and payload.get('reason') == 'today':
         logger.info('[Routes] «Развоз» %s: из рейса %s убраны %s — причина «միայն այսօր» (%s)', day, payload.get('trip'),
                     payload.get('remove'), session.get('username'))
-    if rule is not None:
+    if until is not None:
+        body['until'] = until
+    elif rule is not None:
         body['rule_kept_days'] = rule.kept   # «никогда»: дни, где магазин уже в загруженной машине, — не тронуты
     return jsonify({'success': True, **body})
 
@@ -3510,14 +3598,17 @@ def _learning_days(state: RoutesState, bundle: Bundle, since: date, until: date,
     заполняется (машина, день) → отпечаток, с которым посчитан факт каждой возвращённой строки."""
     if state.fleet_facts is None:
         return []
-    windows = {cid: w.span() for cid, w in bundle.windows.items()}
-    windows_key = tuple(sorted(windows.items()))
     drafts: dict[str, dict[str, Any] | None] = {}
+    # окна приёма дня («Մինչև ժամը» дня — вместо постоянного) и их отпечаток для кэша
+    by_day: dict[str, tuple[dict[int, tuple[float, float]], tuple[Any, ...]]] = {}
     out = []
     for car, ds in state.fleet_facts.car_days(since.isoformat(), until.isoformat()):
         if ds not in drafts:
             got = state.store.load_dispatch(ds)
             drafts[ds] = dp.sent_json(got[0]) if got is not None else None   # №81: факт сравниваем с планом водителей
+            spans = {cid: w.span() for cid, w in bundle.windows_on(date.fromisoformat(ds)).items()}
+            by_day[ds] = (spans, tuple(sorted(spans.items())))
+        windows, windows_key = by_day[ds]
         ranks, plan_trips = learning.draft_ranks(drafts[ds], car)
         version = (state.fleet_facts.version(car, ds), bundle.depot, tuple(sorted(ranks.items())), windows_key)
         with state.actuals_lock:
@@ -4687,7 +4778,7 @@ def _live_context(state: RoutesState, day: date,
     def tracks(car: str, parts: Sequence[tl.Chunk]) -> Mapping[Any, Sequence[tl.TPoint]]:
         return state.live_tracks.get(day, car, parts, _track_matcher(state, caps.get(car)))
     return _LiveContext(rules, road, bundle.depot, plans, trucks, names, crew, tuple(planned),
-                        {cid: w.span() for cid, w in bundle.windows.items()}, routes,
+                        {cid: w.span() for cid, w in bundle.windows_on(day).items()}, routes,
                         stored is not None and full.released is not None, tracks)
 
 
@@ -5162,8 +5253,10 @@ def _scorecard_days(state: RoutesState, bundle: Bundle, since: date, until: date
     for ds in sorted(versions):
         helpers = {car: ids[k] for car, name in state.store.truck_drivers(ds, 'helper')[0].items()
                    if (k := ' '.join(name.split()).casefold()) in ids}
-        # день ещё идёт — «день против плана» не считается (_day_span); после полуночи пересчитать
-        key = (versions[ds], revs.get(ds), base, tuple(sorted(helpers.items())), ds >= today)
+        # день ещё идёт — «день против плана» не считается (_day_span); после полуночи пересчитать. «Մինչև ժամը» дня —
+        # в ключе дня (постоянные окна — в base)
+        key = (versions[ds], revs.get(ds), base, tuple(sorted(helpers.items())), ds >= today,
+               tuple(sorted(bundle.day_until.get(date.fromisoformat(ds), {}).items())))
         with state.scorecard_lock:
             hit = state.scorecard_cache.get(ds)
         if hit is not None and hit[0] == key:

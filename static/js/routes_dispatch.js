@@ -116,6 +116,7 @@
         geoChanged: null,                   // день, в котором после сборки меняли точку магазина — подсказать пересборку
         unloadStop: null, unloadInfo: null, unloadSeq: 0,   // «Ժամանակ խանութում»: магазин диалога, его данные с сервера, номер запроса
         condStop: null, condInfo: null, condSeq: 0,         // «Առաքման պայմաններ»: то же для условий магазина
+        untilStop: null, untilInfo: null, untilSeq: 0,      // «Մինչև ժամը»: то же для срока магазина
         stepsOpen: new Set(),               // шаги 1–2, раскрытые логистом после сборки (иначе свёрнуты в строку)
         open: new Set(),                    // раскрытые карточки машин (код машины)
         driverCar: null,                    // «Վարորդ»: машина открытого диалога
@@ -536,7 +537,7 @@
     // тогда обновляются только подсказки, а страница — при следующей проверке.
     const interacting = () => {
         const a = document.activeElement;
-        return state.dragging || !!state.mapDrag || (!!state.stopCard && state.stopCard.isOpen() && wsOn()) || $('dpGeoDlg').open || $('dpUnloadDlg').open || $('dpCondDlg').open || $('dpDriverDlg').open
+        return state.dragging || !!state.mapDrag || (!!state.stopCard && state.stopCard.isOpen() && wsOn()) || $('dpGeoDlg').open || $('dpUnloadDlg').open || $('dpCondDlg').open || $('dpUntilDlg').open || $('dpDriverDlg').open
             || $('dpSameDayDlg').open || $('dpAbsentDlg').open || $('dpSendFirstDlg').open || $('dpAddDlg').open || $('dpWhyDlg').open
             || (!!a && $('dpBody').contains(a) && /^(SELECT|INPUT|TEXTAREA)$/.test(a.tagName));
     };
@@ -1889,6 +1890,10 @@
         $('dpCondTrucks').textContent = '';
         syncCondTime();
         syncCondTrucks();
+        // «Մինչև ժամը» этого дня: в этот день конец окна — срок дня, начало — постоянного окна ниже (Bundle.windows_on)
+        $('dpCondDayNote').hidden = !isMin(stop.until_day);
+        $('dpCondDayNote').textContent = isMin(stop.until_day) ? 'Այս օրը գործում է նաև «Մինչև ժամը»՝ մինչև ' + hhmm(stop.until_day)
+            + ' (միայն այս օրվա համար)։ Ստորև նշվածը մշտական ժամն է։' : '';
         $('dpCondLoad').textContent = 'Բեռնում եմ խանութի տվյալները…';
         lockCond(true);             // пока не пришли свежие условия магазина — сохранять нечего
         $('dpCondDlg').showModal();
@@ -1974,6 +1979,126 @@
         if (!add || state.addFor !== add || !$('dpAddDlg').open) return;
         if (failed) { $('dpAddErr').textContent = failed.message; addSummary(); return; }   // ошибка под страницей за окном не видна
         refreshAddStops(stop.customer_id);          // списки окна — по новому правилу
+    }
+
+    // ---------- «Մինչև ժամը» (владелец 08.10): привезти магазин не позже времени — только в этот день или всегда ----------
+    // «Միայն այսօր» (по умолчанию) — срок только дня плана: в этот день конец окна приёма магазина (начало постоянного окна
+    // остаётся — untilFloor; stop.until_day — срок, минуты); «Միշտ» — постоянное окно «մինչև» вместо прежнего окна любого вида. Сохраняет правка «Развоза» {action: 'until', customer_id, time, scope}:
+    // программа сама переставляет магазины его рейса (кроме закреплённого, загруженного и уже грузящегося); не успеть —
+    // плашка красная и подсказка машины, которая успела бы («Տեղափոխել» — перенос с порядком под окна, fit). Постоянное
+    // окно для подсказки в диалоге — GET /api/routes/customer-vehicles?customer_id=… (свежее, как у «Առաքման պայմաններ»).
+    const untilScope = () => ($('dpUntilAlways').checked ? 'always' : 'day');
+    const untilDayWord = () => (state.day === state.data.today ? 'այսօր' : 'միայն այս օրը');
+    // начало постоянного окна, которое срок дня оставляет (как store.until_floor): после / между — t1, «в T ± tol» — T − tol
+    function untilFloor(w) {
+        if (!isObj(w) || w.kind === 'before' || !isMin(w.t1)) return null;
+        const lo = w.kind === 'at' ? w.t1 - (Number.isInteger(w.tol) ? w.tol : 0) : w.t1;
+        return lo > 0 ? lo : null;
+    }
+    // cancel — и «Չեղարկել»: пока идёт сохранение, диалог не закрыть (ошибка не потеряется)
+    const lockUntil = (on, cancel = false) => ['dpUntilTime', 'dpUntilDay', 'dpUntilAlways', 'dpUntilSave', 'dpUntilClear',
+        ...(cancel ? ['dpUntilCancel'] : [])].forEach(id => { $(id).disabled = on; });
+    // подсказка и «Հանել» — по выбранному сроку: что действует сейчас и что заменит «Միշտ»
+    function syncUntil() {
+        const stop = state.untilStop, w = state.untilInfo && isObj(state.untilInfo.window) ? state.untilInfo.window : null;
+        if (!stop) return;
+        const always = untilScope() === 'always';
+        const lines = [];
+        if (isMin(stop.until_day)) lines.push('Այս օրվա համար նշված է՝ մինչև ' + hhmm(stop.until_day) + '։');
+        lines.push(w ? 'Մշտական ընդունման ժամը՝ ' + windowText(w) + '։' : 'Մշտական ընդունման ժամ նշված չէ։');
+        if (always && w && w.kind !== 'before') lines.push('Ուշադրություն՝ «Միշտ»-ը կփոխարինի այն։');
+        const floor = untilFloor(w);
+        if (!always && floor !== null) lines.push('Այս օրը խանութը կընդունի ' + hhmm(floor) + '-ից ոչ շուտ (մշտական ժամը) և մինչև ձեր նշած ժամը։');
+        lines.push('Ծրագիրը ինքը կփոխի երթի խանութների հերթականությունը, որ մեքենան հասցնի։ Ամրացված երթը չի փոխվում։');
+        $('dpUntilHint').textContent = lines.join(' ');
+        $('dpUntilClear').hidden = always ? !(w && w.kind === 'before') : !isMin(stop.until_day);
+        $('dpUntilErr').textContent = '';
+    }
+    async function openUntil(stop) {
+        if (state.busy || !needPlan()) return;
+        const seq = ++state.untilSeq;
+        state.untilStop = stop;
+        state.untilInfo = null;
+        $('dpUntilLead').textContent = '«' + (stop.name || stop.code) + '»' + (stop.address ? '՝ ' + stop.address : '');
+        $('dpUntilDayT').textContent = state.day === state.data.today ? 'Միայն այսօր' : 'Միայն ' + dayHuman(state.day, true);
+        $('dpUntilDay').checked = true;
+        $('dpUntilTime').value = isMin(stop.until_day) ? hhmm(stop.until_day) : '';
+        $('dpUntilHint').textContent = 'Բեռնում եմ խանութի տվյալները…';
+        $('dpUntilErr').textContent = '';
+        $('dpUntilClear').hidden = true;
+        lockUntil(true);            // пока не пришло постоянное окно магазина — сохранять нечего
+        $('dpUntilDlg').showModal();
+        try {
+            const r = await api('GET', '/api/routes/customer-vehicles?customer_id=' + encodeURIComponent(stop.customer_id));
+            if (seq !== state.untilSeq || !$('dpUntilDlg').open) return;
+            const x = Array.isArray(r.customers) ? r.customers[0] : null;
+            if (!isObj(x)) throw new Error('Խանութը չի գտնվել — թարմացրեք էջը');
+            state.untilInfo = x;
+            const w = isObj(x.window) ? x.window : null;
+            if (!$('dpUntilTime').value && w && w.kind === 'before' && isMin(w.t1)) $('dpUntilTime').value = hhmm(w.t1);
+            lockUntil(false);
+            syncUntil();
+            $('dpUntilTime').focus();
+        } catch (e) {
+            if (seq !== state.untilSeq) return;
+            $('dpUntilHint').textContent = '';
+            $('dpUntilErr').textContent = e.message;
+        }
+    }
+    // clear — «Հանել» выбранного срока. Ничего не изменилось — сохранять нечего: диалог закрывается без запроса
+    async function saveUntil(clear) {
+        const stop = state.untilStop, x = state.untilInfo;
+        if (!stop || !x || state.busy) return;
+        const scope = untilScope();
+        let time = null;
+        if (!clear) {
+            const m = /^(\d{2}):(\d{2})$/.exec($('dpUntilTime').value || '');
+            if (!m || Number(m[1]) > 23 || Number(m[2]) > 59) { $('dpUntilErr').textContent = 'Նշեք ժամը։'; $('dpUntilTime').focus(); return; }
+            time = m[1] + ':' + m[2];
+            const t1 = Number(m[1]) * 60 + Number(m[2]), w = isObj(x.window) ? x.window : null;
+            if (scope === 'day' ? stop.until_day === t1 : !isMin(stop.until_day) && w && w.kind === 'before' && w.t1 === t1) {
+                $('dpUntilDlg').close();
+                return;
+            }
+        }
+        lockUntil(true, true);
+        $('dpUntilErr').textContent = '';
+        const data = await edit({ action: 'until', customer_id: stop.customer_id, time, scope }, null);
+        lockUntil(false, true);
+        if (!data) {
+            // план изменён в другой вкладке (409) — «Թարմացնել» под окном: закрываем окно, чтобы до неё дотянуться
+            if (!$('dpActionReload').classList.contains('d-none')) { $('dpUntilDlg').close(); $('dpActionError').focus(); return; }
+            if ($('dpUntilDlg').open) $('dpUntilErr').textContent = $('dpActionErrorText').textContent;
+            return;
+        }
+        $('dpUntilDlg').close();
+        untilToast(stop, data, time, scope);
+    }
+    // итог: успевает (порядок рейса сменился или и так успевал) или нет — почему и какая машина успела бы
+    function untilToast(stop, data, time, scope) {
+        const u = isObj(data.until) ? data.until : {}, name = '«' + (stop.name || stop.code) + '»';
+        const what = name + '՝ ' + (time === null ? (scope === 'day' ? 'այս օրվա ժամը հանված է' : 'մշտական ժամը հանված է')
+            : 'մինչև ' + time + ' · ' + (scope === 'day' ? untilDayWord() : 'միշտ')) + '։ ';
+        if (!u.late) {
+            toast(what + (Array.isArray(u.reordered) && u.reordered.length ? 'Երթի հերթականությունը փոխվեց՝ մեքենան հասցնում է։' : 'Մեքենան հասցնում է։'));
+            return;
+        }
+        const h = isObj(u.hint) ? u.hint : null;
+        if (!h && u.split) {   // тяжёлый заказ в нескольких рейсах: подсказки нет — переносят «Տեղափոխել այլ երթ…»
+            toast(what + 'Չի հասցնում․ խանութի ծանր պատվերը բաժանված է մի քանի երթի՝ տեղափոխեք այն «Տեղափոխել այլ երթ…»-ով։');
+            return;
+        }
+        if (!h) {
+            toast(what + (Array.isArray(u.kept) && u.kept.length
+                ? 'Չի հասցնում․ երթն ամրացված է, բեռնված կամ արդեն ճանապարհին՝ ծրագիրը այն չի փոխում։'
+                : 'Չի հասցնում․ մյուս մեքենաներն էլ չեն հասցնի։'));
+            return;
+        }
+        const from = data.plan ? data.plan.trucks.flatMap(t => t.trips).find(tr => tr.stops.some(s => s.customer_id === stop.customer_id)) : null;
+        toast(what + 'Այս երթով չի հասցնում։ Կհասցնի ' + truckLabel({ name: h.name, car_code: h.truck })
+            + (h.trip === null ? '՝ նոր երթով' : '') + ' (≈ ' + h.eta + ')։',
+            from ? { label: 'Տեղափոխել', run: () => edit({ action: 'move', customer_id: stop.customer_id, from_trip: from.id,
+                to_trip: h.trip, truck: h.trip === null ? h.truck : null, fit: true }, name + ' տեղափոխվեց') } : null);
     }
 
     // ---------- Заказы прошлых дней и исключённые ----------
@@ -3156,7 +3281,9 @@
             tags.appendChild(bd);
         };
         const win = windowText(stop.window);
-        if (win) tag(stop.window_miss ? 'b-danger' : 'b-gps', (stop.window_miss ? 'չի հասցնում՝ ' : 'ընդունում է՝ ') + win, 'fa-door-open');
+        // «Մինչև ժամը» только этого дня (владелец 08.10) — своя плашка вместо постоянного окна
+        if (win && isMin(stop.until_day)) tag(stop.window_miss ? 'b-danger' : 'dp-b-until', (stop.window_miss ? 'չի հասցնում՝ ' : '') + win + ' · ' + untilDayWord(), 'fa-clock');
+        else if (win) tag(stop.window_miss ? 'b-danger' : 'b-gps', (stop.window_miss ? 'չի հասցնում՝ ' : 'ընդունում է՝ ') + win, 'fa-door-open');
         // своё время у магазина (№50) — только у магазинов, где оно задано; у остальных — общая норма
         const own = ownUnload(stop);
         if (own !== null) {
@@ -3195,6 +3322,12 @@
             ex.innerHTML = '<i class="fas fa-ban" aria-hidden="true"></i><span>Այսօր չենք տանում</span>';
             ex.setAttribute('aria-label', 'Այսօր չենք տանում՝ ' + (stop.name || stop.code));
             ex.addEventListener('click', () => excludeStop(stop));
+            const tb = document.createElement('button');
+            tb.type = 'button';
+            tb.className = 'rt-btn rt-btn-ghost rt-btn-sm dp-untilbtn';
+            tb.innerHTML = '<i class="fas fa-clock" aria-hidden="true"></i><span>Մինչև ժամը</span>';
+            tb.setAttribute('aria-label', 'Մինչև ժամը՝ ' + (stop.name || stop.code));
+            tb.addEventListener('click', () => openUntil(stop));
             const gb = document.createElement('button');
             gb.type = 'button';
             gb.className = 'rt-btn rt-btn-ghost rt-btn-sm';
@@ -3213,7 +3346,7 @@
             ub.innerHTML = '<i class="fas fa-stopwatch" aria-hidden="true"></i><span>Ժամանակ խանութում</span>';
             ub.setAttribute('aria-label', 'Ժամանակ խանութում՝ ' + (stop.name || stop.code));
             ub.addEventListener('click', () => openUnload(stop));
-            acts.append(moveSelect(stop, tripId), ex, vb, ub, gb);
+            acts.append(moveSelect(stop, tripId), ex, tb, vb, ub, gb);
             li.appendChild(acts);
         }
         return li;
@@ -5589,6 +5722,14 @@
         $('dpCondDlg').addEventListener('keydown', (e) => {
             if (e.key === 'Enter' && e.target instanceof HTMLInputElement) { e.preventDefault(); saveCond(); }
         });
+        $('dpUntilSave').addEventListener('click', () => saveUntil(false));
+        $('dpUntilClear').addEventListener('click', () => saveUntil(true));
+        $('dpUntilCancel').addEventListener('click', () => $('dpUntilDlg').close());
+        ['dpUntilDay', 'dpUntilAlways'].forEach(id => $(id).addEventListener('change', syncUntil));
+        $('dpUntilTime').addEventListener('input', () => { $('dpUntilErr').textContent = ''; });
+        $('dpUntilTime').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); saveUntil(false); } });
+        $('dpUntilDlg').addEventListener('close', () => { state.untilStop = null; state.untilInfo = null; });
+        $('dpUntilDlg').addEventListener('cancel', (e) => { if (state.busy) e.preventDefault(); });
         $('dpMapBox').addEventListener('toggle', () => { if ($('dpMapBox').open && state.data && state.data.plan) drawMap(); });
         initTabs();
         initWs();

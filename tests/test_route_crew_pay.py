@@ -418,7 +418,7 @@ def test_store_params_roundtrip_without_schema_change(tmp_path):
     store.save_crew_pay_params(p, 'boss')
     params, at, by = store.crew_pay_params()
     assert params == p and by == 'boss' and at.startswith('20')
-    assert st.CREW_PAY_KEY not in store.load().settings and st.SCHEMA_VERSION == 24   # настройки маршрутов не задеты
+    assert st.CREW_PAY_KEY not in store.load().settings and st.SCHEMA_VERSION >= 24   # настройки маршрутов не задеты
 
 
 def test_store_params_row_without_rate_km_loads(tmp_path):
