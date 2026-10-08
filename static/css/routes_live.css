@@ -40,7 +40,11 @@
 .lv-side { grid-area: side; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .lv-mapbox { grid-area: map; position: relative; min-width: 0; }
 .lv-card { grid-area: card; }
-@media (min-width: 1280px) {
+/* три колонки — по ширине самой страницы, а не окна: слева от неё может стоять меню раздела «Маршруты» (routes_base.html),
+   и при окне 1366 px карте осталось бы ~320 px. 1241 px = прежний порог 1280 px окна минус
+   полоса прокрутки (15 px, Chrome / Windows) и поля main 24 px — без меню (роль «Гараж») три колонки с того же окна, что и раньше */
+#lvPage { container: lvpage / inline-size; }
+@container lvpage (min-width: 1241px) {
     .lv-layout { grid-template-columns: minmax(280px, 330px) minmax(0, 1fr) minmax(330px, 400px); grid-template-rows: auto 1fr;
         grid-template-areas: "probs map card" "side map card"; }
     .lv-card { max-height: calc(100vh - var(--rt-nav-h, 64px) - 40px); overflow: auto; position: sticky; top: calc(var(--rt-nav-h, 64px) + 14px); align-self: start; }

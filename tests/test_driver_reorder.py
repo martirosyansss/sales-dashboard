@@ -480,7 +480,7 @@ def test_live_page_violet_info_for_until():
     js = (ROOT / 'static' / 'js' / 'routes_live.js').read_text(encoding='utf-8')
     assert "REORDER_TITLE = 'Վարորդը փոխեց հերթը՝ ժամկետի պատճառով'" in js
     assert "out.push(one('reorder', 3, REORDER_TITLE" in js and "r.reason === 'until'" in js
-    assert "routes_live.js') }}?v=22" in (ROOT / 'templates' / 'routes_live.html').read_text(encoding='utf-8')
+    assert "routes_live.js') }}?v=23" in (ROOT / 'templates' / 'routes_live.html').read_text(encoding='utf-8')
 
 
 # ============================== «Վարորդներ»: порядок со сменами ==============================
