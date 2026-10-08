@@ -73,6 +73,8 @@
   только такой долгий заезд. Вес unmarked-точки остаётся в грузе и в расходе топлива (сколько отдали — неизвестно, пока
   водитель не отметит). В сводке магазинов — gps_visited (точек с таким заездом) и unmarked;
 - воспроизведение дня: track_t — момент (секунды эпохи, UTC) каждой точки линии track, 1:1 с ней (те же упрощённые точки);
+- подсказка точки линии трека (владелец 08.10, track_hover): скорость (track_v) и км дня (track_km) — 1:1 с track,
+  расстояние до плановой линии — только у вершин внутри отклонений (track_dev_m);
 - плановая линия (владелец 08.10, PlanRoute — собирает views): что водитель получил — отправленный план «Развоза» (№81),
   по рейсам склад → магазины плана по порядку → склад, по дорогам в объезд малого центра, как линии «Развоза»; дорог нет
   или линии ещё строятся — по прямой (road false: отклонение не считается). Номер магазина на карте — место клиента в
@@ -146,6 +148,9 @@ STRAIGHT_DETOUR = 1.5               # участок плана по прямо�
 STATS_GAP = timedelta(minutes=5)    # перерыв трека дольше — «нет данных»: ни езда, ни стоянка
 M_PER_DEG_LAT = 110540.0            # равнопромежуточная проекция (как actuals.simplify): метров на градус широты…
 M_PER_DEG_LON = 111320.0            # …и долготы на экваторе (× cos широты)
+HOVER_SPEED_S = 60.0                # подсказка линии трека: скорость терминала ближайшей по времени точки не дальше 60 с…
+HOVER_STEP_S = 120.0                # …нет — смещение между соседними точками трека не дольше 2 мин
+HOVER_DEV_MAX_M = 5000.0            # расстояние до плановой линии ищется до 5 км (дальше — -1: «больше 5 км»)
 
 
 
@@ -660,10 +665,12 @@ def center_alerts(pts: Sequence[Fix], rules: Rules, truck: TruckSpec, live: bool
 class PlanRoute:
     """Плановая линия машины на день (правило — в описании модуля; собирает views._live_plan_routes): geo — линии рейсов
     (RouteGeometry: по дорогам и участки по прямой); stops — (клиент, точка) по порядку плана за день; km — км плана
-    (прогноз сборки «Развоза», нет — длина линий по дорогам; None — неизвестно)."""
+    (прогноз сборки «Развоза», нет — длина линий по дорогам; None — неизвестно); trip_stops — клиенты каждой линии
+    geo.trips по порядку (подсказка участка «склад → магазин → …» на карте; пусто — неизвестно)."""
     geo: RouteGeometry
     stops: tuple[tuple[int, Point], ...] = ()
     km: float | None = None
+    trip_stops: tuple[tuple[int, ...], ...] = ()
 
 
 def _seg_xy(x: float, y: float, x1: float, y1: float, x2: float, y2: float) -> float:
@@ -717,6 +724,21 @@ class RouteIndex:
         r = min(radius_m, self._cell)
         return any(_seg_xy(x, y, *seg) <= r for di in (-1, 0, 1) for dj in (-1, 0, 1)
                    for seg in self._grid.get((i + di, j + dj), ()))
+
+    def distance(self, p: Point, limit_m: float) -> float | None:
+        """Расстояние, м, от p до ближайшего участка линий; дальше limit_m (или линий нет) — None. Кольца ячеек вокруг
+        ячейки p по очереди: точки кольца r + 1 не ближе r × cell_m — найденное не дальше этого окончательно."""
+        x, y = self._xy(p)
+        i, j = math.floor(x / self._cell), math.floor(y / self._cell)
+        best = math.inf
+        for r in range(math.ceil(limit_m / self._cell) + 1):
+            for di in range(-r, r + 1):
+                for dj in (range(-r, r + 1) if abs(di) == r else (-r, r)):
+                    for seg in self._grid.get((i + di, j + dj), ()):
+                        best = min(best, _seg_xy(x, y, *seg))
+            if best <= r * self._cell:
+                break
+        return best if best <= limit_m else None
 
 
 class RouteGeometry:
@@ -855,6 +877,77 @@ def day_stats(pts: Sequence[Fix]) -> dict[str, Any]:
     out.update(moving_min=round(moving / 60), stopped_min=round(stopped / 60), nodata_min=round(nodata / 60),
                avg_kmh=round(km / (moving / 3600.0)) if moving >= 300 else None)
     return out
+
+
+def track_hover(line: Sequence[tl.TPoint], parts: Sequence[tl.Chunk], pts: Sequence[Fix], moving: Sequence[Fix],
+                index: RouteIndex | None, runs: Sequence[Sequence[Fix]]) -> dict[str, Any]:
+    """Данные точек линии трека для подсказки на карте (владелец 08.10: «при наведении на линию покажи данные на этой
+    точке — скорость и другие»). Вершина линии — не точка GPS (у привязанной к дорогам момент — интерполяция), поэтому:
+    - track_v (1:1 с track) — км/ч: точка стоянки (track_line: середина стоянки, дважды) — 0; иначе скорость терминала
+      ближайшей по времени точки трека pts не дальше HOVER_SPEED_S (больше ac.MAX_SPEED_KMH — сбой GPS, мимо); нет —
+      смещение между соседними по времени точками не дольше HOVER_STEP_S; нет и его — None («տվյալ չկա»);
+    - track_km (1:1) — км дня к моменту вершины: те же сегменты, что км карточки (geo.track_steps по km-треку moving), между
+      концами сегментов — по времени; последняя вершина — км карточки;
+    - track_dev_m — только вершины внутри отклонений (deviation_runs, по моменту): [индекс вершины, м до участков плана по
+      дорогам] (-1 — дальше HOVER_DEV_MAX_M); линии по дорогам нет (отклонение не считается) — None. Не 1:1: вне
+      отклонений расстояние не нужно, а 1 500 «null» — лишние 7 КБ каждого опроса.
+    Стоянка (где, с какого по какое время) — у страницы из самой линии (две одинаковые точки подряд) и точек дня."""
+    stays: dict[tuple[float, float], list[tuple[float, float]]] = {}
+    for c in parts:
+        if c.stay:
+            stays.setdefault((c.points[0][0], c.points[0][1]), []).append((c.points[0][2], c.points[-1][2]))
+    at = [f.at.timestamp() for f in pts]
+
+    def speed(p: tl.TPoint) -> int | None:
+        if any(a <= p[2] <= b for a, b in stays.get((p[0], p[1]), ())):
+            return 0
+        j = bisect.bisect_left(at, p[2])
+        best: tuple[float, float] | None = None   # (|Δt|, м/с)
+        for k in range(j - 1, -1, -1):
+            if p[2] - at[k] > HOVER_SPEED_S:
+                break
+            spd = getattr(pts[k], 'spd', None)
+            if spd is not None and spd * 3.6 <= ac.MAX_SPEED_KMH:
+                best = (p[2] - at[k], spd)
+                break
+        for k in range(j, len(at)):
+            if at[k] - p[2] > HOVER_SPEED_S or (best is not None and at[k] - p[2] >= best[0]):
+                break
+            spd = getattr(pts[k], 'spd', None)
+            if spd is not None and spd * 3.6 <= ac.MAX_SPEED_KMH:
+                best = (at[k] - p[2], spd)
+                break
+        if best is not None:
+            return round(best[1] * 3.6)
+        if 0 < j < len(at) and 0 < at[j] - at[j - 1] <= HOVER_STEP_S:
+            kmh = haversine_km(pts[j - 1].point, pts[j].point) / ((at[j] - at[j - 1]) / 3600.0)
+            return round(kmh) if kmh <= ac.MAX_SPEED_KMH else None
+        return None
+
+    steps = list(track_steps(moving))
+    st = [moving[0].at.timestamp()] if steps else []
+    cum = [0.0] if steps else []
+    for f, km in steps:
+        st.append(f.at.timestamp())
+        cum.append(cum[-1] + km)
+
+    def km_at(t: float) -> float:
+        j = bisect.bisect_right(st, t)
+        if j == 0:
+            return 0.0
+        if j == len(st):
+            return cum[-1]
+        return cum[j - 1] + (cum[j] - cum[j - 1]) * (t - st[j - 1]) / (st[j] - st[j - 1])
+
+    dev: list[list[int]] | None = None
+    if index is not None:
+        spans = [(r[0].at.timestamp(), r[-1].at.timestamp()) for r in runs]
+        dev = []
+        for i, p in enumerate(line):
+            if any(a <= p[2] <= b for a, b in spans):
+                d = index.distance((p[0], p[1]), HOVER_DEV_MAX_M)
+                dev.append([i, round(d) if d is not None else -1])
+    return {'track_v': [speed(p) for p in line], 'track_km': [round(km_at(p[2]), 1) for p in line], 'track_dev_m': dev}
 
 
 # --- карточка машины ---
@@ -1336,7 +1429,10 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
         out['route'].update({
             'lines': route.geo.shown(),
             'points': [{'customer_id': c, 'no': nos[c], 'lat': round(p[0], 6), 'lon': round(p[1], 6)}
-                      for c, p in where.items()]})
+                      for c, p in where.items()],
+            # номера магазинов каждой линии рейса по порядку (подсказка участка плана); не сходится с линиями — пусто
+            'trip_nos': ([[nos[c] for c in t if c in nos] for t in route.trip_stops]
+                         if len(route.trip_stops) == len(route.geo.trips) else [])})
     if detail and index is not None:
         out['deviation']['runs'] = [
             {'from': a['from'], 'to': a['to'], 'km': a['km'], 'active': a['active'],
@@ -1351,6 +1447,7 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
         out.update({
             'track': [[round(p[0], 6), round(p[1], 6)] for p in line],
             'track_t': [round(p[2]) for p in line],
+            **track_hover(line, parts, pts, moving, index, runs),   # подсказка точки линии (track_v, track_km, track_dev_m)
             'stops': [{'stop_id': s['stop_id'], 'customer_id': s.get('customer_id'), 'name': s.get('name'),
                        'lat': s.get('lat'), 'lon': s.get('lon'),
                        'status': s.get('status'), 'seq': s.get('seq'), 'trip': trips[s['stop_id']] + 1,

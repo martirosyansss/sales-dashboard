@@ -4461,6 +4461,7 @@ def _live_plan_routes(state: RoutesState, bundle: Bundle, snap: Any, day: date, 
     trips: dict[str, list[list[int]]] = {}
     stops: dict[str, list[tuple[int, Point]]] = {}
     straight: dict[str, list[tuple[Point, ...]]] = {}
+    legs: dict[str, list[tuple[int, ...]]] = {}   # клиенты каждой линии рейса (подсказка участка на карте)
     for t in draft.trips:
         pts = [(c, p) for c in t.stops if (p := where(c)) is not None]
         trips.setdefault(t.truck, []).append(list(t.stops))
@@ -4468,6 +4469,7 @@ def _live_plan_routes(state: RoutesState, bundle: Bundle, snap: Any, day: date, 
         line = (depot, *(p for _, p in pts), depot) if depot is not None else tuple(p for _, p in pts)
         if pts and len(line) > 1:   # ни одной известной точки магазина — линии рейса нет
             straight.setdefault(t.truck, []).append(line)
+            legs.setdefault(t.truck, []).append(tuple(c for c, _ in pts))
     drawn: dict[str, live.RouteGeometry] = {}
     roads = state.roads.get() if state.roads is not None else None
     if roads is not None and not roads.failed and straight:
@@ -4487,7 +4489,7 @@ def _live_plan_routes(state: RoutesState, bundle: Bundle, snap: Any, day: date, 
                 for tr in p.get('trips') or () if isinstance(tr, Mapping)] == trips[car]
         km = p.get('km') if same and isinstance(p.get('km'), (int, float)) and not isinstance(p.get('km'), bool) else None
         km = float(km) if km is not None else geo.km
-        out[car] = live.PlanRoute(geo, tuple(stops[car]), km)
+        out[car] = live.PlanRoute(geo, tuple(stops[car]), km, tuple(legs[car]))
     return out
 
 
@@ -4691,7 +4693,9 @@ def _live_head(ctx: _LiveContext, day: date, now: datetime) -> dict[str, Any]:
             'depot': list(ctx.depot) if ctx.depot else None,
             'thresholds': {'speed_kmh': r.speed_kmh, 'speed_sec': r.speed_sec, 'stop_min': r.stop_min,
                            'no_contact_min': r.no_contact_min, 'stale_s': live.STALE_S,
-                           'old_apk_silent_min': live.OLD_APK_SILENT_MIN, 'deviation_m': r.deviation_m},
+                           'old_apk_silent_min': live.OLD_APK_SILENT_MIN, 'deviation_m': r.deviation_m,
+                           # подсказка линии трека: стоянка у магазина / склада — в этих радиусах (как actuals)
+                           'stop_radius_m': ac.STOP_RADIUS_M, 'depot_radius_m': ac.DEPOT_RADIUS_M},
             'center_zone': [list(p) for p in r.center_zone]}
 
 

@@ -26,6 +26,13 @@
 скорость — кнопка к точке на карте); машина 2 уехала от плана к стоянке — активная тревога «Շեղում երթուղուց», красная
 линия отклонения.
 
+Подсказка точки линии (08.10, «при наведении на линию покажи данные на этой точке»): курсор над путём машины 1 —
+«ժամը HH:MM», скорость «կմ/ժ» (выше порога — «գերազանցում»), «անցած՝ N կմ»; у склада — «Կանգառ՝ Պահեստ»; над
+плановой линией — «Երթ 1 · A → B» и км участка; у машины 2 над объездом — «Շեղում երթուղուց՝ N մ»; курсор ушёл —
+подсказки нет; опрос перерисовал карту — подсказка одна, слоёв не прибавилось; на телефоне — касанием. Часы дня
+проверки — фиксированные (сегодня 11:00 по Еревану): после полудня стоянка машины 2 попадала в окно обеда, и
+отклонение не считалось.
+
 Проверяется: список и маркеры всех машин, состояние и счётчик тревог, карточка выбранной машины (поля №76), путь и
 магазины на карте, нет горизонтальной прокрутки на телефоне, опрос раз в 15 с, нет ошибок страницы и консоли (кроме сетевых
 ошибок внешних ресурсов: шрифты, CDN, плитки).
@@ -239,6 +246,40 @@ def seed(app: Flask) -> list[str]:
     return cars
 
 
+# точка линии (SVG path) на экране: доля длины (< 1) или пиксели от начала; None — она не сверху (значок магазина и т.п.)
+POINT_JS = """([sel, at]) => { const p = document.querySelector(sel); if (!p) return null;
+    const len = p.getTotalLength(), q = p.getPointAtLength(at < 1 ? len * at : at), m = p.getScreenCTM();
+    const x = q.x * m.a + q.y * m.c + m.e, y = q.x * m.b + q.y * m.d + m.f;
+    return document.elementFromPoint(x, y) === p ? [x, y] : null; }"""
+TRACK_HIT = '.leaflet-overlay-pane path.lv-hit.is-track'
+PLAN_HIT = '.leaflet-overlay-pane path.lv-hit.is-plan'
+
+
+def line_tips(page, sel, ats, tap=False) -> list[str]:
+    """Курсор (или касание) в точках линии sel → тексты подсказки точки (пусто — подсказки нет)."""
+    out = []
+    for at in ats:
+        xy = page.evaluate(POINT_JS, [sel, at])
+        if xy is None:
+            continue
+        if tap:
+            page.touchscreen.tap(xy[0], xy[1])
+        else:
+            page.mouse.move(xy[0], xy[1])
+        page.wait_for_timeout(40)
+        tip = page.locator('.lv-hover-tip')
+        out.append(tip.first.inner_text() if tip.count() else '')
+    return out
+
+
+def fit_track(page) -> None:
+    """Карта — на весь путь выбранной машины: воспроизведение показывает день целиком, «Փակել» — обратно."""
+    page.eval_on_selector('#lvReplayRange', "r => { r.value = r.max; r.dispatchEvent(new Event('input')); }")
+    page.wait_for_timeout(300)
+    page.locator('#lvReplayExit').click()
+    page.wait_for_timeout(300)
+
+
 def main() -> int:
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     logging.getLogger('werkzeug').setLevel(logging.ERROR)
@@ -249,6 +290,11 @@ def main() -> int:
         results.append(bool(cond))
         print(('OK   ' if cond else 'FAIL ') + msg)
 
+    # часы дня проверки — сегодня 11:00 по Еревану (до окна обеда: стоянка машины 2 — не обед, отклонение считается)
+    fixed = clock.now().replace(hour=11, minute=0, second=0)
+    clock.now = lambda: fixed
+    from route_optimizer import views
+    views._yerevan_now = lambda: fixed
     with tempfile.TemporaryDirectory(prefix='live-check-') as tmp:
         tmp_p = Path(tmp)
         for name in ('route_optimizer.db', 'courier.db'):
@@ -319,6 +365,27 @@ def main() -> int:
                 check('Դադար' in page.inner_text('#lvReplayPlay'), 'воспроизведение: «Նվագարկել» → «Դադար»')
                 page.locator('#lvReplayExit').click()
                 check(not page.is_visible('#lvReplayExit'), 'воспроизведение: «Փակել» — обратно к живой карте')
+                page.wait_for_timeout(300)
+                tips = [x for x in line_tips(page, TRACK_HIT, [k / 40 for k in range(1, 40)]) if x]
+                check(len(tips) >= 5 and any('ժամը' in x and 'կմ/ժ' in x and 'անցած՝' in x for x in tips),
+                      f'подсказка пути: время, скорость, км ({len(tips)}: {tips[:2]!r})')
+                speed_kmh = page.evaluate("fetch('/api/routes/live').then(r => r.json()).then(b => b.thresholds.speed_kmh)")
+                if speed_kmh < 95:   # машина 1 ехала 97 км/ч
+                    check(any('գերազանցում' in x for x in tips), f'подсказка пути: превышение скорости (порог {speed_kmh})')
+                # у склада — значки машин на складе (машина 4) поверх: на время проверки стоянки значков машин нет
+                hide = page.add_style_tag(content='.leaflet-marker-pane { display: none; }')
+                depot_tip = line_tips(page, TRACK_HIT, [11])
+                hide.evaluate('el => el.remove()')
+                check(depot_tip and 'Կանգառ՝ Պահեստ' in depot_tip[0] and 'րոպե' in depot_tip[0],
+                      f'подсказка пути у склада — стоянка ({depot_tip!r})')
+                plan_tips = [x for x in line_tips(page, PLAN_HIT, [k / 40 for k in range(1, 40)]) if x.startswith('Երթ')]
+                check(any('Երթ 1 · ' in x and '→' in x and 'հատվածը՝ ≈' in x for x in plan_tips),
+                      f'подсказка плановой линии: рейс и участок ({plan_tips[:2]!r})')
+                page.mouse.move(5, 5)
+                page.wait_for_timeout(400)   # подсказка Leaflet гаснет 200 мс
+                left = page.locator('.lv-hover-tip')
+                check(left.count() == 0, f'курсор ушёл с линии — подсказки нет ({left.count()}: '
+                      f'{left.first.inner_text() if left.count() else ""!r})')
                 check(page.locator('.leaflet-overlay-pane path').count() >= 4, 'путь и магазины выбранной машины на карте')
                 dashed = '.leaflet-overlay-pane path[stroke-dasharray="8 8"]'
                 check(page.locator(dashed).count() == 1, f'плановая линия пунктиром ({page.locator(dashed).count()})')
@@ -352,6 +419,16 @@ def main() -> int:
                 check(page.locator('.leaflet-overlay-pane path[stroke="#ff6b79"][stroke-width="6"]').count() >= 1,
                       'машина 2: линия отклонения красным')
                 check('հիմա երթուղուց դուրս է' in page.inner_text('#lvStats'), 'машина 2: «հիմա երթուղուց դուրս է»')
+                fit_track(page)
+                tips = [x for x in line_tips(page, TRACK_HIT, [k / 60 for k in range(1, 60)]) if x]
+                check(any('Շեղում երթուղուց՝' in x and (' մ' in x or ' կմ' in x) for x in tips),
+                      f'машина 2: подсказка над объездом — «Շեղում երթուղուց՝ N մ» ({[x for x in tips if "Շեղում" in x][:1]!r})')
+                last = next((x for x in reversed(tips) if x), '')
+                paths = page.locator('.leaflet-overlay-pane path').count()
+                page.wait_for_timeout(16000)   # опрос перерисовал слой машины — подсказка та же, одна, слоёв столько же
+                check(page.locator('.lv-hover-tip').count() == 1 and page.locator('.leaflet-overlay-pane path').count() == paths,
+                      f'подсказка после опроса: одна, слои не копятся ({page.locator(".lv-hover-tip").count()}, {last[:20]!r})')
+                page.screenshot(path=str(SHOTS / 'live_hover.png'))
                 page.screenshot(path=str(SHOTS / 'live_desktop_stop.png'))
                 page.locator(f'.lv-item[data-car="{cars[2]}"]').click()
                 page.wait_for_timeout(1200)
@@ -387,6 +464,10 @@ def main() -> int:
                 phone.wait_for_selector('#lvCard:not([hidden]) .lv-grid dt')
                 phone.wait_for_timeout(800)
                 wide = phone.evaluate('document.documentElement.scrollWidth > window.innerWidth + 1')
+                phone.locator('#lvMap').scroll_into_view_if_needed()
+                phone.wait_for_timeout(300)
+                taps = [x for x in line_tips(phone, TRACK_HIT, [k / 30 for k in range(1, 30)], tap=True) if x]
+                check(any('ժամը' in x or 'Կանգառ՝' in x for x in taps), f'телефон: касание пути — подсказка точки ({taps[:1]!r})')
                 check(not wide, 'телефон: нет горизонтальной прокрутки')
                 phone.screenshot(path=str(SHOTS / 'live_phone.png'), full_page=True)
                 browser.close()

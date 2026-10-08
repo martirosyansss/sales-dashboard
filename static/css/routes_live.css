@@ -268,6 +268,14 @@ button.lv-prob:focus-visible { outline: 2px solid var(--rt-acc); outline-offset:
 .lv-linkbtn:focus-visible { outline: 2px solid var(--rt-acc); outline-offset: 2px; border-radius: 4px; }
 .lv-pf { margin: 6px 0 0; font-size: .875rem; color: var(--rt-fg-dim); font-variant-numeric: tabular-nums; }
 
+/* подсказка точки линии трека и плана (08.10): строки — время, скорость, км, стоянка, отклонение */
+.rt-page .leaflet-tooltip.lv-hover-tip { width: max-content; max-width: min(280px, 80vw); white-space: normal; pointer-events: none; }
+.lv-hover { display: grid; gap: 2px; font-size: .8125rem; line-height: 1.35; font-variant-numeric: tabular-nums; }
+.lv-hover > div:first-child { font-weight: 700; }
+.lv-hover .is-bad { color: var(--rt-danger); }
+.lv-hover .is-mute { color: var(--rt-fg-mute); }
+.leaflet-overlay-pane path.lv-hit { cursor: crosshair; }
+
 /* Телефон: карта сверху на полэкрана, затем список и карточка */
 @media (max-width: 899px) {
     .lv-layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; grid-template-areas: "probs" "map" "side" "card"; }
