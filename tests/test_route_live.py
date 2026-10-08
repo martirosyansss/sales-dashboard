@@ -1717,3 +1717,123 @@ def test_build_text_deviation():
     a = {'kind': 'deviation', 'from': T0.isoformat(), 'to': None, 'active': True, 'km': 1.2, 'lat': A[0], 'lon': A[1]}
     text = la.build_text({'car_code': 'CAR1', 'driver': 'Արամ'}, a, 'start', RULES)
     assert text.splitlines()[0] == 'Շեղում երթուղուց' and '300 մ' in text and '1,2 կմ' in text and 'yandex' in text
+
+
+class FakeLineRoads:
+    """Дороги для линий карты: линия «по дорогам» — та же ломаная с серединами участков (лежит на прямой); None — не
+    построились."""
+    failed = False
+    version = 'map-1'
+
+    def __init__(self, ok=True):
+        self.ok = ok
+        self.calls = []
+
+    def lines(self, lines):
+        self.calls.append([list(x) for x in lines])
+        if not self.ok:
+            return None
+        return [[p for a, b in zip(x, x[1:]) for p in (a, ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2))] + [x[-1]]
+                for x in lines]
+
+
+class FakeRoadProvider:
+    def __init__(self, roads):
+        self.roads = roads
+        self.zones = []
+
+    def get(self):
+        return self.roads
+
+    def bypass(self, base, zone):
+        self.zones.append(zone)
+        return base
+
+
+def _send_plan(state, km=None, released=True):
+    """Черновик фикстуры live_app — отправлен водителям (№80/№81); km — км машины 1 в прогнозе сборки."""
+    from route_optimizer import dispatch as dp
+    draft = dp.Draft.from_json(state.store.load_dispatch('2026-10-03')[0])
+    draft.released = {'at': '2026-10-03T08:00:00+04:00', 'by': 'qa'} if released else None
+    if km is not None:
+        draft.prediction['trucks']['CAR1']['km'] = km
+    state.store.save_dispatch('2026-10-03', draft.to_json(), 'qa')
+
+
+def _lines_app(live_app, monkeypatch, ok=True):
+    from route_optimizer import views
+    state = live_app.app.extensions['route_optimizer']
+    roads = FakeLineRoads(ok)
+    provider = FakeRoadProvider(roads)
+    monkeypatch.setattr(state, 'roads', provider)
+    monkeypatch.setattr(state, 'live_lines', views._LiveRoads(math.inf))
+    from route_optimizer import store as st
+    state.store.save(st.Changes(dict(state.store.load().settings), True, DEPOT, (), ()), 'qa')   # склад — у трека FakeLive
+    state.live_facts.data['2026-10-03'] = dict(state.live_facts.data['2026-10-03'])   # новый факт — без кэша карточек
+    return state, roads, provider
+
+
+def test_api_live_plan_route_by_roads_once_and_prediction_km(client, live_app, monkeypatch):
+    state, roads, provider = _lines_app(live_app, monkeypatch)
+    _send_plan(state, km=21.4)
+    depot = state.store.load().depot
+    _session_as(client, 'boss', base=LAN)
+    body = client.get('/api/routes/live', base_url=LAN).get_json()
+    assert body['thresholds']['deviation_m'] == 300
+    car1 = {t['car_code']: t for t in body['trucks']}['CAR1']
+    assert car1['plan_sent'] is True and car1['route'] == {'road': True, 'km': 21.4, 'trips': 1, 'stops': 2}
+    assert car1['deviation'] == {'threshold_m': 300, 'count': 0, 'km': 0.0, 'active': False}
+    assert car1['stats']['max_speed']['kmh'] == 36 and car1['stats']['overspeed'] == {'count': 0, 'minutes': 0}
+    truck = client.get('/api/routes/live/truck?car=CAR1', base_url=LAN).get_json()['truck']
+    # линия — склад → A → B → склад, как «Развоз»: по дорогам (здесь — с серединами участков), в объезд малого центра
+    line = truck['route']['lines'][0]
+    assert line[0] == line[-1] == [round(depot[0], 6), round(depot[1], 6)] and len(line) == 7
+    assert [round(x, 6) for x in A] in line and [round(x, 6) for x in B] in line
+    assert [(s['customer_id'], s['no']) for s in truck['route']['points']] == [(7, 1), (8, 2)]
+    assert [s['plan_no'] for s in truck['stops']] == [1, 2] and truck['deviation']['runs'] == []
+    assert provider.zones and len(provider.zones[0]) >= 3            # граница малого центра из настроек
+    # CAR9: точки её магазина неизвестны (терминала нет, снимка ERP в памяти нет) — линии нет
+    car9 = {t['car_code']: t for t in body['trucks']}['CAR9']
+    assert car9['route'] is None and car9['plan_sent'] is True
+    # линии — один раз на набор линий и версию карты: следующий пересчёт флота их не строит
+    state.live_facts.data['2026-10-03'] = dict(state.live_facts.data['2026-10-03'])
+    client.get('/api/routes/live', base_url=LAN)
+    assert len(roads.calls) == 1
+
+
+def test_api_live_plan_route_km_from_lines_when_trips_changed_and_straight_fallback(client, live_app, monkeypatch):
+    from route_optimizer import dispatch as dp
+    state, roads, _ = _lines_app(live_app, monkeypatch)
+    _send_plan(state, km=21.4)
+    raw = state.store.load_dispatch('2026-10-03')[0]
+    draft = dp.Draft.from_json(raw)
+    draft.trips[0].stops = [8, 7]          # логист поменял порядок после сборки — км прогноза уже не того плана
+    draft.sent = None
+    state.store.save_dispatch('2026-10-03', draft.to_json(), 'qa')
+    _session_as(client, 'boss', base=LAN)
+    truck = client.get('/api/routes/live/truck?car=CAR1', base_url=LAN).get_json()['truck']
+    depot = state.store.load().depot
+    want = haversine_km(depot, B) + haversine_km(B, A) + haversine_km(A, depot)
+    assert truck['route']['road'] is True and truck['route']['km'] == pytest.approx(want, abs=0.1)
+    assert [s['customer_id'] for s in truck['route']['points']] == [8, 7]
+    # дороги не построились — по прямой: линия есть, км и отклонения нет; сбой не повторяется на каждом опросе
+    state, roads, _ = _lines_app(live_app, monkeypatch, ok=False)
+    truck = client.get('/api/routes/live/truck?car=CAR1', base_url=LAN).get_json()['truck']
+    assert truck['route']['road'] is False and truck['route']['km'] is None and truck['deviation'] is None
+    assert len(truck['route']['lines'][0]) == 4
+    state.live_facts.data['2026-10-03'] = dict(state.live_facts.data['2026-10-03'])
+    client.get('/api/routes/live/truck?car=CAR1', base_url=LAN)
+    assert len(roads.calls) == 1
+
+
+def test_api_live_no_plan_route_until_sent_or_without_map(client, live_app, monkeypatch):
+    state, roads, _ = _lines_app(live_app, monkeypatch)
+    _session_as(client, 'boss', base=LAN)
+    car1 = {t['car_code']: t for t in client.get('/api/routes/live', base_url=LAN).get_json()['trucks']}['CAR1']
+    assert car1['plan_sent'] is False and car1['route'] is None and car1['deviation'] is None and roads.calls == []
+    # карты дорог нет — линия по прямой
+    monkeypatch.setattr(state, 'roads', None)
+    _send_plan(state)
+    state.live_facts.data['2026-10-03'] = dict(state.live_facts.data['2026-10-03'])
+    truck = client.get('/api/routes/live/truck?car=CAR1', base_url=LAN).get_json()['truck']
+    assert truck['route']['road'] is False and truck['route']['km'] is None and truck['deviation'] is None

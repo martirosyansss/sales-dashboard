@@ -201,6 +201,7 @@ class RoutesState:
     live_facts: live.LiveFacts | None = None
     # «Մեքենաները առցանց»: дорожная модель ETA (views._LiveRoads) и карточки флота на 10 с (views._live_cards)
     live_roads: _LiveRoads = field(default_factory=lambda: _LiveRoads())
+    live_lines: _LiveRoads = field(default_factory=lambda: _LiveRoads(math.inf))   # плановые линии по дорогам (08.10)
     live_cards: dict[date, tuple[Any, float, Any, datetime, dict[str, dict[str, Any]]]] = field(default_factory=dict)
     live_lock: threading.Lock = field(default_factory=threading.Lock)   # только словари кэша: расчёт под ним не идёт
     live_flight: dict[date, threading.Lock] = field(default_factory=dict)   # пересчёт флота — один на день
@@ -4058,17 +4059,21 @@ LIVE_CARDS_TTL_S = 10.0     # карточки флота за сегодня �
 class _LiveRoads:
     """Дорожная модель ETA карты (live.Road.legs/unload) по набору точек дня: собирается в фоне — граф дорог для
     сотни точек при первом обращении считается секунды, опрос карты их ждать не должен: пока модели нет, ETA — запасная
-    модель (по прямой × извилистость). Готовая живёт LIVE_ROAD_TTL_S, потом пересобирается (старая работает до замены)."""
+    модель (по прямой × извилистость). Готовая живёт ttl (LIVE_ROAD_TTL_S), потом пересобирается (старая работает до
+    замены). Так же — плановые линии машин по дорогам (RoutesState.live_lines, _live_plan_routes): ключ — сами линии и
+    версия карты, ttl бесконечен."""
 
-    def __init__(self) -> None:
+    def __init__(self, ttl: float | None = None) -> None:   # None — LIVE_ROAD_TTL_S
         self._lock = threading.Lock()
-        self._items: dict[Any, tuple[float, live.Road | None]] = {}   # None — сборка не удалась (на LIVE_ROAD_FAIL_TTL_S)
+        self._ttl = ttl
+        self._items: dict[Any, tuple[float, Any]] = {}   # None — сборка не удалась (на LIVE_ROAD_FAIL_TTL_S)
         self._building: set[Any] = set()
 
-    def get(self, key: Any, build: Callable[[], live.Road], fallback: live.Road) -> live.Road:
+    def get(self, key: Any, build: Callable[[], Any], fallback: Any) -> Any:
         with self._lock:
             hit = self._items.get(key)
-            stale = hit is None or _monotonic() - hit[0] > (LIVE_ROAD_TTL_S if hit[1] is not None else LIVE_ROAD_FAIL_TTL_S)
+            stale = hit is None or _monotonic() - hit[0] > ((LIVE_ROAD_TTL_S if self._ttl is None else self._ttl)
+                                                         if hit[1] is not None else LIVE_ROAD_FAIL_TTL_S)
             start = stale and key not in self._building
             if start:
                 self._building.add(key)
@@ -4108,6 +4113,69 @@ class _LiveContext:
     crew: dict[str, dict[str, str]]       # машина → {'driver': имя, 'helper': имя} по «Վարորդ» / «Առաքիչ» (№62)
     planned: tuple[str, ...]               # машины плана дня
     windows: dict[int, tuple[float, float]] = field(default_factory=dict)   # окна приёма клиентов (№87, late_forecast)
+    # плановые линии машин (08.10, _live_plan_routes) — только если план отправлен водителям (sent: Draft.released)
+    routes: dict[str, live.PlanRoute] = field(default_factory=dict)
+    sent: bool = False
+
+
+def _live_plan_routes(state: RoutesState, bundle: Bundle, snap: Any, draft: dp.Draft,
+                      fleet: Mapping[str, Mapping[str, Any]]) -> dict[str, live.PlanRoute]:
+    """Плановые линии машин по отправленному плану draft (владелец 08.10: «его маршрут, который дал ему софт»): рейс —
+    склад → магазины по порядку плана → склад, как линии «Развоза» (routes_dispatch.js → /api/routes/road-lines с
+    avoid_center). Точка магазина — с терминала (что водитель видит в «Առաքիչ»), нет — visit_coord снимка в памяти (ERP
+    не читается), нет и её — магазина на линии нет. Линии по дорогам — в фоне (state.live_lines: граф дорог грузится
+    на время построения), один раз на набор линий и версию карты; пока не готовы, карты нет или дороги сломаны — по
+    прямой (road false: отклонение не считается). Км плана — прогноз сборки машины (prediction km), если его рейсы — те же
+    клиенты в том же порядке; иначе длина линий по дорогам; по прямой — неизвестно."""
+    known = {x['customer_id']: (x['lat'], x['lon']) for facts in fleet.values() for x in facts.get('stops') or ()
+             if isinstance(x.get('customer_id'), int) and x.get('lat') is not None and x.get('lon') is not None}
+
+    def where(cid: int) -> Point | None:
+        if cid in known:
+            return known[cid]
+        if snap is None:
+            return None
+        return evaluate.visit_coord(snap, cid, 0, bundle.geo_overrides, bundle.driver_points).point
+    depot = bundle.depot
+    trips: dict[str, list[list[int]]] = {}
+    stops: dict[str, list[tuple[int, Point]]] = {}
+    straight: dict[str, list[tuple[Point, ...]]] = {}
+    for t in draft.trips:
+        pts = [(c, p) for c in t.stops if (p := where(c)) is not None]
+        trips.setdefault(t.truck, []).append(list(t.stops))
+        stops.setdefault(t.truck, []).extend(pts)
+        line = (depot, *(p for _, p in pts), depot) if depot is not None else tuple(p for _, p in pts)
+        if pts and len(line) > 1:   # ни одной известной точки магазина — линии рейса нет
+            straight.setdefault(t.truck, []).append(line)
+    drawn: dict[str, list[tuple[Point, ...]]] | None = None
+    roads = state.roads.get() if state.roads is not None else None
+    if roads is not None and not roads.failed and straight:
+        zone = tuple((float(lat), float(lon)) for lat, lon in bundle.settings['center_zone'])
+        key = (tuple((car, tuple(lines)) for car, lines in sorted(straight.items())), zone, roads.version)
+
+        def build() -> dict[str, list[tuple[Point, ...]]] | None:
+            flat = [(car, line) for car, lines in sorted(straight.items()) for line in lines]
+            got = state.roads.bypass(roads, zone).lines([list(line) for _, line in flat])   # type: ignore[union-attr]
+            if got is None:   # дороги не построились (в журнале — у roads.lines): по прямой, повтор не на каждом опросе
+                return None
+            out: dict[str, list[tuple[Point, ...]]] = {}
+            for (car, line), road in zip(flat, got):
+                out.setdefault(car, []).append(tuple(road) if len(road) > 1 else line)
+            return out
+        drawn = state.live_lines.get(key, build, None)
+    pred = (draft.prediction or {}).get('trucks') or {}
+    out: dict[str, live.PlanRoute] = {}
+    for car, lines in straight.items():
+        road = drawn.get(car) if drawn is not None else None
+        p = pred.get(car) if isinstance(pred.get(car), Mapping) else {}
+        same = [[c[0] for c in tr.get('stops') or () if isinstance(c, list) and c]
+                for tr in p.get('trips') or () if isinstance(tr, Mapping)] == trips[car]
+        km = p.get('km') if same and isinstance(p.get('km'), (int, float)) and not isinstance(p.get('km'), bool) else None
+        if km is None and road is not None:
+            km = math.fsum(haversine_km(a, b) for line in road for a, b in zip(line, line[1:]))
+        out[car] = live.PlanRoute(tuple(road or lines), road is not None, tuple(stops[car]),
+                                  float(km) if km is not None else None)
+    return out
 
 
 def _live_road_build(state: RoutesState, bundle: Bundle, snap: Any, calib: Any, day: date, base: live.Road,
@@ -4202,6 +4270,7 @@ def _live_context(state: RoutesState, day: date,
     stored = state.store.load_dispatch(day.isoformat())
     plans: dict[str, list[live.PlanTrip]] = {}
     planned: list[str] = []
+    routes: dict[str, live.PlanRoute] = {}
     rules = live.Rules.from_settings(s)
     if stored is not None:
         full = dp.Draft.from_json(stored[0])
@@ -4226,20 +4295,23 @@ def _live_context(state: RoutesState, day: date,
             if car in trucks and mine:
                 trucks[car] = replace(trucks[car], center_customers=mine)
         planned = list(by_truck)
+        if full.released is not None:   # №80/№81: план отправлен водителям — его линия на карте и отклонение от неё
+            routes = _live_plan_routes(state, bundle, snap, draft, fleet or {})
     ds = day.isoformat()
     drivers, helpers = state.store.truck_drivers(ds)[0], state.store.truck_drivers(ds, 'helper')[0]
     crew = {car: {'driver': drivers.get(car), 'helper': helpers.get(car)} for car in set(drivers) | set(helpers)}
     return _LiveContext(rules, road, bundle.depot, plans, trucks, names, crew, tuple(planned),
-                        {cid: w.span() for cid, w in bundle.windows.items()})
+                        {cid: w.span() for cid, w in bundle.windows.items()}, routes,
+                        stored is not None and full.released is not None)
 
 
 def _live_card(ctx: _LiveContext, day: date, now: datetime, car: str, facts: Mapping[str, Any] | None,
                detail: bool) -> dict[str, Any]:
     crew = ctx.crew.get(car, {})
     return {'car_code': car, 'name': ctx.names.get(car), 'driver': crew.get('driver'), 'helper': crew.get('helper'),
-            'planned': car in ctx.planned,
+            'planned': car in ctx.planned, 'plan_sent': ctx.sent,
             **live.car_view(day, now, facts or {}, ctx.plans.get(car, []), ctx.trucks.get(car, live.TruckSpec()),
-                            ctx.depot, ctx.rules, ctx.road, detail, ctx.windows)}
+                            ctx.depot, ctx.rules, ctx.road, detail, ctx.windows, ctx.routes.get(car))}
 
 
 def _live_cards(state: RoutesState, day: date) -> tuple[_LiveContext, datetime, dict[str, Any],
@@ -4297,7 +4369,7 @@ def _live_head(ctx: _LiveContext, day: date, now: datetime) -> dict[str, Any]:
     return {'success': True, 'date': day.isoformat(), 'now': now.isoformat(timespec='seconds'),
             'depot': list(ctx.depot) if ctx.depot else None,
             'thresholds': {'speed_kmh': r.speed_kmh, 'speed_sec': r.speed_sec, 'stop_min': r.stop_min,
-                           'no_contact_min': r.no_contact_min, 'stale_s': live.STALE_S},
+                           'no_contact_min': r.no_contact_min, 'stale_s': live.STALE_S, 'deviation_m': r.deviation_m},
             'center_zone': [list(p) for p in r.center_zone]}
 
 
