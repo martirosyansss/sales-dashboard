@@ -361,14 +361,16 @@ class TgBot:
     def _pin(self, rec: Rec, unpin: Rec | None = None) -> None:
         """Закрепить сообщение отчёта без звука (и открепить прежнее). Нет прав — одна строка в журнале, не сбой;
         очередь, 429, сеть — отметка pin в записи (снять закрепление — unpin), повтор следующим проходом (_pending)."""
+        target = unpin.key if unpin is not None and unpin.message_id is not None else None
         try:
-            if unpin is not None and unpin.message_id is not None:
-                self.api('unpinChatMessage', chat_id=unpin.chat, message_id=unpin.message_id)
+            if target is not None:
+                self.api('unpinChatMessage', chat_id=unpin.chat, message_id=unpin.message_id)   # type: ignore[union-attr]
+                target = None   # откреплено — повтор (если закрепить не дала очередь) больше не открепляет
             self.api('pinChatMessage', chat_id=rec.chat, message_id=rec.message_id, disable_notification=True)
             rec.payload.pop('pin', None)
         except TelegramError as e:
             if tg_api.throttled(e):
-                rec.payload['pin'] = {'unpin': unpin.key if unpin is not None and unpin.message_id is not None else None}
+                rec.payload['pin'] = {'unpin': target}
                 return
             rec.payload.pop('pin', None)
             if not self.pin_warned:
@@ -511,6 +513,18 @@ class TgBot:
         rec = self.records.get(key)
         if rec is None:
             return 0
+        try:
+            return self._pending_rec(key, rec)
+        except TelegramError:
+            raise
+        except Exception:   # битая запись (текст не строится): отметки снять — иначе каждый проход без отчётов
+            logger.exception('[Routes] Telegram-бот: отложенное %s не доделано — отметки сняты', key)
+            for flag in ('ack_edit', 'copies_pending', 'pin'):
+                rec.payload.pop(flag, None)
+            self._persist(rec)
+            return 0
+
+    def _pending_rec(self, key: str, rec: Rec) -> int:
         done = 0
         if rec.payload.get('ack_edit'):
             try:
@@ -709,7 +723,8 @@ class TgBot:
                 if tg_api.throttled(e):
                     break   # остальные — следующим проходом
                 rec.payload['copies_pending'].remove(uid)
-                if e.status == 403:
+                # 403 — бот заблокирован или не начат; 400 «chat not found» — человек ни разу не открывал бота
+                if e.status == 403 or (e.status == 400 and 'chat not found' in e.description.lower()):
                     logger.warning('[Routes] Telegram-бот: эскалация %s лично %s не доставлена (%s) — человеку нужно '
                                    'открыть бота и нажать /start', rec.key, uid, e)
                 else:

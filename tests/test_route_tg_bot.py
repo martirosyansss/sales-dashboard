@@ -1251,6 +1251,44 @@ def test_review5_pin_hit_by_queue_is_retried(tmp_path):
     assert len(h.api.of('pinChatMessage')) == 2
 
 
+# ============================== ревью 6 ==============================
+
+def test_review6_unpin_is_not_repeated_when_only_the_pin_was_throttled(tmp_path, caplog):
+    cars = {'CAR1': card(planned=True, closed=True), 'CAR2': card(car='CAR2', planned=True, closed=True)}
+    h = Harness(tmp_path, cars, NOW, settings={'live_alert_kinds': []})
+    h.set(plan=plan_of(), fleet={})
+    h.api.fail['pinChatMessage'] = [None, local429()]          # план закреплён; итог — открепили план, закрепить — очередь
+    h.tick()
+    summary = h.rec('summary:')
+    assert summary.payload['pin'] == {'unpin': None} and len(h.api.of('unpinChatMessage')) == 1
+    h.api.fail['unpinChatMessage'] = [err(400, 'Bad Request: message to unpin not found')]
+    h.tick()
+    assert len(h.api.of('unpinChatMessage')) == 1 and 'pin' not in h.rec('summary:').payload
+    assert h.api.of('pinChatMessage')[-1]['message_id'] == summary.message_id and 'не закреплено' not in caplog.text
+
+
+def test_review6_broken_pending_record_does_not_block_reports(tmp_path, caplog, monkeypatch):
+    h = Harness(tmp_path, gps_card(), NOW)
+    h.tick()
+    rec = h.rec('alert:')
+    rec.payload['copies_pending'] = [str(OWNER)]
+    real = la.render
+    monkeypatch.setattr(la, 'render', lambda r: (_ for _ in ()).throw(KeyError('body')) if r.key == rec.key else real(r))
+    h.set(plan=plan_of())
+    h.tick()
+    assert 'отложенное' in caplog.text and 'copies_pending' not in h.rec('alert:').payload
+    assert any(t.startswith('📋') for t in h.api.texts())               # отчёт дня ушёл в том же проходе
+
+
+def test_review6_dm_chat_not_found_gets_the_start_hint(tmp_path, caplog):
+    h = Harness(tmp_path, gps_card(), NOW)
+    h.tick()
+    h.set(now=NOW + timedelta(minutes=10))
+    h.api.fail['sendMessage'] = [None, err(400, 'Bad Request: chat not found')]
+    h.tick()
+    assert '/start' in caplog.text and h.bot.client_errors == 0 and 'copies_pending' not in h.rec('alert:').payload
+
+
 def test_settings_page_has_telegram_block():
     js = (ROOT / 'static' / 'js' / 'routes_settings.js').read_text(encoding='utf-8')
     assert all(f"key: '{k}'" in js for k in ('tg_levels', 'tg_sim_installed', 'tg_escalate_min', 'tg_escalate_to',
