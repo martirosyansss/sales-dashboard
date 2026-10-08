@@ -2049,6 +2049,8 @@ class Store:
                                  f'(սխեմա {version}, աջակցվում է {SCHEMA_VERSION})')
             if version < SCHEMA_VERSION:
                 Store._migrate(conn)
+            else:
+                Store._live_explain_stops(conn)
             return
         if tables:
             raise StoreError('Ֆայլը երթուղիների բազա չէ (կան օտար աղյուսակներ)')
@@ -2058,6 +2060,23 @@ class Store:
                 conn.execute(ddl)
             conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
                          (str(SCHEMA_VERSION),))
+            conn.execute('COMMIT')
+        except BaseException:
+            conn.execute('ROLLBACK')
+            raise
+
+    @staticmethod
+    def _live_explain_stops(conn: sqlite3.Connection) -> None:
+        """База схемы 26 с live_explain первой версии ветки (без stops, до ревью 08.10; в trunk не попадала) — столбец
+        добавляется: прежние объяснения — без пропущенных точек (порядок объезда по ним больше не объяснён, отклонения —
+        как были)."""
+        cols = {r[1] for r in conn.execute('PRAGMA table_info(live_explain)')}
+        if not cols or 'stops' in cols:
+            return
+        conn.execute('BEGIN IMMEDIATE')
+        try:
+            if 'stops' not in {r[1] for r in conn.execute('PRAGMA table_info(live_explain)')}:
+                conn.execute("ALTER TABLE live_explain ADD COLUMN stops TEXT NOT NULL DEFAULT '[]'")
             conn.execute('COMMIT')
         except BaseException:
             conn.execute('ROLLBACK')

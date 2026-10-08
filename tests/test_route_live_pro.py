@@ -595,3 +595,81 @@ def test_telegram_skips_minor_and_explained_and_texts_sequence():
     assert 'Նախքան դրանք սպասարկվել է՝ №13 Նոր։' in lines
     assert la.plan_messages(cards, replace(rules, alert_kinds=('deviation',)), now, la.AlertState('x'))[0][0].kind == \
         'deviation'
+
+
+# ============================== ревью 2: извилистость идущего участка, открытая водителем, столбец stops ==============================
+
+FAR = (40.17, 44.70)   # дальний магазин: ~21 км по прямой от склада
+
+
+def _far_view(path, leg_ratio):
+    """Машина едет к дальнему магазину; линия плана — по дорогам с км = прямая × leg_ratio (RouteGeometry.leg_km), у
+    Road — глобальная извилистость 1,3: прогноз остатка — по извилистости самого плана участка."""
+    lines = ((DEPOT, FAR, DEPOT),)
+    geo = live.RouteGeometry(lines, lines, (), {(DEPOT, FAR): haversine_km(DEPOT, FAR) * leg_ratio})
+    tr = Track().park(DEPOT, 10)
+    for p in path:
+        tr.drive(p)
+    return live.car_view(DAY, tr.t, facts(tr.pts, [stop('S:F', 9, FAR, 500.0)], [T0, tr.t]), [live.PlanTrip((9,), {})],
+                         TRUCK, DEPOT, RULES, ROAD, True, None, live.PlanRoute(geo, ((9, FAR),), None))
+
+
+def _frac(f, north=0.0):
+    return (DEPOT[0] + (FAR[0] - DEPOT[0]) * f + north, DEPOT[1] + (FAR[1] - DEPOT[1]) * f)
+
+
+def test_ongoing_projection_uses_leg_own_ratio_sidestep_minor_big_detour_alert():
+    # заезд в сторону на 450 м (заправка у дороги) и обратно на линию: план участка ×1,05 — не тревога
+    side = _far_view([_frac(0.10), _frac(0.12, 0.004), _frac(0.14, 0.004), _frac(0.16), _frac(0.20)], 1.05)
+    (d,) = _dev(side)
+    assert d['minor'] is True and d['projected'] is True and d['excess_km'] < 1.0 and 'deviation' not in side['alerts']['active']
+    (leg,) = side['detour']['items']
+    assert leg['plan_km'] == pytest.approx(haversine_km(DEPOT, FAR) * 1.05, abs=0.05) and leg['over'] is False
+    # настоящий объезд: ушёл на 3 км от линии и едет параллельно — тревога сразу, не после 22 км
+    far = _far_view([_frac(0.10), _frac(0.12, 0.027), _frac(0.25, 0.027)], 1.05)
+    (d,) = _dev(far)
+    assert d['minor'] is False and d['excess_km'] >= 1.0 and d['active'] is True and far['state'] == 'alert'
+    # прямая A → B короче LEG_RATIO_MIN_KM — извилистость модели; длинный план — не больше LEG_RATIO_MAX
+    assert live.LEG_RATIO_MIN_KM == 0.2 and live.LEG_RATIO_MAX == 3.0
+
+
+def test_in_progress_with_short_finished_visit_is_visited_not_skipped():
+    """Водитель открыл магазин (in_progress), разгрузился 4 мин и уехал, не закрыв, — не «пропущен»."""
+    c_pt = (40.19, 44.51)
+    tr = Track().park(DEPOT, 10).drive(A)
+    ta = tr.t
+    tr.park(A, 8).drive(B).park(B, 4).drive(c_pt)
+    tc = tr.t
+    tr.park(c_pt, 8).drive(((c_pt[0] + DEPOT[0]) / 2, (c_pt[1] + DEPOT[1]) / 2))
+    route = _route(lines=((DEPOT, A, B, c_pt, DEPOT),), stops=((7, A), (8, B), (10, c_pt)))
+    stops = [stop('S:A', 7, A, 300.0, 'full', 1.0, ta + timedelta(minutes=3)),
+             stop('S:B', 8, B, 300.0, 'in_progress', seq=2),
+             stop('S:C', 10, c_pt, 300.0, 'full', 1.0, tc + timedelta(minutes=3), seq=3)]
+    card = live.car_view(DAY, tr.t, facts(tr.pts, stops, [T0, tr.t]), [live.PlanTrip((7, 8, 10), {})], TRUCK, DEPOT,
+                         RULES, ROAD, False, None, route)
+    assert card['sequence'] == {'skipped': [], 'pairs': []} and 'sequence' not in card['alerts']['active']
+
+
+def test_store_adds_stops_column_to_first_version_live_explain(tmp_path):
+    """База схемы 26 первой версии ветки (live_explain без stops) — столбец добавляется при открытии, строки целы."""
+    path = str(tmp_path / 'r.db')
+    st.Store(path).load()
+    a, b = T0.isoformat(), (T0 + timedelta(minutes=5)).isoformat()
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute('DROP TABLE live_explain')
+        conn.execute(
+            "CREATE TABLE live_explain(id INTEGER PRIMARY KEY AUTOINCREMENT, day TEXT NOT NULL, "
+            "car_code TEXT NOT NULL CHECK (length(car_code) BETWEEN 1 AND 64), "
+            "kind TEXT NOT NULL CHECK (kind IN ('deviation', 'sequence')), t_from TEXT NOT NULL, t_to TEXT NOT NULL, "
+            "reason TEXT NOT NULL CHECK (reason IN ('refuel', 'repair', 'customer', 'road', 'other')), "
+            "note TEXT NOT NULL DEFAULT '' CHECK (length(note) <= 200), created_at TEXT NOT NULL, created_by TEXT)")
+        conn.execute("INSERT INTO live_explain(day, car_code, kind, t_from, t_to, reason, note, created_at, created_by) "
+                     f"VALUES('2026-10-03', 'CAR1', 'deviation', '{a}', '{b}', 'road', 'հին', 'x', 'boss')")
+        conn.commit()
+    s = st.Store(path)
+    (row,) = s.live_explanations('2026-10-03')['CAR1']
+    assert (row['note'], row['stops']) == ('հին', [])
+    s.add_live_explanation('2026-10-03', 'CAR1', 'sequence', a, b, 'other', '', 'boss', ['S:1'])
+    assert s.live_explanations('2026-10-03')['CAR1'][1]['stops'] == ['S:1']
+    with closing(sqlite3.connect(path)) as conn:
+        assert 'stops' in {r[1] for r in conn.execute('PRAGMA table_info(live_explain)')}

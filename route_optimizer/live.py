@@ -100,7 +100,8 @@
   участка по формуле running_costs.route_cost (топливо по загрузке × цена дизеля настроек, нет — запасная и
   fuel_price_estimated, + износ машины: журнал гаража или ручной), расхода машины нет — ֏ неизвестно. Сегодня, пока день
   идёт, — и идущий участок: от последнего отъезда до последней точки к следующему магазину своего рейса (нет — к складу);
-  его перепробег — прогноз: проехано + от последней точки до цели по прямой × извилистость − план участка (только для
+  его перепробег — прогноз: проехано + от последней точки до цели по прямой × извилистость самого плана участка (км
+  плана / по прямой A → B, 1–LEG_RATIO_MAX; короче LEG_RATIO_MIN_KM — Road.detour) − план участка (только для
   решения «тревога или փոքր շեղում» и подсветки; ни в итог дня, ни в ֏ не входит — там только кончившиеся участки).
   Итог дня — сумма кончившихся участков с перепробегом не меньше detour_min_km (live_detour_min_km: меньше — шум GPS и
   дорог, не перепробег);
@@ -108,7 +109,7 @@
   участок — прогноз; участка нет — длина самого отклонения) не меньше detour_min_km; меньше — minor, «փոքր շեղում»: в журнале и на карте, не активно,
   не в «Խնդիրներ հիմա», не Telegram, не в счётчике тревог;
 - порядок объезда (sequence_check; только при плане): внутри рейса плана. Точка обслужена — у неё есть касание (выше:
-  закрытая — визит по GPS или отметка, in_progress — долгий визит, ожидающая — засчитанный GPS-визит; ожидающая с
+  закрытая — визит по GPS или отметка, in_progress — долгий визит, ожидающая — засчитанный GPS-визит; незакрытая с
   кончившимся GPS-визитом не короче ac.MIN_DWELL после выезда её рейса — короткая разгрузка без отметки — тоже
   обслужена). Пока обслужена
   точка с местом в рейсе дальше открытой (не обслуженной) точки того же рейса, открытая — «пропущена» (բաց թողնված);
@@ -189,6 +190,8 @@ M_PER_DEG_LON = 111320.0            # …и долготы на экваторе
 ADHERENCE_MIN_KM = 1.0              # следование плану — от столько км езды в счёте дня (меньше — нечего оценивать)
 LEG_LINE_POINTS = 200               # линия участка с перепробегом на карте
 DEPOT_NODE = 'depot'                # узел склада в порядке плана (магазины — клиенты)
+LEG_RATIO_MIN_KM = 0.2              # прогноз идущего участка: короче по прямой — извилистость модели (Road.detour)…
+LEG_RATIO_MAX = 3.0                 # …а у длинного — своя (км плана / по прямой), не больше 3
 EXPLAIN_FROM_TOL = timedelta(minutes=3)   # объяснение — к тревоге с тем же началом ± столько (пересчёт сдвигает точки)
 
 
@@ -1025,7 +1028,11 @@ def detour_legs(moving: Sequence[Fix], anchors: Sequence[Anchor], pairs: Mapping
         plan_km, plan_min, approx, consecutive = plan_of(a, b, ac.day_minutes(day, start) % 1440.0)
         excess = km - plan_km
         cost = truck.cost_amd(max(0.0, excess), load.at(start), rules.fuel_price)
-        projected = km + haversine_km(pos, b.point) * road.detour if ongoing and pos is not None else None
+        projected = None
+        if ongoing and pos is not None:   # остаток — с извилистостью самого плана участка (линия плана / прямая)
+            direct = haversine_km(a.point, b.point)
+            ratio = min(LEG_RATIO_MAX, max(1.0, plan_km / direct)) if direct >= LEG_RATIO_MIN_KM else road.detour
+            projected = km + haversine_km(pos, b.point) * ratio
         return Leg(a, b, start, end, km, minutes, plan_km, plan_min, approx, consecutive, cost, ongoing, projected)
 
     mine = [x for x in anchors if x.leave is None or x.leave >= since]
@@ -1626,12 +1633,12 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
                                  km=round(km, 1), lat=round(run[0].lat, 6), lon=round(run[0].lon, 6), minor=minor,
                                  excess_km=round(leg.judged_km, 1) if leg is not None else None,
                                  projected=bool(leg is not None and leg.ongoing)))
-    # порядок объезда: обслужена — касание; ожидающая, у которой был кончившийся GPS-визит не короче ac.MIN_DWELL после
-    # выезда её рейса (короткая разгрузка без отметки), — тоже «посещена», не «пропущена»
+    # порядок объезда: обслужена — касание; незакрытая (ожидающая или открытая водителем), у которой был кончившийся
+    # GPS-визит не короче ac.MIN_DWELL после выезда её рейса (короткая разгрузка без отметки), — тоже «посещена»
     seq_touches = dict(touches)
     for x in stops:
         sid = x['stop_id']
-        if x.get('status') == 'pending' and sid not in seq_touches and trips[sid] in gone:
+        if x.get('status') in OPEN and sid not in seq_touches and trips[sid] in gone:
             brief = [v for v in visits.get(sid, ()) if v.arrive >= gone[trips[sid]] and v.leave - v.arrive >= ac.MIN_DWELL
                      and not (live and last is not None and v.leave >= last.at)]
             if brief:
