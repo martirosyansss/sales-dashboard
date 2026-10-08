@@ -606,7 +606,7 @@ def _far_view(path, leg_ratio):
     """Машина едет к дальнему магазину; линия плана — по дорогам с км = прямая × leg_ratio (RouteGeometry.leg_km), у
     Road — глобальная извилистость 1,3: прогноз остатка — по извилистости самого плана участка."""
     lines = ((DEPOT, FAR, DEPOT),)
-    geo = live.RouteGeometry(lines, lines, (), {(DEPOT, FAR): haversine_km(DEPOT, FAR) * leg_ratio})
+    geo = live.RouteGeometry(lines, lines, (), leg_km={(DEPOT, FAR): haversine_km(DEPOT, FAR) * leg_ratio})
     tr = Track().park(DEPOT, 10)
     for p in path:
         tr.drive(p)

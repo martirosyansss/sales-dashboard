@@ -64,7 +64,9 @@
     const state = { date: '', data: null, detail: null, selected: null, timer: null, busy: false, again: false, fitted: false,
         map: null, markers: new Map(), layer: null, zone: null, lateOpen: false, pin: null, showPlan: loadPlanToggle(),
         // воспроизведение дня: снимок машины на начало (опрос его не меняет), момент t (секунды эпохи), слои
-        replay: { on: false, playing: false, t: 0, raf: 0, last: 0, truck: null, prefix: null, ghost: null, stops: [] } };
+        replay: { on: false, playing: false, t: 0, raf: 0, last: 0, truck: null, prefix: null, ghost: null, stops: [] },
+        // подсказка точки линии: подсказка и точка на карте; at/car — где курсор (координаты: после опроса — снова), fns — линии
+        hover: { tip: null, mark: null, at: null, car: null, fns: [] } };
 
     // «Պլանային երթուղի» на карте — удобство одного зрителя: помнится в браузере (нет хранилища — просто включено)
     function loadPlanToggle() { try { return window.localStorage.getItem('lv.plan') !== '0'; } catch (e) { return true; } }
@@ -254,6 +256,8 @@
         RoutesBasemap.add(state.map);
         state.map.setView(YEREVAN, 11);
         state.layer = L.layerGroup().addTo(state.map);
+        state.map.on('click', forgetHover);   // касание мимо линии на телефоне — подсказку убрать
+        state.map.on('mouseout', forgetHover);   // курсор ушёл с карты (линию перерисовал опрос — её mouseout не придёт)
     }
 
     // нет связи — серый полупрозрачный маркер в последнем известном положении и «վերջինը՝ HH:MM» (время этой точки GPS:
@@ -322,26 +326,180 @@
         return L.divIcon({ html: el.outerHTML, className: '', iconSize: [24, 24], iconAnchor: [12, 12] });
     }
 
+    // ---------- подсказка точки линии (владелец 08.10: «при наведении на линию покажи данные на этой точке») ----------
+    // Факт: t.track_v (км/ч; 0 — стоянка; null — данных нет) и t.track_km — 1:1 с t.track; t.track_dev_m — [индекс, м]
+    // только у точек внутри отклонения (-1 — дальше 5 км). Стоянка — две одинаковые точки линии подряд (track_line): где —
+    // GPS-визит магазина в это время, иначе магазин дня или склад в радиусе (thresholds); перерыв трека (между соседними
+    // точками дольше GAP_S без точек трека внутри — t.track_gaps) — «տվյալ չկա». План: t.route.trip_nos — номера магазинов каждой линии рейса, trip_cuts —
+    // индексы концов участков в ней (склад, магазины, склад). Мышь — над линией (невидимая широкая линия поверх), телефон —
+    // касание; подсказка — у ближайшей к курсору линии выбранной машины (путь или план), точка — по экрану (ближайший
+    // участок), момент и км — между соседними точками.
+    const HOVER_PX = 24;   // курсор дальше от линии — подсказки нет (после опроса — снова, только если линия рядом)
+    const STAY_PX = 14;    // у точки стоянки ближе — подсказка стоянки (номер магазина на карте — 12 px радиус)
+    const TRACK_PX = 2;    // путь и план рядом — у пути преимущество в 2 px (план — где курсор явно ближе к нему)
+    const hmOf = (sec) => clockOf(sec).slice(0, 5);
+    const metres = (a, b) => Math.hypot((b[0] - a[0]) * 110540, (b[1] - a[1]) * 111320 * Math.cos(a[0] * Math.PI / 180));
+    const same = (a, b) => !!a && !!b && a[0] === b[0] && a[1] === b[1];
+
+    function clearHover() {
+        const hv = state.hover;
+        if (hv.tip) hv.tip.remove();
+        if (hv.mark) hv.mark.remove();
+        hv.tip = hv.mark = null;
+    }
+    function forgetHover() { clearHover(); Object.assign(state.hover, { at: null, car: null }); }
+
+    function showHover(ll, lines) {
+        const hv = state.hover;
+        const el = h('div', { class: 'lv-hover' }, ...lines.map(([text, cls]) => h('div', { class: cls || null, text })));
+        if (hv.mark) hv.mark.setLatLng(ll);
+        else hv.mark = L.circleMarker(ll, { radius: 6, color: '#0e1116', weight: 2, fillColor: '#ffb547', fillOpacity: 1, interactive: false }).addTo(state.map);
+        if (hv.tip) hv.tip.setLatLng(ll).setContent(el);
+        else hv.tip = L.tooltip({ direction: 'top', offset: [0, -8], opacity: 1, className: 'lv-hover-tip' }).setLatLng(ll).setContent(el).addTo(state.map);
+    }
+
+    // подсказка у точки карты ll (координаты, не пиксели: после опроса и зума — та же точка): ближайшая линия из hover.fns
+    function hoverAt(ll) {
+        const hv = state.hover;
+        if (!state.map || !ll) return;
+        const p = state.map.latLngToLayerPoint(ll);
+        let best = null;
+        for (const fn of hv.fns) { const x = fn(p); if (x && (!best || x.d < best.d)) best = x; }
+        if (!best) { forgetHover(); return; }
+        Object.assign(hv, { at: ll, car: state.selected });
+        showHover(best.ll, best.lines);
+    }
+
+    // ближайший к точке экрана p (слой карты) участок ломаной: начало i, доля f вдоль него, расстояние d и длина len, px
+    function nearestSeg(line, cache, p) {
+        const map = state.map, key = map.getZoom() + ':' + map.getPixelOrigin().toString();
+        if (cache.key !== key) { cache.key = key; cache.pts = line.map(ll => map.latLngToLayerPoint(ll)); }
+        const q = cache.pts;
+        let best = { i: 0, f: 0, d: Infinity, len: 0 };
+        for (let i = 0; i + 1 < q.length; i++) {
+            const a = q[i], b = q[i + 1], dx = b.x - a.x, dy = b.y - a.y, d2 = dx * dx + dy * dy;
+            const f = d2 ? Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / d2)) : 0;
+            const d = Math.hypot(p.x - a.x - f * dx, p.y - a.y - f * dy);
+            if (d < best.d) best = { i, f, d, len: Math.sqrt(d2) };
+        }
+        return best;
+    }
+    const along = (line, n) => [line[n.i][0] + n.f * (line[n.i + 1][0] - line[n.i][0]), line[n.i][1] + n.f * (line[n.i + 1][1] - line[n.i][1])];
+
+    // где стояла машина: магазин с GPS-визитом в это время, иначе магазин дня или склад рядом, иначе — неизвестно
+    function stayPlace(t, p, a, b) {
+        const th = (state.data && state.data.thresholds) || {};
+        const stops = t.stops || [];
+        const visit = stops.find(s => s.gps && epoch(s.gps.arrive) <= b && (s.gps.leave ? epoch(s.gps.leave) : Infinity) >= a);
+        if (visit) return visit.name || visit.stop_id;
+        const near = stops.filter(s => num(s.lat) !== null && num(s.lon) !== null)
+            .map(s => [metres(p, [s.lat, s.lon]), s]).filter(([d]) => d <= (num(th.stop_radius_m) ?? 100))
+            .sort((x, y) => x[0] - y[0])[0];
+        if (near) return near[1].name || near[1].stop_id;
+        if (state.data && state.data.depot && metres(p, state.data.depot) <= (num(th.depot_radius_m) ?? 150)) return 'Պահեստ';
+        return 'անհայտ վայր';
+    }
+
+    function trackInfo(t, n, devOf, stay, gapOf) {
+        const tr = t.track, tt = t.track_t, th = (state.data && state.data.thresholds) || {};
+        const one = (a) => Array.isArray(a) && a.length === tr.length;
+        const i = n.i, j = i + 1, k = n.f < 0.5 ? i : j;   // k — ближайшая точка участка
+        const kmAt = (x) => (one(t.track_km) && num(t.track_km[x]) !== null ? t.track_km[x] : null);
+        const kmLine = (km) => (km !== null ? [['անցած՝ ' + fmt(km, 1) + ' կմ']] : []);
+        // стоянка (её две точки подряд): курсор на ней или ближе STAY_PX к ней (магазин и склад — под своим значком)
+        const s = same(tr[i], tr[j]) ? i : stay;
+        if (s !== null) {
+            const a = tt[s], b = tt[s + 1];
+            return { ll: tr[s], lines: [['Կանգառ՝ ' + stayPlace(t, tr[s], a, b)],
+                [hmOf(a) + '–' + hmOf(b) + ' · ' + Math.max(0, Math.round((b - a) / 60)) + ' րոպե'], ...kmLine(kmAt(s))] };
+        }
+        if (gapOf.has(i)) {   // перерыв трека (сервер: без точек внутри; стоял в пробке — не перерыв): что было — неизвестно
+            return { ll: along(tr, n), lines: [['տվյալ չկա'], [hmOf(tt[i]) + '–' + hmOf(tt[j]) + ' · GPS կետեր չկան', 'is-mute']] };
+        }
+        const x = tt[i] + n.f * (tt[j] - tt[i]);
+        const lines = [['ժամը ' + hmOf(x)]];
+        const v = one(t.track_v) ? num(t.track_v[k]) : null;
+        const over = v !== null && num(th.speed_kmh) !== null && v > th.speed_kmh;
+        lines.push(v === null ? ['արագություն՝ տվյալ չկա', 'is-mute'] : v === 0 ? ['կանգնած']
+            : ['արագություն՝ ' + v + ' կմ/ժ' + (over ? ' · գերազանցում (> ' + fmt(th.speed_kmh) + ')' : ''), over ? 'is-bad' : null]);
+        const ka = kmAt(i), kb = kmAt(j);
+        lines.push(...kmLine(ka !== null && kb !== null ? ka + n.f * (kb - ka) : null));
+        const dev = devOf.has(k) ? devOf.get(k) : devOf.get(k === i ? j : i);
+        if (num(dev) !== null) {   // до плановой линии: метры, от километра — км
+            lines.push(['Շեղում երթուղուց՝ ' + (dev < 0 ? '5 կմ-ից ավելի' : dev < 1000 ? fmt(dev) + ' մ' : fmt(dev / 1000, 1) + ' կմ'), 'is-bad']);
+        }
+        // отклонение целиком (его красная линия — под линией подсказки): км и время
+        const run = ((t.deviation && t.deviation.runs) || []).find(r => epoch(r.from) <= x && (r.to ? epoch(r.to) >= x : true));
+        if (run) lines.push(['շեղումը՝ ' + fmt(run.km, 1) + ' կմ · ' + hm(run.from) + (run.to ? '–' + hm(run.to) : ' — հիմա'), 'is-bad']);
+        return { ll: along(tr, n), lines };
+    }
+
+    function trackHover(t) {
+        const cache = { key: '', pts: [] };
+        const devOf = new Map((Array.isArray(t.track_dev_m) ? t.track_dev_m : []).filter(x => Array.isArray(x) && x.length === 2));
+        const stays = t.track.map((p, i) => i).filter(i => same(t.track[i], t.track[i + 1]));
+        const gapOf = new Set(Array.isArray(t.track_gaps) ? t.track_gaps : []);
+        return (p) => {
+            const n = nearestSeg(t.track, cache, p);
+            if (n.d > HOVER_PX) return null;
+            let stay = null, best = STAY_PX;   // ближайшая к курсору точка стоянки на экране
+            for (const i of stays) { const q = cache.pts[i], d = Math.hypot(q.x - p.x, q.y - p.y); if (d <= best) { best = d; stay = i; } }
+            return { d: n.d - TRACK_PX, ...trackInfo(t, n, devOf, stay, gapOf) };
+        };
+    }
+
+    // участок плана: «Երթ N · A → B» и его км по линии; концы участков — trip_cuts сервера (склад, магазины, склад)
+    function planHover(t, li) {
+        const r = t.route, line = r.lines[li], cache = { key: '', pts: [] };
+        const how = 'Պլանային երթուղի (' + (r.road ? 'ճանապարհներով' : 'ուղիղ գծով') + ')';
+        const nos = Array.isArray(r.trip_nos) && r.trip_nos.length === r.lines.length ? r.trip_nos[li] : null;
+        const cuts = Array.isArray(r.trip_cuts) && r.trip_cuts.length === r.lines.length ? r.trip_cuts[li] : null;
+        const nameOf = (no) => { const s = (t.stops || []).find(x => x.plan_no === no); return '№' + no + (s && s.name ? ' ' + s.name : ''); };
+        // концы: склад и магазины по порядку (линия — склад → магазины → склад; склада нет — только магазины); не сходится — без участка
+        const names = !nos || !cuts || !nos.length ? null : cuts.length === nos.length + 2 ? ['Պահեստ', ...nos.map(nameOf), 'Պահեստ']
+            : cuts.length === nos.length ? nos.map(nameOf) : null;
+        const anchors = names ? cuts.map((v, k) => [v, names[k]]) : [];
+        return (p) => {
+            const n = nearestSeg(line, cache, p);
+            if (n.d > HOVER_PX) return null;
+            const title = 'Երթ ' + (li + 1);
+            if (anchors.length < 2) return { d: n.d, ll: along(line, n), lines: [[title], [how, 'is-mute']] };
+            const pos = n.i + n.f;
+            let m = 0;
+            while (m + 2 < anchors.length && anchors[m + 1][0] <= pos) m++;
+            const [va, a] = anchors[m], [vb, b] = anchors[m + 1];
+            let km = 0;
+            for (let v = va; v < vb; v++) km += metres(line[v], line[v + 1]) / 1000;
+            return { d: n.d, ll: along(line, n), lines: [[title + ' · ' + a + ' → ' + b], ['հատվածը՝ ≈ ' + fmt(km, 1) + ' կմ'], [how, 'is-mute']] };
+        };
+    }
+
+    // невидимая широкая линия поверх: мышь — подсказка следует за курсором, касание — подсказка в точке касания
+    function hoverable(line, cls, info, layer) {
+        state.hover.fns.push(info);
+        L.polyline(line, { color: '#000', opacity: 0, weight: 20, lineCap: 'round', className: 'lv-hit ' + cls })
+            .on('mousemove', (e) => hoverAt(e.latlng))
+            .on('click', (e) => { L.DomEvent.stopPropagation(e); hoverAt(e.latlng); })
+            .on('mouseout', forgetHover)
+            .addTo(layer);
+    }
+
     // плановая линия (что водитель получил): пунктир по рейсам — под фактическим путём
     function drawPlan(t, layer) {
         const r = t.route;
         if (!state.showPlan || !r || !Array.isArray(r.lines)) return;
-        const how = r.road ? 'ճանապարհներով' : 'ուղիղ գծով';
         r.lines.forEach((line, i) => {
             if (line.length < 2) return;
-            L.polyline(line, { color: '#e8edf4', weight: 3, opacity: 0.7, dashArray: '8 8' })
-                .bindTooltip(tip('Պլանային երթուղի' + (r.lines.length > 1 ? ', երթ ' + (i + 1) : '') + ' (' + how + ')')).addTo(layer);
+            L.polyline(line, { color: '#e8edf4', weight: 3, opacity: 0.7, dashArray: '8 8', interactive: false }).addTo(layer);
+            hoverable(line, 'is-plan', planHover(t, i), layer);
         });
     }
 
     function renderTruckLayer(t) {
         if (!state.layer || state.replay.on) return;   // воспроизведение рисует своё — опрос его не стирает
-        state.layer.clearLayers();
-        if (!t) return;
-        if (state.data.depot) {
-            L.circleMarker(state.data.depot, { radius: 8, color: '#e8edf4', weight: 2, fillColor: '#38bdf8', fillOpacity: 1 })
-                .bindTooltip(tip('Պահեստ')).addTo(state.layer);
-        }
+        state.layer.clearLayers();   // подсказка точки — на карте, не в слое: ниже обновится по новым данным или уйдёт
+        state.hover.fns = [];
+        if (!t) { forgetHover(); return; }
         drawPlan(t, state.layer);
         // участки с перепробегом — широкой оранжевой подложкой под путём
         for (const x of (t.detour && t.detour.items) || []) {
@@ -350,9 +508,10 @@
                 .bindTooltip(tip('Ավելորդ վազք՝ ' + legExcess(x) + ' կմ · ' + legName(x))).addTo(state.layer);
         }
         if (t.track && t.track.length > 1) {
-            L.polyline(t.track, { color: '#38bdf8', weight: 4, opacity: 0.85 }).addTo(state.layer);
+            L.polyline(t.track, { color: '#38bdf8', weight: 4, opacity: 0.85, interactive: false }).addTo(state.layer);
         }
-        // отклонения от плановой линии — красным поверх пути; «փոքր շեղում» — тонкой линией, объяснённое — серым
+        // отклонения от плановой линии — красным поверх пути (км и время — и в подсказке точки пути); «փոքր շեղում» —
+        // тонкой линией, объяснённое — серым
         for (const r of (t.deviation && t.deviation.runs) || []) {
             if (!Array.isArray(r.line) || r.line.length < 2) continue;
             const style = r.explained ? { color: '#8693a5', weight: 4, opacity: 0.9 }
@@ -362,6 +521,13 @@
                     + (r.to ? '–' + hm(r.to) : ' — հիմա') + (r.explained ? ' · բացատրված՝ ' + (REASON[r.explained.reason] || '') : '')))
                 .addTo(state.layer);
         }
+        if (canReplay(t)) hoverable(t.track, 'is-track', trackHover(t), state.layer);   // поверх пути и отклонений
+        if (state.data.depot) {   // склад — поверх линии подсказки (своя подсказка «Պահեստ»)
+            L.circleMarker(state.data.depot, { radius: 8, color: '#e8edf4', weight: 2, fillColor: '#38bdf8', fillOpacity: 1 })
+                .bindTooltip(tip('Պահեստ')).addTo(state.layer);
+        }
+        const hv = state.hover;
+        if (hv.at && hv.car === t.car_code) hoverAt(hv.at); else if (hv.at) forgetHover();
         // магазины плана, которых нет у терминала, — пустой номер (только вместе с плановой линией)
         const have = new Set((t.stops || []).map(s => s.customer_id));
         for (const p of (state.showPlan && t.route && t.route.points) || []) {
@@ -783,6 +949,8 @@
         if (rp.on) return true;
         if (!canReplay(t) || !state.layer) return false;
         Object.assign(rp, { on: true, truck: t });
+        forgetHover();
+        state.hover.fns = [];   // при воспроизведении — подсказка только плановой линии
         state.layer.clearLayers();
         if (state.data.depot) {
             L.circleMarker(state.data.depot, { radius: 8, color: '#e8edf4', weight: 2, fillColor: '#38bdf8', fillOpacity: 1 })

@@ -1766,7 +1766,7 @@ def test_track_line_changes_nothing_but_the_line():
         plain = live.car_view(DAY, now, f, [], TRUCK, DEPOT, RULES, ROAD, True, None, _route())
         snapped = live.car_view(DAY, now, f, [], TRUCK, DEPOT, RULES, ROAD, True, None, _route(), snap)
         assert snapped['track'] != plain['track'] and len(snapped['track']) == len(snapped['track_t'])
-        rest = ('track', 'track_t')
+        rest = ('track', 'track_t', 'track_v', 'track_km', 'track_dev_m', 'track_gaps')   # линия и подсказка её точек
         assert {k: v for k, v in snapped.items() if k not in rest} == {k: v for k, v in plain.items() if k not in rest}
         brief = live.car_view(DAY, now, f, [], TRUCK, DEPOT, RULES, ROAD, False, None, _route())
         rest = ('deviation', 'route')   # у деталей — ещё линии плана и отклонений
@@ -2071,10 +2071,11 @@ def test_plan_geometry_marks_long_straight_leg_inside_road_line():
 def test_route_geometry_index_and_map_lines_built_once(monkeypatch):
     geo = live.RouteGeometry(PLAN_LINE, PLAN_LINE)
     calls = []
-    real = ac.simplify
-    monkeypatch.setattr(ac, 'simplify', lambda *a, **k: calls.append(1) or real(*a, **k))
+    from route_optimizer import track_line as tl
+    real = tl._fit   # упрощение линий для карты — с обязательными концами участков (shown_cuts)
+    monkeypatch.setattr(tl, '_fit', lambda *a, **k: calls.append(1) or real(*a, **k))
     assert geo.index(300.0) is geo.index(300.0) and geo.index(100.0) is not geo.index(300.0)
-    assert geo.shown() is geo.shown() and len(calls) == 1
+    assert geo.shown() is geo.shown() and geo.shown_cuts() is geo.shown_cuts() and len(calls) == 1
     tr = _detour_track(1500.0)
     route = live.PlanRoute(geo, ((7, A), (8, B)))
     first = _route_view(tr, tr.t, route)
@@ -2300,3 +2301,230 @@ def test_plan_lines_cache_keeps_recently_opened_old_day(monkeypatch):
     clock[0] += 1
     cache.get(days[0], {'CAR1': 'k'}, build)                           # пересобран; уходит самый давний — days[2]
     assert {d for d, _ in cache._slots} == {old, days[1], days[0]}
+
+
+# ============================== подсказка точки линии трека (владелец 08.10: «при наведении на линию…») ==============================
+
+def _stay_idx(card):
+    """Индексы вершин стоянок: середина стоянки в линии — дважды подряд (track_line)."""
+    tr = card['track']
+    return {k for i in range(len(tr) - 1) if tr[i] == tr[i + 1] for k in (i, i + 1)}
+
+
+def test_track_hover_speed_km_one_to_one_and_stays_zero():
+    """track_v / track_km — 1:1 с track: стоянка (точка дважды) — 0 км/ч, езда — скорость терминала; км дня не убывают,
+    у первой вершины 0, у последней — км карточки; плановой линии нет — track_dev_m None."""
+    tr = Track().park(DEPOT, 5).drive(A, speed_ms=10.0).park(A, 6).drive(B, speed_ms=15.0)
+    card = view(facts(tr.pts, [], [T0, tr.t]), tr.t, detail=True)
+    n = len(card['track'])
+    assert n > 4 and len(card['track_v']) == len(card['track_km']) == len(card['track_t']) == n
+    stays = _stay_idx(card)
+    assert len(stays) == 4 and all(card['track_v'][i] == 0 for i in stays)
+    a_leave = max(t for i, t in enumerate(card['track_t']) if i in stays)
+    moving = [(t, v) for i, (t, v) in enumerate(zip(card['track_t'], card['track_v'])) if i not in stays]
+    assert moving and all(v == (36 if t < a_leave else 54) for t, v in moving)
+    km = card['track_km']
+    assert km == sorted(km) and km[0] == 0.0 and km[-1] == card['km'] > 0
+    assert card['track_dev_m'] is None
+    empty = view(facts(), T0, detail=True)
+    assert empty['track_v'] == [] and empty['track_km'] == [] and empty['track_dev_m'] is None
+
+
+def test_track_hover_snapped_vertices_take_nearest_fix_or_step_speed():
+    """Вершины линии по дорогам — с интерполированными моментами (не точки GPS): скорость — ближайшей по времени точки
+    терминала; терминал скорость не шлёт — по смещению соседних точек; км — по времени между сегментами км дня."""
+    tr = Track().park(DEPOT, 3).drive(A, speed_ms=12.0).park(A, 4)
+
+    def snap(parts):   # «дорога»: между соседними точками куска — ещё вершина посередине (момент — середина)
+        out = {}
+        for c in parts:
+            if c.stay:
+                continue
+            raw = c.raw()
+            line = [raw[0]]
+            for p, q in zip(raw, raw[1:]):
+                line += [((p[0] + q[0]) / 2 + 0.0001, (p[1] + q[1]) / 2, (p[2] + q[2]) / 2), q]
+            out[c.key] = line
+        return out
+    card = live.car_view(DAY, tr.t, facts(tr.pts, [], [T0, tr.t]), [], TRUCK, DEPOT, RULES, ROAD, True, None, None, snap)
+    stays = _stay_idx(card)
+    # кусок езды начинается в середине стоянки (track_line 08.10): вершина сразу после неё — посередине между точкой «стоит»
+    # и первой точкой езды, скорость там любая из двух
+    driving = [i for i in range(len(card['track'])) if i not in stays and i - 1 not in stays]
+    assert len(driving) > 10 and all(card['track_v'][i] == round(12.0 * 3.6) for i in driving)
+    assert card['track_km'] == sorted(card['track_km']) and card['track_km'][-1] == card['km']
+    no_spd = [p[:4] + (None,) + p[5:] for p in tr.pts]   # старый терминал: скорости нет
+    bare = live.car_view(DAY, tr.t, facts(no_spd, [], [T0, tr.t]), [], TRUCK, DEPOT, RULES, ROAD, True, None, None, snap)
+    inner = [v for i, v in enumerate(bare['track_v']) if i not in _stay_idx(bare)][1:-1]
+    assert inner and all(v is not None and abs(v - 43) <= 2 for v in inner)
+
+
+def test_track_hover_no_data_in_gap_is_none():
+    """Вершина в перерыве трека (нет точки ближе HOVER_SPEED_S, соседние дальше HOVER_STEP_S) — скорость None, а не 0;
+    км до первого сегмента — 0, после последнего — итог."""
+    tr = Track()
+    tr.pos = DEPOT
+    tr.drive(A, speed_ms=10.0)
+    pts = ac.clean_track(live.track_fixes(tr.pts))
+    t0, t1 = pts[0].at.timestamp(), pts[-1].at.timestamp()
+    line = [(A[0], A[1], t0 - 600), (A[0], A[1], t0 + 30), (A[0], A[1], t1 + 600)]
+    got = live.track_hover(line, [], pts, pts, None, [])
+    assert got['track_v'] == [None, 36, None] and got['track_dev_m'] is None
+    km = sum(k for _, k in track_steps(pts))
+    assert got['track_km'][0] == 0.0 and got['track_km'][2] == round(km, 1) and 0 < got['track_km'][1] < got['track_km'][2]
+    bare = [replace(p, spd=None) for p in pts]   # скорости нет — по смещению соседних точек
+    v = live.track_hover(line, [], bare, bare, None, [])['track_v']
+    assert v[0] is None and v[2] is None and abs(v[1] - 36) <= 1
+
+
+def test_route_index_distance_matches_brute_force_and_limit():
+    lines = [[DEPOT, A, B, DEPOT], [C, _off(C, 2000.0)]]
+    index = live.RouteIndex(lines, 300.0)
+    for p in (MID_AB, _off(MID_AB, 120.0), _off(MID_AB, 1500.0), _off(C, -700.0), (40.20, 44.40), A):
+        want = min(live.polyline_m(p, line) for line in lines)
+        assert index.distance(p, 10000.0) == pytest.approx(want, rel=0.003, abs=0.5)
+    assert index.distance((40.20, 44.40), 5000.0) is None   # 6,7 км — дальше предела
+    assert index.distance((40.40, 44.90), 5000.0) is None and live.RouteIndex([], 300.0).distance(A, 5000.0) is None
+
+
+def test_track_hover_distance_to_plan_only_inside_deviation():
+    """track_dev_m — [индекс, м] только у вершин внутри отклонения (по моменту), метры — до участков плана по дорогам;
+    отклонений нет — пусто; линии по дорогам нет — None."""
+    tr = _detour_track(1500.0)
+    card = _route_view(tr, tr.t, _route())
+    run = card['deviation']['runs'][0]
+    lo, hi = datetime.fromisoformat(run['from']).timestamp(), datetime.fromisoformat(run['to']).timestamp()
+    dev = card['track_dev_m']
+    assert dev and [i for i, _ in dev] == [i for i, t in enumerate(card['track_t']) if lo <= t <= hi]
+    for i, m in dev:
+        p = tuple(card['track'][i])
+        assert m == pytest.approx(min(live.polyline_m(p, x) for x in PLAN_LINE), abs=2)
+    side = _off(MID_AB, 1500.0)                                   # дальняя точка объезда — в линии трека
+    assert max(m for _, m in dev) == pytest.approx(min(live.polyline_m(side, x) for x in PLAN_LINE), abs=2)
+    assert _route_view(tr, tr.t, _route(road=False))['track_dev_m'] is None
+    calm = Track().park(DEPOT, 5).drive(A).park(A, 3).drive(B).park(B, 3)
+    assert _route_view(calm, calm.t, _route())['track_dev_m'] == []
+
+
+def test_route_trip_nos_for_leg_hover():
+    """Номера магазинов каждой линии рейса (подсказка «Երթ N · A → B»): по trip_stops; не сходится с линиями — пусто."""
+    tr = Track().park(DEPOT, 5).drive(A)
+    lines = ((DEPOT, A, DEPOT), (DEPOT, B, DEPOT))
+    two = live.PlanRoute(live.RouteGeometry(lines, lines), ((7, A), (8, B)), None, ((7,), (8,)))
+    assert _route_view(tr, tr.t, two)['route']['trip_nos'] == [[1], [2]]
+    assert _route_view(tr, tr.t, _route())['route']['trip_nos'] == []          # trip_stops неизвестны
+
+
+def test_api_live_truck_hover_arrays_and_radii(client, live_app, monkeypatch):
+    state, _, _ = _lines_app(live_app, monkeypatch)
+    _send_plan(state, km=21.4)
+    _session_as(client, 'boss', base=LAN)
+    body = client.get('/api/routes/live/truck?car=CAR1', base_url=LAN).get_json()
+    truck = body['truck']
+    assert body['thresholds']['stop_radius_m'] == ac.STOP_RADIUS_M and body['thresholds']['depot_radius_m'] == ac.DEPOT_RADIUS_M
+    assert len(truck['track_v']) == len(truck['track_km']) == len(truck['track']) > 1
+    assert truck['route']['trip_nos'] == [[1, 2]] and truck['track_dev_m'] == []
+    fleet = client.get('/api/routes/live', base_url=LAN).get_json()['trucks']
+    assert all('track_v' not in t and 'track_km' not in t for t in fleet)      # флот — без трека и подсказки
+
+
+class _FixedLines:
+    """Кэш плановых линий, который отдаёт заданные линии (как прежние, пока новые строятся)."""
+
+    def __init__(self, geo):
+        self.geo = geo
+
+    def get(self, day, wanted, build):
+        return {car: self.geo for car in wanted}
+
+
+def test_api_live_stale_plan_lines_have_no_leg_stores(client, live_app, monkeypatch):
+    """План поменяли, линии по дорогам ещё строятся — отдаются прежние (другого порядка магазинов): участки «A → B» по
+    новому плану к ним не приписываются (trip_nos пусто, подсказка — только «Երթ N»); линии того же плана — с ними."""
+    from route_optimizer import dispatch as dp
+    from route_optimizer import views
+    state, roads, _ = _lines_app(live_app, monkeypatch)
+    _send_plan(state, km=21.4)
+    old = views._plan_geometry(roads, {'CAR1': (((DEPOT, A, B, DEPOT),), (), 'map-1')})['CAR1']
+    assert old.source == ((DEPOT, A, B, DEPOT),)
+    draft = dp.Draft.from_json(state.store.load_dispatch('2026-10-03')[0])
+    draft.trips[0].stops = [8, 7]                      # логист поменял порядок: новые линии — B, затем A
+    draft.sent = None
+    state.store.save_dispatch('2026-10-03', draft.to_json(), 'qa')
+    monkeypatch.setattr(state, 'live_lines', _FixedLines(old))
+    _session_as(client, 'boss', base=LAN)
+    route = client.get('/api/routes/live/truck?car=CAR1', base_url=LAN).get_json()['truck']['route']
+    assert route['road'] is True and route['trip_nos'] == [] and len(route['trip_cuts']) == len(route['lines']) == 1
+    fresh = views._plan_geometry(roads, {'CAR1': (((DEPOT, B, A, DEPOT),), (), 'map-1')})['CAR1']
+    monkeypatch.setattr(state, 'live_lines', _FixedLines(fresh))
+    state.live_facts.data['2026-10-03'] = dict(state.live_facts.data['2026-10-03'])   # без кэша карточек
+    route = client.get('/api/routes/live/truck?car=CAR1', base_url=LAN).get_json()['truck']['route']
+    assert route['trip_nos'] == [[1, 2]] and [p['customer_id'] for p in route['points']] == [8, 7]
+
+
+class _DenseRoads(FakeLineRoads):
+    """Участок «по дорогам» — 60 точек на прямой: упрощение для карты оставило бы от рейса два конца."""
+
+    def leg_lines(self, legs):
+        return [([(a[0] + (b[0] - a[0]) * k / 59, a[1] + (b[1] - a[1]) * k / 59) for k in range(60)], True)
+                for a, b in legs]
+
+
+def test_plan_geometry_cuts_survive_simplification(monkeypatch):
+    """Концы участков (склад, магазины, склад) — обязательные точки линии для карты: trip_cuts указывает ровно на них,
+    даже когда магазин лежит на прямой между соседями и упрощение его бы выбросило."""
+    from route_optimizer import views
+    monkeypatch.setattr(live, 'PLAN_LINE_POINTS', 10)
+    mid = ((A[0] + B[0]) / 2, (A[1] + B[1]) / 2)              # магазин на прямой A–B
+    lines = ((DEPOT, A, mid, B, DEPOT), (DEPOT, C, DEPOT))
+    geo = views._plan_geometry(_DenseRoads(), {'CAR1': (lines, (), 'map-1')})['CAR1']
+    assert geo.source == lines and [len(c) for c in geo.cuts] == [5, 3] and len(geo.trips[0]) == 4 * 59 + 1
+    shown, cuts = geo.shown(), geo.shown_cuts()
+    assert len(shown) == len(cuts) == 2 and sum(len(x) for x in shown) <= 10 + 2 * 5
+    for line, cut, want in zip(shown, cuts, lines):
+        assert cut == sorted(cut) and [line[i] for i in cut] == [[round(p[0], 6), round(p[1], 6)] for p in want]
+    straight = live.RouteGeometry(lines, (), (), lines)       # по прямой — каждая точка конец участка
+    assert straight.shown_cuts() == [[0, 1, 2, 3, 4], [0, 1, 2]]
+
+
+def test_track_hover_distance_index_cell_not_below_500(monkeypatch):
+    """Порог отклонения 100 м: расстояние до плана для подсказки — по своему индексу с ячейкой 500 м (поиск до 5 км не
+    перебирает тысячи ячеек на точку); отклонение — по индексу порога."""
+    tr = _detour_track(1500.0)
+    route = _route()
+    rules = replace(RULES, deviation_m=100.0)
+    card = _route_view(tr, tr.t, route, rules)
+    assert set(route.geo._index) == {100.0, live.HOVER_DEV_CELL_M} and card['track_dev_m']
+    for i, m in card['track_dev_m']:
+        assert m == pytest.approx(min(live.polyline_m(tuple(card['track'][i]), x) for x in PLAN_LINE), abs=2)
+
+
+def test_track_gaps_only_without_fixes_inside():
+    """track_gaps — участки линии дольше GAP_S без единой точки трека внутри («տվյալ չկա»); машина стояла 4 мин в пробке
+    (точки есть, в линию не попали) — не перерыв, хотя участок линии тоже дольше GAP_S."""
+    jam = Track().park(DEPOT, 5).drive(A)
+    jam.park(A, 4)                                   # стоит в пробке: точка раз в минуту, скорость 0 (не стоянка дня)
+    jam.drive(B)
+    card = view(facts(jam.pts, [], [T0, jam.t]), jam.t, detail=True)
+    tt = card['track_t']
+    assert any(b - a > live.GAP_S for a, b in zip(tt, tt[1:])) and card['track_gaps'] == []
+    gap = Track().park(DEPOT, 5).drive(A)
+    gap.t += timedelta(minutes=10)                   # 10 минут без данных
+    gap.drive(B)
+    card = view(facts(gap.pts, [], [T0, gap.t]), gap.t, detail=True)
+    tt = card['track_t']
+    assert card['track_gaps'] and all(tt[i + 1] - tt[i] > live.GAP_S for i in card['track_gaps'])
+    assert any(tt[i + 1] - tt[i] >= 600 for i in card['track_gaps'])
+    assert view(facts(), T0, detail=True)['track_gaps'] == []
+
+
+def test_plan_cuts_keep_order_and_repeats():
+    """Концы участков — по порядку и с повторами: два магазина в одной точке не выбрасывают подсказку участков рейса
+    (число концов = магазины + 2 склада)."""
+    from route_optimizer import views
+    lines = ((DEPOT, A, A, B, DEPOT),)               # два магазина в одной точке
+    geo = views._plan_geometry(FakeLineRoads(), {'CAR1': (lines, (), 'map-1')})['CAR1']
+    cuts = geo.shown_cuts()[0]
+    assert len(cuts) == 5 and [geo.shown()[0][i] for i in cuts] == [[round(p[0], 6), round(p[1], 6)] for p in lines[0]]
+    rep = live.RouteGeometry(((DEPOT, A, B, DEPOT),), (), (), cuts=((0, 1, 1, 2, 3),))   # конец участка дважды
+    assert rep.shown_cuts() == [[0, 1, 1, 2, 3]]
