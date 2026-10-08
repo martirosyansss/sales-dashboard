@@ -38,7 +38,7 @@ from . import fleet as fl
 from . import waybill as wb
 from . import terrain as dem
 from .running_costs import TERRAIN_U_BAR_TRACK, curb_tonnes, profile_fields, route_cost, terrain_liters
-from .erp import CUSTOMER_FIND_MAX_LEN, CustomerHint, CustomerRef, ErpError
+from .erp import CUSTOMER_FIND_MAX_LEN, Customer, CustomerHint, CustomerRef, ErpError
 from .geo import Point, haversine_km, in_city, in_polygon, is_valid_point
 from .roads import SNAP_MAX_KM, CenterBypassRoads, RoadDistances, RoadProvider, roads_version
 from .snapshot import CAR_IDLE_DAYS, MIN_REFRESH_SECONDS, ResultCache, Snapshot, SnapshotCache
@@ -3425,6 +3425,18 @@ def api_customer_window() -> Any:
 CUSTOMER_FLAGS = frozenset({'solo', 'center'})   # флажки карточки магазина «Развоза» (№78)
 
 
+def _known_customers(state: RoutesState, snap: Snapshot) -> Mapping[int, Customer]:
+    """Магазины для условий: снимок (клиенты шаблонов менеджеров) + клиенты заказов «Развоза» в памяти (кэши заказов
+    дня) — магазин вне шаблонов ERP с заказом тоже в рейсе, его условия и «Մինչև ժամը» задают так же (08.10: «ՍԱՍ ս/մ
+    /Բաղրամյան» — «Խանութը չի գտնվել»). Заказов в памяти нет (перезапуск) — «Развоз» загрузит их при обновлении."""
+    with state.dispatch_lock:
+        loaded = [d.customers for _, d in state.dispatch_cache.values()] + [
+            d.customers for _, d in state.same_day_cache.values()]
+    extra = {cid: Customer(cid, code, name, '', None, False, None)
+             for names in loaded for cid, (code, name) in names.items() if cid not in snap.customers}
+    return {**snap.customers, **extra} if extra else snap.customers
+
+
 @bp.post('/api/routes/customer-vehicles')
 @_api
 def api_customer_vehicles() -> Any:
@@ -3448,7 +3460,7 @@ def api_customer_vehicles() -> Any:
         return _bad_request({'customer_id': 'Սպասվում էր հաճախորդի կոդ'})
     state = _state()
     snap, _ = state.snapshots.get(allow_stale=True)
-    if cid not in snap.customers:
+    if cid not in _known_customers(state, snap):
         return _bad_request({'customer_id': 'Խանութը չի գտնվել — թարմացրեք էջը'})
     if 'access' not in payload:     # только время у магазина
         minutes = None
@@ -3508,7 +3520,7 @@ def api_customer_vehicles_search() -> Any:
     state = _state()
     snap, _ = state.snapshots.get(allow_stale=True)
     bundle = _bundle(state)
-    customers = [c for cid, c in snap.customers.items() if
+    customers = [c for cid, c in _known_customers(state, snap).items() if
                  (cid == customer_id if customer_id is not None else
                   (not query and (cid in bundle.vehicle_access or cid in bundle.windows or cid in bundle.unload_min
                                   or cid in bundle.solo or cid in bundle.center_allow)) or
