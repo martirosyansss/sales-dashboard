@@ -229,7 +229,8 @@ _LIVE_EXPLAIN_INDEX = 'CREATE INDEX IF NOT EXISTS live_explain_day ON live_expla
 # Схема 27 (№91, Telegram-бот «Araqich Dispatch», docs/plans/telegram-bot-plan.md §2): сообщения бота — строка на тревогу
 # (key «alert:машина|вид|начало»; и решение «не слать»: phase skipped без message_id — тихие часы, старая, окно повтора,
 # перенесена из route_live_alerts.json), на «не успеет» машины за день («late:машина|день») и на отчёт («plan:день»,
-# «summary:день», «week:понедельник»). id — короткий номер для подписанных кнопок; level — 🔴/🟠/⚪ на момент отправки;
+# «summary:день», «week:понедельник»); phase failed — Telegram отверг именно это сообщение (400: тема закрыта, разметка,
+# длина), повтора нет. id — короткий номер для подписанных кнопок; level — 🔴/🟠/⚪ на момент отправки;
 # acked_* — кто нажал «Տեսա»; resolved_at — тревога кончилась; escalated_at — эскалация (один раз); payload — JSON (тело
 # сообщения, строки «не успеет», копии эскалации, подпись отчёта). tg_kv — offset getUpdates, темы форума, имена людей,
 # отметка импорта route_live_alerts.json.
@@ -237,7 +238,7 @@ _TG_MESSAGE_TABLE = (
     "CREATE TABLE IF NOT EXISTS tg_message(id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL UNIQUE, "
     "kind TEXT NOT NULL, car TEXT, level TEXT CHECK (level IS NULL OR level IN ('critical', 'warning', 'info')), "
     "chat TEXT, message_id INTEGER, thread_id INTEGER, "
-    "phase TEXT NOT NULL CHECK (phase IN ('active', 'ended', 'skipped', 'report')), sent_at TEXT NOT NULL, "
+    "phase TEXT NOT NULL CHECK (phase IN ('active', 'ended', 'skipped', 'report', 'failed')), sent_at TEXT NOT NULL, "
     "acked_by INTEGER, acked_name TEXT, acked_at TEXT, resolved_at TEXT, escalated_at TEXT, "
     "payload TEXT NOT NULL DEFAULT '{}')")
 _TG_MESSAGE_INDEX = 'CREATE INDEX IF NOT EXISTS tg_message_sent ON tg_message(sent_at)'
@@ -2837,11 +2838,12 @@ class Store:
         return self._read(query)
 
     def tg_save_message(self, rec: Mapping[str, Any]) -> None:
-        """Записать запись бота целиком (по key: новая — вставка с её id, есть — замена всех полей, id прежний)."""
+        """Записать запись бота целиком (по key: новая — вставка с её id, есть — замена всех полей, и id: номер выдаёт бот,
+        запись, заведённая заново под тем же ключом, получает новый)."""
         values = [json.dumps(rec.get('payload') or {}, ensure_ascii=False) if f == 'payload' else rec.get(f)
                   for f in TG_MESSAGE_FIELDS]
         cols = ', '.join(TG_MESSAGE_FIELDS)
-        update = ', '.join(f'{f} = excluded.{f}' for f in TG_MESSAGE_FIELDS if f not in ('id', 'key'))
+        update = ', '.join(f'{f} = excluded.{f}' for f in TG_MESSAGE_FIELDS if f != 'key')
         self._transaction(lambda conn: conn.execute(
             f'INSERT INTO tg_message({cols}) VALUES({", ".join("?" * len(TG_MESSAGE_FIELDS))}) '
             f'ON CONFLICT(key) DO UPDATE SET {update}', values), 'не удалось записать сообщение Telegram-бота')

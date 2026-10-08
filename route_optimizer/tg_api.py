@@ -13,6 +13,7 @@ result или TelegramError. Токен есть только в адресе з
 """
 from __future__ import annotations
 
+import http.client
 import json
 import threading
 import time
@@ -76,9 +77,34 @@ class RateLimiter:
         if delay > 0:
             self.sleep(delay)
 
+    def hold(self) -> None:
+        """Метод вне очереди чатов (getUpdates, getChatMember, answerCallbackQuery): только общая пауза 429."""
+        with self.lock:
+            delay = self.paused_until - self.clock()
+        if delay > 0:
+            self.sleep(delay)
+
     def pause(self, seconds: float) -> None:
         with self.lock:
             self.paused_until = max(self.paused_until, self.clock() + seconds)
+
+
+CHAT_WIDE_400 = ('chat not found', 'chat was deactivated', 'was kicked', 'not a member', 'have no rights to send',
+                 'not enough rights to send')
+
+
+def chat_wide(e: TelegramError) -> bool:
+    """Ошибка всего чата или бота (токен неверен — 401/404, бота убрали или запретили — 403, чата нет, нет права писать):
+    повтор других сообщений бессмыслен, такие подряд останавливают рассылку."""
+    if e.status in (401, 403, 404):
+        return True
+    return e.status == 400 and any(x in e.description.lower() for x in CHAT_WIDE_400)
+
+
+def per_message(e: TelegramError) -> bool:
+    """Ошибка одного сообщения (400: тема закрыта, разметка, длина, кнопка, нельзя ответить): это сообщение не уйдёт и
+    при повторе — в журнал и дальше; остальные — шлются."""
+    return isinstance(e.status, int) and 400 <= e.status < 500 and e.status not in (409, 429) and not chat_wide(e)
 
 
 def _error(status: int | None, body: Any) -> TelegramError:
@@ -121,7 +147,8 @@ class BotApi:
             except (OSError, ValueError, AttributeError):
                 body = None
             raise _error(e.code, body) from None
-        except (urllib.error.URLError, OSError, ValueError) as e:   # сеть, тайм-аут, не JSON — без адреса (в нём токен)
+        except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as e:
+            # сеть, тайм-аут, обрыв ответа (RemoteDisconnected, IncompleteRead), не JSON — без адреса (в нём токен)
             raise TelegramError(type(e).__name__) from None
         if not isinstance(body, dict) or not body.get('ok'):
             raise _error(None, body)
@@ -132,6 +159,8 @@ class BotApi:
         for attempt in (1, 2):
             if method in LIMITED and 'chat_id' in params:
                 self.limiter.wait(str(params['chat_id']))
+            else:   # 429 и у них — повтор не раньше retry_after
+                self.limiter.hold()
             try:
                 return self._once(method, params)
             except TelegramError as e:

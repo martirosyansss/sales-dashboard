@@ -12,7 +12,7 @@
   без порога MIN_DAYS — у одного дня его нет); итог парка;
 - неделя (week_text): места водителей за прошлую неделю (scorecard.period: балл и место — с MIN_DAYS днями), с малым
   числом дней — отдельной строкой; три самых слабых показателя парка (средняя подоценка водителей);
-- /where (where_text), /today (today_text), /late (late_text), /help (HELP).
+- /where (where_text), /today (today_text), /late (late_text), /help (help_text).
 """
 from __future__ import annotations
 
@@ -207,13 +207,16 @@ def week_text(monday: date, rows: Sequence[Mapping[str, Any]]) -> str:
 
 # --- команды ---
 
-HELP = ('🤖 <b>Araqich Dispatch</b>\n'
-        '/where [համար] — որտեղ է մեքենան (առանց համարի՝ մեքենաների ցուցակ)\n'
-        '/today — այսօրվա առաջընթացը\n'
-        '/late — ով է ուշանում\n'
-        '/help — այս օգնությունը\n\n'
-        '🔴 կրիտիկական (ձայն, «✔ Տեսա», 10 րոպեից պատասխան չկա՝ ղեկավարին) · 🟠 ուշադրություն · ⚪ տեղեկություն '
-        '(առանց ձայնի)։ «✔ Տեսա»՝ տեսել եմ, զբաղվում եմ։')
+def help_text(escalate_min: float) -> str:
+    """/help: команды и уровни; эскалация — из настроек (0 — выключена)."""
+    esc_text = (f', {int(escalate_min)} րոպեից պատասխան չկա՝ ղեկավարին' if escalate_min > 0 else '')
+    return ('🤖 <b>Araqich Dispatch</b>\n'
+            '/where [համար] — որտեղ է մեքենան (առանց համարի՝ մեքենաների ցուցակ)\n'
+            '/today — այսօրվա առաջընթացը\n'
+            '/late — ով է ուշանում\n'
+            '/help — այս օգնությունը\n\n'
+            f'🔴 կրիտիկական (ձայն, «✔ Տեսա»{esc_text}) · 🟠 ուշադրություն · ⚪ տեղեկություն '
+            '(առանց ձայնի)։ «✔ Տեսա»՝ տեսել եմ, զբաղվում եմ։')
 
 
 def _ago(seconds: Any) -> str:

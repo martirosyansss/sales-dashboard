@@ -364,9 +364,10 @@ def test_late_message_groups_stores_of_a_car_once_per_day(tmp_path):
     # перезапуск — записи в базе
     h.restart()
     assert h.tick() == 0 and len(h.api.sent()) == 3
-    # другой день — новое сообщение
+    # другой день — новое сообщение; вчерашнее, ещё «идущее», закрыто правкой (ревью: без кнопки и эскалации)
     h.set(now=NOW + timedelta(days=1))
-    assert h.tick() == 1 and h.api.sent()[-1]['text'].startswith('🔴') and 'reply_parameters' not in h.api.sent()[-1]
+    assert h.tick() == 2 and h.api.sent()[-1]['text'].startswith('🔴') and 'reply_parameters' not in h.api.sent()[-1]
+    assert h.api.text('-100', mid).startswith('✅ <b>Օրն ավարտվեց</b>') and la.ACK_TEXT not in h.api.buttons('-100', mid)
 
 
 def test_late_flapping_at_threshold_is_one_message(tmp_path):

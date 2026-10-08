@@ -412,13 +412,31 @@ def test_deleted_topic_falls_back_to_main_chat_and_topics_are_recreated(tmp_path
     api = FakeTelegram(forum=True)
     h = Harness(tmp_path, gps_card(), NOW, api=api)
     h.tick()
-    api.threads.clear()                                                    # тему удалили в группе
+    before = dict(h.bot.topics)
+    api.threads.discard(before['violations'])                              # тему «Խախտումներ» удалили в группе
     h.set(cards={'CAR1': card(alert('gps', 1, gps='off'), alert('center', 1, lat=1.0, lon=1.0))})
     assert h.tick() == 1
     assert 'message_thread_id' not in api.sent()[-1] and 'Փոքր կենտրոնում' in api.sent()[-1]['text']
+    # ревью: сброшена только удалённая тема, прочие — как были (в базе — тоже)
+    assert h.bot.topics == {k: v for k, v in before.items() if k != 'violations'}
+    assert h.store.tg_kv('topics')['ids'] == h.bot.topics
     h.clock[0] += tg_bot.SETUP_RETRY_S + 1
     h.tick()
-    assert len(api.of('createForumTopic')) == 8
+    assert [p['name'] for p in api.of('createForumTopic')][4:] == ['🚚 Խախտումներ']
+    assert h.bot.topics['critical'] == before['critical'] and h.bot.topics['violations'] != before['violations']
+
+
+def test_topics_are_saved_one_by_one_when_creation_fails_midway(tmp_path):
+    api = FakeTelegram(forum=True)
+    api.fail['createForumTopic'] = [None, None, err(500, 'Internal Server Error')]
+    h = Harness(tmp_path, {}, NOW, api=api)
+    h.tick()
+    assert list(h.store.tg_kv('topics')['ids']) == ['critical', 'late']        # созданные две — в базе
+    h.restart()
+    h.clock[0] += tg_bot.SETUP_RETRY_S + 1
+    h.tick()
+    assert [p['name'] for p in api.of('createForumTopic')] == [n for _, n in tg_bot.TOPICS][:3] + \
+        [n for _, n in tg_bot.TOPICS][2:]                                    # первые две второй раз не создаются
 
 
 def test_group_upgraded_to_supergroup_writes_to_new_id(tmp_path, caplog):
@@ -609,7 +627,7 @@ def test_commands_in_group_where_today_late_help(tmp_path):
     assert [b['text'] for b in h.api.sent()[1]['reply_markup']['inline_keyboard'][0]] == ['CAR1', 'CAR2']
     assert '🚚 <b>CAR1</b> Արամ — 12/20 · ⏰ 1 · 📶 3 րոպե առաջ' in today and '📵 կապ չկա' in today
     assert '<b>Ընդամենը՝</b> 15/29 կետ' in today
-    assert 'Խանութ c1 — կուշանա պատուհանից 20' in late_t and help_t == rp.HELP
+    assert 'Խանութ c1 — կուշանա պատուհանից 20' in late_t and help_t == rp.help_text(10)
     assert h.store.tg_kv('offset') == 3 and h.api.of('getUpdates')[0] == {'timeout': 0, 'allowed_updates':
                                                                           ['message', 'callback_query']}
     h.bot.poll_once(0)
@@ -700,12 +718,231 @@ def test_store_tg_methods_round_trip(tmp_path):
         s.tg_save_message({**rec, 'key': 'other', 'level': 'red'})        # CHECK уровня
 
 
+# ============================== ревью 1 ==============================
+
+def test_review_high1_rejected_message_is_logged_marked_and_pass_continues(tmp_path, caplog):
+    """400 одного сообщения (тема закрыта, разметка, длина, кнопка) — в журнал, запись failed, остальные уходят в том же
+    проходе, паузы и счёта до остановки нет; повтора нет. Ошибка всего чата (чат не найден) — считается."""
+    cards = {'CAR1': card(alert('gps', 1, gps='off'), alert('center', 1, lat=1.0, lon=1.0))}
+    h = Harness(tmp_path, cards, NOW)
+    h.api.fail['sendMessage'] = [err(400, 'Bad Request: TOPIC_CLOSED')]
+    assert h.tick() == 1 and h.bot.retry_at == 0.0 and h.bot.client_errors == 0 and h.bot.failures == 0
+    assert h.rec('alert:CAR1|gps').phase == 'failed' and 'TOPIC_CLOSED' in h.rec('alert:CAR1|gps').payload['error']
+    assert h.rec('alert:CAR1|center').phase == 'active' and 'отклонено Telegram' in caplog.text
+    assert h.tick() == 0 and len(h.api.sent()) == 2 and len(h.api.messages) == 1   # отвергнутое не повторяется
+    # много отвергнутых подряд — не остановка
+    many = {f'C{i}': card(alert('gps', 1, gps='off'), car=f'C{i}') for i in range(la.CLIENT_ERRORS_MAX + 2)}
+    h2 = Harness(tmp_path, many, NOW, db='b.db')
+    h2.api.fail['sendMessage'] = [err(400, "Bad Request: can't parse entities")] * (la.CLIENT_ERRORS_MAX + 2)
+    h2.tick()
+    assert h2.bot.halted is None and all(r.phase == 'failed' for r in h2.bot.records.values())
+    # чат не найден — ошибка всего чата: пауза и счёт
+    h3 = Harness(tmp_path, gps_card(), NOW, db='c.db')
+    h3.api.fail['sendMessage'] = [err(400, 'Bad Request: chat not found')]
+    h3.tick()
+    assert h3.bot.client_errors == 1 and h3.bot.retry_at > 0 and h3.bot.records == {}
+    assert tg_api.chat_wide(err(403, 'Forbidden: bot was kicked')) and tg_api.chat_wide(err(401, 'Unauthorized'))
+    assert tg_api.per_message(err(400, 'Bad Request: message is too long')) and not tg_api.per_message(err(429, 'x'))
+    assert not tg_api.per_message(err(400, 'Bad Request: chat not found'))
+
+
+def test_review_high1_rejected_late_escalation_and_report_do_not_loop(tmp_path):
+    h = Harness(tmp_path, {'CAR1': card(late('c1', 20))}, NOW)
+    h.api.fail['sendMessage'] = [err(400, 'Bad Request: TOPIC_CLOSED')]
+    h.tick()
+    rec = h.rec('late:')
+    assert rec.phase == 'failed' and 'c1' in rec.payload['lines']
+    assert h.tick() == 0 and len(h.api.sent()) == 1 and h.api.messages == {}   # тот же прогноз — без повторов
+    t = NOW + timedelta(minutes=2)
+    h.set(now=t, cards={'CAR1': card(late('c1', 60, now=t))})              # хуже на шаг — новое сообщение
+    assert h.tick() == 1 and h.rec('late:').phase == 'active' and h.rec('late:').message_id
+    # эскалация отвергнута — считается сделанной
+    h2 = Harness(tmp_path, gps_card(), NOW, db='b.db')
+    h2.tick()
+    h2.set(now=NOW + timedelta(minutes=11))
+    h2.api.fail['sendMessage'] = [err(400, 'Bad Request: message to be replied not found')]
+    assert h2.tick() == 0 and h2.rec('alert:').escalated_at is not None
+    assert h2.tick() == 0
+    # план отвергнут — до его изменения не повторяем
+    h3 = Harness(tmp_path, {}, NOW, db='c.db')
+    h3.set(plan=plan_of())
+    h3.api.fail['sendMessage'] = [err(400, 'Bad Request: TOPIC_CLOSED')]
+    h3.tick()
+    h3.tick()
+    assert h3.rec('plan:').phase == 'failed' and len(h3.api.of('sendMessage')) == 1
+    changed = {**STORED_PLAN, 'trips': STORED_PLAN['trips'] + [{'id': 4, 'truck': 'CAR2', 'stops': [505]}]}
+    h3.set(plan=plan_of(changed))
+    assert h3.tick() == 1 and h3.rec('plan:').phase == 'report'
+
+
+def test_review_medium3_db_failure_keeps_record_in_memory_and_is_logged(tmp_path, caplog, monkeypatch):
+    h = Harness(tmp_path, gps_card(), NOW)
+
+    def broken(rec):
+        raise st.StoreError('disk I/O error')
+    monkeypatch.setattr(h.store, 'tg_save_message', broken)
+    assert h.tick() == 1 and 'не сохранена в базу' in caplog.text
+    assert h.tick() == 0 and len(h.api.sent()) == 1                       # в памяти — не повторяется каждые 30 с
+    import http.client
+
+    def dropped(req, timeout):
+        raise http.client.RemoteDisconnected('Remote end closed connection without response')
+    with pytest.raises(tg_api.TelegramError) as e:
+        tg_api.BotApi(SECRET, opener=dropped)('getMe')
+    assert str(e.value) == 'RemoteDisconnected'
+
+
+def test_review_medium4_ack_wins_over_escalation_and_scores_are_computed_outside_the_lock(tmp_path):
+    import threading
+    h = Harness(tmp_path, gps_card(), NOW)
+    h.tick()
+    rec = h.rec('alert:')
+    h.bot.handle(callback(h, h.bot.sign(f'a:{rec.id}')))
+    sent = len(h.api.sent())
+    assert h.bot._escalate(rec.key, la.TgRules(), NOW + timedelta(minutes=20)) == 0 and len(h.api.sent()) == sent
+    # долгий расчёт «Վարորդներ» — без замка (кнопки в это время отвечают)
+    free = []
+
+    def scores(a, b):
+        t = threading.Thread(target=lambda: free.append(h.bot.lock.acquire(timeout=1) and (h.bot.lock.release() or True)))
+        t.start()
+        t.join()
+        return SCORE_ROWS
+    monday = datetime(2026, 10, 5, 9, 0, tzinfo=Y)
+    h2 = Harness(tmp_path, {}, monday, db='b.db')
+    h2.feeds.scores = scores   # под замком прохода другой поток его бы не получил (False через 1 с)
+    h2.set(plan=plan_of(day=monday.date()))
+    assert h2.tick() == 2 and free == [True]
+
+
+def test_review_medium5_explained_minor_and_past_day_records_are_closed(tmp_path):
+    dev = alert('deviation', 5, km=2.0, lat=1.0, lon=1.0)
+    kinds = {'live_alert_kinds': list(st.LIVE_ALERT_KINDS),
+             'tg_levels': {**st.DEFAULT_SETTINGS['tg_levels'], 'deviation': 'critical'}}
+    h = Harness(tmp_path, {'CAR1': card(dev)}, NOW, settings=kinds)
+    h.tick()
+    mid = h.rec('alert:CAR1|deviation').message_id
+    h.set(cards={'CAR1': card({**dev, 'active': False, 'explained': {'reason': 'road'}})},
+          now=NOW + timedelta(minutes=15))
+    assert h.tick() == 1 and h.api.text('-100', mid).startswith('✅ <b>Բացատրված է</b>')
+    assert h.api.buttons('-100', mid) == [la.MAP_TEXT, la.WHERE_TEXT] and len(h.api.sent()) == 1   # без эскалации
+    h2 = Harness(tmp_path, {'CAR1': card(dev)}, NOW, settings=kinds, db='b.db')
+    h2.tick()
+    h2.set(cards={'CAR1': card({**dev, 'active': False, 'minor': True})})
+    h2.tick()
+    assert h2.rec('alert:').phase == 'ended' and h2.rec('alert:').payload['end_reason'] == 'minor'
+    # «нет связи» пропала из журнала без конца (20:00) — запись «идёт»; на следующий день закрывается правкой
+    h3 = Harness(tmp_path, gps_card(), NOW, db='c.db')
+    h3.tick()
+    mid3 = h3.rec('alert:').message_id
+    h3.set(cards={})
+    h3.tick()
+    assert h3.rec('alert:').phase == 'active'
+    h3.set(now=datetime(2026, 10, 7, 8, 30, tzinfo=Y))
+    assert h3.tick() == 1 and h3.api.text('-100', mid3).startswith('✅ <b>Օրն ավարտվեց</b>') and len(h3.api.sent()) == 1
+    assert h3.tick() == 0
+
+
+def test_review_low1_legacy_three_part_late_key_is_skipped_and_summary_counts_real_late(tmp_path):
+    legacy = tmp_path / la.STATE_FILE
+    legacy.write_text(json.dumps({'sent': {
+        'CAR1|late|2026-10-06': {'at': at(10), 'start': at(10), 'end': None},
+        'CAR1|late|2026-10-06|c1': {'at': at(10), 'start': at(10), 'end': None, 'over': 20},
+        'CAR1|late|2026-10-06|c2': {'at': at(10), 'start': at(10), 'end': None, 'over': 30}}}), encoding='utf-8')
+    h = Harness(tmp_path, {'CAR1': card(planned=True, closed=True), 'CAR2': card(car='CAR2', planned=True, closed=True)},
+                NOW, legacy=str(legacy), settings={'live_alert_kinds': []})
+    assert list(h.bot.records) == ['late:CAR1|2026-10-06']                    # без мусорной alert:CAR1|late|…
+    h.set(plan=plan_of(), fleet={})
+    h.tick()
+    summary = [t for t in h.api.texts() if t.startswith('🏁')][0]
+    assert 'ուշացում՝ 2' in summary.split('\n')[2]
+
+
+def test_review_low2_non_ascii_callback_data_is_ignored_not_raised(tmp_path):
+    h = Harness(tmp_path, {'ԱԲ12': card(car='ԱԲ12')}, NOW, settings={'live_alert_kinds': []})
+    assert h.bot.verify('w:ԱԲ12|Ա') is None and h.bot.verify(h.bot.sign('w:ԱԲ12')) == 'w:ԱԲ12'
+    h.bot.handle(callback(h, 'w:ԱԲ12|ԱԲԳԴ'))
+    assert 'text' not in h.api.of('answerCallbackQuery')[-1] and h.api.of('sendLocation') == []
+    h.bot.handle(callback(h, h.bot.sign('w:ԱԲ12')))
+    assert len(h.api.of('sendLocation')) == 1
+
+
+def test_review_low3_429_on_unlimited_methods_waits_retry_after():
+    answers = [urllib.error.HTTPError('u', 429, 'Too Many', {}, io.BytesIO(
+        b'{"ok": false, "error_code": 429, "description": "Too Many Requests", "parameters": {"retry_after": 5}}')),
+        Resp(b'{"ok": true, "result": []}')]
+
+    def opener(req, timeout):
+        a = answers.pop(0)
+        if isinstance(a, Exception):
+            raise a
+        return a
+    clock = Clock()
+    api = tg_api.BotApi(SECRET, opener=opener, limiter=tg_api.RateLimiter(clock, clock.sleep))
+    assert api('getUpdates', timeout=0) == [] and clock.slept == [5.0]
+
+
+def test_review_low4_fit_without_newlines_is_hard_cut():
+    text = tg_bot.fit('<b>' + 'Ա' * 5000 + '</b>')
+    assert len(text) <= tg_bot.TEXT_MAX and '<b>' not in text and text.endswith('…')
+
+
+def test_review_low5_escalation_recipient_outside_group_can_ack_in_private(tmp_path):
+    h = Harness(tmp_path, gps_card(), NOW, settings={'tg_escalate_to': [555]})
+    h.tick()
+    h.set(now=NOW + timedelta(minutes=10))
+    h.tick()
+    private = h.api.sent('555')[-1]
+    h.bot.handle(callback(h, private['reply_markup']['inline_keyboard'][0][0]['callback_data'], uid=555, first='Տեր',
+                          chat={'id': 555, 'type': 'private'}))
+    assert h.rec('alert:').acked_name == 'Տեր' and h.api.of('getChatMember') == [p for p in h.api.of('getChatMember')
+                                                                                  if p['user_id'] != 555]
+
+
+def test_review_low6_settings_js_falls_back_to_default_level():
+    js = (ROOT / 'static' / 'js' / 'routes_settings.js').read_text(encoding='utf-8')
+    assert '(cur[code] || TG_DEFAULT[code]) === v' in js
+    assert all(f"{k}: '{v}'" in js for k, v in st.DEFAULT_SETTINGS['tg_levels'].items())
+
+
+def test_review_low7_help_takes_escalation_minutes_from_settings(tmp_path):
+    h = Harness(tmp_path, {}, NOW, settings={'tg_escalate_min': 25})
+    h.bot.handle(command('/help'))
+    assert '25 րոպեից պատասխան չկա' in h.api.texts()[-1] and '10 րոպե' not in h.api.texts()[-1]
+    assert 'ղեկավարին' not in rp.help_text(0)
+
+
+def test_review_low8_first_start_sends_no_stale_week_or_summary(tmp_path):
+    wednesday = datetime(2026, 10, 7, 9, 0, tzinfo=Y)
+    h = Harness(tmp_path, {}, wednesday)
+    h.set(plan=plan_of(day=wednesday.date()), scores=SCORE_ROWS)
+    h.tick()
+    assert [t[:1] for t in h.api.texts()] == ['📋']           # план — да, прошлая неделя — нет
+    late_evening = datetime(2026, 10, 7, 21, 0, tzinfo=Y)                     # запуск в 21:00: итог дня устарел
+    h2 = Harness(tmp_path, {}, late_evening, db='b.db', settings={'live_quiet_from': '23:00', 'live_quiet_to': '07:00'})
+    h2.set(plan=plan_of(day=late_evening.date()))
+    h2.tick()
+    assert not any(t.startswith('🏁') for t in h2.api.texts()) and h2.rec('summary:').payload == {'why': 'stale'}
+    # праздник в понедельник — неделя со вторым (первым рабочим) днём
+    tuesday = datetime(2026, 10, 6, 9, 0, tzinfo=Y)
+    h3 = Harness(tmp_path, {}, tuesday, db='c.db', settings={'holidays': ['2026-10-05']})
+    h3.set(plan=plan_of(), scores=SCORE_ROWS)
+    assert h3.tick() == 2 and h3.api.texts()[-1].startswith('🏆')
+
+
+def test_review_low9_repeat_window_applies_within_one_pass(tmp_path):
+    cards = {'CAR1': card(alert('speed', 5, 4, max_kmh=100, lat=1.0, lon=1.0), alert('speed', 2, max_kmh=110, lat=1.0, lon=1.0))}
+    h = Harness(tmp_path, cards, NOW)
+    assert h.tick() == 1 and len(h.api.messages) == 1
+    assert sorted(r.payload.get('why') or r.phase for r in h.bot.records.values()) == ['ended', 'repeat']
+
+
 def test_settings_page_has_telegram_block():
     js = (ROOT / 'static' / 'js' / 'routes_settings.js').read_text(encoding='utf-8')
     assert all(f"key: '{k}'" in js for k in ('tg_levels', 'tg_sim_installed', 'tg_escalate_min', 'tg_escalate_to',
                                               'tg_report_plan', 'tg_report_summary', 'tg_summary_at', 'tg_report_week'))
     assert all(f"['{k}'," in js for k in st.TG_LEVEL_KINDS) and 'Տերմինալներում կա բջջային ինտերնետ (SIM)' in js
-    assert "routes_settings.js') }}?v=40" in (ROOT / 'templates' / 'routes_settings.html').read_text(encoding='utf-8')
+    assert "routes_settings.js') }}?v=41" in (ROOT / 'templates' / 'routes_settings.html').read_text(encoding='utf-8')
 
 
 def test_token_is_never_logged(tmp_path, caplog):

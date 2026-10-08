@@ -7,13 +7,20 @@
   (live_alerts.due_escalations): ответ в группе на исходное сообщение со звуком и упоминанием людей escalate_to + личное
   сообщение каждому с теми же кнопками (403 — человек не нажимал /start у бота — в журнал, рассылку не останавливает);
   отчёты по событию: план дня — как только план сегодня выпущен водителям (Draft.released), изменили — правка того же
-  сообщения со строкой «Թարմացված՝ HH:MM», закреплён; неделя — с первым планом недели; итог дня — когда все машины плана
-  вернулись на склад (карточка closed), но не позже tg_summary_at, закреплён вместо плана. Выходные и праздники
-  (настройки №64) — без отчётов. План и неделя ждут конца тихих часов (утром), итог — нет (уходит один раз за день);
+  сообщения со строкой «Թարմացված՝ HH:MM», закреплён; неделя — с первым планом недели (только в первый рабочий день
+  недели); итог дня — когда все машины плана вернулись на склад (карточка closed), но не позже tg_summary_at, закреплён
+  вместо плана (бот запущен позже tg_summary_at больше чем на SUMMARY_STALE_MIN — итога за день нет). Выходные и
+  праздники (настройки №64) — без отчётов. План и неделя ждут конца тихих часов (утром), итог — нет;
+  тревога, объяснённая диспетчером или ставшая «փոքր», и записи прошлых дней, ещё «идущие», закрываются правкой;
 - приём обновлений poll_once (getUpdates, long poll POLL_TIMEOUT_S, offset — в tg_kv): кнопки и команды /where /today
-  /late /help. Доступ: в группе — все; в личке — только участники группы (getChatMember, кэш ACCESS_TTL_S); чужим и
-  другим чатам — молчание. Данные кнопок подписаны (HMAC от токена, короткий id записи): подделанные — мимо.
-Общее состояние (записи) — под self.lock; запись в базу — только после удачного вызова Telegram (сбой — повтор).
+  /late /help. Доступ: в группе — все; в личке — участники группы (getChatMember, кэш ACCESS_TTL_S) и люди эскалации
+  (tg_escalate_to); чужим и другим чатам — молчание. Данные кнопок подписаны (HMAC от токена, короткий id записи):
+  подделанные — мимо.
+Общее состояние (записи) — под self.lock; долгие расчёты (карточки флота, план, «Վարորդներ») — до него; эскалация
+перепроверяет «Տեսա» под замком. Запись — после удачного вызова Telegram (сбой — повтор), сначала в память, потом в
+базу (сбой базы — в журнал, без повтора сообщения). Сообщение, которое Telegram отверг само по себе (400: тема закрыта,
+разметка, длина, кнопка), — в журнал и запись failed, проход идёт дальше (tg_api.per_message); к остановке рассылки
+ведут только ошибки всего чата (tg_api.chat_wide).
 
 Темы: группа — форум и бот — админ с правом «Управление темами» → при старте создаются недостающие темы (TOPICS), их id —
 в tg_kv; тревоги «нет связи»/GPS — в 🔴, «не успеет» — в ⏰, прочие — в 🚚, отчёты — в 📊. Не форум или нет прав — всё в
@@ -31,8 +38,10 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import html
 import json
 import logging
+import re
 import threading
 import time
 from dataclasses import asdict, dataclass, replace
@@ -45,7 +54,7 @@ from . import live_alerts as la
 from . import tg_reports as rp
 from .live import Rules
 from .live_alerts import Rec
-from .tg_api import TelegramError
+from .tg_api import TelegramError, chat_wide, per_message
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +78,7 @@ COMMANDS = [{'command': 'where', 'description': 'Որտեղ է մեքենան (�
             {'command': 'help', 'description': 'Օգնություն'}]
 NO_PREVIEW = {'is_disabled': True}
 TEXT_MAX = 4096                # символов в сообщении (Telegram)
+SUMMARY_STALE_MIN = 60         # итог дня позже tg_summary_at больше чем на столько (бот запущен поздно) — не шлётся
 ACKED = 'Գրանցված է'
 
 
@@ -88,7 +98,10 @@ def fit(text: str) -> str:
     """Текст в предел Telegram (TEXT_MAX): лишние строки целиком (каждая строка — законченный HTML) и «…»."""
     if len(text) <= TEXT_MAX:
         return text
-    return text[:text.rfind('\n', 0, TEXT_MAX - 2)] + '\n…'
+    cut = text.rfind('\n', 0, TEXT_MAX - 2)
+    if cut <= 0:   # одна огромная строка — без разметки (обрезанный тег сломал бы разбор HTML)
+        return html.escape(re.sub(r'<[^>]*>', '', text), quote=False)[:TEXT_MAX - 1] + '…'
+    return text[:cut] + '\n…'
 
 
 def _person(user: Mapping[str, Any]) -> str:
@@ -141,17 +154,31 @@ class TgBot:
         return rec
 
     def _persist(self, rec: Rec) -> None:
+        """Запись — сначала в память (сообщение уже ушло: повтора в этом процессе не будет), потом в базу; сбой базы —
+        в журнал (после перезапуска возможен один повтор — лучше, чем дубль на каждом проходе)."""
         if rec.id is None:   # номер — всегда свой (база с AUTOINCREMENT дала бы занятый для кнопок номер)
             rec.id, self.next_id = self.next_id, self.next_id + 1
-        self.store.tg_save_message(asdict(rec))
         self.records[rec.key] = rec
+        try:
+            self.store.tg_save_message(asdict(rec))
+        except Exception:
+            logger.exception('[Routes] Telegram-бот: запись %s не сохранена в базу', rec.key)
+
+    def _kv(self, key: str, value: Any) -> None:
+        try:
+            self.store.tg_set_kv(key, value)
+        except Exception:
+            logger.exception('[Routes] Telegram-бот: ключ %s не сохранён в базу', key)
 
     def _prune(self, now: datetime) -> None:
         day = now.astimezone(ac.YEREVAN).date()
         if self.pruned == day:
             return
         before = (now - timedelta(days=KEEP_DAYS)).isoformat()
-        self.store.tg_prune(before)
+        try:
+            self.store.tg_prune(before)
+        except Exception:
+            logger.exception('[Routes] Telegram-бот: старые записи не удалены из базы')
         self.records = {k: r for k, r in self.records.items() if r.sent_at >= before}
         self.pruned = day
 
@@ -174,10 +201,16 @@ class TgBot:
         count = 0
         for k, v in (sent if isinstance(sent, dict) else {}).items():
             at = la._moment(v.get('at')) if isinstance(v, dict) else None
-            if at is None or at < keep or self.records.get(k) is not None:
+            if at is None or at < keep:
                 continue
             parts = k.split('|')
             start = v.get('start') if isinstance(v.get('start'), str) else None
+            # «не успеет» — только 4 части (машина|late|день|цель); 3 части с late — не тревога, мимо
+            new_key = (la.late_key(parts[0], parts[2]) if len(parts) == 4 and parts[1] == 'late'
+                       else la.alert_key(*parts) if len(parts) == 3 and parts[1] in la.TITLE and parts[1] != 'late'
+                       else None)
+            if new_key is None or new_key in self.records:   # бот уже вёл эту тревогу — его запись главнее
+                continue
             if len(parts) == 4 and parts[1] == 'late':
                 car, _, day, target = parts
                 rec = late.get(la.late_key(car, day)) or self._new(la.late_key(car, day), 'late', 'active', at, car=car,
@@ -187,7 +220,7 @@ class TgBot:
                 rec.payload['lines'][target] = {'over': over, 'sent': over, 'kind': None, 'text': '',
                                                 'calm': v.get('calm_since') if isinstance(v.get('calm_since'), str) else None}
                 rec.payload['seen'] = sorted(set(rec.payload['seen']) | {target})
-            elif len(parts) == 3 and parts[1] in la.TITLE:
+            else:
                 car, kind, begin = parts
                 phase = 'skipped' if start is None else ('ended' if v.get('end') else 'active')
                 rec = self._new(la.alert_key(car, kind, begin), kind, phase, at, car=car,
@@ -199,7 +232,7 @@ class TgBot:
         for rec in late.values():
             self._persist(rec)
             count += 1
-        self.store.tg_set_kv('legacy_json', {'path': path, 'at': now.isoformat(), 'records': count})
+        self._kv('legacy_json', {'path': path, 'at': now.isoformat(), 'records': count})
         if count:
             logger.info('[Routes] Telegram-бот: из %s перенесено записей «уже отправлено»: %d', path, count)
 
@@ -215,8 +248,8 @@ class TgBot:
         if not isinstance(raw, str) or '|' not in raw:
             return None
         data = raw.rsplit('|', 1)[0]
-        good = self.sign(data)
-        return data if good is not None and hmac.compare_digest(good, raw) else None
+        good = self.sign(data)   # байты: compare_digest на str не с ASCII бросает TypeError
+        return data if good is not None and hmac.compare_digest(good.encode('utf-8'), raw.encode('utf-8')) else None
 
     # --- Telegram ---
 
@@ -226,7 +259,7 @@ class TgBot:
     def _migrated(self, new_id: int) -> None:
         logger.warning('[Routes] Telegram-бот: группа стала супергруппой, новый id %s — бот пишет туда; впишите его в '
                        'ROUTES_LIVE_TG_CHAT', new_id)
-        self.store.tg_set_kv('chat', {'from': self.chat, 'to': str(new_id)})
+        self._kv('chat', {'from': self.chat, 'to': str(new_id)})
         self.chat = str(new_id)
         self.ready, self.setup_at, self.forum, self.topics = False, None, False, {}
 
@@ -245,11 +278,15 @@ class TgBot:
                 if chat == self.chat:
                     self._migrated(e.migrate_to)
                 return self.api('sendMessage', **{**params, 'chat_id': str(e.migrate_to), 'message_thread_id': None})
-            if thread is not None and e.status == 400 and 'thread' in e.description.lower():
-                logger.warning('[Routes] Telegram-бот: тема %s не найдена — сообщение в общий чат, темы создам заново',
+            if thread is not None and e.status == 400 and 'thread not found' in e.description.lower():
+                logger.warning('[Routes] Telegram-бот: тема %s не найдена — сообщение в общий чат, тему создам заново',
                                thread)
-                self.topics, self.ready, self.setup_at = {}, False, None
-                self.store.tg_set_kv('topics', {'chat': self.chat, 'ids': {}})
+                gone = [k for k, v in self.topics.items() if v == thread]   # только удалённая; остальные — как были
+                for k in gone:
+                    del self.topics[k]
+                if gone:
+                    self.ready, self.setup_at = False, None
+                    self._kv('topics', {'chat': self.chat, 'ids': self.topics})
                 return self.api('sendMessage', **{**params, 'message_thread_id': None})
             raise
 
@@ -302,11 +339,10 @@ class TgBot:
 
     def _failed(self, e: TelegramError, sig: tuple[Any, ...]) -> None:
         """Сбой отправки в группу: пауза с ростом (429 — не меньше retry_after) или остановка после CLIENT_ERRORS_MAX
-        ошибок 4xx подряд."""
+        ошибок всего чата подряд (tg_api.chat_wide: токен, бота убрали, чата нет; ошибка одного сообщения сюда не
+        попадает — _rejected)."""
         self.failures += 1
-        status = e.status
-        self.client_errors = self.client_errors + 1 if isinstance(status, int) and 400 <= status < 500 \
-            and status != 429 else 0
+        self.client_errors = self.client_errors + 1 if chat_wide(e) else 0
         if self.client_errors >= la.CLIENT_ERRORS_MAX:
             self.halted = sig
             logger.error('[Routes] Тревоги в Telegram ОСТАНОВЛЕНЫ: %d ошибок %s подряд (токен или чат неверны, бота '
@@ -359,9 +395,9 @@ class TgBot:
             if not self.topics:
                 self.forum = False
             return
-        for k, name in missing:
+        for k, name in missing:   # каждая созданная — сразу в базу: сбой на следующей не создаст эту второй раз
             self.topics[k] = int(self.api('createForumTopic', chat_id=self.chat, name=name)['message_thread_id'])
-        self.store.tg_set_kv('topics', {'chat': self.chat, 'ids': self.topics})
+            self._kv('topics', {'chat': self.chat, 'ids': self.topics})
 
     # --- проход: тревоги, эскалация, отчёты ---
 
@@ -384,21 +420,56 @@ class TgBot:
         fleet: Mapping[str, Mapping[str, Any]] = {}
         if live is not None:
             rules, now, cards, fleet = live
+        inputs = self._report_inputs(day, now, settings, rules, tg, cards)   # долгие расчёты — вне замка
         done = 0
         with self.lock:
             self._prune(now)
             try:
-                if live is not None:
-                    quiet = la.in_quiet(rules, now)
-                    p = la.plan(cards, rules, tg, now, self.records)
-                    for act in p.actions:
-                        done += self._apply(act, cards, now, quiet)
-                    for rec in la.due_escalations(self.records, p.active, tg, now, quiet):
-                        done += self._escalate(rec, tg, now)
-                done += self._reports(day, now, settings, rules, tg, cards, fleet)
-            except TelegramError as e:   # сеть, Telegram: не падаем, повтор позже (несделанное не записано)
+                quiet = la.in_quiet(rules, now)
+                p = la.plan(cards, rules, tg, now, self.records)   # без «Առաքիչ» — только закрытие прошлых дней
+                for act in p.actions:
+                    done += self._guard(act.key, lambda act=act: self._apply(act, cards, now, quiet), act, now)
+                for rec in la.due_escalations(self.records, p.active, tg, now, quiet) if live is not None else ():
+                    done += self._guard(rec.key, lambda rec=rec: self._escalate(rec.key, tg, now), None, now)
+                if inputs is not None:
+                    done += self._reports(inputs, day, now, rules, tg, cards, fleet)
+            except TelegramError as e:   # сеть, Telegram, ошибка всего чата: повтор позже (несделанное не записано)
                 self._failed(e, sig)
         return done
+
+    def _guard(self, key: str, run: Callable[[], int], act: la.Action | None, now: datetime) -> int:
+        """Одно действие: Telegram отверг именно это сообщение (tg_api.per_message: тема закрыта, разметка, длина,
+        кнопка) — в журнал, запись помечается (_rejected), проход идёт дальше; прочие сбои — наверх (_failed).
+        act None — эскалация записи key; act — строка вида отчёта ('plan' | 'week' | 'summary') — отчёт."""
+        try:
+            return run()
+        except TelegramError as e:
+            if not per_message(e):
+                raise
+            logger.warning('[Routes] Telegram-бот: сообщение %s отклонено Telegram (%s) — пропущено', key, e)
+            self._rejected(key, act, e, now)
+            return 0
+
+    def _rejected(self, key: str, act: Any, e: TelegramError, now: datetime) -> None:
+        """Отметить отвергнутое, чтобы не повторять его на каждом проходе: новая тревога или отчёт — запись failed;
+        окончание — запись кончилась (без правки); «не успеет» — строки записаны (новое сообщение — при ухудшении);
+        эскалация — считается сделанной."""
+        why = {'why': 'rejected', 'error': e.description[:200]}
+        old = self.records.get(key)
+        if isinstance(act, la.End) and old is not None:
+            self._persist(replace(old, phase='ended', resolved_at=act.at,
+                                  payload={**old.payload, 'minutes': act.minutes, **why,
+                                           **({'end_reason': act.reason} if act.reason else {})}))
+        elif isinstance(act, la.Late):
+            base = {**(old.payload if old else {}), 'lines': act.lines, 'seen': list(act.seen), **why}
+            self._persist(replace(old, payload=base) if old is not None else
+                          self._new(key, 'late', 'failed', now, car=act.car, level=act.level, payload=base))
+        elif act is None and old is not None:
+            self._persist(replace(old, escalated_at=now.isoformat(), payload={**old.payload, 'escalation': why}))
+        elif isinstance(act, (la.Send, la.Skip)):
+            self._persist(self._new(key, act.kind, 'failed', now, car=act.car, payload=why))
+        elif isinstance(act, str) and old is None:
+            self._persist(self._new(key, act, 'failed', now, payload=why))
 
     def _apply(self, act: la.Action, cards: Mapping[str, Mapping[str, Any]], now: datetime, quiet: bool) -> int:
         if isinstance(act, la.Skip):
@@ -414,10 +485,14 @@ class TgBot:
             return 1
         if isinstance(act, la.End):
             old = self.records[act.key]
-            rec = replace(old, phase='ended', resolved_at=act.at, payload={**old.payload, 'minutes': act.minutes})
+            rec = replace(old, phase='ended', resolved_at=act.at,
+                          payload={**old.payload, 'minutes': act.minutes,
+                                   **({'end_reason': act.reason} if act.reason else {})})
             done = int(self._edit(rec))
-            # сообщения нет (перенесено из прежнего потока — только «нет связи»/GPS) или правка невозможна — новое ⚪
-            if not done and not quiet and (old.message_id is not None or act.kind in la.LEGACY_END_KINDS):
+            # сообщения нет (перенесено из прежнего потока — только «нет связи»/GPS) или правка невозможна — новое ⚪;
+            # закрытая не концом тревоги (объяснена, «փոքր», прошлый день) — только правка
+            if not done and not quiet and not act.reason and (old.message_id is not None
+                                                               or act.kind in la.LEGACY_END_KINDS):
                 self._send(self.chat, act.body, thread=self._thread(act.kind), silent=True)
                 done = 1
             self._persist(rec)
@@ -458,8 +533,9 @@ class TgBot:
                            updated=now.astimezone(ac.YEREVAN).strftime('%H:%M'))
         done = int(self._edit(rec))
         if act.notify:
-            if not done:   # править нечего (перенесено, удалено) — новое сообщение вместо прежнего
+            if not done:   # править нечего (перенесено, удалено, отвергнуто) — новое сообщение вместо прежнего
                 rec.payload.pop('updated', None)
+                rec.phase = 'active'
                 self._post(rec, silent=rec.level == 'info')
                 done = 1
             elif rec.level != 'info':   # ухудшилось на шаг — короткий ответ со звуком
@@ -471,8 +547,12 @@ class TgBot:
         self._persist(rec)
         return done
 
-    def _escalate(self, rec: Rec, tg: la.TgRules, now: datetime) -> int:
-        """Эскалация 🔴 (один раз): ответ в группе со звуком и упоминанием + личные копии с кнопками."""
+    def _escalate(self, key: str, tg: la.TgRules, now: datetime) -> int:
+        """Эскалация 🔴 (один раз): ответ в группе со звуком и упоминанием + личные копии с кнопками. Запись берётся
+        заново под замком: «Տեսա», нажатую между решением и отправкой, эскалация не перекрывает."""
+        rec = self.records.get(key)
+        if rec is None or rec.acked_by is not None or rec.escalated_at is not None or rec.phase != 'active':
+            return 0
         n = int(tg.escalate_min)
         mention = ', '.join(f'<a href="tg://user?id={uid}">{la.esc(self.names.get(str(uid)) or "ղեկավար")}</a>'
                             for uid in tg.escalate_to)
@@ -495,26 +575,53 @@ class TgBot:
             self._persist(rec)
         return 1 + len(copies)
 
-    def _reports(self, day: date, now: datetime, settings: Mapping[str, Any], rules: Rules, tg: la.TgRules,
-                 cards: Mapping[str, Mapping[str, Any]], fleet: Mapping[str, Mapping[str, Any]]) -> int:
+    def _report_inputs(self, day: date, now: datetime, settings: Mapping[str, Any], rules: Rules, tg: la.TgRules,
+                       cards: Mapping[str, Mapping[str, Any]]) -> dict[str, Any] | None:
+        """Данные отчётов — до замка (план из базы, «Վարորդներ» — долгий расчёт): None — отчётов сегодня нет (выключены,
+        выходной или праздник, плана нет). week / day — строки «Վարորդներ», только если отчёт пора слать (ключ есть —
+        посчитано, значение None — данных нет)."""
         if not (tg.report_plan or tg.report_summary or tg.report_week):
-            return 0
+            return None
         if not dp.is_workday(day, settings.get('workdays') or (), dp.holidays_of(settings)):
-            return 0
+            return None
         plan = self.feeds.plan(day)
         if plan is None or not plan.get('cars'):
-            return 0
+            return None
         ds = day.isoformat()
-        quiet = la.in_quiet(rules, now)
+        out: dict[str, Any] = {'plan': plan, 'quiet': la.in_quiet(rules, now)}
+        monday = day - timedelta(days=day.weekday())
+        workdays, off = settings.get('workdays') or (), dp.holidays_of(settings)
+        first = next(d for d in (monday + timedelta(days=i) for i in range(7)) if d == day or dp.is_workday(d, workdays, off))
+        # неделя — только в первый рабочий день недели: бот, запущенный в среду, не шлёт прошлую неделю
+        if (tg.report_week and not out['quiet'] and day == first
+                and f'week:{monday.isoformat()}' not in self.records):
+            prev = monday - timedelta(days=7)
+            out['week'] = self.feeds.scores(prev, prev + timedelta(days=6))
+        local = now.astimezone(ac.YEREVAN)
+        minute = local.hour * 60 + local.minute
+        back = all((cards.get(c['car']) or {}).get('closed') for c in plan['cars'])
+        if tg.report_summary and f'summary:{ds}' not in self.records and (back or minute >= tg.summary_at):
+            if minute >= tg.summary_at + SUMMARY_STALE_MIN:   # первый запуск поздно вечером — итог уже не новость
+                out['stale'] = True
+            else:
+                out['day'] = self.feeds.scores(day, day)
+        return out
+
+    def _reports(self, inputs: Mapping[str, Any], day: date, now: datetime, rules: Rules, tg: la.TgRules,
+                 cards: Mapping[str, Mapping[str, Any]], fleet: Mapping[str, Mapping[str, Any]]) -> int:
+        plan, quiet, ds = inputs['plan'], inputs['quiet'], day.isoformat()
         done = 0
         if tg.report_plan:
-            done += self._plan_report(plan, ds, now, quiet)
-        if tg.report_week and not quiet and (not tg.report_plan or f'plan:{ds}' in self.records):
+            done += self._guard(f'plan:{ds}', lambda: self._plan_report(plan, ds, now, quiet), 'plan', now)
+        if 'week' in inputs and (not tg.report_plan or f'plan:{ds}' in self.records):
             monday = day - timedelta(days=day.weekday())
-            if f'week:{monday.isoformat()}' not in self.records:
-                done += self._week_report(monday, now)
-        if tg.report_summary:
-            done += self._summary_report(plan, ds, now, tg, cards, fleet)
+            done += self._guard(f'week:{monday.isoformat()}', lambda: self._week_report(monday, inputs['week'], now),
+                                'week', now)
+        if inputs.get('stale'):
+            self._persist(self._new(f'summary:{ds}', 'summary', 'skipped', now, payload={'why': 'stale'}))
+        if 'day' in inputs:
+            done += self._guard(f'summary:{ds}', lambda: self._summary_report(plan, ds, now, cards, fleet, inputs['day']),
+                                'summary', now)
         return done
 
     def _report(self, key: str, kind: str, text: str, now: datetime, pin: bool, **payload: Any) -> Rec:
@@ -529,25 +636,41 @@ class TgBot:
         text = rp.plan_text(plan)
         sig = hashlib.sha256(text.encode('utf-8')).hexdigest()[:16]
         old = self.records.get(f'plan:{ds}')
-        if old is None:
-            if quiet:
+        if old is None or old.phase == 'failed':   # ещё не отправлен (или Telegram отверг прежний текст плана)
+            if quiet or (old is not None and old.payload.get('sig') == sig):
                 return 0
-            self._report(f'plan:{ds}', 'plan', text, now, True, sig=sig)
+            if old is not None:
+                del self.records[old.key]
+            try:
+                self._report(f'plan:{ds}', 'plan', text, now, True, sig=sig)
+            except TelegramError as e:
+                if not per_message(e):
+                    raise
+                logger.warning('[Routes] Telegram-бот: план %s отклонён Telegram (%s) — до изменения плана', ds, e)
+                self._persist(self._new(f'plan:{ds}', 'plan', 'failed', now, payload={'sig': sig, 'why': 'rejected'}))
+                return 0
             return 1
         if old.payload.get('sig') == sig or f'summary:{ds}' in self.records:
             return 0
         rec = replace(old, payload={**old.payload, 'body': text, 'sig': sig,
                                     'updated': now.astimezone(ac.YEREVAN).strftime('%H:%M')})
-        if not self._edit(rec):   # удалили — новое сообщение
+        try:
+            edited = self._edit(rec)
+        except TelegramError as e:
+            if not per_message(e):
+                raise
+            logger.warning('[Routes] Telegram-бот: правка плана %s отклонена (%s) — до следующего изменения плана', ds, e)
+            self._persist(replace(old, payload={**old.payload, 'sig': sig}))
+            return 0
+        if not edited:   # удалили — новое сообщение
             rec.payload.pop('updated')
             self._post(rec, silent=True)
             self._pin(rec)
         self._persist(rec)
         return 1
 
-    def _week_report(self, monday: date, now: datetime) -> int:
+    def _week_report(self, monday: date, rows: list[dict[str, Any]] | None, now: datetime) -> int:
         prev = monday - timedelta(days=7)
-        rows = self.feeds.scores(prev, prev + timedelta(days=6))
         key = f'week:{monday.isoformat()}'
         if rows is None:   # «Վարորդներ» не подключены или расчёт не удался — на этой неделе без рейтинга
             self._persist(self._new(key, 'week', 'skipped', now, payload={'why': 'no-data'}))
@@ -555,19 +678,14 @@ class TgBot:
         self._report(key, 'week', rp.week_text(prev, rows), now, False)
         return 1
 
-    def _summary_report(self, plan: Mapping[str, Any], ds: str, now: datetime, tg: la.TgRules,
-                        cards: Mapping[str, Mapping[str, Any]], fleet: Mapping[str, Mapping[str, Any]]) -> int:
+    def _summary_report(self, plan: Mapping[str, Any], ds: str, now: datetime, cards: Mapping[str, Mapping[str, Any]],
+                        fleet: Mapping[str, Mapping[str, Any]], scores: list[dict[str, Any]] | None) -> int:
+        """Итог дня (пора — решено в _report_inputs: все машины плана вернулись или tg_summary_at)."""
         if f'summary:{ds}' in self.records:
             return 0
-        cars = [c['car'] for c in plan['cars']]
-        back = all((cards.get(car) or {}).get('closed') for car in cars)
-        local = now.astimezone(ac.YEREVAN)
-        if not back and local.hour * 60 + local.minute < tg.summary_at:
-            return 0
         late = {r.car: len(r.payload.get('seen') or ()) for r in self.records.values()
-                if r.kind == 'late' and r.key.endswith(f'|{ds}') and r.car}
-        day = date.fromisoformat(ds)
-        rows = rp.summary_data(plan, cards, fleet, late, self.feeds.scores(day, day))
+                if r.key.startswith('late:') and r.key.endswith(f'|{ds}') and r.car}
+        rows = rp.summary_data(plan, cards, fleet, late, scores)
         self._report(f'summary:{ds}', 'summary', rp.summary_text(ds, rows), now, True)
         return 1
 
@@ -590,7 +708,7 @@ class TgBot:
             if isinstance(u.get('update_id'), int):
                 self.offset = u['update_id'] + 1
         if updates:
-            self.store.tg_set_kv('offset', self.offset)
+            self._kv('offset', self.offset)
         return len(updates)
 
     def handle(self, u: Mapping[str, Any]) -> None:
@@ -617,9 +735,13 @@ class TgBot:
         return ok
 
     def _allowed(self, chat: Mapping[str, Any], uid: Any) -> bool:
+        """В группе — все; в личке — участники группы и люди эскалации (tg_escalate_to: копия с «Տեսա» приходит им
+        лично, даже если в группе их нет); прочие чаты — нет."""
         if str(chat.get('id')) == self.chat:
             return True
-        return chat.get('type') == 'private' and self._member(uid)
+        if chat.get('type') != 'private':
+            return False
+        return uid in la.TgRules.from_settings(self.feeds.settings()).escalate_to or self._member(uid)
 
     def _remember(self, user: Mapping[str, Any]) -> None:
         uid, name = user.get('id'), _person(user)
@@ -628,7 +750,7 @@ class TgBot:
                 self.names[str(uid)] = name
                 while len(self.names) > NAMES_MAX:
                     self.names.pop(next(iter(self.names)))
-                self.store.tg_set_kv('names', self.names)
+                self._kv('names', self.names)
 
     def _cards(self) -> Mapping[str, Mapping[str, Any]]:
         now = self.feeds.now()
@@ -651,7 +773,7 @@ class TgBot:
         thread = m.get('message_thread_id') if m.get('is_topic_message') else None
         cmd = cmd.casefold()
         if cmd in ('help', 'start'):
-            self._send(cid, rp.HELP, thread=thread)
+            self._send(cid, rp.help_text(la.TgRules.from_settings(self.feeds.settings()).escalate_min), thread=thread)
         elif cmd == 'where':
             self._where(cid, thread, arg.strip())
         elif cmd == 'today':

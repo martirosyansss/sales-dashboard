@@ -1530,13 +1530,16 @@
         ['late_plan', 'Չի հասցնում՝ պլանից ուշ (առանց ընդունման ժամի)'], ['speed', 'Արագության գերազանցում'],
         ['stop', 'Երկար կանգառ ոչ խանութում'], ['deviation', 'Շեղում երթուղուց'], ['sequence', 'Խանութներ բաց են թողնված']];
     const TG_LEVELS = [['critical', '🔴 կրիտիկական'], ['warning', '🟠 ուշադրություն'], ['info', '⚪ տեղեկություն']];
+    // вид, которого нет в сохранённых уровнях, — уровень по умолчанию (store.DEFAULT_SETTINGS tg_levels), не первый в списке
+    const TG_DEFAULT = { no_contact: 'critical', gps: 'critical', center: 'critical', late_window: 'critical',
+        late_return: 'critical', late_plan: 'warning', speed: 'warning', stop: 'warning', deviation: 'info', sequence: 'info' };
     function tgLevelsField(it, s, err) {
         const cur = (s[it.key] && typeof s[it.key] === 'object') ? s[it.key] : {};
         const box = h('div', { style: 'display:flex;flex-direction:column;gap:6px', role: 'group', 'aria-labelledby': 'rsTgLevelsLabel', id: 'rsN_' + it.key });
         TG_KINDS.forEach(([code, text]) => {
             const sel = h('select', { class: 'rt-select', style: 'flex:0 0 auto;width:184px;max-width:100%',
                 'aria-label': 'Կարևորությունը — ' + text, dataset: { tgLevel: code } },
-                TG_LEVELS.map(([v, t]) => h('option', { value: v, selected: cur[code] === v, text: t })));
+                TG_LEVELS.map(([v, t]) => h('option', { value: v, selected: (cur[code] || TG_DEFAULT[code]) === v, text: t })));
             box.append(h('div', { class: 'rt-field-row' }, h('span', { text: text }), sel));
         });
         reg(['settings.' + it.key], box, err, it.label);

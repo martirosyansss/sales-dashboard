@@ -12,8 +12,10 @@ tg_bot.
 - виды тревог — alert_kinds (по умолчанию все, кроме LIVE_KINDS_OPT_IN); тихие часы quiet (по умолчанию 20:00–08:00,
   Ереван): тревога, замеченная в них, не отправляется вовсе (и не отправится утром, если ещё идёт); повтор — не чаще
   раза в repeat_min минут на тревогу одного вида одной машины (следующая в этом окне пропускается, а не откладывается);
+  (и в одном проходе: две новые тревоги вида у машины — уходит первая);
 - «փոքր շեղում» (minor) и объяснённые диспетчером тревоги (explained) не рассылаются и не отмечаются: малое отклонение,
-  которое вырастет в тревогу (то же начало), уйдёт тогда;
+  которое вырастет в тревогу (то же начало), уйдёт тогда; уже отправленная, а потом объяснённая или ставшая «փոքր», —
+  закрывается правкой (End reason), как и запись прошлого дня, ещё «идущая» (тревога пропала из журнала без конца);
 - запись тревоги — машина, вид и момент начала (alert_key); решение «не слать» (тихие часы, окно повтора, старая)
   записывается тоже (phase skipped) — перезапуск его не пересматривает. Тревога, которой не было видно в этот момент и
   которая кончилась больше RECENT_MIN назад, не рассылается задним числом (после простоя сервера и при первом запуске);
@@ -75,6 +77,7 @@ TITLE = {'speed': 'Արագության գերազանցում', 'stop': 'Երկ
          'sequence': 'Խանութներ բաց են թողնված (հերթականություն)'}
 EXIT_TEXT = {'closed': 'հավելվածը փակվել է', 'shutdown': 'հեռախոսն անջատվել է'}   # live.offline_reason (APK 2.2.5)
 TITLE_END = {'no_contact': 'Կապը վերականգնվեց', 'gps': 'GPS-ը կրկին միացված է'}
+END_TEXT = {'explained': 'Բացատրված է', 'minor': 'Փոքր շեղում՝ ահազանգ չէ', 'day': 'Օրն ավարտվեց'}
 ACK_TEXT = '✔ Տեսա'
 MAP_TEXT = '🗺 Քարտեզ'
 WHERE_TEXT = '📍 Որտեղ է'
@@ -328,7 +331,8 @@ def render(rec: Rec) -> str:
     lines = []
     if rec.phase == 'ended':
         m = rec.payload.get('minutes')
-        lines.append('✅ <b>Վերջացավ</b>' + (f' · տևեց {m} րոպե' if isinstance(m, int) else ''))
+        lines.append('✅ <b>' + END_TEXT.get(rec.payload.get('end_reason'), 'Վերջացավ') + '</b>'
+                     + (f' · տևեց {m} րոպե' if isinstance(m, int) else ''))
     lines.append(str(rec.payload.get('body') or ''))
     if rec.payload.get('updated'):
         lines.append('🔄 Թարմացված՝ ' + esc(rec.payload['updated']))
@@ -383,13 +387,16 @@ class Send:
 
 @dataclass(frozen=True)
 class End:
-    """Тревога кончилась: правка её сообщения (✅); body — отдельное ⚪ сообщение, если правки нет."""
+    """Тревога кончилась: правка её сообщения (✅); body — отдельное ⚪ сообщение, если правки нет. reason — закрыта не
+    концом тревоги (без отдельного сообщения): explained — объяснена диспетчером, minor — оказалась «փոքր շեղում»,
+    day — день прошёл, а запись ещё «идёт» (тревога пропала из журнала без конца: 20:00, день закрыт)."""
     key: str
     car: str
     kind: str
     minutes: int | None
     at: str
     body: str
+    reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -477,7 +484,7 @@ def _plan_late(car: str, card: Mapping[str, Any], rules: Rules, tg: TgRules, now
 
 
 def _plan_car(car: str, card: Mapping[str, Any], rules: Rules, tg: TgRules, now: datetime,
-              records: Mapping[str, Rec], quiet: bool, last: Mapping[str, datetime], out: list[Action],
+              records: Mapping[str, Rec], quiet: bool, last: dict[str, datetime], out: list[Action],
               active: set[str]) -> None:
     """Решения по тревогам одной машины (plan)."""
     if 'late' in rules.alert_kinds and not quiet:
@@ -492,9 +499,17 @@ def _plan_car(car: str, card: Mapping[str, Any], rules: Rules, tg: TgRules, now:
     repeat = timedelta(minutes=rules.repeat_min)
     for a in card.get('alerts_log') or ():
         kind = a.get('kind')
-        if kind not in rules.alert_kinds or kind == 'late' or not a.get('from') or a.get('minor') or a.get('explained'):
+        if kind == 'late' or not a.get('from'):
             continue
         key = alert_key(car, kind, a['from'])
+        if a.get('minor') or a.get('explained'):   # не рассылаются; уже отправленная — закрыть (без «Տեսա» и эскалации)
+            rec = records.get(key)
+            if rec is not None and rec.phase == 'active':
+                out.append(End(key, car, kind, _minutes(a), a.get('to') or now.isoformat(), '',
+                               'explained' if a.get('explained') else 'minor'))
+            continue
+        if kind not in rules.alert_kinds:
+            continue
         if a.get('active'):
             active.add(key)
         rec = records.get(key)
@@ -515,6 +530,7 @@ def _plan_car(car: str, card: Mapping[str, Any], rules: Rules, tg: TgRules, now:
             done = not a.get('active') and bool(ended)
             out.append(Send(key, car, kind, level, alert_body(card, a, rules, level), url, done,
                             _minutes(a) if done else None, ended if done else None))
+            last[f'{car}|{kind}'] = now   # вторая тревога того же вида той же машины в этом же проходе — в окне повтора
         elif rec.phase == 'active' and not a.get('active') and a.get('to'):
             out.append(End(key, car, kind, _minutes(a), a['to'], end_body(card, a)))
 
@@ -528,6 +544,12 @@ def plan(cards: Mapping[str, Mapping[str, Any]], rules: Rules, tg: TgRules, now:
     active: set[str] = set()
     quiet = in_quiet(rules, now)
     last = _last_starts(records)
+    today = now.astimezone(ac.YEREVAN).date()
+    for r in records.values():   # «идёт» с прошлого дня (пропала из журнала без конца) — закрыть: без кнопки и эскалации
+        t = _moment(r.sent_at)
+        if (r.phase == 'active' and r.key.startswith(('alert:', 'late:')) and t is not None
+                and t.astimezone(ac.YEREVAN).date() < today):
+            out.append(End(r.key, r.car or '', r.kind, None, now.isoformat(), '', 'day'))
     for car, card in cards.items():
         mine: list[Action] = []
         try:
