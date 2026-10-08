@@ -74,8 +74,20 @@ def test_schema_28_migrates_copy_of_old_schema_and_acks_roundtrip(tmp_path, old)
     s2.live_ack_put('2026-10-03', [('CAR1', 'speed', b)], 'garage1', b)
     assert s2.live_acks('2026-10-03') == [_ack('CAR1', 'late:window', None, 'boss', at=a),
                                           _ack('CAR1', 'speed', b, 'garage1', at=b)]
-    s2.live_ack_put('2026-10-03', [('CAR1', 'speed', a)], 'garage2', '2026-10-03T10:30:00+04:00', refresh=True)
-    assert s2.live_acks('2026-10-03')[1] == _ack('CAR1', 'speed', a, 'garage1', at=b, seen_at='2026-10-03T10:30:00+04:00')
+    # подтверждение (refresh): строк не создаёт, кто и когда — не меняет; другое начало — только в окне дребезга (10 мин
+    # от прошлого подтверждения), у отклонения то же начало — ± 3 мин
+    t = lambda hm: f'2026-10-03T{hm}:00+04:00'   # noqa: E731
+    s2.live_ack_put('2026-10-03', [('CAR1', 'speed', a)], 'garage2', t('10:30'), refresh=True)   # 18 мин — не дребезг
+    assert s2.live_acks('2026-10-03')[1] == _ack('CAR1', 'speed', b, 'garage1', at=b)
+    s2.live_ack_put('2026-10-03', [('CAR1', 'speed', a)], 'garage2', t('10:20'), refresh=True)   # 8 мин — дребезг
+    assert s2.live_acks('2026-10-03')[1] == _ack('CAR1', 'speed', a, 'garage1', at=b, seen_at=t('10:20'))
+    s2.live_ack_put('2026-10-03', [('CAR1', 'gps', a), ('CAR2', 'speed', a)], 'garage2', t('10:21'), refresh=True)
+    assert len(s2.live_acks('2026-10-03')) == 2                                                   # строк нет — не создаёт
+    s2.live_ack_put('2026-10-03', [('CAR1', 'deviation', t('10:00'))], 'boss', t('10:00'))
+    s2.live_ack_put('2026-10-03', [('CAR1', 'deviation', t('10:10'))], 'garage2', t('10:40'), refresh=True)   # 10 мин
+    assert s2.live_acks('2026-10-03')[0] == _ack('CAR1', 'deviation', t('10:00'), 'boss', at=t('10:00'))
+    s2.live_ack_put('2026-10-03', [('CAR1', 'deviation', t('10:02'))], 'garage2', t('10:40'), refresh=True)   # ± 3 мин
+    assert s2.live_acks('2026-10-03')[0] == _ack('CAR1', 'deviation', t('10:02'), 'boss', at=t('10:00'), seen_at=t('10:40'))
     assert s2.live_acks('2026-10-04') == []
     for bad in ([('', 'speed', None)], [('CAR1', 'Speed', None)], [('CAR1', 'speed', '10:00')], []):
         with pytest.raises(ValueError):
@@ -178,10 +190,12 @@ def test_api_ack_refresh_keeps_who_and_when(client, live_app, monkeypatch):
     seen = later.isoformat(timespec='seconds')
     assert r.status_code == 200 and r.get_json()['acks'] == [_ack('CAR1', 'late:window', None, 'boss', seen_at=seen),
                                                              _ack('CAR1', 'stop', moved, 'boss', seen_at=seen)]
-    # подтверждение без строки — как нажатие (своя отметка страницы, не дошедшая раньше)
-    r = client.post(URL, json={'refresh': True, 'items': [{'car': 'CAR9', 'key': 'stop', 'since': None}]},
+    # подтверждение без строки — ничего не создаёт: у «не успеет» к плану, которую держит отметка «к окну», страница
+    # подтверждает ключом найденной строки (late:window), а не своим (late:plan)
+    r = client.post(URL, json={'refresh': True, 'items': [{'car': 'CAR9', 'key': 'stop', 'since': None},
+                                                          {'car': 'CAR1', 'key': 'late:plan', 'since': None}]},
                     base_url=LAN, headers=hg)
-    assert _ack('CAR9', 'stop', None, 'garage1', at=seen) in r.get_json()['acks']
+    assert r.status_code == 200 and len(r.get_json()['acks']) == 2
     # нажатие — меняет, кто и когда
     r = client.post(URL, json={'items': [{'car': 'CAR1', 'key': 'stop', 'since': moved}]}, base_url=LAN, headers=hg)
     assert _ack('CAR1', 'stop', moved, 'garage1', at=seen) in r.get_json()['acks']

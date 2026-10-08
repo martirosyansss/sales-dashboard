@@ -776,6 +776,11 @@ TG_FLAGS = ('tg_sim_installed', 'tg_report_plan', 'tg_report_summary', 'tg_repor
 # (routes_live.js problemsOf: speed, stop, …, late:window / late:plan), номер машины — как ?car= карты (до 20 символов)
 LIVE_ACK_MAX = 50
 LIVE_ACK_CAR_MAX = 20
+# подтверждение (refresh) меняет начало отметки, только если это тот же случай: у отклонения начало плавает между
+# пересчётами (live.EXPLAIN_FROM_TOL) — в пределах LIVE_ACK_SINCE_TOL; иначе — дребезг, пока отметку подтверждали не дольше
+# LIVE_ACK_FLAP назад (routes_live.js ACK_GRACE_MS)
+LIVE_ACK_SINCE_TOL = timedelta(minutes=3)
+LIVE_ACK_FLAP = timedelta(minutes=10)
 _LIVE_ACK_KEY_RE = re.compile(r'[a-z_]{1,20}(?::[a-z_]{1,20})?')
 GARAGE_KINDS = ('repair', 'accident', 'fixed', 'odometer')   # журнал гаража (№53), как garage.KINDS
 GARAGE_TEXT_MAX = 300
@@ -2936,19 +2941,36 @@ class Store:
     def live_ack_put(self, day: str, items: Sequence[tuple[str, str, str | None]], user: str | None, at: str,
                      refresh: bool = False) -> None:
         """«Տեսա» (check_live_acks) одной транзакцией: строка (день, машина, вид) заменяется — случай, кто, когда.
-        refresh — подтверждение страницей уже отмеченного (дребезг сдвинул since, отметка без since держится): у
-        имеющейся строки меняются только since и seen_at — кто и когда нажал, остаётся; строки нет — пишется как нажатие.
-        Неверные данные — ValueError (API проверяет их раньше и отвечает 400)."""
+        refresh — подтверждение страницей уже отмеченного (дребезг сдвинул since, отметка без since держится): строки не
+        создаёт; у имеющейся (тот же день, машина, вид) меняются только since и seen_at — кто и когда нажал, остаётся — и
+        только если это тот же случай (то же начало; у отклонения — в пределах LIVE_ACK_SINCE_TOL) или отметку подтверждали
+        не дольше LIVE_ACK_FLAP назад (дребезг); иначе подтверждение пропускается. Неверные данные — ValueError (API
+        проверяет их раньше и отвечает 400)."""
         listed, error = check_live_acks([{'car': c, 'key': k, 'since': s} for c, k, s in items])
-        if error or _iso_day(day) is None or _aware_moment(at) is None:
+        moment = _aware_moment(at)
+        if error or _iso_day(day) is None or moment is None:
             raise ValueError('отметки «Տեսա»: день YYYY-MM-DD, at — ISO с поясом, ' + (error or 'данные верны'))
-        update = 'since = excluded.since, seen_at = excluded.seen_at' + (
-            '' if refresh else ', user = excluded.user, at = excluded.at')
+
+        def same_case(key: str, a: str | None, b: str | None) -> bool:
+            if a == b:
+                return True
+            ta, tb = _aware_moment(a), _aware_moment(b)
+            return key == 'deviation' and ta is not None and tb is not None and abs(ta - tb) <= LIVE_ACK_SINCE_TOL
 
         def write(conn: sqlite3.Connection) -> None:
-            conn.executemany('INSERT INTO live_ack(day, car, key, since, user, at, seen_at) VALUES(?, ?, ?, ?, ?, ?, ?) '
-                             f'ON CONFLICT(day, car, key) DO UPDATE SET {update}',
-                             [(day, c, k, s, user, at, at) for c, k, s in listed])
+            if not refresh:
+                conn.executemany('INSERT INTO live_ack(day, car, key, since, user, at, seen_at) VALUES(?, ?, ?, ?, ?, ?, ?) '
+                                 'ON CONFLICT(day, car, key) DO UPDATE SET since = excluded.since, user = excluded.user, '
+                                 'at = excluded.at, seen_at = excluded.seen_at',
+                                 [(day, c, k, s, user, at, at) for c, k, s in listed])
+                return
+            for c, k, s in listed:
+                row = conn.execute('SELECT since, seen_at FROM live_ack WHERE day = ? AND car = ? AND key = ?',
+                                   (day, c, k)).fetchone()
+                seen = _aware_moment(row[1]) if row is not None else None
+                if row is not None and (same_case(k, row[0], s) or (seen is not None and moment - seen <= LIVE_ACK_FLAP)):
+                    conn.execute('UPDATE live_ack SET since = ?, seen_at = ? WHERE day = ? AND car = ? AND key = ?',
+                                 (s, at, day, c, k))
         self._transaction(write, 'не удалось сохранить «Տեսա»')
 
     def driver_names(self, since: str = '') -> list[str]:

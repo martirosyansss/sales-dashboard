@@ -86,7 +86,9 @@
             server: new Map(), posting: new Set(), first: new Map(), beepAt: 0,
             // ревью 0aec70f: самое раннее начало проблемы на этой странице (ключ → мс; задержка не возвращается назад),
             // сбоев отправки подряд и «отправка выключена до перезагрузки»
-            onset: new Map(), fails: 0, postOff: false } };
+            onset: new Map(), fails: 0, postOff: false, postOffUntil: 0,
+            // нажатия «Տեսա», не дошедшие до сервера (ключи): опрос повторяет их как нажатия
+            unsent: new Set() } };
 
     // «Պլանային երթուղի» на карте — удобство одного зрителя: помнится в браузере (нет хранилища — просто включено)
     function loadPlanToggle() { try { return window.localStorage.getItem('lv.plan') !== '0'; } catch (e) { return true; } }
@@ -118,7 +120,9 @@
     // Ревью 0aec70f: начало отклонения между опросами плавает (live.EXPLAIN_FROM_TOL) — тот же случай в пределах
     // SINCE_TOL_MS (sameCase), задержка — от самого раннего начала проблемы на странице (onset), назад в «ожидание» не
     // уходит; подтверждение (refresh) не меняет, кто и когда нажал «Տեսա» (это — только кнопка, строка, «Տեսա բոլորը»);
-    // ACK_FAILS_MAX сбоев отправки подряд — отправка выключена до перезагрузки и одна строка под «Խնդիրներ հիմա».
+    // ACK_FAILS_MAX сбоев отправки подряд — пауза ACK_PAUSE_MS и одна строка под «Խնդիրներ հիմա»; после паузы первый
+    // удачный опрос снимает её. Подтверждение идёт с ключом той строки сервера, которая нашлась (у «не успеет» к плану —
+    // и «к окну»), и строк не создаёт; нажатие, не дошедшее до сервера, опрос повторяет как нажатие (unsent).
     const ON_DELAY_MS = { deviation: 5 * 60000, no_contact: 10 * 60000 };   // короткие отклонения и пропадания связи — шум
     const ESCALATE_MS = 5 * 60000;
     const REBEEP_MS = 2 * 60000;
@@ -126,6 +130,7 @@
     const ACK_BATCH = 50;   // store.LIVE_ACK_MAX
     const SINCE_TOL_MS = 3 * 60000;   // live.EXPLAIN_FROM_TOL: пересчёт сдвигает начало отклонения
     const ACK_FAILS_MAX = 3;
+    const ACK_PAUSE_MS = 5 * 60000;
     // тот же случай: то же начало; у отклонения — в пределах SINCE_TOL_MS
     const sameCase = (kind, a, b) => a === b || (kind === 'deviation' && a !== null && b !== null
         && Math.abs(Date.parse(a) - Date.parse(b)) <= SINCE_TOL_MS);
@@ -214,38 +219,48 @@
 
     // отметка сервера (схема 28): тот же случай (since); без since — отметка без since не старше ACK_GRACE_MS;
     // «не успеет» к плану — и отметка «к окну»
-    function serverAck(p) {
+    const serverRow = (p) => {
         const s = state.alarm.server;
-        const a = s.get(p.key) || (p.kind === 'late:plan' ? s.get(p.key.replace(/late:plan$/, 'late:window')) : null);
+        return s.get(p.key) || (p.kind === 'late:plan' ? s.get(p.key.replace(/late:plan$/, 'late:window')) : null) || null;
+    };
+    function serverAck(p) {
+        const a = serverRow(p);
         if (!a) return null;
         return (p.since !== null ? sameCase(p.kind, a.since, p.since)
             : a.since === null && srvAge(a.seen_at || a.at) <= ACK_GRACE_MS) ? a : null;
     }
     const serverAcks = (date, acks) => new Map((acks || []).map(a => [date + '|' + a.car + '|' + a.key, a]));
 
-    // «Տեսա» — на сервер (другие зрители видят её на своём опросе); ответ — отметки дня. refresh — подтверждение уже
-    // отмеченного (опрос): кто и когда нажал, на сервере не меняется. Ошибка — тихо: отметка остаётся своей (lv.ack),
-    // следующий опрос отправит снова; ACK_FAILS_MAX подряд — отправка выключена до перезагрузки, одна строка (lvAckErr).
-    // Уже отправляемые (ключ и since) — не дублируются.
-    function postAcks(ps, refresh) {
+    // «Տեսա» — на сервер (другие зрители видят её на своём опросе); ответ — отметки дня. list — [{p, key}]: key — вид
+    // строки сервера (нажатие — p.kind, подтверждение — ключ найденной строки). refresh — подтверждение уже отмеченного
+    // (опрос): строк не создаёт, кто и когда нажал, не меняет. Ошибка — тихо: отметка остаётся своей (lv.ack), нажатие —
+    // в unsent (опрос повторит); ACK_FAILS_MAX подряд — пауза ACK_PAUSE_MS, одна строка (lvAckErr). Уже отправляемые
+    // (ключ и since) — не дублируются.
+    function postAcks(list, refresh) {
         const al = state.alarm;
-        const todo = ps.filter(p => p.sev < 3 && !al.posting.has(p.key + '|' + p.since));
+        const todo = list.filter(x => x.p.sev < 3 && !al.posting.has(x.p.key + '|' + x.p.since));
         if (!todo.length || !state.data || al.postOff) return;
         const date = state.data.date;
         for (let i = 0; i < todo.length; i += ACK_BATCH) {
-            const part = todo.slice(i, i + ACK_BATCH), tags = part.map(p => p.key + '|' + p.since);
+            const part = todo.slice(i, i + ACK_BATCH), tags = part.map(x => x.p.key + '|' + x.p.since);
             tags.forEach(t => al.posting.add(t));
             api('/api/routes/live/ack', { date, refresh: !!refresh,
-                items: part.map(p => ({ car: p.t.car_code, key: p.kind, since: p.since })) })
+                items: part.map(x => ({ car: x.p.t.car_code, key: x.key, since: x.p.since })) })
                 .then(body => {
                     al.fails = 0;
+                    if (!refresh) part.forEach(x => al.unsent.delete(x.p.key));
                     if (state.date || !state.data || state.data.date !== date) return;   // день сменили — ответ не наш
                     al.server = serverAcks(date, body.acks);
                     renderProblems();
                 })
-                .catch(() => {   // отметка своя; повтор — на следующем опросе
+                .catch(() => {   // отметка своя; нажатие — повтор на следующем опросе
+                    if (!refresh) part.forEach(x => al.unsent.add(x.p.key));
                     al.fails += 1;
-                    if (al.fails >= ACK_FAILS_MAX && !al.postOff) { al.postOff = true; $('lvAckErr').hidden = false; }
+                    if (al.fails >= ACK_FAILS_MAX && !al.postOff) {
+                        al.postOff = true;
+                        al.postOffUntil = Date.now() + ACK_PAUSE_MS;
+                        $('lvAckErr').hidden = false;
+                    }
                 })
                 .finally(() => tags.forEach(t => al.posting.delete(t)));
         }
@@ -257,23 +272,31 @@
         const al = state.alarm;
         if (state.date || data.date !== String(data.now || '').slice(0, 10)) { al.probs = []; return; }
         const now = Date.now();
+        if (al.postOff && now >= al.postOffUntil) {   // пауза прошла, опрос удался — снова отправлять
+            al.postOff = false;
+            al.fails = 0;
+            $('lvAckErr').hidden = true;
+        }
         al.server = serverAcks(data.date, data.acks);
         al.probs = data.trucks.flatMap(problemsOf);
         const keys = new Set(al.probs.map(p => p.key));
         for (const k of al.onset.keys()) if (!keys.has(k)) al.onset.delete(k);   // проблемы нет — следующая с начала
         mergeAcks();
-        const post = [];
+        const confirm = [], press = [];
         for (const p of al.probs) {
-            const s = serverAck(p);
+            const s = serverAck(p), row = serverRow(p);
             if (s || ackOf(p, now)) {
                 al.acks.set(p.key, { since: p.since, seen: now });
-                // своя без серверной (дребезг, сбой отправки) и серверная без since, которая скоро истечёт, — на сервер
-                if (!s || (p.since === null && srvAge(s.seen_at || s.at) > ACK_REFRESH_MS)) post.push(p);
+                // строка сервера есть, но другого начала (дребезг) или без since скоро истечёт — подтвердить её ключом;
+                // строки нет, а нажатие не дошло — повторить нажатие
+                if (row && (!s || (p.since === null && srvAge(row.seen_at || row.at) > ACK_REFRESH_MS))) confirm.push({ p, key: row.key });
+                else if (!row && al.unsent.has(p.key)) press.push({ p, key: p.kind });
             } else al.acks.delete(p.key);
         }
         for (const [k, a] of al.acks) if (!keys.has(k) && now - a.seen > ACK_GRACE_MS) al.acks.delete(k);
         saveAcks();
-        postAcks(post, true);
+        postAcks(confirm, true);
+        postAcks(press, false);
         const fresh = al.probs.filter(isNew), red = fresh.filter(p => p.sev === 1).map(p => p.key);
         for (const k of red) if (!al.first.has(k)) al.first.set(k, now);
         for (const k of al.first.keys()) if (!red.includes(k)) al.first.delete(k);
@@ -308,7 +331,7 @@
             al.acks.set(k, { since: p ? p.since : null, seen: now });
         }
         saveAcks();
-        postAcks(al.probs.filter(p => keys.includes(p.key)), false);
+        postAcks(al.probs.filter(p => keys.includes(p.key)).map(p => ({ p, key: p.kind })), false);
         const trucks = state.data ? state.data.trucks : [];
         renderProblems();
         renderSummary(trucks);

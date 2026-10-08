@@ -641,7 +641,13 @@ def alarm2_checks(browser, base, cars, check, clear_acks, errors) -> None:
     bad.wait_for_timeout(800)
     check(bad.is_visible('#lvAckErr') and n_posts == 3 and len(posts) == n_posts and not bad.is_visible('#lvAlarm'),
           f'ревью L5: 3 сбоя подряд — строка «{bad.inner_text("#lvAckErr") if bad.is_visible("#lvAckErr") else ""}», '
-          f'отправка выключена ({n_posts} → {len(posts)}), отметки — свои')
+          f'отправка на паузе ({n_posts} → {len(posts)}), отметки — свои')
+    # пауза 5 мин прошла (часы страницы +6 мин) — первый удачный опрос снимает строку, нажатия снова уходят (и снова 500)
+    bad.evaluate("() => { const real = Date.now; Date.now = () => real() + 6 * 60000; }")
+    bad.evaluate("document.dispatchEvent(new Event('visibilitychange'))")
+    bad.wait_for_timeout(800)
+    check(not bad.is_visible('#lvAckErr') and len(posts) == n_posts + 1,
+          f'ревью M2: через 5 мин — строки нет, нажатия снова отправляются ({n_posts} → {len(posts)})')
     bad.close()
     clear_acks()
 

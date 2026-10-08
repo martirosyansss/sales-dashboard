@@ -5125,7 +5125,8 @@ def api_live_unexplain() -> Any:
 # 10 мин от последней записи — её подтверждает открытая страница, у которой проблема отмечена; все страницы закрыты —
 # проблема снова новая. Отметка сама возвращается: страница со своей отметкой (lv.ack) без серверной отправляет её на
 # опросе, поэтому строку live_ack надёжно не удалить вручную, пока такая страница открыта (снять — закрыть её).
-# Запись и чтение — Store.live_ack_put(day, items, user, at) / live_acks(day): их же зовёт «Տեսա» Telegram-бота (№91).
+# Запись и чтение — Store.live_ack_put(day, items, user, at) / live_acks(day); «Տեսա» Telegram-бота (№91) их пока не зовёт
+# (сессия бота подключит их после своего слияния).
 LIVE_ACK_ROLES = ('admin', 'garage')
 
 
@@ -5143,8 +5144,8 @@ def _live_acks_or_none(state: RoutesState, day: date) -> list[dict[str, Any]]:
 @_api
 def api_live_ack() -> Any:
     """{date?, items: [{car, key, since}], refresh?} — до store.LIVE_ACK_MAX отметок (check_live_acks), date — только
-    сегодня (нет — сегодня). refresh: true — страница подтверждает уже отмеченное (дребезг, отметка без since): кто и когда
-    нажал, не меняется (Store.live_ack_put refresh). Машины не из сегодняшнего парка карты (_live_cards) отбрасываются —
+    сегодня (нет — сегодня). refresh: true — страница подтверждает уже отмеченное (дребезг, отметка без since): строку не
+    создаёт, кто и когда нажал, не меняет (Store.live_ack_put refresh). Машины не из сегодняшнего парка карты (_live_cards) отбрасываются —
     отметки входа «Гаража» из интернета не раздувают таблицу. → {success, acks: отметки дня [{car, key, since, user, at,
     seen_at}]}: страница сразу показывает «Տեսավ՝ …»."""
     if g.get('user_role') not in LIVE_ACK_ROLES:
