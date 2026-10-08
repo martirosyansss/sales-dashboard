@@ -1339,31 +1339,62 @@ class _DispatchDay:
     # №74: заказы дня, которые везут другие машины (менеджер правила, город-исключение) и клиентов «машины не везут»
     other_vehicle: list[dp.DispatchOrder] = field(default_factory=list)
     customers_off: list[dp.DispatchOrder] = field(default_factory=list)
-    # «Երբ տանել» прошлых дней на этот день и позже (dp.later_carried): isn → (день доставки, дата заказа, день плана)
-    later: dict[str, tuple[date, date, date]] = field(default_factory=dict)
+    # «Երբ տանել» прошлых дней (dp.later_carried): isn → (день доставки | None — снят, дата заказа, день плана)
+    later: dict[str, tuple[date | None, date, date]] = field(default_factory=dict)
 
 
-def _later_scan(state: RoutesState, day: date) -> dict[str, tuple[date, date, date]]:
-    """«Երբ տանել» на day и позже из планов LATER_MAX_DAYS дней до day (dp.later_carried; отправленные водителям — №81).
-    Битый или непрочитанный черновик — без его переносов (как _carried)."""
-    plans: list[tuple[date, dp.Draft]] = []
-    d = day - timedelta(days=dp.LATER_MAX_DAYS)
-    while d < day:
+def _sent_plan(state: RoutesState, d: date) -> dp.Draft | None:
+    """План дня d, отправленный водителям (№81, Draft.for_drivers); плана нет — None, не прочитан — StoreError. Один раз
+    за запрос (g): переносы (_carried), взятые заказы дня (_same_day_taken), «видел» (№79, _plan_seen) и «Երբ տանել»
+    (_later_scan) смотрят одни и те же прошлые планы. Только для чтения: черновик своего дня правят через _stored_draft."""
+    def load() -> dp.Draft | StoreError | None:
         try:
             stored = state.store.load_dispatch(d.isoformat())
+        except StoreError as e:
+            return e
+        return dp.Draft.from_json(stored[0]).for_drivers() if stored is not None else None
+    if has_request_context():
+        memo = g.setdefault('_sent_plans', {})
+        key = (id(state), d)
+        if key not in memo:
+            memo[key] = load()
+        out = memo[key]
+    else:
+        out = load()
+    if isinstance(out, StoreError):
+        raise out
+    return out
+
+
+def _later_scan(state: RoutesState, day: date, workdays: Sequence[int],
+                holidays: Collection[date] = ()) -> dict[str, tuple[date | None, date, date]]:
+    """«Երբ տանել» из планов LATER_SCAN_DAYS дней до day (dp.later_carried; отправленные водителям — №81). Битый или
+    непрочитанный черновик — без его переносов (как _carried)."""
+    plans: list[tuple[date, dp.Draft]] = []
+    d = day - timedelta(days=dp.LATER_SCAN_DAYS)
+    while d < day:
+        try:
+            plan = _sent_plan(state, d)
         except StoreError:
             logger.warning('[Routes] План развоза на %s не прочитан — его «Երբ տանել» на %s не учтены', d, day,
                            exc_info=True)
-            stored = None
-        if stored is not None:
-            plans.append((d, dp.Draft.from_json(stored[0]).for_drivers()))
+            plan = None
+        if plan is not None:
+            plans.append((d, plan))
         d += timedelta(days=1)
-    return dp.later_carried(plans, day)
+    return dp.later_carried(plans, workdays, holidays)
 
 
-def _later_due(later: Mapping[str, tuple[date, date, date]], day: date) -> dict[str, date]:
-    """Перенесённые «Երբ տանել» именно на day: isn → дата заказа (с неё day читает ERP)."""
+def _later_due(later: Mapping[str, tuple[date | None, date, date]], day: date) -> dict[str, date]:
+    """Перенесённые «Երբ տանել» именно на day: isn → дата заказа. Сам в развоз дня входит только такой заказ."""
     return {isn: od for isn, (to, od, _) in later.items() if to == day}
+
+
+def _later_read(later: Mapping[str, tuple[date | None, date, date]], day: date) -> dict[str, date]:
+    """Заказы «Երբ տանել», которые day читает из ERP и показывает, даже если они старше окна «Նախորդ օրերից»: перенесённые
+    на day (входят сами), на дни позже (строка с «կտանենք») и не довезённые в свой день или снятые (обычная строка —
+    решает логист): isn → дата заказа."""
+    return {isn: od for isn, (_, od, _) in later.items()}
 
 
 def _day_orders(state: RoutesState, bundle: Bundle, day: date, refresh: bool, rule: dp.FleetRule,
@@ -1371,8 +1402,9 @@ def _day_orders(state: RoutesState, bundle: Bundle, day: date, refresh: bool, ru
     """Окно заказов дня, заказы ERP (кэш _dispatch_data) и отбор к доставке по правилу дня «чьи заказы везут машины»
     (№74, dp.fleet_rule_of) — без заказов, взятых в развоз дня их приёма (№72, _same_day_taken). ERP читается и за сам
     день: заказы, заведённые заранее на него (№79), — его заказы; прочие заказы с датой дня — новые заказы дня (№72,
-    _same_day_data), из данных дня они убраны. later — перенесённые «Երբ տանել» на этот день (_later_due): ERP читается и
-    с даты самого раннего из них, но из более старых заказов остаются только они — «Նախորդ օրերից» прежний."""
+    _same_day_data), из данных дня они убраны. later — заказы «Երբ տանել», которые день видит (_later_read): ERP читается
+    и с даты самого раннего из них (не старше DEFER_MAX_AGE_DAYS до дня плана, dp.later_carried), но из более старых
+    заказов остаются только они — «Նախորդ օրերից» прежний."""
     workdays, off = bundle.settings['workdays'], dp.holidays_of(bundle.settings)
     since, until = dp.order_window(day, workdays, off)
     first = dp.backlog_since(since, workdays, holidays=off)
@@ -1431,11 +1463,11 @@ def _carried(state: RoutesState, day: date, workdays: Sequence[int], backlog: li
     d = dp.previous_workday(day, workdays, holidays)
     while d < day:
         try:
-            stored = state.store.load_dispatch(d.isoformat())
+            plan = _sent_plan(state, d)
         except StoreError:
-            stored = None
-        if stored is not None:
-            out |= dp.Draft.from_json(stored[0]).for_drivers().deferred   # №81: «везти завтра», отправленное водителям
+            plan = None
+        if plan is not None:
+            out |= plan.deferred   # №81: «везти завтра», отправленное водителям
         d += timedelta(days=1)
     return (out | set(later)) & {o.isn for o in backlog}
 
@@ -1444,12 +1476,12 @@ def _plan_seen(state: RoutesState, day: date) -> dp.PlanSeen | None:
     """Что видел план дня day (№79, dp.settle_predated); плана нет — ничего: заказ, заведённый заранее на day, едет и
     на следующий рабочий день (не теряется); не прочитан — None (так же, и страница предупреждает)."""
     try:
-        draft, _ = _stored_draft(state, day)
+        plan = _sent_plan(state, day)
     except StoreError:
         logger.warning('[Routes] План развоза на %s не прочитан — заказы, заведённые заранее на него, едут и дальше',
                        day, exc_info=True)
         return None
-    return dp.PlanSeen.of(draft.for_drivers() if draft is not None else None)   # №81: видел — отправленный план
+    return dp.PlanSeen.of(plan)   # №81: видел — отправленный план
 
 
 def _same_day_taken(state: RoutesState, day: date, workdays: Sequence[int],
@@ -1462,13 +1494,13 @@ def _same_day_taken(state: RoutesState, day: date, workdays: Sequence[int],
     d = dp.previous_workday(day, workdays, holidays)
     while d < day:
         try:
-            stored = state.store.load_dispatch(d.isoformat())
+            plan = _sent_plan(state, d)
         except StoreError:
             logger.warning('[Routes] План развоза на %s не прочитан — взятые в его развоз заказы дня не исключены из %s',
                            d, day, exc_info=True)
-            stored, unread = None, True
-        if stored is not None:
-            out |= dp.Draft.from_json(stored[0]).for_drivers().same_day   # №81: взяли в развоз только отправленные
+            plan, unread = None, True
+        if plan is not None:
+            out |= plan.same_day   # №81: взяли в развоз только отправленные
         d += timedelta(days=1)
     return out, unread
 
@@ -1528,9 +1560,9 @@ def _load_day(state: RoutesState, bundle: Bundle, day: date, refresh: bool = Fal
         draft, rev = _stored_draft(state, day)
     # правило №74 — то, с которым день собран (черновик), без плана — из настроек
     rule = dp.fleet_rule_of(draft, bundle.settings)
-    later = _later_scan(state, day)
+    later = _later_scan(state, day, bundle.settings['workdays'], dp.holidays_of(bundle.settings))
     due = _later_due(later, day)
-    since, until, data, sel = _day_orders(state, bundle, day, refresh, rule, due)
+    since, until, data, sel = _day_orders(state, bundle, day, refresh, rule, _later_read(later, day))
     deliver, backlog = sel.main, sel.backlog
     carried = _carried(state, day, bundle.settings['workdays'], backlog, dp.holidays_of(bundle.settings), due)
     # новые заказы дня (№72): сегодня — кандидаты; другой день — только если в нём есть взятые (их точки в плане). Взятых
@@ -1678,15 +1710,22 @@ def _dispatch_body(dd: _DispatchDay) -> dict[str, Any]:
 
     def order_json(o: dp.DispatchOrder) -> dict[str, Any]:
         code, name = dd.data.customers.get(o.customer_id) or ('', '')
-        # «Երբ տանել»: когда повезём — по плану этого дня или (ещё не тот день) по плану прошлого; перенесён сюда — откуда
+        # «Երբ տանել»: когда повезём — по плану этого дня или (ещё не тот день и этот день его не взял и не перенёс) по
+        # плану прошлого (later_from — какого); перенесён сюда — откуда
         mine = draft.later.get(o.isn) if draft is not None else None
         prev = dd.later.get(o.isn)
-        later_to = mine[0] if mine is not None else prev[0] if prev is not None and prev[0] > dd.day else None
+        decided = draft is not None and (o.isn in draft.added or o.isn in draft.deferred)
+        later_to = later_from = None
+        if mine is not None:
+            later_to = dp.later_day(mine[0], s['workdays'], holidays)
+        elif prev is not None and prev[0] is not None and prev[0] > dd.day and not decided:
+            later_to, later_from = prev[0], prev[2]
         return {'isn': o.isn, 'doc_num': o.doc_num, 'customer_id': o.customer_id, 'code': code, 'name': name,
                 'order_date': o.order_date.isoformat(), 'kg': round(o.kg), 'revenue': round(o.revenue),
                 'added': o.isn in added, 'deferred': draft is not None and o.isn in draft.deferred,
                 'carried': o.isn in dd.carried, 'agent_off': o.agent_id in off,
                 **({'later_to': later_to.isoformat()} if later_to is not None else {}),
+                **({'later_from': later_from.isoformat()} if later_from is not None else {}),
                 **({'carried_from': prev[2].isoformat()}
                    if prev is not None and prev[0] == dd.day and o.isn in dd.carried else {})}
 
@@ -2474,8 +2513,9 @@ def api_dispatch_status() -> Any:
         return _bad_request({'date': 'дата в формате ГГГГ-ММ-ДД'})
     draft, rev = _stored_draft(state, day)
     rule = dp.fleet_rule_of(draft, bundle.settings)
-    due = _later_due(_later_scan(state, day), day)
-    _, _, data, sel = _day_orders(state, bundle, day, False, rule, due)
+    later = _later_scan(state, day, bundle.settings['workdays'], dp.holidays_of(bundle.settings))
+    due = _later_due(later, day)
+    _, _, data, sel = _day_orders(state, bundle, day, False, rule, _later_read(later, day))
     carried = _carried(state, day, bundle.settings['workdays'], sel.backlog, dp.holidays_of(bundle.settings), due)
     # новые заказы дня (№72): сегодня — сколько их ещё решать (плашка без перезагрузки); ERP не ответила — без них
     today: list[dp.DispatchOrder] = []

@@ -6,14 +6,18 @@
 как в tests/routes_dispatch_browser_check.py (магазины 101, 102, 104 и 999 без точки), «сейчас» — вечер 30.09, день
 плана — чт 01.10; база — временная; порт 8775 на 127.0.0.1.
 
-A сборка рейсов; «×» у магазина → окно «Ինչու՞»: под «Այսօր չենք տանում» — группа «Երբ տանել» (radiogroup): дни
-  defer_days и «Չգիտեմ», выбран первый, он же «Վաղը, …»; подсказка — в какой день войдут заказы;
+A сборка рейсов; «×» у магазина → окно «Ինչու՞»: под «Այսօր չենք տանում» — группа «Երբ տանել» (radiogroup,
+  aria-describedby — подсказка с aria-live): дни defer_days и «Չգիտեմ», выбран первый; «Վաղը» — только у завтрашнего
+  относительно сегодня (30.09 → 02.10 — не «Վաղը»); подсказка — в какой день войдут заказы;
 B выбор дня (пн) сам отмечает «Այսօր չենք տանում» и открывает «Հանել երթից»; сохранение — одна правка defer_store
   {customer_id, to}, подсказка «կտանենք», магазина в рейсах нет, в «Այսօր չենք տանում» — значок «կտանենք …»,
   фокус остался в рейсе; клавиатура: стрелка в группе дней переключает день;
 C другой магазин, «Չգիտեմ» → defer_store с to = null, подсказка про «Նախորդ օրերից»;
-D следующий понедельник (05.10): заказ магазина из B — в развозе дня, «տեղափոխված է 1 հոկտեմբերի պլանից»;
-H телефон 390×860: в окне чипы переносятся, горизонтальной прокрутки нет ни в окне, ни на странице.
+D пятница (02.10): строка «Նախորդ օրերից» — «Ըստ 1 հոկտեմբերի պլանի՝ կտանենք …»; понедельник (05.10): заказ
+  магазина из B — в развозе дня, «տեղափոխված է 1 հոկտեմբերի պլանից»;
+T «сегодня» = день плана (01.10 утро): первый день 02.10 — «Վաղը, …»;
+H телефон 390×860: в окне чипы переносятся, горизонтальной прокрутки нет ни в окне, ни на странице;
+E режим «Փոփոխել»: «Այսօր չենք տանում» у магазина — одна правка defer_store с to = null.
 Ошибки страницы и консоли — провал (кроме внешних ресурсов, как в основной проверке).
 """
 from __future__ import annotations
@@ -107,8 +111,10 @@ def main() -> int:
             check(group.count() == 1 and group.get_attribute('aria-label') == 'Երբ տանել', 'A radiogroup «Երբ տանել» under the reason')
             check(chips.count() == len(days) + 1 and chips.last.inner_text().strip() == 'Չգիտեմ',
                   f'A one chip per day + «Չգիտեմ» ({chips.count()})')
-            check(chips.first.locator('input').is_checked() and chips.first.inner_text().startswith('Վաղը, '),
-                  'A first day picked by default and named «Վաղը»: ' + chips.first.inner_text())
+            check(chips.first.locator('input').is_checked() and not chips.first.inner_text().startswith('Վաղը'),
+                  'A first day picked by default; not «Վաղը» (today is 30.09): ' + chips.first.inner_text())
+            check(group.get_attribute('aria-describedby') == 'dpWhyDaysHint'
+                  and page.locator('#dpWhyDaysHint').get_attribute('aria-live') == 'polite', 'A hint described + live')
             check('Երբ տանել՝' in page.locator('#dpWhyOpts .dp-why-days-t').inner_text(), 'A caption «Երբ տանել՝»')
             check('պլանի մեջ' in page.locator('#dpWhyDaysHint').inner_text(), 'A hint names the day: ' + page.locator('#dpWhyDaysHint').inner_text())
             opt = page.locator('#dpWhyOpts .dp-why-opt', has=page.locator('input[value="not_today"]'))
@@ -163,6 +169,11 @@ def main() -> int:
             check(trip_of(data(), cid2) is None, 'C store out of trips')
 
             # D
+            page.goto(f'{BASE}/routes/dispatch?date=2026-10-02')
+            page.wait_for_selector('#dpBody', state='visible', timeout=30000)
+            page.wait_for_timeout(500)
+            check('Ըստ 1 հոկտեմբերի պլանի՝ կտանենք երկուշաբթի' in (page.locator('#dpBacklogList').text_content() or ''),
+                  'D Friday: row says it goes by the 1 Oct plan on Monday')
             mon = data('2026-10-05')
             rows = [o for o in mon['backlog'] if o['customer_id'] == cid]
             check(rows and all(o['taken'] and o['carried'] and o.get('carried_from') == DAY for o in rows),
@@ -173,8 +184,20 @@ def main() -> int:
             check('1 հոկտեմբերի պլանից' in (page.locator('#dpBacklogList').text_content() or ''), 'D backlog row says moved from the 1 Oct plan')
             page.screenshot(path=str(SHOTS / 'd-monday.png'), full_page=True)
 
-            # H
+            # T
+            views._clock = lambda: datetime(2026, 10, 1, 6, 0)
+            views._yerevan_now = lambda: datetime(2026, 10, 1, 6, 0, tzinfo=YEREVAN)
             page.goto(f'{BASE}/routes/dispatch?date={DAY}')
+            page.wait_for_selector('#dpTruckCards .dp-tcard', timeout=30000)
+            open_cards()
+            page.locator('#dpTruckCards .dp-stop-x').first.click()
+            check(chips.first.inner_text().startswith('Վաղը, ուրբաթ'), 'T today = plan day: first chip «Վաղը»: ' + chips.first.inner_text())
+            page.keyboard.press('Escape')
+            views._clock = lambda: datetime(2026, 9, 30, 18, 0)
+            views._yerevan_now = lambda: datetime(2026, 9, 30, 18, 0, tzinfo=YEREVAN)
+
+            # H
+            page.reload()
             page.wait_for_selector('#dpTruckCards .dp-tcard', timeout=30000)
             page.set_viewport_size({'width': 390, 'height': 860})
             page.wait_for_timeout(400)
@@ -193,6 +216,22 @@ def main() -> int:
             page.keyboard.press('Escape')
             pover = page.evaluate('() => document.documentElement.scrollWidth - document.documentElement.clientWidth')
             check(pover <= 0, f'H phone: no horizontal page scroll ({pover}px)')
+            # E
+            page.set_viewport_size({'width': 1440, 'height': 950})
+            page.reload()
+            page.wait_for_selector('#dpTruckCards .dp-tcard', timeout=30000)
+            open_cards()
+            ecid = int(page.locator('#dpTruckCards .dp-stop').first.get_attribute('data-cid'))
+            page.locator('#dpTruckCards .dp-editbtn').first.click()
+            n = len(posts)
+            page.locator('#dpTruckCards .dp-trip.is-editing .dp-stop-acts button', has_text='Այսօր չենք տանում').first.click()
+            page.wait_for_function("() => !document.body.classList.contains('is-busy')", timeout=15000)
+            page.wait_for_timeout(300)
+            e = edits(n)
+            check(len(e) == 1 and e[0].get('action') == 'defer_store' and e[0].get('customer_id') == ecid and e[0].get('to') is None
+                  and 'to' in e[0], 'E edit mode «Այսօր չենք տանում» — one defer_store to null: ' + str(e))
+            check(trip_of(data(), ecid) is None, 'E store out of trips')
+
             browser.close()
     finally:
         server.shutdown()

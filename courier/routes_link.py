@@ -95,12 +95,12 @@ def routes_view(state: Any, day: date) -> RoutesView:
     base = RoutesView(depot=bundle.depot, geo_overrides=dict(bundle.geo_overrides), workdays=workdays,
                       holidays=holidays, fleet=dp.FleetRule.from_settings(bundle.settings), roads=roads)
     stored = state.store.load_dispatch(day.isoformat())   # RoutesStoreError — наружу (№80): не «плана нет»
-    later = _later(state, day)
-    carried = _carried(state, day, workdays, holidays) | set(later)
+    load = _plans(state)
+    later = _later(load, day, workdays, holidays)
+    carried = _carried(state, day, workdays, holidays, load) | set(later)
     carried_since = min(later.values(), default=None)
-    taken = _taken(state, day, workdays, holidays)
-    prev = state.store.load_dispatch(dp.previous_workday(day, workdays, holidays).isoformat())
-    seen = dp.PlanSeen.of(dp.Draft.from_json(prev[0]).for_drivers() if prev is not None else None)   # №81
+    taken = _taken(state, day, workdays, holidays, load)
+    seen = dp.PlanSeen.of(load(dp.previous_workday(day, workdays, holidays)))   # №81
     if stored is None:
         # плана нет — менеджеры, чьи заказы не везём, по правилу настроек «Развоза» (№69)
         return RoutesView(depot=base.depot, geo_overrides=base.geo_overrides, workdays=workdays, holidays=holidays,
@@ -192,39 +192,71 @@ def record_crew(state: Any, car_code: str, day: date, role: str, name: str, only
     return True
 
 
-def _carried(state: Any, day: date, workdays: Sequence[int], holidays: Collection[date] = ()) -> set[str]:
-    """«Везти завтра» из планов с прошлого рабочего дня по вчера (как views._carried «Маршрутов»)."""
+def _plans(state: Any) -> Callable[[date], dp.Draft | None]:
+    """Прошлые планы дня, отправленные водителям (№81, Draft.for_drivers): день → план | None (плана нет); каждый читается и
+    разбирается один раз за вид. База не читается — RoutesStoreError (и при повторе)."""
+    memo: dict[date, dp.Draft | RoutesStoreError | None] = {}
+
+    def load(d: date) -> dp.Draft | None:
+        if d not in memo:
+            try:
+                stored = state.store.load_dispatch(d.isoformat())
+                memo[d] = dp.Draft.from_json(stored[0]).for_drivers() if stored is not None else None
+            except RoutesStoreError as e:
+                memo[d] = e
+        out = memo[d]
+        if isinstance(out, RoutesStoreError):
+            raise out
+        return out
+    return load
+
+
+def _carried(state: Any, day: date, workdays: Sequence[int],
+             holidays: Collection[date] = (), load: Callable[[date], dp.Draft | None] | None = None) -> set[str]:
+    """«Везти завтра» из планов с прошлого рабочего дня по вчера (как views._carried «Маршрутов»); load — общее чтение
+    планов вида (_plans)."""
+    load = load or _plans(state)
     out: set[str] = set()
     d = dp.previous_workday(day, workdays, holidays)
     while d < day:
-        stored = state.store.load_dispatch(d.isoformat())
-        if stored is not None:
-            out |= dp.Draft.from_json(stored[0]).for_drivers().deferred   # №81: отправленное водителям
+        plan = load(d)   # RoutesStoreError — наружу (№80)
+        if plan is not None:
+            out |= plan.deferred
         d += timedelta(days=1)
     return out
 
 
-def _later(state: Any, day: date) -> dict[str, date]:
-    """«Երբ տանել» на дату из планов LATER_MAX_DAYS дней до неё (dp.later_carried, как views._later_scan «Маршрутов»):
-    isn → дата заказа."""
+def _later(load: Callable[[date], dp.Draft | None], day: date, workdays: Sequence[int],
+           holidays: Collection[date] = ()) -> dict[str, date]:
+    """«Երբ տանել» на дату из планов LATER_SCAN_DAYS дней до неё (dp.later_carried, как views._later_scan «Маршрутов»):
+    isn → дата заказа. Непрочитанный старый план — без его переносов (в журнал), как на странице: один битый план не
+    закрывает все терминалы; планы, которые вид читает строго (свой день, прошлый рабочий), падают и так."""
     plans: list[tuple[date, dp.Draft]] = []
-    d = day - timedelta(days=dp.LATER_MAX_DAYS)
+    d = day - timedelta(days=dp.LATER_SCAN_DAYS)
     while d < day:
-        stored = state.store.load_dispatch(d.isoformat())
-        if stored is not None:
-            plans.append((d, dp.Draft.from_json(stored[0]).for_drivers()))   # №81: отправленное водителям
+        try:
+            plan = load(d)
+        except RoutesStoreError:
+            logger.warning('[Courier] План «Развоза» на %s не прочитан — его «Երբ տանել» на %s не учтены', d, day,
+                           exc_info=True)
+            plan = None
+        if plan is not None:
+            plans.append((d, plan))
         d += timedelta(days=1)
-    return {isn: od for isn, (to, od, _) in dp.later_carried(plans, day).items() if to == day}
+    return {isn: od for isn, (to, od, _) in dp.later_carried(plans, workdays, holidays).items() if to == day}
 
 
-def _taken(state: Any, day: date, workdays: Sequence[int], holidays: Collection[date] = ()) -> set[str]:
-    """Взятые в развоз дня их приёма (№72) в планах с прошлого рабочего дня по вчера (как views._same_day_taken)."""
+def _taken(state: Any, day: date, workdays: Sequence[int],
+           holidays: Collection[date] = (), load: Callable[[date], dp.Draft | None] | None = None) -> set[str]:
+    """Взятые в развоз дня их приёма (№72) в планах с прошлого рабочего дня по вчера (как views._same_day_taken); load —
+    общее чтение планов вида (_plans)."""
+    load = load or _plans(state)
     out: set[str] = set()
     d = dp.previous_workday(day, workdays, holidays)
     while d < day:
-        stored = state.store.load_dispatch(d.isoformat())
-        if stored is not None:
-            out |= dp.Draft.from_json(stored[0]).for_drivers().same_day   # №81: отправленное водителям
+        plan = load(d)   # RoutesStoreError — наружу (№80)
+        if plan is not None:
+            out |= plan.same_day
         d += timedelta(days=1)
     return out
 

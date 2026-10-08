@@ -76,8 +76,9 @@
   правил — прежний план до байта.
 - «Այսօր չենք տանում» — «Երբ տանել» (владелец 08.10, Draft.later): логист выбирает день, когда везти заказы магазина
   (рабочий день после дня плана, не дальше LATER_MAX_DAYS, defer_days) — в этот день они сами входят в развоз как
-  перенесённые (views._carried, courier.routes_link: later_carried по планам LATER_MAX_DAYS дней до него); «Չգիտեմ» — как
-  раньше, заказы прошлых дней — «Չտանել» (dismissed), сам день — в «Նախորդ օրերից».
+  перенесённые (views._carried, courier.routes_link: later_carried по планам LATER_SCAN_DAYS дней до него); сам — только
+  по последнему решению о нём (не в два дня); не довезли — виден в «Նախորդ օրերից». «Չգիտեմ» — как раньше, заказы
+  прошлых дней — «Չտանել» (dismissed), сам день — в «Նախորդ օրերից».
 """
 from __future__ import annotations
 
@@ -107,6 +108,11 @@ MAX_BUILT_ORDERS = 20000  # заказов в отметке сборки — т
 MAX_AGENTS = 500          # менеджеров в «чьи заказы не везём» — защита от битого черновика и запроса
 BACKLOG_WORKDAYS = 2      # «не отгружены с прошлых дней» — заказы ещё двух рабочих дней раньше окна
 LATER_MAX_DAYS = 7        # «Երբ տանել» (владелец 08.10): перенос не дальше недели от дня плана (календарных дней)
+# заказ старше этого (дней до дня плана) «Երբ տանել» не переносится: окно ERP дня, куда он придёт, ограничено (later_carried)
+DEFER_MAX_AGE_DAYS = 14
+# сколько дней назад смотреть планы с «Երբ տանել»: день доставки (≤ LATER_MAX_DAYS, стал праздником — позже) и ещё
+# неделя после него — не довезённый в свой день заказ видно в «Նախորդ օրերից» (сам он больше никуда не входит)
+LATER_SCAN_DAYS = 14
 BYPASS_MIN_KM = 0.01      # пояснение рейса: участок длиннее из-за объезда центра хотя бы на 10 м — «в объезд»
 WEEKDAY_FULL = {1: 'понедельник', 2: 'вторник', 3: 'среда', 4: 'четверг', 5: 'пятница', 6: 'суббота',
                 7: 'воскресенье'}
@@ -263,20 +269,34 @@ def defer_days(day: date, workdays: Sequence[int], holidays: Collection[date] = 
     return [d for d in days if is_workday(d, workdays, holidays)]
 
 
-def later_carried(plans: Sequence[tuple[date, Draft]], day: date) -> dict[str, tuple[date, date, date]]:
-    """Заказы, перенесённые «Երբ տանել» (Draft.later) на day и позже, из планов plans — (день плана, план, отправленный
-    водителям: for_drivers) по возрастанию дня, за LATER_MAX_DAYS дней до day: isn → (день доставки, дата заказа, день
-    плана, где перенесли). Перенесли снова позже — последний перенос; логист взял заказ «Տանել այսօր» в промежуточный
-    день (added) — перенос снят: заказ везли там. Одно правило для страницы «Развоза» и терминалов водителей."""
-    out: dict[str, tuple[date, date, date]] = {}
+def later_day(to: date, workdays: Sequence[int], holidays: Collection[date] = ()) -> date:
+    """День, когда везут перенесённое «Երբ տանել» на to: сам to, а стал нерабочим (праздник после переноса) — первый
+    рабочий день после него."""
+    return to if is_workday(to, workdays, holidays) else next_workday(to, workdays, holidays)
+
+
+def later_carried(plans: Sequence[tuple[date, Draft]], workdays: Sequence[int],
+                  holidays: Collection[date] = ()) -> dict[str, tuple[date | None, date, date]]:
+    """Перенесённые «Երբ տանել» (Draft.later) в планах plans — (день плана, план, отправленный водителям: for_drivers) по
+    возрастанию дня, LATER_SCAN_DAYS дней до дня, который их смотрит: isn → (день доставки — later_day; None — перенос
+    снят, дата заказа, день плана последнего решения). Одно правило для страницы «Развоза» и терминалов водителей.
+
+    Сам заказ входит в развоз только дня доставки (== день) и только по последнему решению о нём — поэтому он никогда не
+    входит сам в два дня. План после переноса, который сам решил судьбу заказа, заменяет перенос: взял «Տանել այսօր»
+    (added; заказ везут там) или перенёс «Վաղը» (deferred; его сам берёт следующий день, views._carried) — перенос снят
+    (None); снова «Երբ տանել» (later) — новый день. «Не везём сегодня» промежуточного дня (excluded, «Չտանել» —
+    dismissed, убран перенесённый сюда — dropped) — решение только того дня: сам заказ туда не входит, перенос остаётся.
+    Снятый перенос и прошедший день доставки — заказ сам никуда не входит, но его видно в «Նախորդ օրերից» (views) до конца
+    окна LATER_SCAN_DAYS: не отгружен — логист решит сам. Строки битого черновика (заказ старше DEFER_MAX_AGE_DAYS, день
+    не в (день плана, + LATER_MAX_DAYS]) — мимо: окно ERP дня ограничено."""
+    out: dict[str, tuple[date | None, date, date]] = {}
     for d, plan in plans:
-        for isn in plan.added:
-            out.pop(isn, None)
+        for isn in plan.added | plan.deferred:
+            if isn in out:
+                out[isn] = (None, out[isn][1], d)
         for isn, (to, od) in plan.later.items():
-            if to >= day:
-                out[isn] = (to, od, d)
-            else:
-                out.pop(isn, None)
+            if d - timedelta(days=DEFER_MAX_AGE_DAYS) <= od and d < to <= d + timedelta(days=LATER_MAX_DAYS):
+                out[isn] = (later_day(to, workdays, holidays), od, d)
     return out
 
 
@@ -1968,15 +1988,20 @@ def _trip_stops(ctx: DayContext, draft: Draft, routable: Mapping[int, Stop], edi
     return draft
 
 
-DEFER_DAY_BAD = 'Այդ օրը չի կարելի ընտրել — ընտրեք առաջիկա 7 օրվա աշխատանքային օրերից մեկը'
+DEFER_DAY_BAD = f'Այդ օրը չի կարելի ընտրել — ընտրեք առաջիկա {LATER_MAX_DAYS} օրվա աշխատանքային օրերից մեկը'
+DEFER_TOO_OLD = (f'Խանութի պատվերներից մեկը {DEFER_MAX_AGE_DAYS} օրից ավելի հին է — այն այլ օր տեղափոխել չի կարելի։ '
+                 'Որոշեք այսօր կամ ընտրեք «Չգիտեմ»։')
 
 
-def _defer_store(stops: Sequence[Stop], draft: Draft, edit: Mapping[str, Any], order_ids: Collection[str],
+def _defer_store(day: date, stops: Sequence[Stop], draft: Draft, edit: Mapping[str, Any], order_ids: Collection[str],
                  backlog_ids: Collection[str], carried: Collection[str], defer_to: Collection[date]) -> Draft:
     """«Այսօր չենք տանում» магазина (владелец 08.10) — все его заказы в развозе дня одной правкой: заказы дня — в excluded,
     прошлых дней — из added (перенесённый сюда — ещё и в dropped); взятые сегодня новые заказы дня (№72, same_day) — снова
-    заказы следующего дня, и только. to — «Երբ տանել»: день из defer_to (рабочий после дня плана, defer_days) — в later
-    (тот день возьмёт их сам); null — «Չգիտեմ»: как exclude каждого (прошлых дней — «Չտանել», dismissed)."""
+    заказы следующего дня, и только. to (ключ обязателен) — «Երբ տանել»: день из defer_to (рабочий после дня плана,
+    defer_days) — в later (тот день возьмёт их сам); заказ старше DEFER_MAX_AGE_DAYS — нельзя (окно ERP того дня
+    ограничено); null — «Չգիտեմ»: как exclude каждого (прошлых дней — «Չտանել», dismissed)."""
+    if 'to' not in edit:
+        raise DispatchError('Սերվերը չընդունեց հարցումը — թարմացրեք էջը')
     cid, raw = edit.get('customer_id'), edit.get('to')
     stop = next((s for s in stops if s.customer_id == cid), None) if _is_int(cid) else None
     if stop is None:
@@ -1989,6 +2014,9 @@ def _defer_store(stops: Sequence[Stop], draft: Draft, edit: Mapping[str, Any], o
             to = None
         if to is None or to not in set(defer_to):
             raise DispatchError(DEFER_DAY_BAD)
+        oldest = day - timedelta(days=DEFER_MAX_AGE_DAYS)
+        if any(o.order_date < oldest for o in stop.orders if o.isn in order_ids or o.isn in backlog_ids):
+            raise DispatchError(DEFER_TOO_OLD)
     for o in stop.orders:
         isn = o.isn
         if isn in order_ids:
@@ -2092,7 +2120,7 @@ def apply_edit(ctx: DayContext, stops: Sequence[Stop], draft: Draft, edit: Mappi
         draft.later.pop(isn, None)
         return draft
     if action == 'defer_store':
-        return _defer_store(stops, draft, edit, order_ids, backlog_ids, carried, defer_to)
+        return _defer_store(ctx.day, stops, draft, edit, order_ids, backlog_ids, carried, defer_to)
     if action == 'agents':
         off = parse_agents(edit.get('off'))
         if off is None:

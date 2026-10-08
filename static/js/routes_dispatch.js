@@ -1946,7 +1946,9 @@
         if (o.taken && tt) [tone, icon, text] = ['is-ok', 'fa-check', 'Տանում ենք այսօր՝ ' + tt];
         else if (o.taken) [tone, icon, text] = ['is-warn', 'fa-triangle-exclamation', 'Ավելացված է, բայց երթերում տեղ չկա՝ տեսեք «Դեռ երթերում չեն»'];
         else if (o.deferred) [tone, icon, text] = ['', 'fa-calendar-day', 'Տեղափոխված է հաջորդ օրվան՝ կտարվի ' + dayHuman(state.data.defer_to, true)];
-        else if (o.later_to) [tone, icon, text] = ['', 'fa-calendar-day', 'Խանութն այսօր չի ընդունում՝ կտանենք ' + dayHuman(o.later_to, true)];
+        // «Երբ տանել»: этого дня — магазин сегодня не принимает; другого дня (later_from) — по тому плану
+        else if (o.later_to) [tone, icon, text] = ['', 'fa-calendar-day', (o.later_from ? 'Ըստ ' + dayHuman(o.later_from, false) + ' պլանի՝ կտանենք '
+            : 'Խանութն այսօր չի ընդունում՝ կտանենք ') + dayHuman(o.later_to, true)];
         else if (o.agent_off) [tone, icon, text] = ['', 'fa-user-slash', 'Մենեջերը հանված է «Մենեջերներ» ֆիլտրից։ «Տանել այսօր»-ով կտանենք միայն այս պատվերը'];
         else if (tt) [tone, icon, text] = ['', 'fa-route', 'Խանութն այսօր արդեն երթում է այլ պատվերով՝ ' + tt];
         if (o.taken && o.carried) text += ' · տեղափոխված է ' + (o.carried_from ? dayHuman(o.carried_from, false) + ' պլանից' : 'նախորդ օրից');
@@ -2665,7 +2667,7 @@
         });
         return list;
     }
-    // «Երբ տանել»: дни defer_days (первый — по умолчанию; он же «Վաղը», если это следующий календарный день) и «Չգիտեմ» —
+    // «Երբ տանել»: дни defer_days (первый — по умолчанию; завтрашний относительно сегодня — с «Վաղը», relDay) и «Չգիտեմ» —
     // заказы остаются в «Նախորդ օրերից». Прошедший день — переносить некуда: без выбора, как «Չգիտեմ»
     function whyDays() {
         const days = state.data.defer_days || [];
@@ -2679,7 +2681,7 @@
         group.className = 'dp-why-chips';
         group.setAttribute('role', 'radiogroup');
         group.setAttribute('aria-label', 'Երբ տանել');
-        const next = shiftDay(state.data.day, 1);
+        group.setAttribute('aria-describedby', 'dpWhyDaysHint');
         [...days, ''].forEach((d, i) => {
             const lab = document.createElement('label');
             lab.className = 'dp-why-chip';
@@ -2693,12 +2695,14 @@
                 if (rb.checked && !r.checked) r.checked = true;
                 whyState();
             });
-            lab.append(rb, document.createTextNode(d ? (i === 0 && d === next ? 'Վաղը, ' : '') + dayHuman(d, true) : 'Չգիտեմ'));
+            const rel = d ? relDay(d) : '';
+            lab.append(rb, document.createTextNode(d ? (rel ? rel + ', ' : '') + dayHuman(d, true) : 'Չգիտեմ'));
             group.appendChild(lab);
         });
         const hint = document.createElement('span');
         hint.className = 'dp-why-days-hint';
         hint.id = 'dpWhyDaysHint';
+        hint.setAttribute('aria-live', 'polite');
         wrap.append(cap, group, hint);
         return wrap;
     }
@@ -4490,13 +4494,10 @@
         }
     }
 
+    // «Այսօր չենք տանում» в режиме «Փոփոխել»: все заказы магазина одной правкой, без дня («Չգիտեմ» окна «Ինչու՞»)
     async function excludeStop(stop) {
         if (!needPlan()) return;
-        const orders = stop.orders || [];
-        let ok = true;
-        for (let i = 0; i < orders.length && ok; i++) {
-            ok = !!(await edit({ action: 'exclude', order: orders[i].isn }, i === orders.length - 1 ? '«' + (stop.name || stop.code) + '» այսօր չենք տանում' : null));
-        }
+        await edit({ action: 'defer_store', customer_id: stop.customer_id, to: null }, '«' + (stop.name || stop.code) + '» այսօր չենք տանում');
     }
 
     async function reset() {

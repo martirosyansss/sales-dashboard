@@ -93,16 +93,26 @@ def test_defer_days_are_workdays_within_a_week():
     assert dp.defer_days(THU, (1, 2, 3, 4, 5))[-1] == date(2026, 10, 8) and date(2026, 10, 3) not in dp.defer_days(THU, (1, 2, 3, 4, 5))
 
 
-def test_later_carried_latest_wins_and_take_today_cancels():
-    a, b, c = _isn(1), _isn(2), _isn(3)
-    thu = dp.Draft(later={a: (TUE, WED), b: (TUE, WED), c: (FRI, WED)})
-    fri = dp.Draft(added={b})                                                 # b взяли «Տանել այսօր» в пятницу — везли там
-    sat = dp.Draft(later={a: (date(2026, 10, 7), WED)})                       # a перенесли снова — на среду
-    out = dp.later_carried([(THU, thu), (FRI, fri)], TUE)
-    assert out == {a: (TUE, WED, THU)}                                        # c — на пятницу: уже прошёл
-    assert dp.later_carried([(THU, thu), (FRI, fri), (date(2026, 10, 3), sat)], TUE) == {a: (date(2026, 10, 7), WED, date(2026, 10, 3))}
-    mon = dp.Draft(later={a: (MON, WED)})                                     # перенесли на раньше дня — не этому дню
-    assert dp.later_carried([(THU, thu), (date(2026, 10, 3), mon)], TUE) == {b: (TUE, WED, THU)}
+def test_later_carried_last_decision_wins_never_two_days():
+    """Сам заказ входит только в день последнего решения: «Տանել այսօր» (added) и «Վաղը» (deferred) промежуточного дня
+    снимают перенос (None), новый «Երբ տանել» его заменяет; «не везём сегодня» промежуточного дня перенос не трогает."""
+    a, b, c, e, x = _isn(1), _isn(2), _isn(3), _isn(4), _isn(5)
+    sat = date(2026, 10, 3)
+    thu = dp.Draft(later={a: (TUE, WED), b: (TUE, WED), c: (TUE, WED), e: (TUE, WED), x: (FRI, WED)})
+    fri = dp.Draft(added={b}, deferred={c}, dismissed={e}, excluded={e}, dropped={e})
+    out = dp.later_carried([(THU, thu), (FRI, fri)], SIX)
+    assert out == {a: (TUE, WED, THU), b: (None, WED, FRI), c: (None, WED, FRI), e: (TUE, WED, THU), x: (FRI, WED, THU)}
+    again = dp.Draft(later={a: (date(2026, 10, 7), WED)})                     # a перенесли снова — на среду
+    assert dp.later_carried([(THU, thu), (sat, again)], SIX)[a] == (date(2026, 10, 7), WED, sat)
+    # решение до переноса (тот же заказ взят в среду) перенос не снимает
+    assert dp.later_carried([(WED, dp.Draft(added={a})), (THU, thu)], SIX)[a] == (TUE, WED, THU)
+
+
+def test_later_carried_holiday_shift_and_broken_rows():
+    thu = dp.Draft(later={_isn(1): (TUE, WED), _isn(2): (TUE, date(2026, 9, 10)),          # старше DEFER_MAX_AGE_DAYS
+                          _isn(3): (date(2026, 10, 9), WED), _isn(4): (THU, WED)})          # > 7 дней, не после дня плана
+    assert dp.later_carried([(THU, thu)], SIX, {TUE}) == {_isn(1): (date(2026, 10, 7), WED, THU)}   # вт — праздник: ср
+    assert dp.later_day(date(2026, 10, 4), SIX) == MON                                       # вс → пн
 
 
 def test_apply_edit_defer_store_classifies_orders():
@@ -126,12 +136,30 @@ def test_apply_edit_defer_store_classifies_orders():
                         carried={carried_o.isn}, defer_to=[TUE])
     assert out.later == {} and out.dismissed == {old_o.isn, carried_o.isn} and out.excluded == {day_o.isn}
     for bad in ({'customer_id': 101, 'to': '2026-10-05'}, {'customer_id': 101, 'to': 'x'}, {'customer_id': 101, 'to': 5},
-                {'customer_id': 555, 'to': None}, {'customer_id': True, 'to': None}, {'to': None}):
+                {'customer_id': 555, 'to': None}, {'customer_id': True, 'to': None}, {'to': None}, {'customer_id': 101}):
         with pytest.raises(dp.DispatchError):
             dp.apply_edit(ctx, stops, draft(), {'action': 'defer_store', **bad}, *args, defer_to=[TUE])
     # перенос рейса «Վաղը» и «Տանել բոլորը» снимают «Երբ տանել»
     d = dp.Draft(later={old_o.isn: (TUE, OLD)})
     assert dp.apply_edit(ctx, stops, d, {'action': 'include', 'orders': [old_o.isn]}, *args).later == {}
+
+
+def test_defer_store_refuses_too_old_orders():
+    """Заказ старше DEFER_MAX_AGE_DAYS «Երբ տանել» не переносится (окно ERP дня доставки ограничено); «Չգիտեմ» — можно."""
+    fresh, old = _dorder(1, 101, 10.0), _dorder(2, 101, 10.0, day=date(2026, 9, 16))   # 15 дней до 01.10
+    stops = dp.build_stops([fresh, old], lambda c: dp.Coord(40.18, 44.51, 'erp'))
+    ctx = _dp_ctx()
+    with pytest.raises(dp.DispatchError, match='14'):
+        dp.apply_edit(ctx, stops, dp.Draft(), {'action': 'defer_store', 'customer_id': 101, 'to': '2026-10-06'},
+                      {fresh.isn}, {old.isn}, defer_to=[TUE])
+    out = dp.apply_edit(ctx, stops, dp.Draft(), {'action': 'defer_store', 'customer_id': 101, 'to': None},
+                        {fresh.isn}, {old.isn}, defer_to=[TUE])
+    assert out.later == {} and out.dismissed == {old.isn}
+    edge = _dorder(3, 102, 10.0, day=date(2026, 9, 17))                                    # ровно 14 дней — можно
+    stops = dp.build_stops([edge], lambda c: dp.Coord(40.18, 44.51, 'erp'))
+    out = dp.apply_edit(ctx, stops, dp.Draft(), {'action': 'defer_store', 'customer_id': 102, 'to': '2026-10-06'},
+                        set(), {edge.isn}, defer_to=[TUE])
+    assert out.later == {edge.isn: (TUE, edge.order_date)}
 
 
 def test_defer_store_refused_for_loaded_trip_without_confirm():
@@ -208,8 +236,8 @@ def test_include_undoes_later_and_past_day_refuses(client, monkeypatch):
 
 
 def test_deferred_order_comes_on_its_day_only(client):
-    """Чт → вт: во вторник заказ сам в развозе (ERP читается с его даты), в пятницу — только строка «Նախորդ օրերից» с
-    «կտանենք», в понедельник его не видно; лишние старые заказы вторник не показывает."""
+    """Чт → вт: во вторник заказ сам в развозе (ERP читается с его даты), в пятницу и понедельник — только строка
+    «Նախորդ օրերից» с «կտանենք» (по плану 01.10); лишние старые заказы вторник не показывает."""
     calls = _dispatch_setup(client, _orders())
     d = _build(client)
     code, d = _edit(client, d, action='defer_store', customer_id=101, to='2026-10-06')
@@ -225,9 +253,12 @@ def test_deferred_order_comes_on_its_day_only(client):
     fri = _get(client, '2026-10-02')
     row = _row(fri['backlog'], 1)
     assert row is not None and not row['taken'] and not row['carried'] and row['later_to'] == '2026-10-06'
+    assert row['later_from'] == DAY
     assert _isn(1) not in {o['isn'] for o in fri['excluded']}
-    mon = _get(client, '2026-10-05')
-    assert _row(mon['backlog'], 1) is None and mon['orders']['count'] == 0
+    mon = _get(client, '2026-10-05')                                          # старше окна понедельника — и всё же видно
+    row = _row(mon['backlog'], 1)
+    assert row is not None and not row['taken'] and row['later_to'] == '2026-10-06' and mon['orders']['count'] == 0
+    assert [o['isn'] for o in mon['backlog']] == [_isn(1)]
     # во вторник логист собирает план — магазин в рейсах; «Հանել» — как с переносом «Վաղը»
     d = _build(client, '2026-10-06')
     assert 101 in _in_trips(d)
@@ -236,14 +267,110 @@ def test_deferred_order_comes_on_its_day_only(client):
 
 
 def test_take_today_on_intermediate_day_cancels_later(client):
+    """Пятница взяла заказ «Տանել այսօր» — во вторник он сам не входит (строка — обычная, решает логист); у пятницы нет
+    «կտանենք» (её решение — везти сегодня)."""
     _dispatch_setup(client, _orders())
     d = _build(client)
     _edit(client, d, action='defer_store', customer_id=101, to='2026-10-06')
     fri = _build(client, '2026-10-02')
     code, fri = _edit(client, fri, day='2026-10-02', action='include', order=_isn(1))
-    assert code == 200 and _row(fri['backlog'], 1)['taken']
+    row = _row(fri['backlog'], 1)
+    assert code == 200 and row['taken'] and 'later_to' not in row and 'later_from' not in row
     tue = _get(client, '2026-10-06')
-    assert tue['orders']['count'] == 0 and _row(tue['backlog'], 1) is None
+    row = _row(tue['backlog'], 1)
+    assert tue['orders']['count'] == 0 and not row['taken'] and not row['carried'] and 'later_to' not in row
+
+
+def _trip_with(d, cid):
+    return next(t['id'] for tr in d['plan']['trucks'] for t in tr['trips'] if any(s['customer_id'] == cid for s in t['stops']))
+
+
+def test_intermediate_defer_trip_never_carries_into_two_days(client):
+    """Ревью: чт «Երբ տանել» на вт; пт «Տանել այսօր», затем рейс «Վաղը» — заказ сам едет в субботу и только в субботу:
+    не во вторник (ни страница, ни терминал)."""
+    _dispatch_setup(client, _orders())
+    state = client.application.extensions['route_optimizer']
+    d = _build(client)
+    code, d = _edit(client, d, action='defer_store', customer_id=101, to='2026-10-06')
+    assert code == 200
+    fri = _build(client, '2026-10-02')
+    code, fri = _edit(client, fri, day='2026-10-02', action='include', order=_isn(1))
+    code, fri = _edit(client, fri, day='2026-10-02', action='defer_trip', trip=_trip_with(fri, 101))
+    assert code == 200 and _isn(1) in _stored(client, '2026-10-02').deferred
+    sat = _get(client, '2026-10-03')
+    tue = _get(client, '2026-10-06')
+    assert _row(sat['backlog'], 1)['carried'] and _row(sat['backlog'], 1)['taken']
+    row = _row(tue['backlog'], 1)
+    assert not row['carried'] and not row['taken'] and tue['orders']['count'] == 0
+    assert _isn(1) in rl.routes_view(state, date(2026, 10, 3)).carried
+    tv = rl.routes_view(state, TUE)
+    assert _isn(1) not in tv.carried and tv.carried_since is None
+    view = replace(tv, plan_exists=True, released=True, trips=(('CAR1', (101, 102, 104)),))
+    assert rl.pick_orders(_orders(), TUE, view, 'CAR1') == []
+
+
+def test_holiday_on_target_moves_to_next_workday(client):
+    _dispatch_setup(client, _orders())
+    state = client.application.extensions['route_optimizer']
+    d = _build(client)
+    code, d = _edit(client, d, action='defer_store', customer_id=101, to='2026-10-06')
+    assert code == 200
+    r = client.post('/api/routes/settings', json={'settings': {'holidays': ['2026-10-06']}})
+    assert r.status_code == 200, r.get_json()
+    assert _row(_get(client, DAY)['excluded'], 1)['later_to'] == '2026-10-07'   # страница дня показывает новый день
+    wed = _get(client, '2026-10-07')
+    row = _row(wed['backlog'], 1)
+    assert row['carried'] and row['taken'] and wed['orders']['count'] == 1
+    assert rl.routes_view(state, date(2026, 10, 7)).carried_since == WED
+    assert _isn(1) in rl.routes_view(state, date(2026, 10, 7)).carried
+
+
+def test_not_delivered_on_target_stays_visible_not_carried(client):
+    """Во вторник не отвезли (накладной нет): дальше заказ — обычная строка «Նախորդ օրերից» (сам не входит) до конца
+    окна LATER_SCAN_DAYS от плана переноса; потом — как любой старый заказ."""
+    calls = _dispatch_setup(client, _orders())
+    d = _build(client)
+    _edit(client, d, action='defer_store', customer_id=101, to='2026-10-06')
+    for day in ('2026-10-07', '2026-10-08', '2026-10-15'):
+        g = _get(client, day)
+        row = _row(g['backlog'], 1)
+        assert row is not None and not row['taken'] and not row['carried'] and 'later_to' not in row, day
+        assert g['orders']['count'] == 0 and calls[-1][0] == WED
+    assert _row(_get(client, '2026-10-16')['backlog'], 1) is None             # 14 дней после 01.10 прошли
+
+
+def test_one_read_per_plan_per_request(client):
+    """Переносы, взятые заказы дня, «видел» (№79) и «Երբ տանել» читают каждый прошлый план один раз за запрос."""
+    _dispatch_setup(client, _orders())
+    _build(client)
+    state = client.application.extensions['route_optimizer']
+    real, seen = state.store.load_dispatch, []
+    state.store.load_dispatch = lambda day: (seen.append(day), real(day))[1]
+    try:
+        _get(client, '2026-10-06')
+    finally:
+        state.store.load_dispatch = real
+    assert seen and len(seen) == len(set(seen)), sorted(seen)
+
+
+def test_courier_skips_unreadable_old_plan_but_not_recent(client, monkeypatch):
+    _dispatch_setup(client, _orders())
+    state = client.application.extensions['route_optimizer']
+    d = _build(client)
+    _edit(client, d, action='defer_store', customer_id=101, to='2026-10-06')
+    real = state.store.load_dispatch
+
+    def broken(bad):
+        def load(day):
+            if day == bad:
+                raise rl.RoutesStoreError('битая база')
+            return real(day)
+        return load
+    monkeypatch.setattr(state.store, 'load_dispatch', broken('2026-09-25'))   # старый план — только в окне «Երբ տանել»
+    assert _isn(1) in rl.routes_view(state, TUE).carried
+    monkeypatch.setattr(state.store, 'load_dispatch', broken('2026-10-03'))   # прошлый рабочий день — строго, как прежде
+    with pytest.raises(rl.RoutesStoreError):
+        rl.routes_view(state, MON)
 
 
 def test_released_plan_carries_only_what_was_sent(client):
