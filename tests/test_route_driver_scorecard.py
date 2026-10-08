@@ -354,7 +354,7 @@ def test_api_scorecard_for_admin(client, sc_app):
     assert sorted(crew.calls) == [D1, D1, D2, D2]
     page = client.get('/routes/drivers', base_url=LAN)
     html = page.get_data(as_text=True)
-    assert page.status_code == 200 and 'js/routes_drivers.js?v=5' in html and 'css/routes_drivers.css?v=2' in html
+    assert page.status_code == 200 and 'js/routes_drivers.js?v=6' in html and 'css/routes_drivers.css?v=2' in html
     assert 'data-key="cash"' in html and 'data-cash="1"' in html
     assert '<a href="/routes/drivers" aria-current="page">Վարորդներ</a>' in html
 
@@ -440,8 +440,9 @@ def test_period_speed_stops_order_liters_and_score():
     assert det['2026-10-02']['liters_vs_norm_pct'] == -20.0 and det['2026-10-03']['liters_vs_norm_pct'] is None
     assert det['2026-10-03']['speed_events'] is None and det['2026-10-01']['order_pct'] == 90.0
     # 3 дня — балл: вовремя не оценено (выпадает), порядок 95 → 100, скорость 1,5 → 25, стоянки 15 → 75, литры 0 % → 100
-    assert r['enough_data'] and r['score'] == pytest.approx((100 * 15 + 25 * 20 + 75 * 15 + 100 * 15) / 65, abs=0.05)
-    assert r['parts']['speed'] == {'value': 1.5, 'score': 25.0, 'weight': 20, 'share': 30.8}
+    # (веса 08.10: порядок 10, скорость 15, стоянки 15, литры 15; «Երթուղի» без трека — выпадает)
+    assert r['enough_data'] and r['score'] == pytest.approx((100 * 10 + 25 * 15 + 75 * 15 + 100 * 15) / 55, abs=0.05)
+    assert r['parts']['speed'] == {'value': 1.5, 'score': 25.0, 'weight': 15, 'share': 27.3}
     assert 'on_time' not in r['parts'] and r['rank'] == 1 and out['ranked'] == 1
     json.dumps(out)
 
@@ -453,12 +454,12 @@ def test_sub_score_thresholds_and_renormalization():
     assert (sc.sub_score('speed', 0), sc.sub_score('speed', 1), sc.sub_score('speed', 5)) == (100, 50, 0)
     assert (sc.sub_score('stops', 0), sc.sub_score('stops', 30), sc.sub_score('stops', 90)) == (100, 50, 0)
     assert sum(sc.WEIGHTS.values()) == 100
-    full, parts = sc.score({'on_time': 95, 'order': 90, 'speed': 0, 'stops': 0, 'liters': 0})
-    assert full == 100.0 and [p['share'] for p in parts.values()] == [35.0, 15.0, 20.0, 15.0, 15.0]
-    # без скорости и литров веса 35 + 15 + 15 = 65 перенормируются: вовремя — 35 / 65
+    full, parts = sc.score({'on_time': 95, 'order': 90, 'speed': 0, 'stops': 0, 'liters': 0, 'route': 95})
+    assert full == 100.0 and [p['share'] for p in parts.values()] == [30.0, 10.0, 15.0, 15.0, 15.0, 15.0]
+    # без скорости, литров и маршрута веса 30 + 10 + 15 = 55 перенормируются: вовремя — 30 / 55
     got, parts = sc.score({'on_time': 72.5, 'order': 90, 'speed': None, 'stops': 30, 'liters': None})
-    assert got == pytest.approx((50 * 35 + 100 * 15 + 50 * 15) / 65, abs=0.05)
-    assert set(parts) == {'on_time', 'order', 'stops'} and parts['on_time']['share'] == 53.8
+    assert got == pytest.approx((50 * 30 + 100 * 10 + 50 * 15) / 55, abs=0.05)
+    assert set(parts) == {'on_time', 'order', 'stops'} and parts['on_time']['share'] == 54.5
     assert sc.score({'on_time': None}) == (None, {}) and sc.score({}) == (None, {})
 
 
@@ -788,7 +789,7 @@ def test_apk_score_own_week_rank_without_names(client, apk, monkeypatch):
     assert set(me) == {'days', 'stops', 'on_time_pct', 'on_time_n', 'on_time_of', 'avg_late_min', 'order_pct',
                        'speed_events', 'speed_per_100km', 'offroute_stop_min', 'liters_vs_norm_pct', 'score', 'parts'}
     assert (me['days'], me['stops'], me['order_pct'], me['score'], me['on_time_of']) == (3, 3, 100.0, 100.0, 0)
-    assert me['parts'] == {'order': {'value': 100.0, 'score': 100.0, 'weight': 15, 'share': 100.0}}
+    assert me['parts'] == {'order': {'value': 100.0, 'score': 100.0, 'weight': 10, 'share': 100.0}}
     assert (body['rank'], body['of'], body['enough_data']) == (1, 2, True)   # Գոռ (2 дня) — вне места
     text = r.get_data(as_text=True)
     for other in ('Բաբկեն', 'Գոռ', 'Արամ', '"id"', '"name"', '"key"'):
