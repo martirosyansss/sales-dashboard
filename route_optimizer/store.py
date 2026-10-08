@@ -30,7 +30,7 @@ from .patterns import parse_freq_key, parse_pattern_key, parse_plan_freq_key, pa
 from .running_costs import LOAD_COST_FIELDS, profile_fields
 from .vehicle_access import VehicleAccess, check_access
 
-SCHEMA_VERSION = 26
+SCHEMA_VERSION = 27
 logger = logging.getLogger(__name__)
 CREW_PAY_KEY = 'crew_pay'   # строка settings с параметрами «Աշխատավարձ» (Store.crew_pay_params); не ключ DEFAULT_SETTINGS
 # строка settings: какие виды тревог карты знала программа, сохранившая live_alert_kinds (№87); не ключ
@@ -226,6 +226,25 @@ _LIVE_EXPLAIN_TABLE = (
     "created_at TEXT NOT NULL, created_by TEXT)")
 _LIVE_EXPLAIN_INDEX = 'CREATE INDEX IF NOT EXISTS live_explain_day ON live_explain(day, car_code)'
 
+# Схема 27 (№91, Telegram-бот «Araqich Dispatch», docs/plans/telegram-bot-plan.md §2): сообщения бота — строка на тревогу
+# (key «alert:машина|вид|начало»; и решение «не слать»: phase skipped без message_id — тихие часы, старая, окно повтора,
+# перенесена из route_live_alerts.json), на «не успеет» машины за день («late:машина|день») и на отчёт («plan:день»,
+# «summary:день», «week:понедельник»). id — короткий номер для подписанных кнопок; level — 🔴/🟠/⚪ на момент отправки;
+# acked_* — кто нажал «Տեսա»; resolved_at — тревога кончилась; escalated_at — эскалация (один раз); payload — JSON (тело
+# сообщения, строки «не успеет», копии эскалации, подпись отчёта). tg_kv — offset getUpdates, темы форума, имена людей,
+# отметка импорта route_live_alerts.json.
+_TG_MESSAGE_TABLE = (
+    "CREATE TABLE IF NOT EXISTS tg_message(id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL UNIQUE, "
+    "kind TEXT NOT NULL, car TEXT, level TEXT CHECK (level IS NULL OR level IN ('critical', 'warning', 'info')), "
+    "chat TEXT, message_id INTEGER, thread_id INTEGER, "
+    "phase TEXT NOT NULL CHECK (phase IN ('active', 'ended', 'skipped', 'report')), sent_at TEXT NOT NULL, "
+    "acked_by INTEGER, acked_name TEXT, acked_at TEXT, resolved_at TEXT, escalated_at TEXT, "
+    "payload TEXT NOT NULL DEFAULT '{}')")
+_TG_MESSAGE_INDEX = 'CREATE INDEX IF NOT EXISTS tg_message_sent ON tg_message(sent_at)'
+_TG_KV_TABLE = 'CREATE TABLE IF NOT EXISTS tg_kv(key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL)'
+TG_MESSAGE_FIELDS = ('id', 'key', 'kind', 'car', 'level', 'chat', 'message_id', 'thread_id', 'phase', 'sent_at',
+                     'acked_by', 'acked_name', 'acked_at', 'resolved_at', 'escalated_at', 'payload')
+
 _MEASUREMENT_TABLE = (
     'CREATE TABLE IF NOT EXISTS route_measurement(day TEXT NOT NULL, car_code TEXT NOT NULL, '
     'data TEXT NOT NULL, updated_at TEXT NOT NULL, updated_by TEXT, PRIMARY KEY(day, car_code))')
@@ -307,6 +326,9 @@ _SCHEMA = (
     _CUSTOMER_DAY_UNTIL_TABLE,
     _LIVE_EXPLAIN_TABLE,
     _LIVE_EXPLAIN_INDEX,
+    _TG_MESSAGE_TABLE,
+    _TG_MESSAGE_INDEX,
+    _TG_KV_TABLE,
     _GEO_OVERRIDE_TABLE,
     _DISPATCH_TABLE,
     _TRUCKS_ONE_VAN,
@@ -459,6 +481,9 @@ _MIGRATIONS: dict[int, tuple[str, ...]] = {
     24: (_CUSTOMER_DAY_UNTIL_TABLE,),
     # 25 → 26 (владелец 08.10): только добавляем — объяснения отклонений и порядка объезда карты машин.
     25: (_LIVE_EXPLAIN_TABLE, _LIVE_EXPLAIN_INDEX),
+    # 26 → 27 (№91): только добавляем — сообщения Telegram-бота и его ключи; прежнее не меняется. «Уже отправлено» из
+    # route_live_alerts.json переносит сам бот при первом запуске (tg_bot: файл рядом с базой, не DDL)
+    26: (_TG_MESSAGE_TABLE, _TG_MESSAGE_INDEX, _TG_KV_TABLE),
 }
 
 FUEL_TYPES = ('diesel', 'petrol', 'lpg')
@@ -596,6 +621,21 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # «Не успеет» (ответ владельца №87, п.2): магазин без окна приёма «опаздывает», когда прогноз прибытия позже планового
     # ETA не меньше чем на столько минут (с окном — позже конца окна)
     'late_nowin_min': 30,
+    # Telegram-бот (ответ владельца №91): важность тревоги каждого вида — 🔴 critical (звук, «Տեսա», эскалация), 🟠 warning
+    # (звук, «Տեսա»), ⚪ info (без звука и кнопок); «не успеет» — по виду строки: окно приёма, возврат на склад, план без
+    # окна. «Կապ չկա» — 🔴 только когда в терминалах есть мобильный интернет (tg_sim_installed): до SIM терминал виден
+    # лишь на Wi-Fi склада и «нет связи» в дороге — норма, не тревога (⚪). Эскалация — неподтверждённая 🔴 через столько
+    # минут (0 — без эскалации) этим людям (Telegram id); отчёты — план дня, итог дня (не позже tg_summary_at), неделя
+    'tg_levels': {'no_contact': 'critical', 'gps': 'critical', 'center': 'critical', 'late_window': 'critical',
+                  'late_return': 'critical', 'late_plan': 'warning', 'speed': 'warning', 'stop': 'warning',
+                  'deviation': 'info', 'sequence': 'info'},
+    'tg_sim_installed': False,
+    'tg_escalate_min': 10,
+    'tg_escalate_to': [838786551],
+    'tg_report_plan': True,
+    'tg_report_summary': True,
+    'tg_report_week': True,
+    'tg_summary_at': '19:30',
     'yerevan_zone': [[40.2173, 44.3948], [40.2129, 44.4031], [40.2021, 44.4052], [40.1964, 44.4102], [40.1936, 44.4029],
                     [40.1912, 44.4067], [40.19, 44.4042], [40.1853, 44.4078], [40.1748, 44.4063], [40.17, 44.4111],
                     [40.1671, 44.4196], [40.1694, 44.4271], [40.1675, 44.4303], [40.1599, 44.429], [40.1578, 44.4373],
@@ -680,6 +720,7 @@ _NUMERIC: dict[str, tuple[float, float, bool]] = {
     'live_detour_min_km': (0.1, 20, False),
     'live_repeat_min': (1, 1440, False),
     'late_nowin_min': (5, 240, False),     # и целое (validate_settings)
+    'tg_escalate_min': (0, 240, False),    # и целое; 0 — без эскалации
 }
 
 TRUCK_CAPACITY_KG = (100, 30000)
@@ -711,6 +752,13 @@ LIVE_EXPLAIN_KINDS = ('deviation', 'sequence')
 LIVE_EXPLAIN_REASONS = ('refuel', 'repair', 'customer', 'road', 'other')
 LIVE_EXPLAIN_NOTE_MAX = 200
 LIVE_EXPLAIN_STOPS_MAX = 200   # точек в объяснении порядка объезда (точка — stop_id терминала, до 64 символов)
+# Telegram-бот (№91): уровни важности и виды, у которых он настраивается («не успеет» — по виду строки)
+TG_LEVELS = ('critical', 'warning', 'info')
+TG_LEVEL_KINDS = ('no_contact', 'gps', 'center', 'late_window', 'late_return', 'late_plan', 'speed', 'stop', 'deviation',
+                  'sequence')
+TG_ESCALATE_TO_MAX = 20            # людей, кому уходит эскалация
+TG_USER_ID_MAX = 10 ** 13          # Telegram id человека — положительное целое (сейчас до 2⁵²)
+TG_FLAGS = ('tg_sim_installed', 'tg_report_plan', 'tg_report_summary', 'tg_report_week')
 GARAGE_KINDS = ('repair', 'accident', 'fixed', 'odometer')   # журнал гаража (№53), как garage.KINDS
 GARAGE_TEXT_MAX = 300
 GARAGE_AMOUNT_MAX = 100_000_000
@@ -1412,7 +1460,8 @@ def validate_settings(values: Mapping[str, Any],
         out['traffic_mode'] = mode
 
     for key in ('work_start', 'work_end', 'truck_work_start', 'truck_work_end', 'truck_overtime_end',
-                'dispatch_ready_time', 'truck_lunch_from', 'truck_lunch_to', 'live_quiet_from', 'live_quiet_to'):
+                'dispatch_ready_time', 'truck_lunch_from', 'truck_lunch_to', 'live_quiet_from', 'live_quiet_to',
+                'tg_summary_at'):
         v = values.get(key)
         if not isinstance(v, str) or not _HHMM_RE.match(v):
             errors[key] = 'ժամը՝ ԺԺ:ՐՐ ձևաչափով'
@@ -1455,6 +1504,7 @@ def validate_settings(values: Mapping[str, Any],
         errors['live_alert_kinds'] = 'ահազանգի անհայտ տեսակ՝ ' + ', '.join(k for k in kinds if k not in LIVE_ALERT_KINDS)
     else:
         out['live_alert_kinds'] = [k for k in LIVE_ALERT_KINDS if k in kinds]
+    _validate_tg(values, out, errors)
 
     days, err = _check_int_set(values.get('workdays'), 1, 7, 'շաբաթվա օրերի')
     if err:
@@ -1512,10 +1562,11 @@ def validate_settings(values: Mapping[str, Any],
             errors[key] = err
         else:
             out[key] = v
-    # порог «не успеет» без окна (№87) — целые минуты, как у поля страницы
-    if 'late_nowin_min' in out and not float(out['late_nowin_min']).is_integer():
-        errors['late_nowin_min'] = 'ամբողջ թիվ րոպեներով'
-        del out['late_nowin_min']
+    # порог «не успеет» без окна (№87) и эскалация бота (№91) — целые минуты, как у полей страницы
+    for key in ('late_nowin_min', 'tg_escalate_min'):
+        if key in out and not float(out[key]).is_integer():
+            errors[key] = 'ամբողջ թիվ րոպեներով'
+            del out[key]
     if 'size_small_max_kg' in out and 'size_medium_max_kg' in out \
             and out['size_small_max_kg'] >= out['size_medium_max_kg']:
         errors['size_medium_max_kg'] = 'միջին խանութների շեմը պետք է մեծ լինի փոքր խանութների շեմից'
@@ -1579,6 +1630,33 @@ def validate_settings(values: Mapping[str, Any],
     else:
         out['yerevan_zone'] = [[float(p[0]), float(p[1])] for p in zone]
     return out, errors
+
+
+def _validate_tg(values: Mapping[str, Any], out: dict[str, Any], errors: dict[str, str]) -> None:
+    """Настройки Telegram-бота (№91). Уровни: словарь «вид → critical | warning | info»; вида нет — по умолчанию, вид,
+    которого эта версия не знает (база после более новой), — молча мимо (как _loaded_alert_kinds). Кому эскалация —
+    Telegram id людей без повторов, порядок как ввели; пусто — эскалация только ответом в группе. Флаги — true/false.
+    Нет ключа — значение по умолчанию (база до №91)."""
+    levels = values.get('tg_levels', DEFAULT_SETTINGS['tg_levels'])
+    if not isinstance(levels, dict) or not all(isinstance(k, str) for k in levels):
+        errors['tg_levels'] = 'սպասվում էր «տեսակ → կարևորություն» աղյուսակ'
+    elif any(levels[k] not in TG_LEVELS for k in levels if k in TG_LEVEL_KINDS):
+        errors['tg_levels'] = 'կարևորությունը՝ critical, warning կամ info'
+    else:
+        out['tg_levels'] = {k: levels.get(k, DEFAULT_SETTINGS['tg_levels'][k]) for k in TG_LEVEL_KINDS}
+    ids = values.get('tg_escalate_to', DEFAULT_SETTINGS['tg_escalate_to'])
+    if not isinstance(ids, list) or len(ids) > TG_ESCALATE_TO_MAX:
+        errors['tg_escalate_to'] = f'սպասվում էր Telegram id-ների ցուցակ (ոչ ավելի, քան {TG_ESCALATE_TO_MAX})'
+    elif not all(isinstance(x, int) and not isinstance(x, bool) and 0 < x < TG_USER_ID_MAX for x in ids):
+        errors['tg_escalate_to'] = 'Telegram id-ն՝ դրական ամբողջ թիվ (օրինակ՝ 838786551)'
+    else:
+        out['tg_escalate_to'] = list(dict.fromkeys(ids))
+    for key in TG_FLAGS:
+        v = values.get(key, DEFAULT_SETTINGS[key])
+        if not isinstance(v, bool):
+            errors[key] = 'սպասվում էր այո կամ ոչ'
+        else:
+            out[key] = v
 
 
 def _loaded_alert_kinds(kinds: Any, known_raw: str | None) -> Any:
@@ -2727,6 +2805,68 @@ class Store:
                 conn.execute('DELETE FROM live_explain WHERE id = ?', (explanation_id,))
             return (row[0], row[1]) if row is not None else None
         return self._transaction(write, 'не удалось отменить объяснение тревоги')
+
+    # --- Telegram-бот (схема 27, №91) ---
+
+    def tg_messages(self, since: str) -> list[dict[str, Any]]:
+        """Записи бота с sent_at не раньше since (ISO) — словари TG_MESSAGE_FIELDS, payload разобран. Битый payload —
+        {} с предупреждением в журнале: запись остаётся (повторной отправки не будет), теряется только её тело."""
+        rows = self._read(lambda conn: conn.execute(
+            f'SELECT {", ".join(TG_MESSAGE_FIELDS)} FROM tg_message WHERE sent_at >= ? ORDER BY id', (since,)).fetchall())
+        out = []
+        for row in rows:
+            rec = dict(zip(TG_MESSAGE_FIELDS, row))
+            try:
+                payload = json.loads(rec['payload'])
+            except (TypeError, ValueError):
+                payload = None
+            if not isinstance(payload, dict):
+                logger.warning('[Routes] %s: запись бота %s — битый payload, без тела', self._name(), rec['key'])
+                payload = {}
+            rec['payload'] = payload
+            out.append(rec)
+        return out
+
+    def tg_next_id(self) -> int:
+        """Номер следующей записи бота (запись — после удачной отправки, а номер нужен её кнопкам раньше): пишет один
+        процесс (поток бота), номера не пересекаются; AUTOINCREMENT — удалённые номера не возвращаются."""
+        def query(conn: sqlite3.Connection) -> int:
+            seq = conn.execute("SELECT seq FROM sqlite_sequence WHERE name = 'tg_message'").fetchone()
+            top = conn.execute('SELECT MAX(id) FROM tg_message').fetchone()
+            return max(int(seq[0]) if seq else 0, int(top[0] or 0)) + 1
+        return self._read(query)
+
+    def tg_save_message(self, rec: Mapping[str, Any]) -> None:
+        """Записать запись бота целиком (по key: новая — вставка с её id, есть — замена всех полей, id прежний)."""
+        values = [json.dumps(rec.get('payload') or {}, ensure_ascii=False) if f == 'payload' else rec.get(f)
+                  for f in TG_MESSAGE_FIELDS]
+        cols = ', '.join(TG_MESSAGE_FIELDS)
+        update = ', '.join(f'{f} = excluded.{f}' for f in TG_MESSAGE_FIELDS if f not in ('id', 'key'))
+        self._transaction(lambda conn: conn.execute(
+            f'INSERT INTO tg_message({cols}) VALUES({", ".join("?" * len(TG_MESSAGE_FIELDS))}) '
+            f'ON CONFLICT(key) DO UPDATE SET {update}', values), 'не удалось записать сообщение Telegram-бота')
+
+    def tg_prune(self, before: str) -> int:
+        """Удалить записи бота с sent_at раньше before (ISO) → сколько удалено."""
+        return self._transaction(lambda conn: conn.execute('DELETE FROM tg_message WHERE sent_at < ?', (before,)).rowcount,
+                                 'не удалось очистить сообщения Telegram-бота')
+
+    def tg_kv(self, key: str) -> Any:
+        """Значение ключа бота (JSON) или None; битое — None с предупреждением."""
+        row = self._read(lambda conn: conn.execute('SELECT value FROM tg_kv WHERE key = ?', (key,)).fetchone())
+        if row is None:
+            return None
+        try:
+            return json.loads(row[0])
+        except (TypeError, ValueError):
+            logger.warning('[Routes] %s: ключ бота %s не читается — как нет', self._name(), key)
+            return None
+
+    def tg_set_kv(self, key: str, value: Any) -> None:
+        self._transaction(lambda conn: conn.execute(
+            'INSERT INTO tg_kv(key, value, updated_at) VALUES(?, ?, ?) ON CONFLICT(key) DO UPDATE SET '
+            'value = excluded.value, updated_at = excluded.updated_at',
+            (key, json.dumps(value, ensure_ascii=False), _now())), 'не удалось записать ключ Telegram-бота')
 
     def driver_names(self, since: str = '') -> list[str]:
         """Имена водителей и առաքիչ из записей (№62) с днём записи не раньше since (YYYY-MM-DD; '' — все), по алфавиту:

@@ -397,7 +397,8 @@ def test_schema_26_migrates_from_24_and_from_25_and_explanations_roundtrip(tmp_p
             names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'index')")}
         return v, names
     v, names = version_and_tables()
-    assert v == '26' and {'customer_day_until', 'live_explain', 'live_explain_day'} <= names
+    # версия — текущая: дальше 26 — свои шаги (27 — Telegram-бот, №91)
+    assert v == str(st.SCHEMA_VERSION) and {'customer_day_until', 'live_explain', 'live_explain_day'} <= names
     # 24 → 26: база до обеих веток (нет ни срока магазина, ни объяснений)
     with closing(sqlite3.connect(path)) as conn:
         conn.execute('DROP TABLE live_explain')
@@ -406,7 +407,7 @@ def test_schema_26_migrates_from_24_and_from_25_and_explanations_roundtrip(tmp_p
         conn.commit()
     assert st.Store(path).truck_drivers('2026-10-02')[0] == {'CAR1': 'Արամ'}
     v, names = version_and_tables()
-    assert v == '26' and {'customer_day_until', 'live_explain', 'live_explain_day'} <= names
+    assert v == str(st.SCHEMA_VERSION) and {'customer_day_until', 'live_explain', 'live_explain_day'} <= names
     # 25 → 26: база, которую уже мигрировала ветка until-time (её таблица со строкой остаётся как была)
     with closing(sqlite3.connect(path)) as conn:
         conn.execute('DROP TABLE live_explain')
@@ -417,7 +418,7 @@ def test_schema_26_migrates_from_24_and_from_25_and_explanations_roundtrip(tmp_p
     assert s.live_explanations('2026-10-03') == {}
     v, names = version_and_tables()
     with closing(sqlite3.connect(path)) as conn:
-        assert v == '26' and conn.execute('SELECT * FROM customer_day_until').fetchall() == \
+        assert v == str(st.SCHEMA_VERSION) and conn.execute('SELECT * FROM customer_day_until').fetchall() == \
             [('2026-10-03', 501, 660, 'x', 'qa')]
     assert st._MIGRATIONS[24] == (st._CUSTOMER_DAY_UNTIL_TABLE,)
     assert st._MIGRATIONS[25] == (st._LIVE_EXPLAIN_TABLE, st._LIVE_EXPLAIN_INDEX)
