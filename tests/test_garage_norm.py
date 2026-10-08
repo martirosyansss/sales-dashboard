@@ -380,7 +380,7 @@ def test_garage_page_tab_and_basemap_without_yandex_key(dashboard, monkeypatch):
     assert 'aria-hidden="true"></i>Նորմ և փաստ</button>' in html and 'Նորմա' not in html   # глоссарий: норма — նորմ
     assert html.count('Օրեր GPS-ով') == 1                               # заголовок столбца (подпись карточки — в JS)
     leaflet = html.index('leaflet@1.9.4/dist/leaflet.js')
-    basemap = html.index('js/routes_basemap.js?v=1" data-yandex-key=""')
+    basemap = html.index('js/routes_basemap.js?v=2" data-yandex-key=""')
     assert leaflet < basemap < html.index('js/routes_garage.js?v=12')
     js = (ROOT / 'static' / 'js' / 'routes_garage.js').read_text(encoding='utf-8')
     assert "'/api/routes/garage/norm'" in js and "'/api/routes/garage/day?date='" in js
