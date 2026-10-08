@@ -1,6 +1,7 @@
 /* «Մեքենաները առցանց» /routes/live — машины на карте сейчас (ответ владельца №76, docs/plans/live-map-plan.md).
    Поверх routes.css: те же токены (--rt-*, тема «Развоза»), только классы этой страницы (.lv-*). ПК: список машин слева,
-   карта справа, карточка выбранной машины под ними; телефон (начальник гаража): карта, список, карточка — друг под другом. */
+   карта справа, карточка выбранной машины под ними; телефон (начальник гаража): «Խնդիրներ հիմա», карта, список, карточка —
+   друг под другом. */
 
 #lvPage {
     max-width: 1640px; margin: 0 auto; color-scheme: dark;
@@ -10,6 +11,7 @@
     --lv-alert:   #ff6b79;
     --lv-offline: #8693a5;
     --lv-closed:  #5b6779;
+    --lv-unmarked: #a78bfa;   /* магазин посещён по GPS, водитель не отметил: на тёмном фоне контраст ≥ 7:1 */
 }
 #lvPage .rt-title { display: flex; align-items: center; gap: 12px; }
 .lv-title-ico { color: var(--rt-acc); font-size: .8em; }
@@ -29,15 +31,38 @@
 .lv-layout {
     display: grid; gap: 14px;
     grid-template-columns: minmax(280px, 340px) minmax(0, 1fr);
-    grid-template-areas: "side map" "card card";
+    grid-template-rows: auto 1fr auto;
+    grid-template-areas: "probs map" "side map" "card card";
 }
 .lv-side { grid-area: side; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .lv-mapbox { grid-area: map; position: relative; min-width: 0; }
 .lv-card { grid-area: card; }
 @media (min-width: 1280px) {
-    .lv-layout { grid-template-columns: minmax(280px, 330px) minmax(0, 1fr) minmax(330px, 400px); grid-template-areas: "side map card"; }
+    .lv-layout { grid-template-columns: minmax(280px, 330px) minmax(0, 1fr) minmax(330px, 400px); grid-template-rows: auto 1fr;
+        grid-template-areas: "probs map card" "side map card"; }
     .lv-card { max-height: calc(100vh - var(--rt-nav-h, 64px) - 40px); overflow: auto; position: sticky; top: calc(var(--rt-nav-h, 64px) + 14px); align-self: start; }
 }
+
+/* «Խնդիրներ հիմա»: по важности — тревоги, нет связи, не успеет, не отмеченные GPS-визиты; строка — кнопка выбора машины */
+.lv-probs { grid-area: probs; min-width: 0; padding: 10px; border-radius: var(--rt-radius-sm); background: var(--rt-panel); border: 1px solid var(--rt-line); }
+#lvPage .lv-probs-title { margin: 0 0 8px; font-size: .8125rem; font-weight: 700; color: var(--rt-fg-dim); letter-spacing: .02em; }
+.lv-prob-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; max-height: 232px; overflow: auto; }
+.lv-prob {
+    display: grid; grid-template-columns: 16px auto minmax(0, 1fr); align-items: start; gap: 8px; width: 100%; min-height: 36px;
+    padding: 7px 9px; border-radius: 9px; border: 1px solid transparent; background: var(--rt-inset);
+    color: var(--rt-fg); font: inherit; font-size: .875rem; line-height: 1.35; text-align: left;
+}
+button.lv-prob { cursor: pointer; }
+button.lv-prob:hover { border-color: var(--rt-acc-dim); }
+button.lv-prob:focus-visible { outline: 2px solid var(--rt-acc); outline-offset: 1px; }
+.lv-prob i { margin-top: 2px; text-align: center; }
+.lv-prob b { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.lv-prob span { overflow-wrap: anywhere; }
+.lv-prob.is-sev0 { background: var(--rt-danger-bg); border-color: var(--rt-danger-line); }
+.lv-prob.is-sev0 i, .lv-prob.is-sev1 i { color: var(--rt-danger); }
+.lv-prob.is-sev2 i { color: var(--rt-warn); }
+.lv-prob.is-sev3 i { color: var(--lv-unmarked); }
+.lv-prob.is-none { grid-template-columns: 16px minmax(0, 1fr); color: var(--rt-ok); background: var(--rt-ok-bg); }
 
 /* Сводка парка: машин в пути / стоят / тревога / нет связи */
 .lv-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
@@ -98,6 +123,8 @@
 .lv-sq.is-partial { background: #ffb547; }
 .lv-sq.is-refused { background: #ff6b79; }
 .lv-sq.is-pending { background: #8693a5; }
+.lv-sq.is-unmarked { background: var(--lv-unmarked); }
+.lv-legend .lv-dot.is-stale { opacity: .55; }
 
 /* Маркер машины: круг цвета состояния, стрелка курса, номер, счётчик тревог */
 .lv-marker { position: relative; width: 34px; height: 34px; }
@@ -111,6 +138,13 @@
 .lv-marker.is-offline .lv-marker-body, .lv-marker.is-nodata .lv-marker-body { background: var(--lv-offline); }
 .lv-marker.is-closed .lv-marker-body { background: var(--lv-closed); }
 .lv-marker.is-selected .lv-marker-body { border-color: #e8edf4; }
+/* нет связи: последнее известное положение — полупрозрачно, подпись «վերջինը՝ HH:MM» под номером остаётся читаемой */
+.lv-marker.is-stale .lv-marker-body, .lv-marker.is-stale .lv-marker-arrow { opacity: .55; }
+.lv-marker-last {
+    position: absolute; left: 50%; top: 56px; transform: translateX(-50%); white-space: nowrap;
+    padding: 0 6px; border-radius: 6px; background: rgba(14, 17, 22, .88); color: #aab4c3;
+    font: 500 10px/1.6 'Google Sans', 'Noto Sans Armenian', system-ui, sans-serif; border: 1px solid #283140;
+}
 .lv-marker-arrow {
     position: absolute; left: 50%; top: -3px; width: 0; height: 0; margin-left: -6px;
     border-left: 6px solid transparent; border-right: 6px solid transparent; border-bottom: 9px solid #e8edf4;
@@ -155,22 +189,49 @@
 .lv-est { font-size: .75rem; font-weight: 600; color: var(--rt-warn); margin-left: 4px; }
 .lv-more { margin-top: 12px; }
 .lv-more > summary { cursor: pointer; font-weight: 600; color: var(--rt-acc); min-height: 36px; display: flex; align-items: center; }
-.lv-stops, .lv-log { margin: 6px 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; }
-.lv-stops li, .lv-log li {
+.lv-log { margin: 6px 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; }
+.lv-log li {
     display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; align-items: center;
     padding: 7px 10px; border-radius: 9px; background: var(--rt-inset); font-size: .875rem;
 }
-.lv-stops li .when, .lv-log li .when { color: var(--rt-fg-mute); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.lv-log li .when { color: var(--rt-fg-mute); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .lv-log li.is-active { border: 1px solid var(--rt-danger-line); }
-/* №87: магазин, к которому машина не успевает (прогноз) */
-.lv-stops li.is-late { border: 1px solid var(--rt-danger-line); }
-.lv-stops li.is-late > span:nth-child(2) { color: var(--rt-danger); }
+
+/* Магазины: план — факт. Таблица прокручивается внутри карточки (страница на телефоне — без горизонтальной прокрутки) */
+.lv-table-wrap { margin-top: 6px; overflow-x: auto; border-radius: 9px; border: 1px solid var(--rt-line-soft); }
+.lv-stops { width: 100%; min-width: 500px; border-collapse: collapse; font-size: .8125rem; }
+.lv-stops th {
+    padding: 7px 8px; text-align: left; font-size: .75rem; font-weight: 600; color: var(--rt-fg-mute);
+    background: var(--rt-panel-2); white-space: nowrap;
+}
+.lv-stops td { padding: 7px 8px; border-top: 1px solid var(--rt-line-soft); vertical-align: top; background: var(--rt-inset); }
+.lv-stops .is-num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.lv-stops .is-mute { color: var(--rt-fg-mute); }
+.lv-stops .is-bad { color: var(--rt-danger); font-weight: 700; }
+.lv-stop-name { min-width: 130px; }
+.lv-stop-name span { display: block; overflow-wrap: anywhere; }
+.lv-stop-name small { display: block; margin-top: 2px; color: var(--rt-fg-dim); font-size: .75rem; }
+.lv-stop-status { min-width: 110px; }
+.lv-stop-status .lv-dot { width: 10px; height: 10px; margin-right: 6px; vertical-align: -1px; }
+/* №87: магазин, к которому машина не успевает (прогноз); посещён по GPS, но не отмечен */
+.lv-stops tr.is-late td { background: var(--rt-danger-bg); }
+.lv-stops tr.is-late .lv-stop-status span { color: var(--rt-danger); }
+.lv-stops tr.is-unmarked .lv-stop-status span { color: var(--lv-unmarked); }
+
+/* Воспроизведение дня */
+.lv-replay { margin-top: 12px; padding: 10px 12px; border-radius: 10px; background: var(--rt-inset); border: 1px solid var(--rt-line-soft); }
+.lv-replay-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; min-height: 34px; }
+#lvPage .lv-replay-title { margin: 0; font-size: .875rem; font-weight: 700; }
+.lv-replay-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
+.lv-replay-range { flex: 1 1 160px; min-width: 0; height: 28px; accent-color: var(--rt-acc); }
+.lv-replay-time { font-family: var(--rt-mono); font-variant-numeric: tabular-nums; min-width: 8ch; }
+.lv-replay-speed { width: auto; }
 .lv-log li i { color: var(--lv-alert); }
 .lv-note { margin: 12px 0 0; font-size: .8125rem; color: var(--rt-fg-mute); line-height: 1.5; }
 
 /* Телефон: карта сверху на полэкрана, затем список и карточка */
 @media (max-width: 899px) {
-    .lv-layout { grid-template-columns: minmax(0, 1fr); grid-template-areas: "map" "side" "card"; }
+    .lv-layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; grid-template-areas: "probs" "map" "side" "card"; }
     .lv-map { height: 52vh; min-height: 300px; }
     .lv-list { max-height: none; }
     .lv-tools { width: 100%; }
