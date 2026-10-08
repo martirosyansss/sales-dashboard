@@ -541,6 +541,42 @@ def test_no_end_when_no_contact_alert_just_disappears():
         assert [a for a in out.actions if isinstance(a, la.End)] == [] and send[0].key not in out.active, later
 
 
+def test_bot_key_is_the_live_page_case_since_and_stays_stable(tmp_path):
+    """После слияния live-alarm (b22f122): страница отмечает «Տեսա» по случаю alerts.since — это from последней идущей
+    тревоги вида. Ключ бота — машина|вид|from той же тревоги: случай у бота и у страницы один; пересчёт карточки
+    позже (тот же случай) нового сообщения не даёт, конец — правка того же сообщения."""
+    from test_route_live import DEPOT, T0, Track, facts, stop, A, TRUCK, ROAD
+
+    tr = Track().park(DEPOT, 5).drive(A).park(A, 2)
+    stops = [stop('S:A', 1, A, 100.0, seq=1)]
+    last = T0 + timedelta(minutes=5)
+    dev = {'battery': 50, 'charging': False, 'gps': 'on', 'net': 'cell', 'app': '2.2.0'}
+
+    def cards_at(now, contact):
+        f = facts(tr.pts, stops, sorted({T0, last, contact}), dev, last_contact=contact)
+        c = live.car_view(T0.date(), now, f, [live.PlanTrip((1,), {})], TRUCK, DEPOT, live.Rules(), ROAD, False)
+        return {'CAR1': {**c, 'car_code': 'CAR1', 'name': 'JAC', 'driver': 'Արամ'}}
+    now = last + timedelta(minutes=12)
+    cards = cards_at(now, last)
+    since = cards['CAR1']['alerts']['since']['no_contact']
+    active = [a for a in cards['CAR1']['alerts_log'] if a['kind'] == 'no_contact' and a['active']]
+    assert len(active) == 1 and active[0]['from'] == since
+    tg = la.TgRules(levels=tuple((k, 'critical' if k == 'no_contact' else v) for k, v in la.TgRules().levels), sim=True)
+    got = la.plan(cards, live.Rules(), tg, now, {})
+    send = [a for a in got.actions if isinstance(a, la.Send)]
+    assert [a.key for a in send] == [la.alert_key('CAR1', 'no_contact', since)]
+    records = {send[0].key: la.Rec(send[0].key, 'no_contact', 'active', now.isoformat(), car='CAR1', level='critical',
+                                   message_id=5, id=1)}
+    later = now + timedelta(minutes=7)                                   # тот же случай: пересчёт — тот же from
+    again = cards_at(later, last)
+    assert again['CAR1']['alerts']['since']['no_contact'] == since
+    assert la.plan(again, live.Rules(), tg, later, records).actions == []
+    back = cards_at(later + timedelta(minutes=1), later + timedelta(minutes=1))   # связь вернулась — конец того же
+    ends = [a for a in la.plan(back, live.Rules(), tg, later + timedelta(minutes=1), records).actions
+            if isinstance(a, la.End)]
+    assert [e.key for e in ends] == [send[0].key] and 'no_contact' not in back['CAR1']['alerts']['since']
+
+
 def test_legacy_state_file_is_migrated_once_and_nothing_is_resent(tmp_path, caplog):
     """После выкладки: «уже отправлено» прежнего потока (route_live_alerts.json) переносится — тех же тревог бот не шлёт;
     окончание перенесённой «нет связи» — отдельным ⚪ (правке нечего править), у перенесённой скорости — без сообщения."""

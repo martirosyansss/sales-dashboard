@@ -88,6 +88,7 @@ def test_basemap_follows_yandex_terms():
     params = dict(p.split('=') for p in (url.group(1) + url.group(2)).split('?')[1].split('&'))
     assert params['projection'] == 'web_mercator'     # иначе эллиптическая проекция — сдвиг относительно Leaflet
     assert params['l'] == 'map' and params['lang'] == 'ru_RU' and params['apikey'] == '{ymKey}'
+    assert params['theme'] == 'dark'   # тёмную карту рисует сам Яндекс (страницы «Маршрутов» тёмные) — не фильтр
     # логотип обязателен: в углу, ссылка на Яндекс Карты, картинка из официального набора
     assert "position: 'bottomleft'" in js and "'https://yandex.ru/maps/'" in js
     logo = ROOT / 'static' / 'img' / 'yandex_maps_logo_ru.svg'

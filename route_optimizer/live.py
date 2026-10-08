@@ -673,12 +673,40 @@ def stop_alerts(actual: ac.DayActual, day: date, rules: Rules, since: datetime |
     lunch = lunch_stay(stays, day, rules)
     out = []
     for s in stays:
-        limit = rules.stop_min + (rules.lunch_min if s is lunch else 0.0)
-        if s.minutes > limit:
+        if s.minutes > _stop_limit(s, lunch, rules):
             ongoing = live and last_at is not None and s.leave >= last_at
             out.append(_alert('stop', s.arrive, None if ongoing else s.leave, ongoing, minutes=round(s.minutes),
                               lunch=s is lunch, lat=s.center[0] if s.center else None,
                               lon=s.center[1] if s.center else None))
+    return out
+
+
+def _stop_limit(s: ac.Stay, lunch: ac.Stay | None, rules: Rules) -> float:
+    """Сколько минут стоянка не по плану — ещё не тревога: stop_min, у обеда — обед + stop_min."""
+    return rules.stop_min + (rules.lunch_min if s is lunch else 0.0)
+
+
+def off_stays(actual: ac.DayActual, day: date, rules: Rules, since: datetime | None, until: datetime | None,
+              last_at: datetime | None, live: bool, index: RouteIndex | None,
+              straight: Sequence[tuple[Point, Point]] = ()) -> list[dict[str, Any]]:
+    """Все стоянки не по плану за день (владелец 08.10 «очень чётко покажи, где были остановки вне маршрута»): те же,
+    что считает тревога stop (_unplanned: ≥ 5 мин вне склада и точек дня, после первого выезда), но и короткие.
+    long — длиннее порога тревоги (_stop_limit), lunch — стоянка обеда, ongoing — стоит там сейчас (to — None),
+    off_line — вне плановой линии по дорогам (None — линии по дорогам нет: не сравнивали)."""
+    if since is None:
+        return []
+    stays = _unplanned(actual, since, until)
+    lunch = lunch_stay(stays, day, rules)
+    out = []
+    for s in stays:
+        if s.center is None:
+            continue
+        ongoing = live and last_at is not None and s.leave >= last_at
+        out.append({'from': _iso(s.arrive), 'to': None if ongoing else _iso(s.leave), 'minutes': round(s.minutes),
+                    'lat': round(s.center[0], 6), 'lon': round(s.center[1], 6), 'lunch': s is lunch,
+                    'long': s.minutes > _stop_limit(s, lunch, rules), 'ongoing': ongoing,
+                    'off_line': (off_route(s.center, index, rules.deviation_m, (), straight)
+                                 if index is not None else None)})
     return out
 
 
@@ -1784,6 +1812,12 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
               + [_alert('late', now, None, True, **x) for x in late])   # прогноз «не успеет» (№87) — пока он такой
     alerts.sort(key=lambda a: a['from'] or '')
     active = sorted({a['kind'] for a in alerts if a['active']})
+    # начало идущей тревоги вида (последней из идущих): «Տեսա» страницы отмечает случай, а не вид; «не успеет» — без него
+    # (её from — момент расчёта)
+    since: dict[str, str] = {}
+    for a in alerts:
+        if a['active'] and a['kind'] != 'late' and a['from'] and a['from'] > since.get(a['kind'], ''):
+            since[a['kind']] = a['from']
 
     if not pts and not contacts:
         state = 'nodata'
@@ -1837,12 +1871,15 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
         'last_contact': _iso(last_contact),
         'contact_age_s': round((now - last_contact).total_seconds()) if last_contact is not None and live else None,
         'closed': finished,
-        'alerts': {'active': active, 'count': sum(1 for a in alerts if not a.get('minor'))},   # «փոքր շեղում» — не тревога
+        # «փոքր շեղում» — не тревога; since — с какого момента идёт активная тревога вида
+        'alerts': {'active': active, 'count': sum(1 for a in alerts if not a.get('minor')), 'since': since},
         # идущие тревоги, которые диспетчер может объяснить («Բացատրել» в «Խնդիրներ հիմա»; журнала API флота не отдаёт)
         'explainable': [{'kind': a['kind'], 'from': a['from']} for a in alerts
                         if a['active'] and a['kind'] in LIVE_EXPLAIN_KINDS],
         'late': late,   # «не успеет» (№87, late_forecast): магазины и возврат на склад
         'alerts_log': alerts,   # журнал тревог дня: API флота его не отдаёт (views), Telegram и карточка машины — да
+        # стоянки не по плану (off_stays) — карта и карточка выбранной машины; API флота их не отдаёт (views)
+        'stops_off': off_stays(actual, day, rules, first_dep, end, last.at if last else None, open_now, index, straight),
         # плановая линия (None — плана машине не отправляли) и отклонения от неё (None — линии по дорогам нет: не считали)
         'route': ({'road': route.geo.road, 'km': round(route.km, 1) if route.km is not None else None,
                    'trips': len(route.geo.trips), 'stops': len({c for c, _ in route.stops}),

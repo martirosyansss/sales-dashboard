@@ -91,7 +91,7 @@
 .rt-num { font-family: var(--rt-mono); }
 
 /* --------------------------------------------------------------------------
-   ШАПКА СТРАНИЦЫ: название, вкладки, одна строка «что это»
+   ШАПКА СТРАНИЦЫ: название, одна строка «что это»
    ------------------------------------------------------------------------ */
 .rt-head {
     padding: 18px 20px; margin: 4px 0 18px; border: 1px solid var(--rt-line); border-radius: var(--rt-radius);
@@ -111,23 +111,113 @@
 .rt-pill.is-warn { color: var(--rt-warn); border-color: var(--rt-warn-line); background: var(--rt-warn-bg); }
 .rt-toolbar { margin-left: auto; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 
-/* Вкладки раздела: Обзор · Оптимизация · Развоз · Настройки */
-.rt-tabs {
-    display: inline-flex; flex-wrap: wrap; gap: 2px; padding: 4px;
-    background: var(--rt-inset); border: 1px solid var(--rt-line); border-radius: 999px;
+/* --------------------------------------------------------------------------
+   МЕНЮ РАЗДЕЛА СЛЕВА (routes_base.html, _routes_side.html; владелец 08.10: десять одинаковых «таблеток» в строку —
+   «очень не профессионально» → меню слева, как у Routific / Onfleet). Группы, текущий пункт — лёгкий фон акцента и
+   полоса слева (не сплошная плашка); сворачивается до иконок (помнится в браузере, static/js/routes_side.js).
+   Уже 992 px — колонки нет: кнопка «☰ текущая страница» над страницей, меню выезжает слева.
+   ------------------------------------------------------------------------ */
+.rt-shell {
+    --rt-secnav-w: 244px;
+    /* под закреплённой шапкой дашборда: её высоту ставит routes_side.js, отступ — как у страницы сверху
+       (у рабочего экрана «Развоза» он меньше — routes_dispatch.css) */
+    --rt-secnav-gap: 12px;
+    --rt-secnav-top: calc(var(--rt-secnav-nav, 58px) + var(--rt-secnav-gap));
+    display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 20px; align-items: start;
 }
-.rt-page .rt-tabs a {
-    display: inline-flex; align-items: center; justify-content: center; height: 36px; padding: 0 16px; border-radius: 999px;
-    color: var(--rt-fg-dim); font-size: .9375rem; font-weight: 600; text-decoration: none; white-space: nowrap;
+.rt-shell-main { min-width: 0; }
+.rt-secnav-bar, .rt-secnav-close { display: none; }
+.rt-secnav-scrim[hidden] { display: none; }
+.rt-page.rt-secnav-bar::before, .rt-page.rt-secnav::before { content: none; }   /* фон рисует сама страница */
+.rt-page.rt-secnav {
+    position: sticky; top: var(--rt-secnav-top); z-index: 5;
+    width: var(--rt-secnav-w); height: calc(100vh - var(--rt-secnav-top) - 12px); min-height: 0;
+    display: flex; flex-direction: column; padding: 8px 10px;
+    background: var(--rt-panel); border: 1px solid var(--rt-line); border-radius: var(--rt-radius); box-shadow: var(--rt-shadow);
+    overflow: hidden;
+    transition: width .2s ease;
+}
+/* шапка меню: «Երթուղիներ» и справа кнопка свернуть (на узком экране — закрыть) */
+.rt-secnav-head { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 36px; padding: 0 0 0 12px; }
+.rt-secnav-title { display: flex; align-items: center; gap: 12px; min-width: 0; font-size: .9375rem; font-weight: 700; color: var(--rt-fg); white-space: nowrap; }
+.rt-secnav-title > i { width: 20px; text-align: center; color: var(--rt-acc); }
+/* окно ниже ~600 px — пункты прокручиваются внутри, «Կարգավորումներ» всегда внизу на виду (ноутбук 1366×650 — без прокрутки) */
+.rt-secnav-nav { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+.rt-secnav-scroll { flex: 1 1 auto; min-height: 0; padding-bottom: 2px; overflow: hidden auto; overscroll-behavior: contain; scrollbar-width: thin; }
+.rt-secnav-glabel {
+    margin: 9px 12px 3px; font-size: .6875rem; font-weight: 700; line-height: 1.2; letter-spacing: .09em; text-transform: uppercase;
+    color: var(--rt-fg-mute); white-space: nowrap; overflow: hidden;
+}
+.rt-secnav-grp:first-child .rt-secnav-glabel { margin-top: 7px; }
+.rt-secnav-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
+.rt-secnav .rt-secnav-link {
+    position: relative; display: flex; align-items: center; gap: 12px; height: 36px; padding: 0 12px; border-radius: 10px;
+    color: var(--rt-fg-dim); font-size: .9375rem; font-weight: 500; line-height: 1.2; text-decoration: none; white-space: nowrap;
     transition: background .15s, color .15s;
 }
-.rt-page .rt-tabs a:hover { color: var(--rt-fg); background: var(--rt-panel-2); }
-.rt-page .rt-tabs a[aria-current="page"] { background: var(--rt-acc); color: var(--rt-acc-ink); }
-/* Полоса вкладок над шапкой — одна и та же на всех страницах раздела: своя ширина (не ширина страницы — у страниц
-   она разная), вкладки справа. Поэтому при переходе между страницами вкладки стоят на одном месте и выглядят одинаково. */
-.rt-secbar { display: flex; justify-content: flex-end; max-width: 1640px; margin: 4px auto 12px; }
-.rt-secbar::before { content: none; }   /* фон рисует сама страница */
-.rt-secbar .rt-tabs { background: var(--rt-panel); }
+.rt-secnav .rt-secnav-link > i { flex: none; width: 20px; text-align: center; font-size: 1rem; color: var(--rt-fg-mute); transition: color .15s; }
+.rt-secnav-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.rt-secnav .rt-secnav-link:hover { background: var(--rt-panel-2); color: var(--rt-fg); }
+.rt-secnav .rt-secnav-link:hover > i { color: var(--rt-fg-dim); }
+.rt-secnav .rt-secnav-link[aria-current="page"] { background: var(--rt-acc-glow); color: var(--rt-acc); font-weight: 600; }
+.rt-secnav .rt-secnav-link[aria-current="page"] > i { color: var(--rt-acc); }
+.rt-secnav .rt-secnav-link[aria-current="page"]::before {
+    content: ""; position: absolute; left: 0; top: 7px; bottom: 7px; width: 3px; border-radius: 0 3px 3px 0; background: var(--rt-acc);
+}
+/* фокус — внутри пункта: снаружи его обрезала бы прокрутка меню */
+.rt-secnav .rt-secnav-link:focus-visible, .rt-page .rt-secnav-fold:focus-visible, .rt-page .rt-secnav-close:focus-visible, .rt-page .rt-secnav-open:focus-visible {
+    outline: 2px solid var(--rt-acc); outline-offset: -2px; border-radius: 10px;
+}
+.rt-secnav-foot { flex: none; padding-top: 6px; border-top: 1px solid var(--rt-line-soft); }
+.rt-secnav-fold, .rt-secnav-close {
+    flex: none; place-items: center; width: 36px; height: 36px; padding: 0; border: 0; border-radius: 10px;
+    background: none; color: var(--rt-fg-mute); cursor: pointer; transition: background .15s, color .15s;
+}
+.rt-secnav-fold { display: grid; }
+.rt-secnav-fold > i { transition: transform .2s ease; }
+.rt-secnav-fold:hover, .rt-secnav-close:hover { background: var(--rt-panel-2); color: var(--rt-fg); }
+
+/* свёрнуто — только иконки; подписи — в подсказках (title) и для экранного диктора */
+@media (min-width: 992px) {
+    .rt-shell.is-collapsed { --rt-secnav-w: 64px; }
+    .rt-shell.is-collapsed :is(.rt-secnav-t, .rt-secnav-title) {
+        position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
+    }
+    .rt-shell.is-collapsed .rt-secnav-head { justify-content: center; padding: 0; }
+    .rt-shell.is-collapsed .rt-secnav-glabel { height: 1px; margin: 10px 8px; color: transparent; background: var(--rt-line-soft); }
+    .rt-shell.is-collapsed .rt-secnav .rt-secnav-link { justify-content: center; gap: 0; padding: 0; }
+    .rt-shell.is-collapsed .rt-secnav-fold > i { transform: rotate(180deg); }
+}
+
+/* узкий экран: кнопка над страницей, меню — выезжающая панель поверх (и поверх шапки дашборда) */
+@media (max-width: 991.98px) {
+    .rt-shell { display: block; }
+    .rt-page.rt-secnav-bar { display: block; margin: 0 0 14px; }
+    .rt-secnav-open {
+        display: flex; align-items: center; gap: 10px; width: 100%; height: 48px; padding: 0 14px;
+        border: 1px solid var(--rt-line); border-radius: 12px; background: var(--rt-panel); color: var(--rt-fg);
+        font-family: var(--rt-font); font-size: .9375rem; font-weight: 600; text-align: left; cursor: pointer;
+    }
+    .rt-secnav-open > .fa-bars { flex: none; width: 20px; text-align: center; color: var(--rt-acc); }
+    .rt-secnav-open-k { flex: none; color: var(--rt-fg-mute); font-weight: 500; }
+    .rt-secnav-open-sep { flex: none; font-size: .625rem; color: var(--rt-fg-mute); }
+    .rt-secnav-open-v { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    /* выше нижних вкладок и кнопки ИИ «Развоза» (1050/1060) и его панелей (до 1065), ниже уведомлений (1080) */
+    .rt-secnav-scrim { position: fixed; inset: 0; z-index: 1068; background: rgba(5, 8, 12, .62); }
+    .rt-page.rt-secnav {
+        position: fixed; top: 0; left: 0; bottom: 0; z-index: 1070; width: min(300px, 86vw); height: auto;
+        padding: 12px 10px calc(12px + env(safe-area-inset-bottom)); border-left: 0; border-radius: 0 var(--rt-radius) var(--rt-radius) 0;
+        transform: translateX(-104%); visibility: hidden; transition: transform .22s ease, visibility 0s linear .22s;
+    }
+    .rt-shell.is-open .rt-secnav { transform: none; visibility: visible; transition: transform .22s ease; }
+    .rt-secnav-close { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 10px; font-size: 1.125rem; }
+    .rt-secnav .rt-secnav-link { height: 44px; }   /* тач-цель */
+    .rt-secnav-fold { display: none; }
+}
+html.rt-secnav-lock { overflow: hidden; }   /* меню открыто — страница под ним не прокручивается */
+@media (prefers-reduced-motion: reduce) {
+    .rt-page.rt-secnav, .rt-shell.is-open .rt-secnav, .rt-secnav-fold > i { transition: none; }
+}
 
 /* --------------------------------------------------------------------------
    КНОПКИ И ПОЛЯ
@@ -1317,7 +1407,6 @@ fieldset:disabled .ro-opt { cursor: default; opacity: .6; }
     .rt-iconbtn { width: 44px; }
     .rt-select, .rt-input { height: 44px; }
     .rt-chip, .rt-mchip, .rt-lg, .rt-snav a, .rt-wd label { height: 42px; }
-    .rt-page .rt-tabs a { height: 42px; }
     .rt-savebar { margin-left: -12px; margin-right: -12px; border-radius: 0; }
     .rt-months { gap: 2px; }
     .rt-month .i { display: none; }
@@ -1360,8 +1449,6 @@ fieldset:disabled .ro-opt { cursor: default; opacity: .6; }
 }
 /* Телефон: строки таблиц настроек — карточки с подписями полей */
 @media (max-width: 575px) {
-    .rt-tabs { width: 100%; }
-    .rt-page .rt-tabs a { flex: 1 1 0; padding: 0 6px; }
     .rt-table-scroll { border: none; overflow: visible; }
     .rt-table-scroll .rt-table { min-width: 0; }
     .rt-table thead { display: none; }
@@ -1514,7 +1601,6 @@ fieldset:disabled .ro-opt { cursor: default; opacity: .6; }
     .dp-run .rt-btn-lg { width: 100%; }
 }
 @media (max-width: 420px) {
-    .rt-page .rt-tabs a { font-size: .8125rem; padding: 0 4px; }
     .dp-dayrow .rt-input.dp-date { flex: 1 1 100%; }
 }
 .ro-warn { color: var(--rt-danger); font-weight: 600; }
@@ -1522,7 +1608,3 @@ fieldset:disabled .ro-opt { cursor: default; opacity: .6; }
 #rmHistory td { white-space: normal; min-width: 6rem; vertical-align: top; }
 #rmHistory td:last-child { min-width: 13rem; }
 
-/* Вкладки раздела на узком экране переносятся в 2 строки — контейнер не «таблетка», а скруглённая карточка */
-@media (max-width: 767px) {
-    .rt-page .rt-tabs { border-radius: 18px; }
-}

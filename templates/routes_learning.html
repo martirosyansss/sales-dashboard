@@ -1,4 +1,6 @@
-{% extends "base_v2.html" %}
+{% extends "routes_base.html" %}
+{#- пункт меню раздела слева (routes_base.html) -#}
+{% set rt_nav = '/routes/learning' %}
 
 {% block title %}Ուսուցում և փաստ — Sales Dashboard{% endblock %}
 
@@ -8,7 +10,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400..700&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+Armenian:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=24">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=25">
 <style>
     /* «Обучение и факт»: план/факт в одной ячейке — факт крупнее, план под ним */
     .lr-pf b { display: block; font-weight: 700; }
@@ -26,21 +28,6 @@
 {% endblock %}
 
 {% block content %}
-<!-- Вкладки раздела — одинаковая полоса на всех страницах «Маршрутов» (одно место, один вид) -->
-<div class="rt-page rt-secbar" lang="hy">
-    <nav class="rt-tabs" aria-label="Երթուղիների բաժիններ">
-        <a href="/routes">Ակնարկ</a>
-        <a href="/routes/optimize">Օպտիմալացում</a>
-        <a href="/routes/dispatch">Առաքում</a>
-        <a href="/routes/learning" aria-current="page">Ուսուցում</a>
-        <a href="/routes/drivers">Վարորդներ</a>
-        <a href="/routes/settings">Կարգավորումներ</a>
-        <a href="/routes/garage">Ավտոտնակ</a>
-        <a href="/routes/pay">Աշխատավարձ</a>
-        <a href="/routes/araqich">Առաքիչների KPI</a>
-        <a href="/routes/cost">Առաքման արժեք</a>
-    </nav>
-</div>
 <div class="rt-page" id="lrPage" lang="hy">
 
     <header class="rt-head">
@@ -229,6 +216,6 @@
 {% block extra_js %}
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
-<script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=1" data-yandex-key="{{ yandex_tiles_key }}"></script>
+<script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=2" data-yandex-key="{{ yandex_tiles_key }}"></script>
 <script src="{{ url_for('static', filename='js/routes_learning.js') }}?v=18"></script>
 {% endblock %}

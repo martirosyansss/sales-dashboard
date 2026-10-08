@@ -10,8 +10,9 @@ tests/routes_dispatch_browser_check.py (настоящие шаблоны, ст�
 по плану); Դավիթ — 2 дня на CAR3 без GPS («քիչ տվյալ»). «Сейчас» — 07.10.2026 12:00. Порт 8774 на 127.0.0.1.
 
 A администратор, 1440×900: плитки парка и ETA, вкладки раздела, столбец «Կանխիկ», балл и место у Արամ и Գոռ,
-  «քիչ տվյալ» у Դավիթ, առաքիչ без балла; по умолчанию — сортировка по баллу (лучший сверху);
-B строка Արամ раскрывается: разбивка балла (полоски, доли) и дни с превышением, стоянкой и опоздавшим магазином;
+  «քիչ տվյալ» у Դավիթ, առաքիչ — свой балл (№88) отдельной группой; по умолчанию — сортировка по баллу (лучший сверху);
+B строка Արամ раскрывается: разбивка балла (полоски, доли), дни — строками в тех же столбцах (превышение, стоянка),
+  опоздавший магазин — списком под днями;
   подсказка балла — составляющие;
 C сортировка по «Արագություն»: меньше превышений — выше;
 D «Гараж»: вкладок нет, есть «Ավտոտնակ», столбца «Կանխիկ» нет ни в шапке, ни в строках, ни в разбивке по дням; в
@@ -178,12 +179,13 @@ def main() -> int:
             got = rows()
             check([n for n, _ in got][:2] == ['Գոռ', 'Արամ'], f'A по баллу: Գոռ (всё по плану) выше Արամ — {got}')
             score = dict(got)
-            check(score.get('Դավիթ') == 'քիչ տվյալ' and score.get('Բաբկեն') == '—',
-                  'A Դավիթ (2 дня) — «քիչ տվյալ», առաքիչ — без балла')
+            check(score.get('Դավիթ') == 'քիչ տվյալ' and score.get('Բաբկեն', '').endswith('1-ին 1-ից'),
+                  'A Դավիթ (2 дня) — «քիչ տվյալ», առաքիչ — свой балл и место среди առաքիչ (№88)')
+            check(page.locator('#drRows tr.dr-group').count() == 2, 'A две группы строк: վարորդներ и առաքիչներ')
             check(score.get('Գոռ', '').endswith('1-ին 2-ից') and score.get('Արամ', '').endswith('2-րդ 2-ից'),
                   f'A место среди двух с баллом (1-ին, 2-րդ) — {score}')
             check(page.locator('#drTable thead th[data-key="cash"]').count() == 1
-                  and page.locator('.rt-tabs').count() == 1, 'A у администратора — «Կանխիկ» и вкладки раздела')
+                  and page.locator('#rtSecNav').count() == 1, 'A у администратора — «Կանխիկ» и меню раздела')
             check(page.locator('#drKpis .dr-kpi').count() == 4 and page.is_visible('#drEtaBox')
                   and page.locator('#drEta .dr-kpi').count() == 4, 'A плитки парка и 4 плитки точности ETA')
             eta = bodies[-1]['eta']
@@ -198,9 +200,13 @@ def main() -> int:
             detail = page.locator('#drRows tr.dr-detail:not([hidden])')
             check(detail.count() == 1 and detail.locator('.dr-parts li').count() == 4
                   and detail.locator('.dr-parts .bar i').count() == 4, 'B раскрыто: 4 составляющие с полосками')
-            text = detail.inner_text()
-            check('անգամ' in text and 'պլանից ուշ' in text and detail.locator('.dr-days tbody tr').count() == 4,
-                  'B по дням: превышения, опоздавший магазин, 4 дня')
+            days = page.locator('#drRows tr.dr-day:not([hidden])')
+            late = page.inner_text('#drRows tr.dr-extra:not([hidden])')
+            check(days.count() == 4 and 'անգամ' in ' '.join(days.all_inner_texts()) and 'պլանից ուշ' in late,
+                  'B по дням (строки в столбцах таблицы): превышения, 4 дня; опоздавший магазин — под днями')
+            cols = page.eval_on_selector('#drRows tr.dr-row', 'e => e.children.length')
+            check(page.eval_on_selector('#drRows tr.dr-day:not([hidden])', 'e => e.children.length') == cols,
+                  'B у строки дня столько же ячеек, сколько у строки водителя')
             check(page.get_attribute('#drRows tr.dr-row.is-open .dr-name', 'aria-expanded') == 'true',
                   'B кнопка имени — aria-expanded')
 
@@ -216,14 +222,13 @@ def main() -> int:
             body = bodies[-1]
             check(body['cash'] is False and all('cash' not in r for r in body['drivers'])
                   and all('cash' not in d for r in body['drivers'] for d in r['detail']), 'D в ответе API денег нет')
-            check(page.locator('#drTable th[data-key="cash"]').count() == 0 and page.locator('.rt-tabs').count() == 0
+            check(page.locator('#drTable th[data-key="cash"]').count() == 0 and page.locator('#rtSecNav').count() == 0
                   and page.locator('a[href="/routes/garage"]').count() >= 1, 'D без «Կանխիկ» и вкладок, есть «Ավտոտնակ»')
             page.locator('#drRows tr.dr-row', has_text='Արամ').click()
-            heads = page.eval_on_selector_all('#drRows tr.dr-detail:not([hidden]) .dr-days thead th',
-                                              'els => els.map(e => e.textContent)')
             cells = page.eval_on_selector('#drRows tr.dr-row', 'e => e.children.length')
-            check('Կանխիկ' not in heads and cells == 13 and 'Կանխիկ' not in page.inner_text('#drPage'),
-                  f'D нет денег и в разбивке по дням ({cells} ячеек в строке)')
+            day_cells = page.eval_on_selector('#drRows tr.dr-day:not([hidden])', 'e => e.children.length')
+            check(cells == 12 and day_cells == 12 and 'Կանխիկ' not in page.inner_text('#drPage'),
+                  f'D нет денег и в разбивке по дням ({cells} ячеек в строке, {day_cells} — в строке дня)')
 
             # E телефон
             phone = browser.new_page(viewport={'width': 390, 'height': 860})
