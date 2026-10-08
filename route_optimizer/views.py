@@ -1345,13 +1345,14 @@ def _active_orders(deliver: list[dp.DispatchOrder], backlog: list[dp.DispatchOrd
                    today: Sequence[dp.DispatchOrder] = ()) -> list[dp.DispatchOrder]:
     """Заказы в развозе: заказы дня без «не везём сегодня» + заказы прошлых дней в развозе (_backlog_in) + новые заказы
     дня today, взятые логистом в развоз сегодня (№72, draft.same_day); заказы менеджеров, снятых фильтром «Մենեջերներ»
-    (dp.agents_off_of: без черновика — правило настроек, №69), — ни те, ни другие."""
+    (dp.agents_off_of: без черновика — правило настроек, №69), — ни те, ни другие. Кроме заказа прошлых дней, который
+    логист сам взял «Տանել այսօր» (dp.backlog_delivered, владелец 08.10): явный выбор сильнее фильтра."""
     excluded = draft.excluded if draft is not None else set()
     off = dp.agents_off_of(draft, settings)
     inside = _backlog_in(draft, carried)
     same = draft.same_day if draft is not None else set()
     return [o for o in deliver if o.isn not in excluded and o.agent_id not in off] \
-        + [o for o in backlog if o.isn in inside and o.agent_id not in off] \
+        + [o for o in backlog if dp.backlog_delivered(o, inside, draft.added if draft is not None else (), off)] \
         + [o for o in today if o.isn in same and o.agent_id not in off]
 
 
@@ -1572,8 +1573,11 @@ def _dispatch_body(dd: _DispatchDay) -> dict[str, Any]:
     # менеджеры новых заказов дня, которые ещё решать (ревью №72 L2: у кого только они, тоже можно снять или вернуть) —
     # их число и вес отдельно (same_day), в заказы развоза не входят
     taken = draft.same_day if draft is not None else set()
+    picked = draft.added if draft is not None else set()   # взятые «Տանել այսօր» везём и при снятом менеджере
     by_agent: dict[int, list[dp.DispatchOrder]] = {}
-    for o in [*(o for o in dd.deliver if o.isn not in excluded), *(o for o in dd.backlog if o.isn in added),
+    # снятому менеджеру взятые «Տանել այսօր» не в счёт: их везём при любом фильтре
+    for o in [*(o for o in dd.deliver if o.isn not in excluded),
+              *(o for o in dd.backlog if o.isn in added and not (o.agent_id in off and o.isn in picked)),
               *(o for o in dd.same_day if o.isn in taken)]:
         by_agent.setdefault(o.agent_id, []).append(o)
     pending: dict[int, list[dp.DispatchOrder]] = {}
@@ -1608,6 +1612,19 @@ def _dispatch_body(dd: _DispatchDay) -> dict[str, Any]:
                 'order_date': o.order_date.isoformat(), 'kg': round(o.kg), 'revenue': round(o.revenue),
                 'added': o.isn in added, 'deferred': draft is not None and o.isn in draft.deferred,
                 'carried': o.isn in dd.carried, 'agent_off': o.agent_id in off}
+
+    # рейс магазина; тяжёлый магазин в нескольких рейсах — первый из них
+    trip_of = {c: t for t in reversed(draft.trips if draft is not None else ()) for c in t.stops}
+
+    def backlog_json(o: dp.DispatchOrder) -> dict[str, Any]:
+        """Заказ прошлых дней (владелец 08.10): + менеджер, в развозе ли он (taken — как _active_orders: с фильтром
+        менеджеров), «Չտանել» (dismissed) и рейс, где стоит его магазин."""
+        agent = dd.snap.agents.get(o.agent_id)
+        trip = trip_of.get(o.customer_id)
+        return order_json(o) | {'agent_name': agent.name if agent else '',
+                                'taken': dp.backlog_delivered(o, added, picked, off),
+                                'dismissed': draft is not None and o.isn in draft.dismissed,
+                                'trip': {'id': trip.id, 'truck': trip.truck} if trip is not None else None}
 
     body: dict[str, Any] = {
         'day': dd.day.isoformat(), 'weekday': dd.day.isoweekday(),
@@ -1648,7 +1665,7 @@ def _dispatch_body(dd: _DispatchDay) -> dict[str, Any]:
         # у дня ещё нет плана, а правило настроек кого-то снимает (№69): выбор выше — из настроек
         **({'agents_from_settings': True} if draft is None and off else {}),
         # не отгружены с прошлых дней: в план — только добавленные логистом (added)
-        'backlog': [order_json(o) for o in dd.backlog],
+        'backlog': [backlog_json(o) for o in dd.backlog],
         'backlog_since': dp.backlog_since(dd.since, s['workdays'], holidays=holidays).isoformat(),
         'plan': None,
         'overtime': draft.overtime if draft is not None else False,
@@ -2047,6 +2064,24 @@ def _stop_rule_edit(state: RoutesState, bundle: Bundle, dd: _DispatchDay, payloa
         logger.info('[Routes] «Развоз» %s: допуск машин клиента %d: %s (%s)', dd.day, cid, access, user)
     return _StopRule(draft, replace(bundle, vehicle_access={**bundle.vehicle_access, cid: access}), also_access)
 
+
+
+def _check_take_started(dd: _DispatchDay, payload: Mapping[str, Any]) -> set[str]:
+    """«Տանել այսօր» заказа прошлых дней (владелец 08.10): заказы прошлых дней из правки. Магазин уже в рейсе, чья загрузка
+    по плану началась (сегодня; и по отправленному водителям плану, №81), — заказ к нему не прилипнет: товар не в машине
+    (как у заказов дня, №72 «started») — DispatchError с названиями магазинов."""
+    raw = payload.get('orders') if 'orders' in payload else [payload.get('order')]
+    picked = {x.upper() for x in raw if isinstance(x, str)} & {o.isn for o in dd.backlog} if isinstance(raw, list) else set()
+    now_min = _today_min(dd)
+    if not picked or now_min is None or dd.draft is None or dd.ctx is None:
+        return picked
+    started = dp.started_customers(dd.ctx, dd.stops, dd.draft, now_min)
+    late = sorted({o.customer_id for o in dd.backlog if o.isn in picked and o.customer_id in started})
+    if late:
+        names = ', '.join('«' + (dd.data.customers.get(c) or ('', str(c)))[1] + '»' for c in late)
+        raise dp.DispatchError(names + '՝ մեքենան արդեն բեռնվում է կամ ճանապարհին է, պատվերն այսօր այդ երթով չի գնա։ '
+                               'Ավելացրեք այն վաղը կամ ուղարկեք առանձին։')
+    return picked
 
 
 def _check_defer_same_day(dd: _DispatchDay, trip_id: Any) -> None:
@@ -2514,6 +2549,7 @@ def api_dispatch_edit() -> Any:
     try:
         if payload.get('action') == 'defer_trip':
             _check_defer_same_day(dd, payload.get('trip'))
+        picked = _check_take_started(dd, payload) if payload.get('action') == 'include' else set()
         if payload.get('action') in ('approve', 'unapprove', 'send', 'discard'):   # утверждение (№73), отправка (№81)
             draft = _approve_edit(dd, payload)
             if payload.get('action') == 'discard':   # рейсы снимка — не «новые рейсы утверждённого плана» (keep_approved)
@@ -2544,6 +2580,10 @@ def api_dispatch_edit() -> Any:
     # отметка дня и прогноз
     dd = _load_day(state, bundle, day, draft=draft, rev=dd.rev)
     dp.prune(draft, dd.stops)
+    # «Տանել այսօր» заказа прошлых дней — сразу в рейс (владелец 08.10); прошедший день — как было: рейсы уже проехали
+    if payload.get('action') == 'include' and day >= _clock().date():
+        dp.place_added(dd.ctx, dd.stops, draft, [o.customer_id for o in dd.backlog if o.isn in picked],
+                       now_min=_today_min(dd))
     # №78: груз загруженного рейса изменился (любая правка: фильтр менеджеров, настройки дня, заказы дня, перенос тяжёлого
     # заказа соседнего рейса…) — только с подтверждением логиста; без него ничего не сохраняется
     # №81: «Չեղարկել փոփոխությունները» возвращает отправленный план — склад грузил по нему (_warehouse_body), товар в

@@ -195,6 +195,13 @@ def agents_off_of(draft: Draft | None, settings: Mapping[str, Any]) -> set[int]:
     return set(draft.agents_off) if draft is not None else set(settings.get('dispatch_agents_off') or ())
 
 
+def backlog_delivered(o: DispatchOrder, inside: Collection[str], added: Collection[str], off: Collection[int]) -> bool:
+    """Заказ прошлых дней везём сегодня: он в развозе дня (inside — добавлен или перенесён сюда, views._backlog_in) и его
+    менеджер не снят фильтром «Մենեջերներ» (off) — или логист сам взял его «Տանել այսօր» (added; владелец 08.10: явный
+    выбор сильнее фильтра). Один отбор для страницы «Развоза» и для терминалов водителей (courier.routes_link)."""
+    return o.isn in inside and (o.agent_id not in off or o.isn in added)
+
+
 def is_workday(day: date, workdays: Sequence[int], holidays: Collection[date] = ()) -> bool:
     """Рабочий день: день недели (1 = пн … 7 = вс) отмечен рабочим и даты нет среди нерабочих (№64)."""
     return day.isoweekday() in (set(workdays) or set(range(1, 8))) and day not in holidays
@@ -661,6 +668,9 @@ class Draft:
     # 'delta_pct': рост ֏ дня (дизель + износ) без неё, % (None — без неё всё не помещается), 'limit_pct': порог настроек};
     # None — правило не понадобилось
     solo_spare: dict[str, Any] | None = None
+    # заказы прошлых дней (backlog), которые логист этого дня решил не везти («Չտանել», владелец 08.10): в развоз не идут
+    # и в списке «Նախորդ օրերից» свёрнуты; «Տանել այսօր» снимает отметку. Водителям не передаётся (_drivers_key)
+    dismissed: set[str] = field(default_factory=set)
 
     def to_json(self) -> dict[str, Any]:
         built = None if self.built_orders is None else {
@@ -686,7 +696,8 @@ class Draft:
                 **({'seats': dict(sorted(self.seats.items()))} if self.seats else {}),
                 **({'unmanned': dict(sorted(self.unmanned.items()))} if self.unmanned else {}),
                 **({'absent': sorted(self.absent)} if self.absent else {}),
-                **({'solo_spare': dict(self.solo_spare)} if self.solo_spare is not None else {})}
+                **({'solo_spare': dict(self.solo_spare)} if self.solo_spare is not None else {}),
+                **({'dismissed': sorted(self.dismissed)} if self.dismissed else {})}
 
     @classmethod
     def from_json(cls, raw: Any, *, snapshot: bool = False) -> Draft:
@@ -736,7 +747,8 @@ class Draft:
                    unmanned={k: v for k, v in _str_map(raw.get('unmanned')).items() if v in UNMANNED},
                    absent=sorted({x for x in (raw.get('absent') or [])[:MAX_TRIPS] if isinstance(x, str) and x})
                    if isinstance(raw.get('absent'), list) else [],
-                   solo_spare=raw.get('solo_spare') if isinstance(raw.get('solo_spare'), dict) else None)
+                   solo_spare=raw.get('solo_spare') if isinstance(raw.get('solo_spare'), dict) else None,
+                   dismissed=isns('dismissed'))
         if released is not None and not snapshot:
             draft.sent = _sent(raw.get('sent'))
             if draft.sent is None:   # выпущен до №81 (или снимок битый): водители видят сам черновик — он и отправлен
@@ -1136,7 +1148,7 @@ def build(ctx: DayContext, stops: Sequence[Stop], old: Draft | None, trucks: Seq
     codes = {t.car_code for t in sel}
     draft = Draft(trucks=sorted(codes), excluded=set(old.excluded), added=set(old.added), next_id=old.next_id,
                   built_at=now, deferred=set(old.deferred), dropped=set(old.dropped), agents_off=set(old.agents_off),
-                  same_day=set(old.same_day), same_day_trips=set(old.same_day_trips),
+                  same_day=set(old.same_day), same_day_trips=set(old.same_day_trips), dismissed=set(old.dismissed),
                   released=dict(old.released) if old.released is not None else None,   # №80: пересборка не прячет день
                   sent=old.sent,   # №81: пересборка — правка: водители видят прежний снимок до отправки
                   fleet=dict(old.fleet) if old.fleet is not None else None)
@@ -1920,8 +1932,10 @@ def apply_edit(ctx: DayContext, stops: Sequence[Stop], draft: Draft, edit: Mappi
       {"action": "resize", "trip": id, "return": минут от полуночи} — конец рейса потянули на шкале дня (_resize);
       {"action": "undo"} — «Չեղարկել»: черновик до последнего resize (Draft.undo);
       {"action": "exclude" | "include", "order": fISN} — «не везём сегодня» / вернуть; заказ прошлых
-          дней (backlog_ids) — убрать из развоза / добавить в развоз (перенесённый сюда — carried —
-          убранный запоминается в dropped); перенос на завтра снимается;
+          дней (backlog_ids) — «Չտանել» (не везём: dismissed; перенесённый сюда — carried — ещё и в dropped) /
+          «Տանել այսօր» (added, явный выбор логиста — и для менеджера, снятого фильтром «Մենեջերներ»; в рейс его
+          ставит place_added); перенос на завтра снимается;
+      {"action": "include", "orders": [fISN, …]} — «Տանել բոլորը»: те же «Տանել այսօր» сразу для заказов прошлых дней;
       {"action": "agents", "off": [agent_id, …]} — фильтр «Մենեջերներ»: заказы этих менеджеров не везём
           (остальные — везём); точки, где заказов не осталось, уходят из рейсов, вернувшиеся — «ещё не в рейсах»;
       {"action": "defer_trip", "trip": id} — «везти завтра» (№25: рейс дешевле min_trip_revenue): заказы
@@ -1941,17 +1955,30 @@ def apply_edit(ctx: DayContext, stops: Sequence[Stop], draft: Draft, edit: Mappi
         restored.sent = draft.sent           # №81: «Չեղարկել» правит черновик, отправленное водителям — как было
         return restored
     draft.undo = None
+    if action == 'include' and 'orders' in edit:
+        isns = edit.get('orders')
+        if not isinstance(isns, list) or not isns or len(isns) > MAX_BUILT_ORDERS \
+                or any(not isinstance(x, str) or x.upper() not in backlog_ids for x in isns):
+            raise DispatchError('Պատվերները չեն գտնվել նախորդ օրերի պատվերների մեջ — թարմացրեք էջը')
+        for x in isns:
+            draft.added.add(x.upper())
+            draft.dropped.discard(x.upper())
+            draft.dismissed.discard(x.upper())
+            draft.deferred.discard(x.upper())
+        return draft
     if action in ('exclude', 'include'):
         isn = edit.get('order')
         isn = isn.upper() if isinstance(isn, str) else None
         if isn in backlog_ids:
             if action == 'exclude':
                 draft.added.discard(isn)
+                draft.dismissed.add(isn)
                 if isn in carried:
                     draft.dropped.add(isn)
             else:
                 draft.added.add(isn)
                 draft.dropped.discard(isn)
+                draft.dismissed.discard(isn)
             draft.deferred.discard(isn)
             return draft
         if isn not in order_ids:
@@ -2050,6 +2077,47 @@ def apply_edit(ctx: DayContext, stops: Sequence[Stop], draft: Draft, edit: Mappi
             start = _timeline(ctx, draft.trips, routable, shares)[t.id][0]
             t.stops, *_ = _route(ctx, t.stops, routable, shares, reorder=True, start=start, truck=t.truck)
     return draft
+
+
+def place_added(ctx: DayContext, stops: Sequence[Stop], draft: Draft, cids: Sequence[int],
+                now_min: float | None = None) -> dict[int, int]:
+    """«Տանել այսօր» у заказа прошлых дней (владелец 08.10: «не функционально» — заказ падал в «ещё не в рейсах»): клиенты
+    cids, которых ещё нет в рейсах, по одному встают туда, где км плана растут меньше всего, — в рейс отмеченной машины
+    или новым рейсом после её рейсов. Машина не позже конца дня (или своего прежнего конца), окна приёма у неё не
+    нарушаются чаще, груз — в пределе сборки (_can_carry); закреплённые логистом, загруженные и начатые (now_min —
+    сегодня) рейсы не трогаются (_movable). Км — с платой за точки Еревана на больших машинах (№68). Некуда — клиент
+    остаётся «ещё не в рейсах». Тяжёлые клиенты — первыми (лёгкие не займут их место); конец дня — с запасом дня (№78,
+    _end_limit), принятая переработка — до её предела. Ответ — клиент → рейс, куда встал."""
+    routable = {s.customer_id: s for s in stops if s.point is not None}
+    sel = _selected(ctx, draft.trucks)
+    codes = [t.car_code for t in sel]
+    over = ctx.overtime_minutes if draft.overtime_ok and ctx.overtime_minutes is not None else None
+    frozen = started_trips(ctx, list(routable.values()), draft, now_min) if now_min is not None else set()
+    not_before = float(ctx.work_start_min + now_min) if now_min is not None else None
+    placed: dict[int, int] = {}
+    for cid in sorted(set(cids) & set(routable), key=lambda c: (-routable[c].kg, c)):
+        shares = _shares(draft.trips)
+        if cid in shares:
+            continue
+        options = [*(t for t in draft.trips if t.truck in codes and _movable(draft, t, frozen)),
+                   *(DraftTrip(draft.next_id, code, [], not_before=not_before) for code in codes)]
+        cands = []
+        for r in options:
+            if not _can_carry(ctx, sel, r.truck, [*r.stops, cid], routable, shares):
+                continue
+            net = (_closed_km(ctx, _insert_cheapest(ctx, r.stops, cid, routable), routable)
+                   - _closed_km(ctx, r.stops, routable) + _yerevan_km(ctx, r.truck, routable[cid]))
+            cands.append((net, not r.stops, r.truck, r.id, r))
+        for *_, r in sorted(cands, key=lambda x: x[:4]):
+            _, end0, miss0 = _truck_day(ctx, draft.trips, routable, shares, r.truck)
+            trial = _moved(ctx, draft.trips, routable, cid, None, r)
+            _, end1, miss1 = _truck_day(ctx, trial, routable, _shares(trial), r.truck)
+            limit = over if over is not None else _end_limit(ctx, trial, routable, _shares(trial), r.truck)
+            if end1 <= max(limit, end0) + _EPS and miss1 <= miss0:
+                _take(ctx, draft, routable, trial, cid, (r.id,))
+                placed[cid] = r.id
+                break
+    return placed
 
 
 # --- Новые заказы дня: взять в сегодняшний развоз (ответ владельца №72) ---

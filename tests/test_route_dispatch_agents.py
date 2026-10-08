@@ -153,10 +153,13 @@ def test_courier_pick_orders_skips_filtered_managers():
               dp.DispatchOrder(isn[2], 'N3', date(2026, 9, 25), 3, 8, '', 1000.0, 10.0, None)]
     plan = rl.RoutesView(plan_exists=True, released=True, trips=(('A', (2, 3)),), added=frozenset({isn[2]}))
     assert [o.isn for o in rl.pick_orders(orders, d, plan, 'A')] == isn
-    # магазин 2 в рейсе ради заказа менеджера 7: заказ менеджера 8 там же и его заказ прошлых дней водитель не везёт
+    # магазин 2 в рейсе ради заказа менеджера 7: заказ дня менеджера 8 там же водитель не везёт; заказ прошлых дней,
+    # который логист сам взял «Տանել այսօր», — везёт (владелец 08.10: явный выбор сильнее фильтра, как на странице)
     off = rl.RoutesView(plan_exists=True, released=True, trips=(('A', (2, 3)),), added=frozenset({isn[2]}),
                         agents_off=frozenset({8}))
-    assert [o.isn for o in rl.pick_orders(orders, d, off, 'A')] == [isn[0]]
+    assert [o.isn for o in rl.pick_orders(orders, d, off, 'A')] == [isn[0], isn[2]]
+    carried = replace(off, added=frozenset(), carried=frozenset({isn[2]}))   # перенесён сюда без выбора — нет
+    assert [o.isn for o in rl.pick_orders(orders, d, carried, 'A')] == [isn[0]]
 
 
 def test_erp_agents_carry_line_name(monkeypatch):

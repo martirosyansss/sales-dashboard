@@ -236,9 +236,10 @@ def pick_orders(orders: Sequence[DispatchOrder], day: date, view: RoutesView, ca
     sel = dp.settle_predated(dp.to_deliver(orders, day, since, view.fleet, place), since, view.seen)
     inside = set(view.added) | (set(view.carried) - set(view.dropped))
     same = [o for o in dp.same_day_candidates(orders, day, view.fleet, place) if o.isn in view.same_day]
-    active = [o for o in sel.main + same if o.isn not in view.excluded and o.isn not in view.taken] \
-        + [o for o in sel.backlog if o.isn in inside]
-    active = [o for o in active if o.agent_id not in view.agents_off]
+    # заказ прошлых дней, взятый логистом «Տանել այսօր», — и при менеджере, снятом фильтром (как на странице)
+    active = [o for o in sel.main + same if o.isn not in view.excluded and o.isn not in view.taken
+              and o.agent_id not in view.agents_off] \
+        + [o for o in sel.backlog if dp.backlog_delivered(o, inside, view.added, view.agents_off)]
     mine = set(view.car_customers(car_code))
     return [o for o in active if o.customer_id in mine]
 

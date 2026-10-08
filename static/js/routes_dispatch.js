@@ -742,7 +742,8 @@
         const gs = geoSug();
         if (gs.count) add('is-warn', 'fa-location-crosshairs', 'Նոր տեղ՝ վարորդներից', gs.count, () => openFold('dpGeoSug'));
         const bl = d.backlog || [];
-        if (bl.length) add('', 'fa-clock-rotate-left', 'Նախորդ օրերից', bl.length, () => openFold('dpBacklog'));
+        const blOpen = blTodo(bl).length;
+        if (bl.length) add(blOpen ? 'is-warn' : '', 'fa-clock-rotate-left', 'Նախորդ օրերից', blOpen || bl.length, () => openFold('dpBacklog'));
         const nd = noDriver();
         if (nd.length && !d.is_past && wsOn()) add('is-warn', 'fa-id-card', 'Առանց վարորդի', nd.length, () => openDriver(nd[0].car_code));
         if (o.excluded) add('', 'fa-ban', 'Այսօր չենք տանում', o.excluded, () => openFold('dpExcluded'));
@@ -1305,9 +1306,9 @@
         if (o.no_coords) add('is-warn', 'fa-location-dot', pl(o.no_coords, 'խանութի') + ' տեղը քարտեզում նշված չէ (' + kgText(o.no_coords_kg)
             + ')։ Մինչև չնշեք, դրանք երթերի մեջ չեն մտնի։', 'Նշել քարտեզում', 'dpNoCoords');
         const bl = state.data.backlog || [];
-        const added = bl.filter(x => x.added && !x.agent_off).length;
-        if (bl.length) add('', 'fa-clock-rotate-left', 'Նախորդ օրերից մնացել է ' + pl(bl.length, 'չառաքված պատվեր')
-            + (added ? ', որից ' + added + '-ը ավելացրել եք այսօրվա առաքմանը' : '') + '։ Ստուգեք՝ պե՞տք է դրանք տանել այսօր։', 'Դիտել', 'dpBacklog');
+        const blOpen = blTodo(bl).length;   // решённые («Տանել այսօր» / «Չտանել») — не напоминаем
+        if (blOpen) add('', 'fa-clock-rotate-left', 'Նախորդ օրերից մնացել է ' + pl(blOpen, 'չառաքված պատվեր')
+            + '։ Որոշեք՝ տանե՞լ դրանք այսօր։', 'Որոշել', 'dpBacklog');
         if (o.excluded) add('', 'fa-ban', pl(o.excluded, 'պատվեր') + ' նշել եք «այսօր չենք տանում»։', 'Դիտել', 'dpExcluded');
         if (o.other_vehicle) add('', 'fa-truck-arrow-right', pl(o.other_vehicle, 'պատվեր') + ' գնում է այլ մեքենայով (կարգավորումներով)։', 'Դիտել', 'dpOther');
         const ag = agentStats();
@@ -1866,14 +1867,113 @@
         showActionError(new Error('Նախ սեղմեք «Կազմել երթերը» — փոփոխությունները պահպանվում են օրվա պլանում։'));
         return false;
     }
-    function renderOrderLists() {
+    // ---------- Заказы прошлых дней (владелец 08.10: таблица; «Տանել այսօր» — сразу в рейс, «Չտանել» — свернуть) ----------
+    const daysAgo = (iso) => Math.round((Date.parse(state.data.day) - Date.parse(iso)) / 864e5);
+    // рейс плана {id, truck} → «Երթ 2 · JAC · 475DD61» (номер — как на шкале дня: по порядку у машины)
+    function tripText(ref) {
+        const t = ref && state.data.plan && state.data.plan.trucks.find(x => x.car_code === ref.truck);
+        const i = t ? t.trips.findIndex(tr => tr.id === ref.id) : -1;
+        return i < 0 ? '' : 'Երթ ' + (i + 1) + ' · ' + truckLabel(t);
+    }
+    // ещё решать: не везём сегодня, не «Չտանել» и не перенесён «Վաղը» (№25 — решён: его везут в день defer_to)
+    const blUndecided = (bl) => bl.filter(o => !o.taken && !o.dismissed && !o.deferred);
+    // напоминаем и берём «Տանել բոլորը» — только заказы менеджеров, которых везём: снятого фильтром — по одному, явно
+    const blTodo = (bl) => blUndecided(bl).filter(o => !o.agent_off);
+    async function takeBacklog(isns) {
+        if (state.busy || !needPlan()) return;
+        const data = await edit(isns.length > 1 ? { action: 'include', orders: isns } : { action: 'include', order: isns[0] });
+        if (!data) return;
+        const rows = (data.backlog || []).filter(x => isns.includes(x.isn));
+        const placed = rows.filter(x => x.taken && x.trip);
+        const km = data.delta_km !== undefined && data.delta_km !== null ? ' — ' + deltaText(data.delta_km) : '';
+        if (!rows.length) {
+            toast('Պատվերն այլևս նախորդ օրերի ցուցակում չէ՝ հավանաբար արդեն առաքվել է։');
+        } else if (rows.length === 1) {
+            toast(placed.length ? 'Պատվերը տանում ենք այսօր՝ ' + tripText(rows[0].trip) + km + '։'
+                : 'Պատվերն ավելացվեց, բայց երթերում տեղ չգտնվեց՝ այն «Դեռ երթերում չեն» ցուցակում է։');
+        } else {
+            const miss = rows.length - placed.length;
+            toast(pl(placed.length, 'պատվեր') + ' դրվեց երթերում' + (miss ? ', ' + pl(miss, 'պատվերի') + ' համար տեղ չգտնվեց («Դեռ երթերում չեն»)' : '') + km + '։');
+        }
+    }
+    function backlogRow(o, hasPlan) {
+        const li = document.createElement('li');
+        li.className = 'dp-bl-row' + (o.taken ? ' is-taken' : '');
+        const cell = (cls, ...kids) => { const el = document.createElement('div'); el.className = cls; el.append(...kids); return el; };
+        const span = (text, cls) => { const s = document.createElement('span'); s.textContent = text; if (cls) s.className = cls; return s; };
+        const n = daysAgo(o.order_date);
+        const age = cell('dp-bl-age', span(n > 0 ? n + NB + 'օր առաջ' : 'այսօր', 'dp-bl-ago'), span(dateRu(o.order_date).slice(0, 5)));
+        const name = document.createElement('b');
+        name.textContent = o.name || o.code || ('հաճախորդ ' + o.customer_id);
+        const sub = [o.code, o.agent_name, o.doc_num ? '№' + NB + o.doc_num : ''].filter(Boolean).join(' · ');
+        const main = cell('dp-bl-main', name, span(sub));
+        const kg = cell('dp-bl-num dp-bl-kg', span(o.kg > 0 ? kgText(o.kg) : '—'));
+        if (!(o.kg > 0)) kg.title = 'ERP-ում ապրանքների քաշը նշված չէ';
+        const sum = cell('dp-bl-num dp-bl-sum', span(money(o.revenue)));
+        const act = cell('dp-bl-act');
+        const btn = (text, cls, onClick) => {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'rt-btn rt-btn-sm ' + cls;
+            b.textContent = text;
+            b.disabled = !hasPlan;
+            if (!hasPlan) b.title = 'Նախ կազմեք երթերը';
+            b.addEventListener('click', onClick);
+            act.append(b);
+        };
+        const label = o.name || o.code || '';
+        if (o.taken) {
+            btn('Հանել', 'rt-btn-ghost', () => { if (needPlan()) edit({ action: 'exclude', order: o.isn }, 'Պատվերը հանվեց այսօրվա առաքումից'); });
+        } else {
+            btn('Տանել այսօր', 'rt-btn-primary', () => takeBacklog([o.isn]));
+            if (!o.dismissed && !o.deferred) btn('Չտանել', 'rt-btn-ghost', () => { if (needPlan()) edit({ action: 'exclude', order: o.isn }, 'Պատվերն այսօր չենք տանում'); });
+        }
+        act.querySelectorAll('button').forEach(b => b.setAttribute('aria-label', b.textContent + ' — ' + label));
+        li.append(age, main, kg, sum, act);
+        // строка состояния: что с заказом сейчас и почему
+        let tone = '', icon = '', text = '';
+        const tt = o.trip ? tripText(o.trip) : '';
+        if (o.taken && tt) [tone, icon, text] = ['is-ok', 'fa-check', 'Տանում ենք այսօր՝ ' + tt];
+        else if (o.taken) [tone, icon, text] = ['is-warn', 'fa-triangle-exclamation', 'Ավելացված է, բայց երթերում տեղ չկա՝ տեսեք «Դեռ երթերում չեն»'];
+        else if (o.deferred) [tone, icon, text] = ['', 'fa-calendar-day', 'Տեղափոխված է հաջորդ օրվան՝ կտարվի ' + dayHuman(state.data.defer_to, true)];
+        else if (o.agent_off) [tone, icon, text] = ['', 'fa-user-slash', 'Մենեջերը հանված է «Մենեջերներ» ֆիլտրից։ «Տանել այսօր»-ով կտանենք միայն այս պատվերը'];
+        else if (tt) [tone, icon, text] = ['', 'fa-route', 'Խանութն այսօր արդեն երթում է այլ պատվերով՝ ' + tt];
+        if (o.taken && o.carried) text += ' · տեղափոխված է նախորդ օրից';
+        if (text) {
+            const st = cell('dp-bl-st' + (tone ? ' ' + tone : ''));
+            st.innerHTML = '<i class="fas ' + icon + '" aria-hidden="true"></i>';
+            st.append(span(text));
+            li.append(st);
+        }
+        return li;
+    }
+    function renderBacklog() {
         const bl = state.data.backlog || [];
+        const hasPlan = !!state.data.plan;
         $('dpBacklog').hidden = !bl.length;
-        $('dpBacklogNote').textContent = bl.length ? pl(bl.length, 'պատվեր') : '';
+        const open = blUndecided(bl), todo = blTodo(bl), taken = bl.filter(o => o.taken || (o.deferred && !o.dismissed)),
+            off = bl.filter(o => !o.taken && o.dismissed);
+        $('dpBacklogNote').textContent = !bl.length ? ''
+            : [pl(bl.length, 'պատվեր'), bl.some(o => o.taken) ? bl.filter(o => o.taken).length + '-ը տանում ենք' : '', todo.length ? todo.length + '-ը չորոշված' : ''].filter(Boolean).join(' · ');
+        $('dpBacklogLead').textContent = !hasPlan
+            ? 'Այս պատվերներն ընդունվել են ավելի վաղ, բայց դեռ չեն առաքվել։ Նախ կազմեք երթերը, հետո այստեղ ընտրեք՝ որոնք տանել այսօր։'
+            : open.length ? 'Այս պատվերներն ընդունվել են ավելի վաղ, բայց դեռ չեն առաքվել։ Յուրաքանչյուրի համար ընտրեք՝ «Տանել այսօր» (պատվերը միանգամից կդրվի ամենահարմար երթում) կամ «Չտանել»։'
+                : 'Բոլոր պատվերների համար որոշել եք։';
+        const all = $('dpBacklogAll');
+        all.hidden = !hasPlan || todo.length < 2;
+        all.textContent = 'Տանել բոլորը (' + todo.length + ')';
+        all.onclick = () => takeBacklog(blTodo(state.data.backlog || []).map(o => o.isn));
         const ul = $('dpBacklogList');
         ul.textContent = '';
-        bl.forEach(o => ul.appendChild(orderLine(o, o.added ? 'Հանել առաքումից' : 'Ավելացնել առաքմանը',
-            () => { if (needPlan()) edit({ action: o.added ? 'exclude' : 'include', order: o.isn }, o.added ? 'Պատվերը հանվեց առաքումից' : 'Պատվերն ավելացվեց — սեղմեք «Վերակազմել երթերը» կամ տեղափոխեք կետը որևէ երթ'); })));
+        [...open, ...taken].forEach(o => ul.appendChild(backlogRow(o, hasPlan)));
+        $('dpBacklogOff').hidden = !off.length;
+        $('dpBacklogOffN').textContent = '(' + off.length + ')';
+        const ul0 = $('dpBacklogOffList');
+        ul0.textContent = '';
+        off.forEach(o => ul0.appendChild(backlogRow(o, hasPlan)));
+    }
+    function renderOrderLists() {
+        renderBacklog();
         const ex = state.data.excluded || [];
         $('dpExcluded').hidden = !ex.length;
         $('dpExcludedNote').textContent = ex.length ? pl(ex.length, 'պատվեր') : '';

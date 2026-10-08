@@ -11,7 +11,7 @@
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=24">
 <!-- Страница на армянском (ответ владельца №31). Редизайн: тёмная спокойная тема (ответ владельца №51), свои стили поверх routes.css -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=60">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=61">
 {% endblock %}
 
 {% block content %}
@@ -276,9 +276,17 @@
                         <summary><span class="rt-fold-t"><i class="fas fa-clock-rotate-left" aria-hidden="true"></i>Նախորդ օրերից չառաքված պատվերներ</span>
                             <span class="rt-fold-note" id="dpBacklogNote"></span></summary>
                         <div class="rt-fold-body">
-                            <p class="rt-fold-lead">Այս պատվերներն ընդունվել են ավելի վաղ, բայց դեռ չեն առաքվել։ Եթե պատվերը պետք է տանել այսօր,
-                                սեղմեք «Ավելացնել առաքմանը»։ Մնացածը կարող եք անտեսել։</p>
-                            <ul class="dp-olist" id="dpBacklogList"></ul>
+                            <!-- владелец 08.10 «не понятно и не функционально»: таблица, «Տանել այսօր» — сразу в рейс, «Չտանել» — свернуть -->
+                            <div class="dp-bl-top">
+                                <p class="rt-fold-lead" id="dpBacklogLead"></p>
+                                <button type="button" class="rt-btn rt-btn-primary rt-btn-sm" id="dpBacklogAll" hidden>Տանել բոլորը</button>
+                            </div>
+                            <div class="dp-bl-hd" aria-hidden="true"><span>Պատվերը</span><span>Խանութ և մենեջեր</span><span>Քաշ</span><span>Գումար</span><span></span></div>
+                            <ul class="dp-bl" id="dpBacklogList" aria-label="Նախորդ օրերից չառաքված պատվերներ"></ul>
+                            <details class="dp-bl-off" id="dpBacklogOff" hidden>
+                                <summary>Չենք տանում այսօր <span id="dpBacklogOffN"></span></summary>
+                                <ul class="dp-bl" id="dpBacklogOffList"></ul>
+                            </details>
                         </div>
                     </details>
 
@@ -548,5 +556,5 @@
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=1" data-yandex-key="{{ yandex_tiles_key }}"></script>
 <!-- панель «Հարցրու AI-ին» — до страницы: init подключает её (RoutesDispatchAI.attach) -->
 <script src="{{ url_for('static', filename='js/routes_dispatch_ai.js') }}?v=3"></script>
-<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=101"></script>
+<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=102"></script>
 {% endblock %}

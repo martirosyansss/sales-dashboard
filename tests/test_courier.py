@@ -233,6 +233,12 @@ def test_pick_orders_by_plan_or_car():
     assert rl.pick_orders(orders, d, replace(plan, released=False), 'A') == []      # план не утверждён — ничего
     excluded = rl.RoutesView(plan_exists=True, released=True, trips=(('A', (2,)),), excluded=frozenset({ISN[1]}))
     assert rl.pick_orders(orders, d, excluded, 'A') == []
+    # менеджер 7 снят фильтром «Մենեջերներ»: его заказы дня — нет, а заказ прошлых дней, взятый «Տանել այսօր», — едет
+    # (как на странице «Развоза», владелец 08.10); перенесённый сюда без выбора логиста — нет
+    off = replace(plan, agents_off=frozenset({7}))
+    assert [o.isn for o in rl.pick_orders(orders, d, off, 'A')] == [ISN[4]]
+    carried = replace(off, added=frozenset(), carried=frozenset({ISN[4]}))
+    assert rl.pick_orders(orders, d, carried, 'A') == []
 
 
 def test_routes_view_car_customers():
