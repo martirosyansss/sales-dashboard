@@ -6,6 +6,8 @@
    («Ընդունման ժամ», windows-center-plan.md) — POST /api/routes/customer-window. Точка любого магазина «Փոխել տեղը»
    — тот же POST /api/routes/geo-override (null — «авто»); предложения водителей (geo_suggestions в ответе дня,
    driver-geo-plan.md §5) — POST /api/routes/geo-suggest/decide. Рейсы после смены точки сами не пересобираются.
+   «Առաքման պայմաններ» у магазина (владелец 08.10) — диалог на странице: GET /api/routes/customer-vehicles?customer_id=…,
+   POST /api/routes/customer-vehicles {customer_id, access, window, solo, center} (без unload_min — время у магазина не трогается).
    Раз в 5 минут, пока страница открыта, — GET /api/routes/dispatch/status?date=…: «заказы ещё поступают»
    и сколько заказов пришло или ушло с последней сборки. Рейсы сами не пересобираются — только по кнопке.
    Безопасность: всё, что пришло из ERP (магазины, адреса, менеджеры, машины), выводится только через
@@ -113,6 +115,7 @@
         sugMap: null, sugLayer: null, sugSel: null,     // предложения водителей: карта и выбранное (event_id)
         geoChanged: null,                   // день, в котором после сборки меняли точку магазина — подсказать пересборку
         unloadStop: null, unloadInfo: null, unloadSeq: 0,   // «Ժամանակ խանութում»: магазин диалога, его данные с сервера, номер запроса
+        condStop: null, condInfo: null, condSeq: 0,         // «Առաքման պայմաններ»: то же для условий магазина
         stepsOpen: new Set(),               // шаги 1–2, раскрытые логистом после сборки (иначе свёрнуты в строку)
         open: new Set(),                    // раскрытые карточки машин (код машины)
         driverCar: null,                    // «Վարորդ»: машина открытого диалога
@@ -176,6 +179,8 @@
         [': не удалось сохранить точку клиента', 'Չհաջողվեց պահպանել խանութի կետը — կարգավորումների բազան հասանելի չէ'],
         [': не удалось сохранить план развоза', 'Չհաջողվեց պահպանել առաքման պլանը — կարգավորումների բազան հասանելի չէ'],
         [': не удалось сохранить время у магазина', 'Չհաջողվեց պահպանել ժամանակը խանութում — կարգավորումների բազան հասանելի չէ'],
+        // условия магазина (store.save_customer_constraints): сам текст уже армянский, по-русски — только имя базы перед ним
+        [': չհաջողվեց պահպանել խանութի առաքման պայմանները', 'Չհաջողվեց պահպանել խանութի առաքման պայմանները — կարգավորումների բազան հասանելի չէ'],
         [': не удалось сохранить водителя машины', 'Չհաջողվեց պահպանել վարորդին — կարգավորումների բազան հասանելի չէ'],
     ];
     function serverText(s) {
@@ -531,7 +536,7 @@
     // тогда обновляются только подсказки, а страница — при следующей проверке.
     const interacting = () => {
         const a = document.activeElement;
-        return state.pickCid !== null || state.dragging || !!state.mapDrag || (!!state.stopCard && state.stopCard.isOpen() && wsOn()) || $('dpGeoDlg').open || $('dpUnloadDlg').open || $('dpDriverDlg').open
+        return state.pickCid !== null || state.dragging || !!state.mapDrag || (!!state.stopCard && state.stopCard.isOpen() && wsOn()) || $('dpGeoDlg').open || $('dpUnloadDlg').open || $('dpCondDlg').open || $('dpDriverDlg').open
             || $('dpSameDayDlg').open || $('dpAbsentDlg').open || $('dpSendFirstDlg').open || $('dpAddDlg').open || $('dpWhyDlg').open
             || (!!a && $('dpBody').contains(a) && /^(SELECT|INPUT|TEXTAREA)$/.test(a.tagName));
     };
@@ -1839,6 +1844,146 @@
         try { await reloadQuiet(); } catch (e) { showActionError(e); }
     }
 
+    // ---------- Условия магазина «Առաքման պայմաններ» (владелец 08.10: «в модальном окне, не выходя с этой страницы») ----------
+    // Поля, тексты и проверки — как в «Условиях магазина» /routes/settings (routes_customer_settings.js), кроме времени у
+    // магазина: у него своя кнопка «Ժամանակ խանութում». Данные диалога — GET /api/routes/customer-vehicles?customer_id=…
+    // (свежие: окно, допуск, отдельный рейс, центр, список машин); сохраняется POST /api/routes/customer-vehicles
+    // {customer_id, access, window, solo, center} — без "unload_min" сервер оставляет время у магазина как есть.
+    // Рейсы сами не пересобираются — подсказка в уведомлении, как после смены времени.
+    const COND_FIRST = { at: 'Ժամ', between: 'Սկսած', before: 'Մինչև', after: 'Հետո' };
+    // cancel — и «Չեղարկել»: пока идёт сохранение, диалог не закрыть (ошибка не потеряется); при загрузке — можно
+    const lockCond = (on, cancel = false) => $('dpCondDlg').querySelectorAll('select, input, #dpCondSave' + (cancel ? ', #dpCondCancel' : ''))
+        .forEach(el => { el.disabled = on; });
+    function syncCondTime() {
+        const kind = $('dpCondKind').value;
+        $('dpCondFirst').hidden = !kind;
+        $('dpCondFirstLabel').textContent = COND_FIRST[kind] || 'Ժամ';
+        $('dpCondLast').hidden = kind !== 'between';
+        $('dpCondTolerance').hidden = kind !== 'at';
+        $('dpCondTimeHint').textContent = 'Խանութում ժամանման և բեռնաթափման սկզբի ժամը։'
+            + (kind === 'at' ? ' 0 րոպե շեղումը նշանակում է ճիշտ նշված ժամը։' : '');
+        $('dpCondErr').textContent = '';
+    }
+    function syncCondTrucks() {
+        const mode = $('dpCondMode').value;
+        $('dpCondTrucks').hidden = $('dpCondChoicesTitle').hidden = !mode;
+        $('dpCondChoicesTitle').textContent = mode === 'allow' ? 'Կարող են սպասարկել' : 'Չեն կարող սպասարկել';
+        $('dpCondCenterRow').hidden = $('dpCondCenterHint').hidden = mode !== 'allow';   // №78: только с «Միայն ընտրված»
+        $('dpCondVehicleHint').textContent = mode === 'allow'
+            ? 'Ընտրեք թույլատրված մեքենաները։ Եթե ոչ մեկն ընտրված չէ կամ այդ օրը չի աշխատում, խանութը կմնա առանց մեքենայի։'
+            : mode === 'deny' ? 'Ընտրված մեքենաները չեն կարող սպասարկել այս խանութը։ Մնացածը կարող են։'
+            : 'Կարող են սպասարկել բոլոր մեքենաները՝ հաշվի առնելով բեռնատարողությունը և մյուս սահմանափակումները։';
+        $('dpCondErr').textContent = '';
+    }
+    // окно приёма из полей (как readWindow «Условий магазина»); без ограничения — null
+    function readCondWindow() {
+        const kind = $('dpCondKind').value;
+        if (!kind) return null;
+        const minutes = (id) => {
+            const m = /^(\d{2}):(\d{2})$/.exec($(id).value || '');
+            return m && Number(m[1]) < 24 && Number(m[2]) < 60 ? Number(m[1]) * 60 + Number(m[2]) : null;
+        };
+        const t1 = minutes('dpCondT1'), t2 = minutes('dpCondT2');
+        const tol = $('dpCondTol').value.trim() === '' ? 0 : Number($('dpCondTol').value);
+        if (t1 === null || (kind === 'between' && t2 === null)) throw new Error('Նշեք ժամը։');
+        if (kind === 'between' && t2 <= t1) throw new Error('Միջակայքի վերջը պետք է լինի սկզբից ուշ։');
+        // нечисло в поле type=number браузер отдаёт как '' — это ошибка, а не «0 минут»
+        if (kind === 'at' && ($('dpCondTol').validity.badInput || !Number.isInteger(tol) || tol < 0 || tol > 120)) {
+            throw new Error('Թույլատրելի շեղումը՝ 0-ից մինչև 120 րոպե։');
+        }
+        return { kind, t1, t2: kind === 'between' ? t2 : null, tol: kind === 'at' ? tol : null };
+    }
+    // окно и допуск строкой — сравнить с открытым (порядок машин в допуске не важен)
+    const condWindowKey = (w) => (isObj(w) ? [w.kind, w.t1, w.t2 ?? null, w.tol ?? null].join('|') : '');
+    const condAccessKey = (a) => (isObj(a) && Array.isArray(a.trucks) ? a.mode + ':' + JSON.stringify([...a.trucks].sort()) : '');
+    async function openCond(stop) {
+        if (state.busy) return;
+        const seq = ++state.condSeq;
+        state.condStop = stop;
+        state.condInfo = null;
+        $('dpCondLead').textContent = '«' + (stop.name || stop.code) + '»' + (stop.address ? '՝ ' + stop.address : '');
+        $('dpCondKind').value = '';
+        $('dpCondMode').value = '';
+        $('dpCondSolo').checked = $('dpCondCenter').checked = false;
+        $('dpCondTrucks').textContent = '';
+        syncCondTime();
+        syncCondTrucks();
+        $('dpCondLoad').textContent = 'Բեռնում եմ խանութի տվյալները…';
+        lockCond(true);             // пока не пришли свежие условия магазина — сохранять нечего
+        $('dpCondDlg').showModal();
+        try {
+            const r = await api('GET', '/api/routes/customer-vehicles?customer_id=' + encodeURIComponent(stop.customer_id));
+            if (seq !== state.condSeq || !$('dpCondDlg').open) return;
+            const x = Array.isArray(r.customers) ? r.customers[0] : null;
+            // магазина нет в данных ERP раздела (новый) — сервер не сохранит и условия
+            if (!isObj(x)) throw new Error('Խանութը չի գտնվել — թարմացրեք էջը');
+            const w = isObj(x.window) ? x.window : null;
+            $('dpCondKind').value = w ? w.kind : '';
+            $('dpCondT1').value = w && isMin(w.t1) ? hhmm(w.t1) : '';
+            $('dpCondT2').value = w && isMin(w.t2) ? hhmm(w.t2) : '';
+            $('dpCondTol').value = String(w && Number.isInteger(w.tol) ? w.tol : 0);
+            const rule = isObj(x.vehicle_access) && Array.isArray(x.vehicle_access.trucks) ? x.vehicle_access : null;
+            $('dpCondMode').value = rule ? rule.mode : '';
+            $('dpCondSolo').checked = !!x.solo;      // №78: отдельный рейс
+            $('dpCondCenter').checked = !!x.center;  // №78: в центр — машинам допуска, ради этого магазина
+            // машины допуска, которых больше нет в списке, остаются отмеченными — как в «Условиях магазина»
+            const checked = new Set(rule ? rule.trucks : []);
+            const choices = (Array.isArray(r.vehicles) ? r.vehicles : []).filter(isObj);
+            checked.forEach(code => {
+                if (!choices.some(t => t.car_code === code)) choices.push({ car_code: code, name: 'Այլևս ցուցակում չէ' });
+            });
+            choices.forEach(t => {
+                const label = document.createElement('label');
+                label.className = 'dp-cond-truck';
+                const input = document.createElement('input');
+                input.type = 'checkbox';
+                input.value = t.car_code;
+                input.checked = checked.has(t.car_code);
+                const text = document.createElement('span');
+                text.textContent = truckLabel(t);
+                label.append(input, text);
+                $('dpCondTrucks').appendChild(label);
+            });
+            syncCondTime();
+            syncCondTrucks();
+            state.condInfo = x;
+            $('dpCondLoad').textContent = '';
+            lockCond(false);
+            $('dpCondKind').focus();
+        } catch (e) {
+            if (seq !== state.condSeq) return;
+            $('dpCondLoad').textContent = '';
+            $('dpCondErr').textContent = e.message;
+        }
+    }
+    // Ничего не изменилось — сохранять нечего: диалог закрывается без запроса и уведомления
+    async function saveCond() {
+        const stop = state.condStop, x = state.condInfo;
+        if (!stop || !x || state.busy) return;
+        let win;
+        try { win = readCondWindow(); } catch (e) { $('dpCondErr').textContent = e.message; return; }
+        const mode = $('dpCondMode').value;
+        const access = mode ? { mode, trucks: [...$('dpCondTrucks').querySelectorAll('input:checked')].map(i => i.value) } : null;
+        const solo = $('dpCondSolo').checked, center = mode === 'allow' && $('dpCondCenter').checked;
+        if (condWindowKey(win) === condWindowKey(x.window) && condAccessKey(access) === condAccessKey(x.vehicle_access)
+            && solo === !!x.solo && center === !!x.center) { $('dpCondDlg').close(); return; }
+        state.busy = true;
+        lockCond(true, true);       // и «Չեղարկել»: ошибка сохранения не должна потеряться в закрытом диалоге (Esc — в init)
+        $('dpCondErr').textContent = '';
+        try {
+            await api('POST', '/api/routes/customer-vehicles', { customer_id: stop.customer_id, access, window: win, solo, center });
+        } catch (e) {
+            if ($('dpCondDlg').open) $('dpCondErr').textContent = e.message; else showActionError(e);
+            return;
+        } finally {
+            state.busy = false;
+            lockCond(false, true);
+        }
+        $('dpCondDlg').close();
+        toast('«' + (stop.name || stop.code) + '»՝ առաքման պայմանները պահպանված են բոլոր օրերի համար։' + (state.data.plan ? ' ' + UNLOAD_REBUILD : ''));
+        try { await reloadQuiet(); } catch (e) { showActionError(e); }   // плашки допуска, окна и центра у точек
+    }
+
     // ---------- Заказы прошлых дней и исключённые ----------
     function orderLine(o, btnText, onClick) {
         const li = document.createElement('li');
@@ -1847,11 +1992,17 @@
         t.className = 'dp-oitem-t';
         const b = document.createElement('b');
         b.textContent = o.name || o.code || ('հաճախորդ ' + o.customer_id);
+        if (o.later_to) {
+            const lt = document.createElement('span');
+            lt.className = 'rt-badge b-ok dp-later';
+            lt.textContent = 'կտանենք ' + dayHuman(o.later_to, true);
+            b.append(' ', lt);
+        }
         const s = document.createElement('span');
         s.textContent = (o.code ? o.code + ' · ' : '') + 'պատվեր ' + (o.doc_num || '') + (o.order_date ? ', ' + dateRu(o.order_date) : '')
             + ' · ' + kgText(o.kg) + ' · ' + money(o.revenue)
             + (o.deferred ? ' · կտարվի ' + dayHuman(state.data.defer_to, true) : '')
-            + (o.carried ? ' · տեղափոխված է նախորդ օրից' : '')
+            + (o.carried ? ' · տեղափոխված է ' + (o.carried_from ? dayHuman(o.carried_from, false) + ' պլանից' : 'նախորդ օրից') : '')
             + (o.agent_off ? ' · մենեջերը հանված է «Որ մենեջերների պատվերներն ենք տանում» ցուցակից' : '')
             + (o.agent_name ? ' · ' + o.agent_name : '') + (o.city ? ' · ' + o.city : '');
         t.append(b, s);
@@ -1879,7 +2030,8 @@
         return i < 0 ? '' : 'Երթ ' + (i + 1) + ' · ' + truckLabel(t);
     }
     // ещё решать: не везём сегодня, не «Չտանել» и не перенесён «Վաղը» (№25 — решён: его везут в день defer_to)
-    const blUndecided = (bl) => bl.filter(o => !o.taken && !o.dismissed && !o.deferred);
+    // «Երբ տանել» (later_to) — тоже решён: его везут в тот день
+    const blUndecided = (bl) => bl.filter(o => !o.taken && !o.dismissed && !o.deferred && !o.later_to);
     // напоминаем и берём «Տանել բոլորը» — только заказы менеджеров, которых везём: снятого фильтром — по одному, явно
     const blTodo = (bl) => blUndecided(bl).filter(o => !o.agent_off);
     async function takeBacklog(isns) {
@@ -1929,7 +2081,7 @@
             btn('Հանել', 'rt-btn-ghost', () => { if (needPlan()) edit({ action: 'exclude', order: o.isn }, 'Պատվերը հանվեց այսօրվա առաքումից'); });
         } else {
             btn('Տանել այսօր', 'rt-btn-primary', () => takeBacklog([o.isn]));
-            if (!o.dismissed && !o.deferred) btn('Չտանել', 'rt-btn-ghost', () => { if (needPlan()) edit({ action: 'exclude', order: o.isn }, 'Պատվերն այսօր չենք տանում'); });
+            if (!o.dismissed && !o.deferred && !o.later_to) btn('Չտանել', 'rt-btn-ghost', () => { if (needPlan()) edit({ action: 'exclude', order: o.isn }, 'Պատվերն այսօր չենք տանում'); });
         }
         act.querySelectorAll('button').forEach(b => b.setAttribute('aria-label', b.textContent + ' — ' + label));
         li.append(age, main, kg, sum, act);
@@ -1939,9 +2091,12 @@
         if (o.taken && tt) [tone, icon, text] = ['is-ok', 'fa-check', 'Տանում ենք այսօր՝ ' + tt];
         else if (o.taken) [tone, icon, text] = ['is-warn', 'fa-triangle-exclamation', 'Ավելացված է, բայց երթերում տեղ չկա՝ տեսեք «Դեռ երթերում չեն»'];
         else if (o.deferred) [tone, icon, text] = ['', 'fa-calendar-day', 'Տեղափոխված է հաջորդ օրվան՝ կտարվի ' + dayHuman(state.data.defer_to, true)];
+        // «Երբ տանել»: этого дня — магазин сегодня не принимает; другого дня (later_from) — по тому плану
+        else if (o.later_to) [tone, icon, text] = ['', 'fa-calendar-day', (o.later_from ? 'Ըստ ' + dayHuman(o.later_from, false) + ' պլանի՝ կտանենք '
+            : 'Խանութն այսօր չի ընդունում՝ կտանենք ') + dayHuman(o.later_to, true)];
         else if (o.agent_off) [tone, icon, text] = ['', 'fa-user-slash', 'Մենեջերը հանված է «Մենեջերներ» ֆիլտրից։ «Տանել այսօր»-ով կտանենք միայն այս պատվերը'];
         else if (tt) [tone, icon, text] = ['', 'fa-route', 'Խանութն այսօր արդեն երթում է այլ պատվերով՝ ' + tt];
-        if (o.taken && o.carried) text += ' · տեղափոխված է նախորդ օրից';
+        if (o.taken && o.carried) text += ' · տեղափոխված է ' + (o.carried_from ? dayHuman(o.carried_from, false) + ' պլանից' : 'նախորդ օրից');
         if (text) {
             const st = cell('dp-bl-st' + (tone ? ' ' + tone : ''));
             st.innerHTML = '<i class="fas ' + icon + '" aria-hidden="true"></i>';
@@ -1954,7 +2109,7 @@
         const bl = state.data.backlog || [];
         const hasPlan = !!state.data.plan;
         $('dpBacklog').hidden = !bl.length;
-        const open = blUndecided(bl), todo = blTodo(bl), taken = bl.filter(o => o.taken || (o.deferred && !o.dismissed)),
+        const open = blUndecided(bl), todo = blTodo(bl), taken = bl.filter(o => o.taken || ((o.deferred || o.later_to) && !o.dismissed)),
             off = bl.filter(o => !o.taken && o.dismissed);
         $('dpBacklogNote').textContent = !bl.length ? ''
             : [pl(bl.length, 'պատվեր'), bl.some(o => o.taken) ? bl.filter(o => o.taken).length + '-ը տանում ենք' : '', todo.length ? todo.length + '-ը չորոշված' : ''].filter(Boolean).join(' · ');
@@ -2575,10 +2730,11 @@
 
     // «Ինչու՞» (владелец 07.10: «обязательно с объяснением… чтобы фильтры всегда работали»): причина обязательна;
     // «միշտ» — правило на все дни: машине нельзя (deny_truck), только эти машины (only_trucks), машины не везут (never) —
-    // правка stop_rule; «միայն այսօր» — trip_stops (с «Չեղարկել»), «այսօր չենք տանում» — exclude заказов магазина
+    // правка stop_rule; «միայն այսօր» — trip_stops (с «Չեղարկել»), «այսօր չենք տանում» — defer_store магазина с днём, когда
+    // везти («Երբ տանել», владелец 08.10: тот день возьмёт заказы сам) или «Չգիտեմ»
     const WHY = [
         { key: 'today', title: 'Միայն այսօր', text: 'Խանութը կմնա «Դեռ երթերում չեն» ցուցակում՝ կդնեք այլ երթ։ Կանոն չի պահվում։' },
-        { key: 'not_today', title: 'Այսօր չենք տանում', text: 'Խանութը փակ է, այսօր չի ընդունում և այլն․ նրա պատվերներն այսօր չեն գնում։' },
+        { key: 'not_today', title: 'Այսօր չենք տանում', text: 'Խանութը փակ է, այսօր չի ընդունում և այլն։ Ընտրեք՝ երբ տանել — այդ օրը պատվերներն ինքնուրույն կմտնեն պլանի մեջ։' },
         { key: 'deny_truck', always: true, title: 'Այս մեքենան չի կարող տանել այս խանութը', text: '' },
         { key: 'only_trucks', always: true, title: 'Այս խանութը տանել միայն ընտրված մեքենաներով', text: 'Մյուս մեքենաներին այն այլևս չի նշանակվի։' },
         { key: 'never', always: true, title: 'Երբեք չտանել մեր մեքենաներով',
@@ -2624,6 +2780,7 @@
             lab.append(rb, body);
             row.appendChild(lab);
             if (o.key === 'only_trucks') row.appendChild(whyTrucks(t.car_code, rule));
+            if (o.key === 'not_today') { const days = whyDays(); if (days) row.appendChild(days); }
             box.appendChild(row);
         });
         $('dpWhyErr').textContent = '';
@@ -2655,21 +2812,69 @@
         });
         return list;
     }
+    // «Երբ տանել»: дни defer_days (первый — по умолчанию; завтрашний относительно сегодня — с «Վաղը», relDay) и «Չգիտեմ» —
+    // заказы остаются в «Նախորդ օրերից». Прошедший день — переносить некуда: без выбора, как «Չգիտեմ»
+    function whyDays() {
+        const days = state.data.defer_days || [];
+        if (!days.length) return null;
+        const wrap = document.createElement('div');
+        wrap.className = 'dp-why-days';
+        const cap = document.createElement('span');
+        cap.className = 'dp-why-days-t';
+        cap.textContent = 'Երբ տանել՝';
+        const group = document.createElement('div');
+        group.className = 'dp-why-chips';
+        group.setAttribute('role', 'radiogroup');
+        group.setAttribute('aria-label', 'Երբ տանել');
+        group.setAttribute('aria-describedby', 'dpWhyDaysHint');
+        [...days, ''].forEach((d, i) => {
+            const lab = document.createElement('label');
+            lab.className = 'dp-why-chip';
+            const rb = document.createElement('input');
+            rb.type = 'radio';
+            rb.name = 'dpWhyDay';
+            rb.value = d;
+            rb.checked = i === 0;
+            rb.addEventListener('change', () => {
+                const r = $('dpWhyOpts').querySelector('input[value="not_today"]');
+                if (rb.checked && !r.checked) r.checked = true;
+                whyState();
+            });
+            const rel = d ? relDay(d) : '';
+            lab.append(rb, document.createTextNode(d ? (rel ? rel + ', ' : '') + dayHuman(d, true) : 'Չգիտեմ'));
+            group.appendChild(lab);
+        });
+        const hint = document.createElement('span');
+        hint.className = 'dp-why-days-hint';
+        hint.id = 'dpWhyDaysHint';
+        hint.setAttribute('aria-live', 'polite');
+        wrap.append(cap, group, hint);
+        return wrap;
+    }
+    const whyDayPicked = () => { const r = $('dpWhyOpts').querySelector('input[name="dpWhyDay"]:checked'); return r && r.value ? r.value : null; };
     const whyPicked = () => { const r = $('dpWhyOpts').querySelector('input[name="dpWhy"]:checked'); return r ? r.value : null; };
     const whyTrucksPicked = () => [...$('dpWhyOpts').querySelectorAll('.dp-why-trucks input:checked')].map(x => x.value);
     function whyState() {
         const k = whyPicked();
         $('dpWhySave').disabled = state.busy || !k || (k === 'only_trucks' && !whyTrucksPicked().length);
         $('dpWhyOpts').querySelectorAll('.dp-why-opt').forEach(r => r.classList.toggle('is-on', !!r.querySelector('input[name="dpWhy"]:checked')));
+        const hint = $('dpWhyDaysHint');
+        if (hint) {
+            const d = whyDayPicked();
+            hint.textContent = d ? 'Պատվերները կմտնեն ' + dayHuman(d, false) + ' պլանի մեջ։' : 'Պատվերները կմնան «Նախորդ օրերից» ցուցակում՝ կորոշեք հետո։';
+        }
     }
     async function saveWhy() {
         const w = state.why, k = whyPicked();
         if (!w || !k || state.busy) return;
         const name = '«' + (w.stop.name || w.stop.code) + '»';
-        if (k === 'not_today') { $('dpWhyDlg').close(); excludeStop(w.stop); return; }
         $('dpWhySave').disabled = $('dpWhyCancel').disabled = true;
         let ok;
-        if (k === 'today') ok = await tripStops({ trip: w.tripId, remove: [w.stop.customer_id], reason: 'today' }, name + ' հանվեց երթից՝ այն «Դեռ երթերում չեն» ցուցակում է');
+        if (k === 'not_today') {
+            const to = whyDayPicked();
+            ok = !!(await edit({ action: 'defer_store', customer_id: w.stop.customer_id, to }, null));
+            if (ok) toast(name + ' այսօր չենք տանում — ' + (to ? 'կտանենք ' + dayHuman(to, true) + '։' : 'այն «Նախորդ օրերից» ցուցակում կլինի։'));
+        } else if (k === 'today') ok = await tripStops({ trip: w.tripId, remove: [w.stop.customer_id], reason: 'today' }, name + ' հանվեց երթից՝ այն «Դեռ երթերում չեն» ցուցակում է');
         else {
             const trucks = whyTrucksPicked();
             const body = { action: 'stop_rule', trip: w.tripId, customer_id: w.stop.customer_id, rule: k };
@@ -2971,11 +3176,12 @@
             gb.innerHTML = '<i class="fas fa-location-dot" aria-hidden="true"></i><span>Փոխել տեղը</span>';
             gb.setAttribute('aria-label', 'Փոխել տեղը՝ ' + (stop.name || stop.code));
             gb.addEventListener('click', () => openGeo(stop));
-            const vb = document.createElement('a');
+            const vb = document.createElement('button');
+            vb.type = 'button';
             vb.className = 'rt-btn rt-btn-ghost rt-btn-sm dp-vehiclebtn';
             vb.innerHTML = '<i class="fas fa-truck" aria-hidden="true"></i><span>Առաքման պայմաններ</span>';
             vb.setAttribute('aria-label', 'Առաքման պայմաններ՝ ' + (stop.name || stop.code));
-            vb.href = '/routes/settings?customer=' + stop.customer_id + '#rsCustomerSettings';
+            vb.addEventListener('click', () => openCond(stop));
             const ub = document.createElement('button');
             ub.type = 'button';
             ub.className = 'rt-btn rt-btn-ghost rt-btn-sm dp-unloadbtn';
@@ -4434,13 +4640,10 @@
         }
     }
 
+    // «Այսօր չենք տանում» в режиме «Փոփոխել»: все заказы магазина одной правкой, без дня («Չգիտեմ» окна «Ինչու՞»)
     async function excludeStop(stop) {
         if (!needPlan()) return;
-        const orders = stop.orders || [];
-        let ok = true;
-        for (let i = 0; i < orders.length && ok; i++) {
-            ok = !!(await edit({ action: 'exclude', order: orders[i].isn }, i === orders.length - 1 ? '«' + (stop.name || stop.code) + '» այսօր չենք տանում' : null));
-        }
+        await edit({ action: 'defer_store', customer_id: stop.customer_id, to: null }, '«' + (stop.name || stop.code) + '» այսօր չենք տանում');
     }
 
     async function reset() {
@@ -5358,6 +5561,17 @@
         $('dpUnloadDlg').addEventListener('cancel', (e) => { if (state.busy) e.preventDefault(); });
         $('dpUnloadMin').addEventListener('input', () => { $('dpUnloadErr').textContent = ''; markUnload(false); });
         $('dpUnloadMin').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); saveUnload(false); } });
+        $('dpCondSave').addEventListener('click', saveCond);
+        $('dpCondCancel').addEventListener('click', () => $('dpCondDlg').close());
+        $('dpCondKind').addEventListener('change', syncCondTime);
+        $('dpCondMode').addEventListener('change', syncCondTrucks);
+        ['dpCondT1', 'dpCondT2', 'dpCondTol'].forEach(id => $(id).addEventListener('input', () => { $('dpCondErr').textContent = ''; }));
+        $('dpCondDlg').addEventListener('close', () => { state.condStop = null; state.condInfo = null; });
+        $('dpCondDlg').addEventListener('cancel', (e) => { if (state.busy) e.preventDefault(); });
+        // Enter в полях — «Պահպանել», как в «Ժամանակ խանութում»; на списках и кнопках Enter остаётся их собственным
+        $('dpCondDlg').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && e.target instanceof HTMLInputElement) { e.preventDefault(); saveCond(); }
+        });
         $('dpMapBox').addEventListener('toggle', () => { if ($('dpMapBox').open && state.data && state.data.plan) drawMap(); });
         initTabs();
         initWs();
