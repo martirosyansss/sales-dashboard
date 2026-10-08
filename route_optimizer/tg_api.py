@@ -9,7 +9,8 @@ result или TelegramError. Токен есть только в адресе з
 (отрицательный chat_id) — для методов, которые пишут в чат (LIMITED); место в очереди резервируется под замком, ждут —
 вне замка (два потока бота не держат друг друга). 429 — пауза retry_after для всех чатов; не дольше RETRY_429_MAX_S —
 ждём и повторяем один раз, дольше — TelegramError(429): вызывающий повторит позже. 400 с migrate_to_chat_id (группа стала
-супергруппой) — в TelegramError.migrate_to.
+супергруппой) — в TelegramError.migrate_to. В блоке no_wait() (бот держит свой замок) вызов не ждёт дольше
+NO_WAIT_MAX_S и не повторяет 429 — TelegramError(429, retry_after): ждут вне замка (RateLimiter.idle, пауза прохода).
 """
 from __future__ import annotations
 
@@ -20,7 +21,8 @@ import time
 import urllib.error
 import urllib.request
 from collections import deque
-from typing import Any, Callable
+from contextlib import contextmanager
+from typing import Any, Callable, Iterator
 
 API_URL = 'https://api.telegram.org/bot{token}/{method}'
 HTTP_TIMEOUT_S = 10.0
@@ -44,6 +46,26 @@ class TelegramError(RuntimeError):
         self.retry_after = retry_after
         self.description = description
         self.migrate_to = migrate_to
+
+
+class _Local(threading.local):
+    no_wait = False
+
+
+_local = _Local()
+NO_WAIT_MAX_S = 2.0   # под замком бота (no_wait) ждать очередь не дольше; дольше и 429 — сбой с retry_after
+
+
+@contextmanager
+def no_wait() -> Iterator[None]:
+    """В этом потоке вызовы не ждут дольше NO_WAIT_MAX_S (очередь, пауза 429) и не повторяют 429 — TelegramError(429,
+    retry_after): бот держит свой замок и подождёт вне его (пауза прохода)."""
+    before = _local.no_wait
+    _local.no_wait = True
+    try:
+        yield
+    finally:
+        _local.no_wait = before
 
 
 class RateLimiter:
@@ -72,7 +94,29 @@ class RateLimiter:
             self.next_at[chat] = at + CHAT_INTERVAL_S
             return at - now
 
+    def ready_in(self, chat: str) -> float:
+        """Сколько ждать до свободного места в chat — без резервирования (подождать заранее, вне чужих замков)."""
+        with self.lock:
+            now = self.clock()
+            at = max(now, self.next_at.get(chat, 0.0), self.paused_until)
+            sent = self.window.get(chat) if chat.startswith('-') else None
+            if sent:
+                recent = [t for t in sent if t > at - 60.0]
+                if len(recent) >= GROUP_PER_MIN:
+                    at = max(at, recent[len(recent) - GROUP_PER_MIN] + 60.0)
+            return at - now
+
+    def idle(self, chat: str) -> None:
+        delay = self.ready_in(chat)
+        if delay > 0:
+            self.sleep(delay)
+
     def wait(self, chat: str) -> None:
+        if _local.no_wait:   # под замком бота: долгого ожидания нет — сбой с retry_after, повтор позже
+            ahead = self.ready_in(chat)
+            if ahead > NO_WAIT_MAX_S:
+                raise TelegramError(f'HTTP 429: очередь {ahead:.0f} с', 429, retry_after=ahead,
+                                    description='rate limit (local queue)')
         delay = self.slot(chat)
         if delay > 0:
             self.sleep(delay)
@@ -82,6 +126,8 @@ class RateLimiter:
         with self.lock:
             delay = self.paused_until - self.clock()
         if delay > 0:
+            if _local.no_wait and delay > NO_WAIT_MAX_S:
+                raise TelegramError('HTTP 429: пауза', 429, retry_after=delay, description='rate limit (paused)')
             self.sleep(delay)
 
     def pause(self, seconds: float) -> None:
@@ -170,6 +216,6 @@ class BotApi:
                     raise
                 pause = e.retry_after if e.retry_after is not None else CHAT_INTERVAL_S
                 self.limiter.pause(pause)
-                if attempt == 2 or pause > RETRY_429_MAX_S:
+                if attempt == 2 or pause > RETRY_429_MAX_S or _local.no_wait:
                     raise
         raise AssertionError('unreachable')   # pragma: no cover

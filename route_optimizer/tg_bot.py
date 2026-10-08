@@ -16,9 +16,11 @@
   /late /help. Доступ: в группе — все; в личке — участники группы (getChatMember, кэш ACCESS_TTL_S) и люди эскалации
   (tg_escalate_to); чужим и другим чатам — молчание. Данные кнопок подписаны (HMAC от токена, короткий id записи):
   подделанные — мимо.
-Общее состояние (записи) — под self.lock, взятым на одно действие прохода (не на весь проход); долгие расчёты
-(карточки флота, план, «Վարորդներ») — до него, их сбой отчётам не даёт пройти, тревогам — не мешает; эскалация
-перепроверяет «Տեսա» под замком; на нажатие «Տեսա» бот отвечает сразу, не дожидаясь замка. Запись — после удачного вызова Telegram (сбой — повтор), сначала в память, потом в
+Общее состояние (записи) — под self.lock, взятым на одно действие прохода (не на весь проход); очередь Telegram (1/с,
+20/мин, пауза 429) ждётся до замка, под замком вызовы не ждут (tg_api.no_wait); долгие расчёты (карточки флота, план,
+«Վարորդներ») — до него, их сбой отчётам не даёт пройти, тревогам — не мешает. Замок не честный: нажатие «Տեսա» может
+ждать его несколько действий прохода — поэтому бот отвечает на нажатие сразу (по снимку записей), а запись ставит в
+pending_acks до ответа: эскалация такой записи не идёт, пока «Տեսա» ждёт замка, и перепроверяет «Տեսա» под замком. Запись — после удачного вызова Telegram (сбой — повтор), сначала в память, потом в
 базу (сбой базы — в журнал, без повтора сообщения). Сообщение, которое Telegram отверг само по себе (400: тема закрыта,
 разметка, длина, кнопка), — в журнал и запись failed, проход идёт дальше (tg_api.per_message); к остановке рассылки
 ведут только ошибки всего чата (tg_api.chat_wide).
@@ -52,6 +54,7 @@ from typing import Any, Callable, Mapping
 from . import actuals as ac
 from . import dispatch as dp
 from . import live_alerts as la
+from . import tg_api
 from . import tg_reports as rp
 from .live import Rules
 from .live_alerts import Rec
@@ -110,8 +113,10 @@ def fit(text: str) -> str:
 
 
 def _person(user: Mapping[str, Any]) -> str:
+    """Имя человека для «✔ Տեսավ …» и упоминаний; одиночные суррогаты — «?» (иначе запись не сохранится в UTF-8)."""
     name = ' '.join(str(user[k]) for k in ('first_name', 'last_name') if user.get(k))
-    return (name or (f'@{user["username"]}' if user.get('username') else f'#{user.get("id")}'))[:64]
+    name = (name or (f'@{user["username"]}' if user.get('username') else f'#{user.get("id")}'))[:64]
+    return name.encode('utf-8', 'replace').decode('utf-8')
 
 
 class TgBot:
@@ -125,11 +130,15 @@ class TgBot:
         self.monotonic = monotonic
         self.lock = threading.RLock()
         self.names_lock = threading.Lock()
+        # «Տեսա» нажата, ответ дан, а запись ещё ждёт замка: эскалация этих записей не идёт (свой маленький замок)
+        self.pending_acks: set[int] = set()
+        self.pending_lock = threading.Lock()
         self.me: dict[str, Any] | None = None
         self.ready = False
         self.setup_at: float | None = None
         self.forum = False
         self.topics: dict[str, int] = {}
+        self.closed_topics: dict[int, float] = {}   # тема → когда Telegram ответил TOPIC_CLOSED (monotonic)
         self.webhook_cleared = False
         self.failures = 0
         self.retry_at = 0.0
@@ -263,7 +272,12 @@ class TgBot:
     # --- Telegram ---
 
     def _thread(self, kind: str) -> int | None:
-        return self.topics.get(TOPIC_OF.get(kind, 'violations')) if self.forum else None
+        """Тема вида; закрытая (TOPIC_CLOSED) — SETUP_RETRY_S сразу общий чат, без лишнего вызова и строки журнала."""
+        thread = self.topics.get(TOPIC_OF.get(kind, 'violations')) if self.forum else None
+        closed = self.closed_topics.get(thread) if thread is not None else None
+        if closed is not None and self.monotonic() - closed < SETUP_RETRY_S:
+            return None
+        return thread
 
     def _migrated(self, new_id: int) -> None:
         logger.warning('[Routes] Telegram-бот: группа стала супергруппой, новый id %s — бот пишет туда; впишите его в '
@@ -288,7 +302,8 @@ class TgBot:
                     self._migrated(e.migrate_to)
                 return self.api('sendMessage', **{**params, 'chat_id': str(e.migrate_to), 'message_thread_id': None})
             if thread is not None and e.status == 400 and 'topic_closed' in e.description.lower():
-                logger.warning('[Routes] Telegram-бот: тема %s закрыта — сообщение в общий чат (откройте тему)', thread)
+                logger.warning('[Routes] Telegram-бот: тема %s закрыта — сообщения в общий чат (откройте тему)', thread)
+                self.closed_topics[thread] = self.monotonic()
                 return self.api('sendMessage', **{**params, 'message_thread_id': None})
             if thread is not None and e.status == 400 and 'thread not found' in e.description.lower():
                 logger.warning('[Routes] Telegram-бот: тема %s не найдена — сообщение в общий чат, тему создам заново',
@@ -306,8 +321,12 @@ class TgBot:
         """Отправить сообщение записи в группу (тема — по виду); chat / message_id / thread_id — в запись."""
         msg = self._send(self.chat, la.render(rec), thread=self._thread(rec.kind), markup=la.keyboard(rec, self.sign),
                          silent=silent, reply_to=reply_to)
-        rec.chat, rec.message_id = self.chat, msg.get('message_id')
-        rec.thread_id = msg.get('message_thread_id') if msg.get('is_topic_message') else None
+        # ушло — дальше ничего не бросает: странный ответ — запись без номера сообщения (её кнопки — та же запись)
+        msg = msg if isinstance(msg, dict) else {}
+        mid = msg.get('message_id')
+        rec.chat, rec.message_id = self.chat, mid if isinstance(mid, int) and not isinstance(mid, bool) else None
+        thread = msg.get('message_thread_id')
+        rec.thread_id = thread if msg.get('is_topic_message') and isinstance(thread, int) else None
         self.failures = self.client_errors = 0
 
     def _edit(self, rec: Rec) -> bool:
@@ -441,27 +460,37 @@ class TgBot:
             inputs = None
         done = 0
         quiet = la.in_quiet(rules, now)
-        # замок — на одно действие, не на весь проход: «Տեսա» ждёт не дольше одного сообщения
+        # замок — на одно действие, не на весь проход; очередь Telegram (1/с, 20/мин, 429) ждётся до замка (_idle), под
+        # замком вызовы не ждут (tg_api.no_wait: долгое ожидание — сбой с retry_after, пауза прохода)
         with self.lock:
             self._prune(now)
             p = la.plan(cards, rules, tg, now, self.records)   # без «Առաքիչ» — только закрытие прошлых дней
         try:
             for act in p.actions:
-                with self.lock:
+                self._idle()
+                with self.lock, tg_api.no_wait():
                     done += self._guard(act.key, lambda act=act: self._apply(act, cards, now, quiet), act, now)
             with self.lock:
                 due = la.due_escalations(self.records, p.active, tg, now, quiet) if live is not None else []
             for rec in due:
-                with self.lock:
+                self._idle()
+                with self.lock, tg_api.no_wait():
                     done += self._guard(rec.key, lambda rec=rec: self._escalate(rec.key, tg, now), None, now)
             if inputs is not None:
-                with self.lock:
+                self._idle()
+                with self.lock, tg_api.no_wait():
                     done += self._reports(inputs, day, now, rules, tg, cards, fleet)
         except TelegramError as e:   # сеть, Telegram, ошибка всего чата: повтор позже (несделанное не записано)
             self._failed(e, sig)
         return done
 
-    def _guard(self, key: str, run: Callable[[], int], act: la.Action | None, now: datetime) -> int:
+    def _idle(self) -> None:
+        """Подождать место в очереди группы до замка (у подделки Telegram очереди нет)."""
+        limiter = getattr(self.api, 'limiter', None)
+        if limiter is not None:
+            limiter.idle(self.chat)
+
+    def _guard(self, key: str, run: Callable[[], int], act: Any, now: datetime, sig: str | None = None) -> int:
         """Одно действие: Telegram отверг именно это сообщение (tg_api.per_message: тема закрыта, разметка, длина,
         кнопка) — в журнал, запись помечается (_rejected), проход идёт дальше; прочие сбои — наверх (_failed).
         act None — эскалация записи key; act — строка вида отчёта ('plan' | 'week' | 'summary') — отчёт."""
@@ -471,14 +500,14 @@ class TgBot:
             if not per_message(e):
                 raise
             logger.warning('[Routes] Telegram-бот: сообщение %s отклонено Telegram (%s) — пропущено', key, e)
-            self._rejected(key, act, e, now)
+            self._rejected(key, act, e, now, sig)
             return 0
         except Exception as e:   # битые данные одного действия не останавливают остальные (и не повторяются)
             logger.exception('[Routes] Telegram-бот: действие %s не выполнено — пропущено', key)
-            self._rejected(key, act, TelegramError(type(e).__name__, description=type(e).__name__), now)
+            self._rejected(key, act, TelegramError(type(e).__name__, description=type(e).__name__), now, sig)
             return 0
 
-    def _rejected(self, key: str, act: Any, e: TelegramError, now: datetime) -> None:
+    def _rejected(self, key: str, act: Any, e: TelegramError, now: datetime, sig: str | None = None) -> None:
         """Отметить отвергнутое, чтобы не повторять его на каждом проходе: новая тревога или отчёт — запись failed;
         окончание — запись кончилась (без правки); «не успеет» — строки записаны (новое сообщение — при ухудшении);
         эскалация — считается сделанной."""
@@ -496,8 +525,10 @@ class TgBot:
             self._persist(replace(old, escalated_at=now.isoformat(), payload={**old.payload, 'escalation': why}))
         elif isinstance(act, (la.Send, la.Skip)):
             self._persist(self._new(key, act.kind, 'failed', now, car=act.car, payload=why))
-        elif isinstance(act, str) and old is None:
-            self._persist(self._new(key, act, 'failed', now, payload=why))
+        elif isinstance(act, str):   # отчёт: нет записи — failed; есть — отметка и подпись (до изменения не повторять)
+            extra = {**why, **({'sig': sig} if sig else {})}
+            self._persist(self._new(key, act, 'failed', now, payload=extra) if old is None
+                          else replace(old, payload={**old.payload, **extra}))
 
     def _apply(self, act: la.Action, cards: Mapping[str, Mapping[str, Any]], now: datetime, quiet: bool) -> int:
         if isinstance(act, la.Skip):
@@ -589,6 +620,9 @@ class TgBot:
         rec = self.records.get(key)
         if rec is None or rec.acked_by is not None or rec.escalated_at is not None or rec.phase != 'active':
             return 0
+        with self.pending_lock:
+            if rec.id in self.pending_acks:   # «Տեսա» уже нажата (ждёт записи) — эскалации нет
+                return 0
         n = int(tg.escalate_min)
         mention = ', '.join(f'<a href="tg://user?id={uid}">{la.esc(self.names.get(str(uid)) or "ղեկավար")}</a>'
                             for uid in tg.escalate_to)
@@ -655,7 +689,11 @@ class TgBot:
         plan, quiet, ds = inputs['plan'], inputs['quiet'], day.isoformat()
         done = 0
         if tg.report_plan:
-            done += self._guard(f'plan:{ds}', lambda: self._plan_report(plan, ds, now, quiet), 'plan', now)
+            try:   # подпись — как в _plan_report: отвергнутый план не повторяется до его изменения
+                sig: str | None = hashlib.sha256(rp.plan_text(plan).encode('utf-8')).hexdigest()[:16]
+            except Exception:
+                sig = None
+            done += self._guard(f'plan:{ds}', lambda: self._plan_report(plan, ds, now, quiet), 'plan', now, sig)
         if 'week' in inputs and (not tg.report_plan or f'plan:{ds}' in self.records):
             monday = day - timedelta(days=day.weekday())
             done += self._guard(f'week:{monday.isoformat()}', lambda: self._week_report(monday, inputs['week'], now),
@@ -870,14 +908,20 @@ class TgBot:
             # ответ на нажатие — сразу, до замка (проход тревог держит его на время одного сообщения, а Telegram ждёт
             # ответа считанные секунды); исход — по снимку записей, «Տեսա» записывается под замком
             seen = next((r for r in list(self.records.values()) if r.id == rid), None)
-            if seen is None or seen.message_id is None:
+            if seen is None or seen.phase not in ('active', 'ended'):   # кнопки — только у отправленных
                 self._answer(cq, 'Հնացած է')
             elif seen.acked_by is not None:
                 self._answer(cq, f'Արդեն նշված է՝ {seen.acked_name}')
             else:
-                self._answer(cq, ACKED)
-                with self.lock:
-                    self._ack(rid, user)
+                with self.pending_lock:   # до ответа: услышав «Գրանցված է», эскалации человек уже не увидит
+                    self.pending_acks.add(rid)
+                try:
+                    self._answer(cq, ACKED)
+                    with self.lock, tg_api.no_wait():
+                        self._ack(rid, user)
+                finally:
+                    with self.pending_lock:
+                        self.pending_acks.discard(rid)
         elif data.startswith('w:'):
             self._answer(cq, None)
             car = data[2:]
@@ -894,7 +938,7 @@ class TgBot:
         """«Տեսա»: кто и когда — в запись, сообщение правится (строка «✔ Տեսավ …», без кнопки). Правка не удалась — нажатие
         всё равно записано (эскалации не будет)."""
         old = next((r for r in self.records.values() if r.id == rid), None)
-        if old is None or old.message_id is None:
+        if old is None or old.phase not in ('active', 'ended'):   # номера сообщения может не быть — кнопка его записи
             return 'Հնացած է'
         if old.acked_by is not None:
             return f'Արդեն նշված է՝ {old.acked_name}'

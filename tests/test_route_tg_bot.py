@@ -1071,6 +1071,104 @@ def test_review3_setup_error_of_any_kind_does_not_abort_the_pass(tmp_path, caplo
     assert h.tick() == 1 and 'настройка не удалась' in caplog.text
 
 
+# ============================== ревью 4 ==============================
+
+def test_review4_pending_ack_blocks_escalation_until_written(tmp_path):
+    h = Harness(tmp_path, gps_card(), NOW)
+    h.tick()
+    rec = h.rec('alert:')
+    h.bot.pending_acks.add(rec.id)                     # «Գրանցված է» уже сказано, запись ждёт замка
+    h.set(now=NOW + timedelta(minutes=11))
+    assert h.tick() == 0 and h.rec('alert:').escalated_at is None
+    h.bot.pending_acks.clear()
+    h.bot.handle(callback(h, h.bot.sign(f'a:{rec.id}')))
+    assert h.bot.pending_acks == set() and h.rec('alert:').acked_by == 7
+    assert h.tick() == 0                                # подтверждена — эскалации нет
+
+
+def test_review4_queue_waits_happen_outside_the_bot_lock_and_429_does_not_sleep_under_it(tmp_path):
+    import threading
+    clock = Clock()
+    holder = {}
+
+    def sleep(s):
+        bot = holder.get('bot')
+        if bot is not None:   # кто бы ни ждал очередь, замок бота свободен
+            free = []
+            t = threading.Thread(target=lambda: free.append(bot.lock.acquire(timeout=0.5) and (bot.lock.release() or True)))
+            t.start()
+            t.join()
+            holder.setdefault('free', []).append(free == [True])
+        clock.sleep(s)
+    sent = []
+
+    def opener(req, timeout):
+        body = json.loads(req.data.decode())
+        sent.append(body)
+        mid = len(sent)
+        return Resp(json.dumps({'ok': True, 'result': {'message_id': mid, 'id': 1, 'username': 'b', 'type': 'group'}
+                                if 'getMe' not in req.full_url else {'id': 999, 'username': 'b'}}).encode())
+    api = tg_api.BotApi(SECRET, opener=opener, limiter=tg_api.RateLimiter(clock, sleep))
+    cards = {f'C{i}': card(alert('center', 1, lat=1.0, lon=1.0), car=f'C{i}') for i in range(3)}
+    h = Harness(tmp_path, cards, NOW, api=api)
+    holder['bot'] = h.bot
+    assert h.tick() == 3 and holder['free'] and all(holder['free'])
+    # под no_wait: 429 — сразу сбой с retry_after (без сна), долгая очередь — тоже
+    lim = tg_api.RateLimiter(clock, clock.sleep)
+    lim.pause(30)
+    before = list(clock.slept)
+    with tg_api.no_wait(), pytest.raises(tg_api.TelegramError) as e:
+        lim.wait('-100')
+    assert e.value.status == 429 and e.value.retry_after == pytest.approx(30) and clock.slept == before
+    lim.idle('-100')
+    assert lim.slot('-100') == 0                       # idle не резервирует место
+
+
+def test_review4_lone_surrogate_name_is_saved(tmp_path):
+    h = Harness(tmp_path, gps_card(), NOW)
+    h.tick()
+    rec = h.rec('alert:')
+    h.bot.handle(callback(h, h.bot.sign(f'a:{rec.id}'), first='Ա\ud800'))
+    assert h.rec('alert:').acked_name == 'Ա?'
+    assert h.restart().records[rec.key].acked_name == 'Ա?'      # в базе (UTF-8)
+
+
+def test_review4_report_exception_with_existing_record_is_not_retried_and_odd_send_reply_keeps_record(tmp_path,
+                                                                                                    caplog, monkeypatch):
+    h = Harness(tmp_path, {}, NOW)
+    h.set(plan=plan_of())
+    h.tick()
+    changed = {**STORED_PLAN, 'trips': STORED_PLAN['trips'] + [{'id': 4, 'truck': 'CAR2', 'stops': [505]}]}
+    h.set(plan=plan_of(changed))
+    monkeypatch.setattr(h.bot, '_edit', lambda rec: (_ for _ in ()).throw(ValueError('boom')))
+    h.tick()
+    n = caplog.text.count('не выполнено')
+    h.tick()
+    assert n == 1 and caplog.text.count('не выполнено') == 1        # подпись записана — без повтора и traceback
+    # Telegram ответил странно (не объект) — сообщение ушло, запись та же, кнопка её — «Գրանցված է»
+    api = FakeTelegram()
+    api._sendMessage = lambda p: True
+    h2 = Harness(tmp_path, gps_card(), NOW, api=api, db='b.db')
+    assert h2.tick() == 1
+    rec = h2.rec('alert:')
+    assert rec.phase == 'active' and rec.message_id is None
+    h2.bot.handle(callback(h2, h2.bot.sign(f'a:{rec.id}')))
+    assert api.of('answerCallbackQuery')[-1]['text'] == tg_bot.ACKED and h2.rec('alert:').acked_by == 7
+
+
+def test_review4_closed_topic_is_remembered(tmp_path, caplog):
+    api = FakeTelegram(forum=True)
+    cards = {'CAR1': card(alert('center', 1, lat=1.0, lon=1.0)), 'CAR2': card(alert('center', 1, lat=1.0, lon=1.0), car='CAR2')}
+    h = Harness(tmp_path, cards, NOW, api=api)
+    api.fail['sendMessage'] = [err(400, 'Bad Request: TOPIC_CLOSED')]
+    assert h.tick() == 2
+    assert len(api.of('sendMessage')) == 3 and caplog.text.count('закрыта') == 1   # вторая — сразу в общий чат
+    h.clock[0] += tg_bot.SETUP_RETRY_S + 1
+    h.set(cards={**cards, 'CAR3': card(alert('center', 1, lat=1.0, lon=1.0), car='CAR3')})
+    h.tick()
+    assert api.sent()[-1].get('message_thread_id') == h.bot.topics['violations']   # потом — снова в тему
+
+
 def test_settings_page_has_telegram_block():
     js = (ROOT / 'static' / 'js' / 'routes_settings.js').read_text(encoding='utf-8')
     assert all(f"key: '{k}'" in js for k in ('tg_levels', 'tg_sim_installed', 'tg_escalate_min', 'tg_escalate_to',
