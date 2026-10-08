@@ -46,7 +46,7 @@ from .store import (CREW_TABLES, DEFAULT_MANAGER_FUEL, DEFAULT_SETTINGS, KEEP, B
                     big_auto, center_auto, check_driver_name, check_garage_entry, check_unload_min, check_window,
                     validate_payload)
 from .valhalla_engine import (CAR_COSTING, PROFILE_CAR, PROFILE_TRUCK, TRUCK_TIME_MODEL, TRUCK_TIME_VALHALLA, ValhallaProvider,
-                              ValhallaRoads, truck_costing, truck_leg_minutes, truck_time_source)
+                              ValhallaRoads, truck_costing, truck_leg_minutes, truck_time_source, valhalla_error)
 from .vehicle_access import check_access
 
 logger = logging.getLogger(__name__)
@@ -4072,7 +4072,7 @@ def _day_map() -> Any:
     # линия как на карте машин (08.10): стоянка — одна точка, езда — без дрожания, по дорогам (track_line)
     truck = bundle.trucks.get(car)
     line = _track_line(state, day, car, truck.capacity_kg if truck is not None else None, track, actual.stays,
-                       MAP_TRACK_POINTS)
+                       MAP_TRACK_POINTS, LIVE_TRACK_WAIT_S)   # страница не переспрашивает — ждём привязку (≤ 3 с)
     prediction = (((draft or {}).get('prediction') or {}).get('trucks') or {}).get(car) or {}
     eta = {c[0]: c[1] for t in prediction.get('trips') or () for c in t.get('stops') or ()
            if isinstance(c, list) and len(c) == 2}
@@ -4353,90 +4353,157 @@ def _plan_geometry(roads: Any, todo: Mapping[str, Any]) -> dict[str, live.RouteG
 
 
 LIVE_TRACK_POINTS = 200_000   # вершин привязанных кусков треков в памяти (все машино-дни; ~40 МБ)
+LIVE_TRACK_QUEUE = 5_000      # кусков в очереди привязки (больше — уходят самые старые заказы)
+LIVE_TRACK_WAIT_S = 3.0       # карта «план — факт» / «Ավտոտնակ» (не опрашивает) ждёт привязку дня не дольше
+LIVE_TRACK_WARN_S = 600.0     # сбой привязки пишется в журнал не чаще раза в 10 мин (со счётчиком)
 
 
 class _LiveTracks:
     """Линии треков машин по дорогам (владелец 08.10: петли и прямые сквозь дома — «не профессионально»): кэш кусков
     езды (track_line.Chunk) по (день, машина, ключ куска). Кусок привязывается к дорогам один раз (track_line.match_chunk:
-    Valhalla map matching; не вышло — его точки, тоже в кэш: повторять бессмысленно); у растущего хвоста дня готовые куски
-    не меняются — заново привязывается только последний. Привязывает один фоновый поток на весь процесс: пока он занят,
-    новые куски ждут следующего опроса, а линия там, где привязки ещё нет, — без неё (сразу, без ожидания). Valhalla нет,
-    выключен или сборки нет — ничего не кэшируется (появится — привяжется). Память: не больше LIVE_TRACK_POINTS вершин —
-    уходят куски, которые дольше всего не спрашивали. Свой замок, не live_lock: привязка под ним не идёт."""
+    Valhalla map matching; путь не найден — его точки, тоже в кэш: повторять бессмысленно); у растущего хвоста дня
+    готовые куски не меняются — заново привязывается только последний, а прежняя версия хвоста (тот же первый момент)
+    при записи новой уходит из кэша. Заказы — в очередь (не теряются, пока поток занят; не больше LIVE_TRACK_QUEUE),
+    её разбирает один фоновый поток на весь процесс. get не ждёт (wait_s=0 — опрос карты машин: где привязки ещё нет,
+    линия без неё) или ждёт свои куски не дольше wait_s (страницы, которые линию не переспрашивают). Valhalla нет,
+    выключен, сборки нет или сбой движка — ничего не кэшируется (появится — привяжется); сбой — в журнал не чаще
+    LIVE_TRACK_WARN_S, со счётчиком. Память: не больше LIVE_TRACK_POINTS вершин — уходят куски, которые дольше всего
+    не спрашивали. Свой замок, не live_lock: привязка под ним не идёт."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
+        self._cond = threading.Condition(self._lock)
         self._items: OrderedDict[tuple[date, str, Any], list[tl.TPoint]] = OrderedDict()
         self._size = 0
+        self._tails: dict[tuple[date, str], Any] = {}   # (день, машина) → ключ последнего записанного куска
+        self._queue: OrderedDict[tuple[date, str, Any], tuple[tl.Chunk, Callable[..., Any]]] = OrderedDict()
+        self._current: tuple[date, str, Any] | None = None
         self._busy = False
+        self._failed = 0          # кусков со сбоем привязки с последней записи в журнал
+        self._warned = -math.inf
 
     def get(self, day: date, car: str, parts: Sequence[tl.Chunk],
-            match: Callable[[tl.Chunk], tuple[list[tl.TPoint], bool] | None] | None) -> dict[Any, list[tl.TPoint]]:
-        def serve() -> tuple[dict[Any, list[tl.TPoint]], list[tl.Chunk]]:
+            match: Callable[[tl.Chunk], tuple[list[tl.TPoint], bool] | None] | None,
+            wait_s: float = 0.0) -> dict[Any, list[tl.TPoint]]:
+        mine = [c for c in parts if not c.stay and len(c.points) >= tl.MATCH_MIN_POINTS]
+
+        def serve() -> dict[Any, list[tl.TPoint]]:
             out: dict[Any, list[tl.TPoint]] = {}
-            todo: list[tl.Chunk] = []
-            for c in parts:
-                if c.stay or len(c.points) < tl.MATCH_MIN_POINTS:
-                    continue
+            for c in mine:
                 k = (day, car, c.key)
                 hit = self._items.get(k)
                 if hit is not None:
                     self._items.move_to_end(k)
                     out[c.key] = hit
-                else:
-                    todo.append(c)
-            return out, todo
+            return out
         with self._lock:
-            out, todo = serve()
-            start = bool(todo) and match is not None and not self._busy
+            out = serve()
+            if match is None:
+                return out
+            for c in mine:
+                k = (day, car, c.key)
+                if c.key not in out and k not in self._queue and k != self._current:
+                    self._queue[k] = (c, match)
+            while len(self._queue) > LIVE_TRACK_QUEUE:
+                self._queue.popitem(last=False)
+            start = bool(self._queue) and not self._busy
             if start:
                 self._busy = True
-
-        def run() -> None:
-            try:
-                for c in todo:
-                    got = match(c)   # type: ignore[misc]
-                    if got is None:   # Valhalla нет — не кэшируем: появится — привяжется
-                        break
+        if start:
+            if LIVE_ROAD_BACKGROUND:
+                try:
+                    threading.Thread(target=self._work, name='routes-live-tracks', daemon=True).start()
+                except Exception:   # поток не стартовал (нет ресурсов) — следующий опрос попробует снова
+                    logger.exception('[Routes] Карта машин: поток привязки треков не запущен')
                     with self._lock:
-                        k = (day, car, c.key)
-                        old = self._items.pop(k, None)
-                        self._size += len(got[0]) - (len(old) if old is not None else 0)
-                        self._items[k] = got[0]
-                        while self._size > LIVE_TRACK_POINTS and len(self._items) > 1:
-                            self._size -= len(self._items.popitem(last=False)[1])
-            except Exception:
-                logger.exception('[Routes] Карта машин: линия трека не привязана к дорогам — без привязки')
-            finally:
-                with self._lock:
+                        self._busy = False
+                    return out
+            else:
+                self._work()
+        keys = [(day, car, c.key) for c in mine]
+        with self._cond:
+            if wait_s > 0:
+                self._cond.wait_for(lambda: all(k not in self._queue and k != self._current for k in keys), wait_s)
+            return serve()
+
+    def _work(self) -> None:
+        """Фоновый поток: очередь — по порядку заказов, пока не опустеет. «Свободен» — в той же критической секции, где
+        очередь увидена пустой: иначе заказ, пришедший между ними, видел бы «занят» и остался бы в очереди без потока."""
+        done = False
+        try:
+            while True:
+                with self._cond:
+                    if not self._queue:
+                        self._busy, self._current, done = False, None, True
+                        self._cond.notify_all()
+                        return
+                    k, (chunk, match) = self._queue.popitem(last=False)
+                    self._current = k
+                try:
+                    got = match(chunk)
+                except Exception as exc:   # сбой движка — не окончательно: не кэшируем, в журнал — редко, со счётчиком
+                    got = None
+                    self._fail(exc)
+                with self._cond:
+                    self._current = None
+                    if got is not None:
+                        self._put(k, got[0])
+                    self._cond.notify_all()
+        finally:
+            if not done:   # исключение мимо match (не должно быть) — поток всё равно освобождается
+                with self._cond:
                     self._busy = False
-        if not start:
-            return out
-        if LIVE_ROAD_BACKGROUND:
-            threading.Thread(target=run, name='routes-live-tracks', daemon=True).start()
-            return out
-        run()
+                    self._current = None
+                    self._cond.notify_all()
+
+    def _put(self, k: tuple[date, str, Any], line: list[tl.TPoint]) -> None:
+        """Под замком: кусок в кэш; прежняя версия хвоста машино-дня (тот же первый момент) — вон; предел вершин."""
+        slot = k[:2]
+        prev = self._tails.get(slot)
+        if prev is not None and prev != k[2] and prev[1] == k[2][1]:
+            old = self._items.pop((*slot, prev), None)
+            self._size -= len(old) if old is not None else 0
+        if prev is None or k[2][1] >= prev[1]:
+            self._tails[slot] = k[2]
+        if len(self._tails) > 1000:
+            self._tails.clear()
+        old = self._items.pop(k, None)
+        self._size += len(line) - (len(old) if old is not None else 0)
+        self._items[k] = line
+        while self._size > LIVE_TRACK_POINTS and len(self._items) > 1:
+            self._size -= len(self._items.popitem(last=False)[1])
+
+    def _fail(self, exc: BaseException) -> None:
         with self._lock:
-            return serve()[0]
+            self._failed += 1
+            now = _monotonic()
+            if now - self._warned < LIVE_TRACK_WARN_S:
+                return
+            self._warned, n, self._failed = now, self._failed, 0
+        logger.warning('[Routes] Карта машин: привязка трека к дорогам не удалась (%s кусков с прошлой записи): %r — '
+                       'линия без привязки', n, exc)
 
 
 def _track_matcher(state: RoutesState, capacity_kg: float | None
                    ) -> Callable[[tl.Chunk], tuple[list[tl.TPoint], bool] | None] | None:
     """Привязка куска трека машины к дорогам: Valhalla сервера (ValhallaProvider.trace), профиль грузовика с тоннажем
-    машины (как матрицы «Развоза»), не вышло — легкового. Valhalla нет — None (линия без привязки)."""
+    машины (как матрицы «Развоза»), не вышло — легкового; «путь не найден» — ValhallaError. Valhalla нет или выключен
+    (режим osm, нет pyvalhalla или карты) — None (линия без привязки, очередь не растёт)."""
     provider = state.valhalla
-    if provider is None:
+    if provider is None or not provider.usable():
         return None
     tries = ((PROFILE_TRUCK, truck_costing(capacity_kg)), (PROFILE_CAR, CAR_COSTING))
-    return lambda c: tl.match_chunk(c, provider.trace, tries)
+    unmatchable = (valhalla_error() or RuntimeError,)
+    return lambda c: tl.match_chunk(c, provider.trace, tries, unmatchable)
 
 
 def _track_line(state: RoutesState, day: date, car: str, capacity_kg: float | None, pts: Sequence[Any],
-                stays: Sequence[ac.Stay], max_points: int) -> list[tl.TPoint]:
+                stays: Sequence[ac.Stay], max_points: int, wait_s: float = 0.0) -> list[tl.TPoint]:
     """Линия трека машино-дня для карты (track_line): стоянка — одна точка, езда — по дорогам, где уже привязана
-    (_LiveTracks; остальное — в фоне), иначе — точки без дрожания."""
+    (_LiveTracks: остальное — в фоне, ждём не дольше wait_s), иначе — точки без дрожания."""
     parts = tl.chunks(pts, stays)
-    return tl.line(parts, state.live_tracks.get(day, car, parts, _track_matcher(state, capacity_kg)), max_points)
+    got = state.live_tracks.get(day, car, parts, _track_matcher(state, capacity_kg), wait_s)
+    return tl.line(parts, got, max_points)
 
 
 def _live_plan_routes(state: RoutesState, bundle: Bundle, snap: Any, day: date, draft: dp.Draft,

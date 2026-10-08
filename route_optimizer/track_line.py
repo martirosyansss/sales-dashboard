@@ -11,18 +11,26 @@
 - стоянки дня (actuals.reconstruct: склад, магазины, «не по плану») — линия проходит через одну точку (середину
   стоянки) дважды: в момент прибытия и в момент отъезда (воспроизведение: машина стоит на месте всю стоянку); точек
   изнутри стоянки нет. Стоянки, которые перекрываются, — одна (середина первой);
-- между стоянками — без дрожания на месте: точка со скоростью терминала ниже actuals.STILL_MS; ближе к последней
-  оставленной точке, чем max(STILL_M, погрешность хуже из двух, но не больше STILL_ACC_MAX_M); без скорости — стояла по
-  смещению (медленнее actuals.STOP_MS за max(шаг, MOVE_STEP_S) и не дальше STAND_JITTER_M, как actuals._still) — не в
-  линии. Маленький «ёжик» — точка, от которой трек сразу вернулся к прежней (прежняя и следующая не дальше
-  actuals.SPIKE_BACK_M, а до неё от обеих — больше SPIKE_RATIO × расстояния между ними), — тоже не в линии;
-- езда делится на куски для привязки к дорогам: перерыв трека дольше GAP_S — разрыв (между кусками прямая: данных
+- между стоянками — без дрожания на месте (как actuals._still, но от последней оставленной точки): точка дальше
+  actuals.STAND_JITTER_M от последней оставленной — всегда в линии (машина сдвинулась: ползком в пробке — линия шагом
+  ~75 м, не пропадает); ближе — не в линии точка со скоростью терминала ниже actuals.STOP_MS (режим «стоит» APK); ближе к последней оставленной, чем max(STILL_M,
+  погрешность хуже из двух, но не больше STILL_ACC_MAX_M); медленнее STOP_MS от неё за max(прошло, MOVE_STEP_S) и не
+  дальше STAND_JITTER_M; и, пока машина стоит (выброшена точка «стоит»: скорость ниже STOP_MS или её нет; после
+  стоянки), — всё в STAND_JITTER_M от последней оставленной, какая бы ни была скорость: у стоящей машины скорость
+  терминала шумит 0,5–1,5 м/с, а дрожание — десятки метров, и без этого короткая остановка (меньше стоянки «не по
+  плану») после привязки — езда туда-обратно. Маленький «ёжик» — точка, от которой трек сразу вернулся к прежней
+  (прежняя и следующая не дальше actuals.SPIKE_BACK_M, а до неё от обеих — больше SPIKE_RATIO × расстояния между
+  ними), — тоже не в линии;
+- езда делится на куски для привязки к дорогам: перерыв трека дольше GAP_S (между точками трека, а не оставленными:
+  выброшенная остановка — не перерыв) — разрыв (между кусками прямая: данных
   нет); кусок — не больше CHUNK_POINTS точек, соседние делят крайнюю точку. Деление идёт от начала участка: у растущего
   хвоста дня готовые куски не меняются — кэш привязки (views._LiveTracks) переиспользует их, заново — только последний;
 - кусок привязывается к дорогам (Valhalla map matching: trace_attributes, shape_match map_snap) по очереди профилями
-  tries (грузовик, затем легковой). Привязка неправдоподобна — длина по дорогам больше LEN_RATIO × длины по точкам +
+  tries (грузовик, затем легковой), штраф поворотов TURN_PENALTY — против петель-разворотов и заездов в переулки.
+  Привязка неправдоподобна — длина по дорогам больше LEN_RATIO × длины по точкам +
   LEN_EXTRA_M, вершина линии дальше max(OFF_M, половина шага трека) от трека в то же время, или не привязано больше
-  UNMATCHED_SHARE точек. Не вышло ни одним профилем — кусок без привязки (точки после фильтра);
+  UNMATCHED_SHARE точек; ошибка «путь не найден» (unmatchable: ValhallaError) — тоже. Не вышло ни одним профилем —
+  кусок без привязки (точки после фильтра). Другая ошибка (сбой движка) — исключение вызывающему: не окончательно;
 - моменты вершин привязанной линии — по положению привязанных точек вдоль неё (edge_index, distance_along_edge), между
   ними — по длине; не убывают;
 - линия не длиннее max_points: Дуглас — Пекер с допуском от 5 м (×2, пока точек больше), точки стоянок остаются всегда.
@@ -51,6 +59,7 @@ UNMATCHED_SHARE = 0.3       # …не привязано больше 30 % то�
 GPS_ACC_M = (5.0, 50.0)     # погрешность для привязки (gps_accuracy) — медиана погрешности куска в этих пределах
 SEARCH_M = (30.0, 100.0)    # радиус поиска дороги — 3 × погрешность в этих пределах
 OFF_WINDOW = 2              # вершина сверяется с отрезками трека ±2 от своего момента
+TURN_PENALTY = 300.0        # trace_options.turn_penalty_factor: развороты и заезды в переулки дороже прямого пути
 SIMPLIFY_EPS_M = 5.0
 
 TPoint = tuple[float, float, float]   # (широта, долгота, момент — секунды эпохи)
@@ -78,15 +87,19 @@ def _m(a: Sequence[float], b: Sequence[float]) -> float:
     return haversine_km((a[0], a[1]), (b[0], b[1])) * 1000.0
 
 
-def _still(k: tuple[float, float, float, float, float | None], f: tuple[float, float, float, float, float | None]) -> bool:
-    """Точка f — дрожание на месте относительно последней оставленной k (правила — в описании модуля)."""
-    spd = f[4]
-    if spd is not None and spd < ac.STILL_MS:
-        return True
+def _still(k: tuple[float, float, float, float, float | None], f: tuple[float, float, float, float, float | None],
+           standing: bool) -> bool:
+    """Точка f — дрожание на месте относительно последней оставленной k; standing — машина стоит (правила — в описании
+    модуля)."""
     d = _m(k, f)
+    if d > ac.STAND_JITTER_M:   # дальше дрожания стоя — машина сдвинулась (и ползком в пробке: линия — шагом ~75 м)
+        return False
+    spd = f[4]
+    if spd is not None and spd < ac.STOP_MS:
+        return True
     if d < max(STILL_M, min(STILL_ACC_MAX_M, max(k[3], f[3]))):
         return True
-    return spd is None and d < ac.STOP_MS * max(f[2] - k[2], ac.MOVE_STEP_S) and d <= ac.STAND_JITTER_M
+    return standing or d < ac.STOP_MS * max(f[2] - k[2], ac.MOVE_STEP_S)
 
 
 def _despike(run: list[tuple[float, float, float, float, float | None]]) -> list[tuple[float, float, float, float, float | None]]:
@@ -102,11 +115,11 @@ def _despike(run: list[tuple[float, float, float, float, float | None]]) -> list
 
 
 def _split(run: Sequence[tuple[float, float, float, float, float | None]]) -> list[Chunk]:
-    """Участок езды → куски привязки (перерыв дольше GAP_S — разрыв; не больше CHUNK_POINTS, соседние делят край)."""
+    """Участок езды без перерывов → куски привязки (не больше CHUNK_POINTS, соседние делят край)."""
     parts: list[list[tuple[float, float, float, float]]] = []
     for f in run:
         p = (f[0], f[1], f[2], f[3])
-        if not parts or p[2] - parts[-1][-1][2] > GAP_S:
+        if not parts:
             parts.append([p])
         elif len(parts[-1]) >= CHUNK_POINTS:
             parts.append([parts[-1][-1], p])
@@ -126,6 +139,8 @@ def chunks(pts: Sequence[Fix], stays: Sequence[ac.Stay]) -> list[Chunk]:
     out: list[Chunk] = []
     run: list[tuple[float, float, float, float, float | None]] = []
     last: tuple[float, float, float, float, float | None] | None = None
+    standing = False   # машина стоит: выброшена точка «стоит» или была стоянка (до следующей оставленной точки)
+    seen: float | None = None   # момент прежней точки трека (и выброшенной): перерыв данных — по ним, не по оставленным
 
     def flush() -> None:
         if run:
@@ -133,13 +148,17 @@ def chunks(pts: Sequence[Fix], stays: Sequence[ac.Stay]) -> list[Chunk]:
             run.clear()
 
     def add(f: Fix) -> None:
-        nonlocal last
+        nonlocal last, standing, seen
         acc = f.accuracy if f.accuracy is not None and math.isfinite(f.accuracy) else 0.0
         p = (f.lat, f.lon, f.at.timestamp(), acc, getattr(f, 'spd', None))
-        if last is not None and _still(last, p):
+        if seen is not None and p[2] - seen > GAP_S:   # перерыв трека — разрыв: куски не склеиваются привязкой
+            flush()
+        seen = p[2]
+        if last is not None and _still(last, p, standing):
+            standing = standing or p[4] is None or p[4] < ac.STOP_MS
             return
         run.append(p)
-        last = p
+        last, standing = p, False
     i = 0
     for arrive, leave, center in spans:
         while i < len(pts) and pts[i].at < arrive:
@@ -150,7 +169,8 @@ def chunks(pts: Sequence[Fix], stays: Sequence[ac.Stay]) -> list[Chunk]:
         out.append(Chunk(((center[0], center[1], a, 0.0), (center[0], center[1], b, 0.0)), True))
         while i < len(pts) and pts[i].at <= leave:
             i += 1
-        last = (center[0], center[1], b, 0.0, None)
+        seen = b
+        last, standing = (center[0], center[1], b, 0.0, None), True
     while i < len(pts):
         add(pts[i])
         i += 1
@@ -262,32 +282,35 @@ def plausible(line: Sequence[TPoint], raw: Sequence[TPoint]) -> bool:
 
 def match_body(chunk: Chunk, profile: str, costing: Mapping[str, Any] | None) -> dict[str, Any]:
     """Тело trace_attributes для куска: моменты точек, погрешность — медиана куска (GPS_ACC_M), радиус поиска — 3 ×
-    погрешность (SEARCH_M); только поля, нужные для моментов вершин."""
+    погрешность (SEARCH_M), штраф поворотов TURN_PENALTY; только поля, нужные для моментов вершин."""
     acc = min(GPS_ACC_M[1], max(GPS_ACC_M[0], median(p[3] for p in chunk.points)))
     body: dict[str, Any] = {
         'shape': [{'lat': p[0], 'lon': p[1], 'time': int(p[2])} for p in chunk.points],
         'costing': profile, 'shape_match': 'map_snap',
         'trace_options': {'gps_accuracy': round(acc, 1),
-                          'search_radius': round(min(SEARCH_M[1], max(SEARCH_M[0], 3 * acc)), 1)},
+                          'search_radius': round(min(SEARCH_M[1], max(SEARCH_M[0], 3 * acc)), 1),
+                          'turn_penalty_factor': TURN_PENALTY},
         'filters': {'attributes': ['shape', 'matched.type', 'matched.edge_index', 'matched.distance_along_edge',
-                                   'edge.begin_shape_index', 'edge.end_shape_index'], 'action': 'include'}}
+                                   'edge.begin_shape_index', 'edge.end_shape_index', 'edge.source_percent_along',
+                                   'edge.target_percent_along'], 'action': 'include'}}
     if costing:
         body['costing_options'] = {profile: dict(costing)}
     return body
 
 
-def match_chunk(chunk: Chunk, trace: Trace,
-                tries: Sequence[tuple[str, Mapping[str, Any] | None]]) -> tuple[list[TPoint], bool] | None:
-    """Кусок езды → (линия, привязана ли). Профили tries — по очереди: ошибка запроса (путь не найден), ответ не
-    разобрать или привязка неправдоподобна — следующий; не вышло — точки куска (False). trace вернул None (Valhalla
-    нет или выключен) — None: результат не окончательный, кэшировать нельзя."""
+def match_chunk(chunk: Chunk, trace: Trace, tries: Sequence[tuple[str, Mapping[str, Any] | None]],
+                unmatchable: tuple[type[BaseException], ...] = (RuntimeError,)) -> tuple[list[TPoint], bool] | None:
+    """Кусок езды → (линия, привязана ли). Профили tries — по очереди: ошибка unmatchable (Valhalla: путь не найден,
+    дороги рядом нет — ValhallaError), ответ не разобрать или привязка неправдоподобна — следующий; не вышло — точки
+    куска (False, окончательно). trace вернул None (Valhalla нет или выключен) — None: не окончательно, кэшировать
+    нельзя. Другие исключения (сбой движка, память) — вызывающему: тоже не окончательно."""
     raw = chunk.raw()
     if chunk.stay or len(raw) < MATCH_MIN_POINTS:
         return raw, False
     for profile, costing in tries:
         try:
             res = trace(match_body(chunk, profile, costing))
-        except Exception:   # лучшая попытка: ValhallaError (нет пути, нет дороги рядом) и пр. — следующий профиль
+        except unmatchable:   # путь не найден — следующий профиль
             continue
         if res is None:
             return None

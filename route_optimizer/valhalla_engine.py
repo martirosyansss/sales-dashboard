@@ -142,6 +142,13 @@ def valhalla_module() -> Any | None:
     return valhalla
 
 
+def valhalla_error() -> type[BaseException] | None:
+    """Ошибка запроса pyvalhalla (ValhallaError: путь не найден, дороги рядом нет); нет pyvalhalla — None."""
+    module = valhalla_module()
+    err = getattr(module, 'ValhallaError', None) if module is not None else None
+    return err if isinstance(err, type) and issubclass(err, BaseException) else None
+
+
 def valhalla_supported() -> bool:
     return np is not None and valhalla_module() is not None
 
@@ -1057,6 +1064,10 @@ class ValhallaProvider:
 
     def _usable(self) -> bool:
         return engine_enabled() and valhalla_supported() and map_signature(self.pbf) is not None
+
+    def usable(self) -> bool:
+        """Valhalla включён (не режим osm), pyvalhalla есть и карта на месте (готовность сборки не проверяется)."""
+        return self._usable()
 
     def start(self) -> None:
         """Фоновая подготовка с запуска сервера: тайлы (если нужно) и кэш матриц машин менеджеров с диска."""
