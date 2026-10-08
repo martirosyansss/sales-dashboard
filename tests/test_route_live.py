@@ -1580,6 +1580,52 @@ def test_api_live_truck_track_by_roads_only_on_truck_card(client, live_app, monk
     monkeypatch.setattr(live_app.app.extensions['route_optimizer'], 'live_tracks', views._LiveTracks())
     bare = client.get('/api/routes/live/truck?car=CAR1', base_url=LAN).get_json()['truck']
     assert set(bare) == set(truck) and len(bare['track']) == len(bare['track_t']) > 1
+    assert truck['track_pending'] is False and bare['track_pending'] is False   # привязано / привязывать нечем
+
+
+def test_api_live_truck_waits_for_its_pieces_and_flags_pending(client, live_app, monkeypatch):
+    """Карточка машины ждёт привязку своих кусков не дольше LIVE_TRUCK_WAIT_S (фон, без замков); не дождалась или сбой
+    движка (не кэшируется) — track_pending: страница переспросит; дождалась — линия уже по дорогам с первого ответа."""
+    import threading as th
+    from route_optimizer import views
+    monkeypatch.setattr(views, 'LIVE_ROAD_BACKGROUND', True)
+    state = live_app.app.extensions['route_optimizer']
+    gate = th.Event()
+
+    def matcher(state_, capacity_kg):
+        def match(c):
+            gate.wait(10)
+            return [(p[0] + 0.001, p[1], p[2]) for p in c.raw()], True
+        return match
+    monkeypatch.setattr(views, '_track_matcher', matcher)
+    monkeypatch.setattr(views, 'LIVE_TRUCK_WAIT_S', 0.3)
+    monkeypatch.setattr(state, 'live_tracks', views._LiveTracks())
+    _session_as(client, 'boss', base=LAN)
+    started = time.monotonic()
+    slow = client.get('/api/routes/live/truck?car=CAR1', base_url=LAN).get_json()['truck']
+    assert slow['track_pending'] is True and time.monotonic() - started < 5.0      # не дождалась — без привязки
+    gate.set()
+    monkeypatch.setattr(views, 'LIVE_TRUCK_WAIT_S', 5.0)
+    done = client.get('/api/routes/live/truck?car=CAR1', base_url=LAN).get_json()['truck']
+    assert done['track_pending'] is False and done['track'] != slow['track']
+
+    def broken(state_, capacity_kg):
+        def match(c):
+            raise OSError('engine down')
+        return match
+    monkeypatch.setattr(views, '_track_matcher', broken)
+    monkeypatch.setattr(state, 'live_tracks', views._LiveTracks())
+    failed = client.get('/api/routes/live/truck?car=CAR1', base_url=LAN).get_json()['truck']
+    assert failed['track_pending'] is True and failed['track'] == slow['track']
+    assert 'track_pending' not in client.get('/api/routes/live', base_url=LAN).get_json()['trucks'][0]
+
+
+def test_live_page_refetches_card_while_track_pending():
+    """Страница: track_pending — карточка ещё раз через 3 с, не больше двух раз на машину и день, не при воспроизведении
+    (прошлый день не опрашивается). ?v= поднят."""
+    js = (ROOT / 'static' / 'js' / 'routes_live.js').read_text(encoding='utf-8')
+    assert 'retrack(one.truck)' in js and 't.track_pending' in js and 'r.tries >= 2' in js and '!state.replay.on' in js
+    assert "js/routes_live.js') }}?v=14" in (ROOT / 'templates' / 'routes_live.html').read_text(encoding='utf-8')
 
 
 # ============================== плановая линия, отклонение от неё, показатели дня (владелец 08.10) ==============================
