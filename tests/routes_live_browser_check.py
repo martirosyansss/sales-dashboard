@@ -299,6 +299,9 @@ PLAN_HIT = '.leaflet-overlay-pane path.lv-hit.is-plan'
 def line_tips(page, sel, ats, tap=False) -> list[str]:
     """Курсор (или касание) в точках линии sel → тексты подсказки точки (пусто — подсказки нет)."""
     out = []
+    # карта целиком на экране: слева меню раздела «Маршруты» — при 1440 px страница в две колонки, карточка машины под
+    # картой, и работа с карточкой прокручивает страницу вниз
+    page.eval_on_selector('#lvMap', "e => e.scrollIntoView({ block: 'nearest' })")
     for at in ats:
         xy = page.evaluate(POINT_JS, [sel, at])
         if xy is None:
@@ -730,6 +733,25 @@ def main() -> int:
                 page.wait_for_timeout(16000)
                 check(len(polls) > n, f'опрос раз в 15 с ({n} → {len(polls)})')
 
+                # слева меню «Маршрутов»: 1366×650 — две колонки, карточка под картой, выбор машины прокручивает к ней;
+                # 1920 — три колонки, карточка справа на виду, страница не прокручивается
+                for w, h, cols in ((1366, 650, 2), (1920, 1080, 3)):
+                    pc = browser.new_page(viewport={'width': w, 'height': h})
+                    pc.on('pageerror', lambda e: errors.append(str(e)))
+                    pc.goto(base + '/routes/live')
+                    pc.wait_for_selector('.lv-item')
+                    n_cols = pc.eval_on_selector('.lv-layout', "e => getComputedStyle(e).gridTemplateColumns.split(' ').length")
+                    pc.locator(f'.lv-item[data-car="{cars[0]}"]').click()
+                    pc.wait_for_selector('#lvCard:not([hidden]) .lv-grid dt')
+                    pc.wait_for_timeout(900)
+                    top, sy = pc.evaluate("[document.getElementById('lvCard').getBoundingClientRect().top, scrollY]")
+                    check(n_cols == cols and 0 <= top < h - 120 and (sy > 0) == (cols == 2),
+                          f'{w}×{h}: {n_cols} колонки, выбранная машина — карточка на экране (верх {round(top)}, прокрутка {sy})')
+                    if w == 1366:
+                        out = ROOT / 'output' / 'routes-side'
+                        out.mkdir(parents=True, exist_ok=True)
+                        pc.screenshot(path=str(out / 'live-1366x650-car-selected.png'))
+                    pc.close()
                 # «меньше движения»: новые — без анимации, обводка и «ՆՈՐ» (свой контекст — отметок «Տեսա» нет)
                 calm = browser.new_page(viewport={'width': 1440, 'height': 900}, reduced_motion='reduce')
                 calm.on('pageerror', lambda e: errors.append(str(e)))

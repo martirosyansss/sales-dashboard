@@ -66,6 +66,7 @@ def build(tmp):
         from flask import g
         g.user_role = 'admin'
     app.before_request_funcs.setdefault(None, []).insert(0, admin)   # приложение уже отвечало: before_request() нельзя
+    app.template_context_processors[None].append(lambda: {'is_admin': True})   # меню раздела «Маршруты» — администратору
     state = app.extensions['route_optimizer']
     state.store.save_dispatch(D1.isoformat(), plan([('CAR1', [104])], sent=[('CAR1', [101, 102]), ('CAR2', [104, 999])]), 'qa')
     state.store.save_dispatch(D2.isoformat(), plan([('CAR2', [101, 104])]), 'qa')
@@ -108,7 +109,7 @@ def main() -> int:
             # A
             page.goto(f'{BASE}/routes/cost')
             page.wait_for_selector('#ctRows tr', timeout=30000)
-            check(page.get_attribute('.rt-tabs a[aria-current="page"]', 'href') == '/routes/cost', 'A вкладка текущая')
+            check(page.get_attribute('#rtSecNav a[aria-current="page"]', 'href') == '/routes/cost', 'A пункт меню раздела текущий')
             check(rows().count() == 4, f'A 4 магазина ({rows().count()})')
             costs = page.eval_on_selector_all('#ctRows td.ct-cost', 'els => els.map(e => +e.textContent.replace(/\\s|\\u00a0/g, ""))')
             check(costs == sorted(costs, reverse=True) and page.get_attribute('th[data-key="cost"]', 'aria-sort') == 'descending',

@@ -223,7 +223,8 @@
     {% endif %}
 
     <main class="container-fluid py-4">
-        {% block content %}{% endblock %}
+        {#- page — обёртка вокруг content: «Маршруты» (routes_base.html) рисуют вокруг страницы меню раздела слева -#}
+        {% block page %}{% block content %}{% endblock %}{% endblock %}
     </main>
 
     {% if not is_public_role %}

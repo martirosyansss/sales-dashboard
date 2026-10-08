@@ -70,8 +70,8 @@ def test_admin_sees_page_tab_and_data(client, users, calls):
     page = client.get('/routes/pay', base_url=LAN)
     assert page.status_code == 200
     html = page.get_data(as_text=True)
-    assert '<a href="/routes/pay" aria-current="page">Աշխատավարձ</a>' in html and 'js/routes_pay.js?v=8' in html and 'css/routes_pay.css?v=3' in html
-    assert '<a href="/routes/pay">Աշխատավարձ</a>' in client.get('/routes/garage', base_url=LAN).get_data(as_text=True)
+    assert '<a class="rt-secnav-link" href="/routes/pay" aria-current="page">' in html and '<span class="rt-secnav-t">Աշխատավարձ</span>' in html and 'js/routes_pay.js?v=8' in html and 'css/routes_pay.css?v=3' in html
+    assert '<a class="rt-secnav-link" href="/routes/pay">' in client.get('/routes/garage', base_url=LAN).get_data(as_text=True)
     body = client.get('/api/routes/pay?month=2026-09', base_url=LAN).get_json()
     assert body['success'] and [r['name'] for r in body['rows']] == ['Կորյուն']
     assert client.get('/api/routes/pay', base_url=LAN).get_json()['month'] == '2026-10'          # часы подменены
@@ -83,8 +83,8 @@ def test_admin_sees_kpi_page_and_tab(client, users, calls):
     """«Առաքիչների KPI» — вкладка рядом с «Աշխատավարձ» на страницах раздела, страница и API — администратору."""
     _session_as(client, 'boss', LAN)
     html = client.get('/routes/araqich', base_url=LAN).get_data(as_text=True)
-    assert '<a href="/routes/araqich" aria-current="page">Առաքիչների KPI</a>' in html
+    assert '<a class="rt-secnav-link" href="/routes/araqich" aria-current="page">' in html and '<span class="rt-secnav-t">Առաքիչների KPI</span>' in html
     assert 'js/routes_araqich.js?v=4' in html and 'css/routes_araqich.css?v=3' in html
-    assert '<a href="/routes/araqich">Առաքիչների KPI</a>' in client.get('/routes/pay', base_url=LAN).get_data(as_text=True)
+    assert '<a class="rt-secnav-link" href="/routes/araqich">' in client.get('/routes/pay', base_url=LAN).get_data(as_text=True)
     body = client.get('/api/routes/araqich?month=2026-09', base_url=LAN).get_json()
     assert body['success'] and [p['name'] for p in body['people']] == ['Կորյուն']
