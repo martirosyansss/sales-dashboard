@@ -28,9 +28,12 @@ CT115, и сообщений ПК не нужно.
   вида у машины к нему не применяется (иначе второй опаздывающий магазин той же машины пропал бы);
 - эскалация (владелец 08.10, «fix all» тревог карты; ISA-18.2): идущая красная тревога (RED_KINDS — как важность 1
   routes_live.js alarmSev; «не успеет» — к окну приёма или возврату на склад, ключ страницы late:window), которую через
-  ESCALATE_MIN минут от начала никто не отметил «Տեսա» на сервере (store.live_acks, схема 27: та же машина, вид и начало;
-  у «не успеет» начала нет — отметка в силе ACK_GRACE_MIN от последнего подтверждения страницы, а начало — когда этот
-  поток её впервые увидел), — одно сообщение «⚠ Չի տեսել ոչ ոք N րոպե՝ …» на (день, машина, вид, начало). Тихие часы —
+  ESCALATE_MIN минут никто не отметил «Տեսա» на сервере (store.live_acks, схема 27: та же машина, вид и начало), — одно
+  сообщение «⚠ Չի տեսել ոչ ոք N րոպե՝ …» на (день, машина, вид, начало); N — сколько тревога идёт. Срок — от позднего из
+  начала тревоги и момента, когда поток впервые увидел этот случай (запись first в AlertState): при первом включении и
+  после простоя давние красные не приходят разом. У «не успеет» начала нет: срок — от первого взгляда потока, а отметка без
+  начала в силе ACK_GRACE_MIN от последнего подтверждения (её держит открытая страница, у которой проблема отмечена,
+  — routes_live.js ACK_REFRESH_MS); все страницы закрыты — через ACK_GRACE_MIN случай снова «никто не видел». Тихие часы —
   как у начала: срок, наступивший в них, не рассылается. Отметки прочитать не удалось — эскалации в этот проход нет;
 - сбой отправки (сеть, Telegram) — в журнал без токена, повтор со всё большей паузой (до BACKOFF_MAX_S); поток не падает.
   Тайм-аут ответа не значит «не доставлено»: сообщение, дошедшее без ответа, при повторе придёт второй раз (редкий дубль
@@ -348,7 +351,7 @@ def escalation_text(card: Mapping[str, Any], a: Mapping[str, Any] | None, minute
 def _plan_escalation(car: str, card: Mapping[str, Any], rules: Rules, now: datetime, state: AlertState, quiet: bool,
                      acks: Sequence[Mapping[str, Any]], out: list[Message]) -> bool:
     """Эскалация красных тревог машины без «Տեսա» (правило — в описании модуля); True — состояние менялось. Запись
-    «esc|день|машина|вид|начало»: first — когда «не успеет» (без начала) впервые увидена, start — отправлено, skipped —
+    «esc|день|машина|вид|начало»: first — когда поток впервые увидел случай, start — отправлено, skipped —
     срок наступил в тихие часы."""
     day = now.astimezone(ac.YEREVAN).date().isoformat()
     since_of = (card.get('alerts') or {}).get('since') or {}
@@ -365,27 +368,34 @@ def _plan_escalation(car: str, card: Mapping[str, Any], rules: Rules, now: datet
         red['late:window'] = (None, None)
     changed = False
     prefix = f'esc|{day}|{car}|'
+    current: set[str] = set()
     for key, (since, a) in red.items():
         sk = f'{prefix}{key}|{since or ""}'
+        current.add(sk)
         rec = state.sent.get(sk)
-        if (rec is not None and (rec.get('start') or rec.get('skipped'))) or _acked(acks, car, key, since, now):
+        if rec is not None and (rec.get('start') or rec.get('skipped')):
             continue
-        start = _moment(since) if since else _moment((rec or {}).get('first'))
-        if start is None:   # «не успеет»: начала нет — отсчёт с того, как поток её увидел
+        first = _moment((rec or {}).get('first'))
+        if first is None:   # случай увиден этим потоком впервые (в т.ч. отмеченный — отметку могут снять сменой since)
             state.sent[sk] = {'at': now.isoformat(), 'start': None, 'end': None, 'first': now.isoformat()}
             changed = True
+            first = now
+        if _acked(acks, car, key, since, now):
             continue
-        if now - start < timedelta(minutes=ESCALATE_MIN):
+        # отсчёт — от позднего из начала тревоги и первого взгляда потока: при первом включении и после простоя давние
+        # красные не приходят разом (ждут ESCALATE_MIN); в тексте — сколько тревога идёт на самом деле
+        began = _moment(since) if since else None
+        if now - max(first, began or first) < timedelta(minutes=ESCALATE_MIN):
             continue
         if quiet:
             state.sent[sk] = {'at': now.isoformat(), 'start': None, 'end': None, 'skipped': 'quiet'}
             changed = True
             continue
         out.append(Message(sk, 'esc', car, key,
-                           escalation_text(card, a, int((now - start).total_seconds() // 60), rules, now)))
-    # «не успеет» прошла, не дождавшись срока, — отсчёт снимается (вернётся — с начала)
+                           escalation_text(card, a, int((now - (began or first)).total_seconds() // 60), rules, now)))
+    # случай прошёл (или сменилось начало), не дождавшись срока, — отсчёт снимается (вернётся — с начала)
     for k in [k for k, v in state.sent.items() if k.startswith(prefix) and v.get('first') and not v.get('start')
-              and k[len(prefix):].split('|')[0] not in red]:
+              and not v.get('skipped') and k not in current]:
         del state.sent[k]
         changed = True
     return changed

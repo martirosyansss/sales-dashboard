@@ -169,12 +169,12 @@ def _alerter(tmp_path, cards, acks=None, rules=live.Rules(), now=NOW, name='esc.
 
 
 def test_escalation_once_after_10_min_unacked_persists_over_restart(tmp_path):
-    a = alert('speed', 9, max_kmh=104, lat=40.19, lon=44.51)
+    a = alert('speed', 0, max_kmh=104, lat=40.19, lon=44.51)
     alerter, sender, box = _alerter(tmp_path, {'CAR1': card(a)})
     assert alerter.tick() == 1 and not sender.sent[0].startswith('⚠')        # начало тревоги — как раньше
-    box['now'] = NOW + timedelta(seconds=59)                                  # 9 мин 59 с — ещё нет
+    box['now'] = NOW + timedelta(minutes=9, seconds=59)                       # 9 мин 59 с — ещё нет
     assert alerter.tick() == 0
-    box['now'] = NOW + timedelta(minutes=1)
+    box['now'] = NOW + timedelta(minutes=10)
     assert alerter.tick() == 1
     lines = sender.sent[1].splitlines()
     assert lines[0] == '⚠ Չի տեսել ոչ ոք 10 րոպե՝ Արագության գերազանցում' and 'Մեքենա՝ CAR1 · JAC' in lines
@@ -183,10 +183,31 @@ def test_escalation_once_after_10_min_unacked_persists_over_restart(tmp_path):
     assert alerter.tick() == 0                                                 # одно сообщение на случай
     again, sender2, box2 = _alerter(tmp_path, {'CAR1': card(a)}, now=NOW + timedelta(minutes=31))
     assert again.tick() == 0 and sender2.sent == []                           # перезапуск не повторяет
-    # новый случай (другое начало, 11:20) — своё начало и своя эскалация (окно повтора начала её не касается)
+    # новый случай (другое начало, 11:20; поток увидел в 11:31) — своё начало и своя эскалация через 10 мин от первого
+    # взгляда (окно повтора начала её не касается); в тексте — сколько тревога идёт
     box2['cards'] = {'CAR1': card(alert('speed', -20, max_kmh=110, lat=40.19, lon=44.51))}
-    assert again.tick() == 2 and not sender2.sent[0].startswith('⚠')
-    assert sender2.sent[1].startswith('⚠ Չի տեսել ոչ ոք 11 րոպե՝ Արագության գերազանցում')
+    assert again.tick() == 1 and not sender2.sent[0].startswith('⚠')
+    box2['now'] = NOW + timedelta(minutes=41)
+    assert again.tick() == 1 and sender2.sent[1].startswith('⚠ Չի տեսել ոչ ոք 21 րոպե՝ Արագության գերազանցում')
+
+
+def test_escalation_no_flood_for_old_reds_on_first_enable(tmp_path):
+    """Поток стартовал, когда красная идёт уже 90 мин: сразу эскалации нет, через 10 мин без «Տեսա» — одна."""
+    a = alert('center', 90, lat=40.18, lon=44.51)
+    alerter, sender, box = _alerter(tmp_path, {'CAR1': card(a), 'CAR2': card(alert('gps', 120, gps='off'), car='CAR2')})
+    alerter.tick()
+    assert not any(x.startswith('⚠') for x in sender.sent)                   # давние красные — не разом
+    box['now'] = NOW + timedelta(minutes=9)
+    alerter.tick()
+    assert not any(x.startswith('⚠') for x in sender.sent)
+    box['acks'] = [{'car': 'CAR2', 'key': 'gps', 'since': at(120), 'user': 'boss', 'at': at(-9)}]   # GPS увидели
+    box['now'] = NOW + timedelta(minutes=10)
+    alerter.tick()
+    esc = [x for x in sender.sent if x.startswith('⚠')]
+    assert len(esc) == 1 and esc[0].startswith('⚠ Չի տեսել ոչ ոք 100 րոպե՝ Փոքր կենտրոնում')
+    box['now'] = NOW + timedelta(minutes=40)
+    alerter.tick()
+    assert len([x for x in sender.sent if x.startswith('⚠')]) == 1
 
 
 def test_escalation_not_when_acked_same_case(tmp_path):
@@ -198,9 +219,12 @@ def test_escalation_not_when_acked_same_case(tmp_path):
     alerter.tick()
     assert [x for x in sender.sent if x.startswith('⚠')] == []
     box['acks'] = [{**ack, 'since': at(40)}]                                  # отметка прежнего случая — не в счёт
-    box['now'] = NOW + timedelta(minutes=1)
+    box['now'] = NOW + timedelta(minutes=9)
     alerter.tick()
-    assert sender.sent[-1].startswith('⚠ Չի տեսել ոչ ոք 16 րոպե՝ GPS-')
+    assert [x for x in sender.sent if x.startswith('⚠')] == []                # 10 мин — от первого взгляда потока
+    box['now'] = NOW + timedelta(minutes=10)
+    alerter.tick()
+    assert sender.sent[-1].startswith('⚠ Չի տեսել ոչ ոք 25 րոպե՝ GPS-')
 
 
 def test_escalation_never_for_amber_and_only_enabled_kinds(tmp_path):
@@ -227,6 +251,8 @@ def test_escalation_quiet_hours_and_unreadable_acks(tmp_path):
     rules = replace(live.Rules(), quiet=(10 * 60.0, 12 * 60.0))               # 10:00–12:00, сейчас 11:00
     a = alert('center', 15, lat=40.18, lon=44.51)
     alerter, sender, box = _alerter(tmp_path, {'CAR1': card(a)}, rules=rules)
+    assert alerter.tick() == 0
+    box['now'] = NOW + timedelta(minutes=10)                                  # срок — в тихие часы
     assert alerter.tick() == 0
     box['now'] = NOW + timedelta(hours=1, minutes=5)                          # тихие часы кончились — задним числом нет
     assert alerter.tick() == 0 and sender.sent == []
