@@ -243,7 +243,8 @@ def test_match_takes_road_shape_and_times_follow_matched_points():
     b = bodies[0]
     assert len(bodies) == 1 and b['costing'] == 'truck' and b['costing_options'] == {'truck': {'weight': 7.0}}
     assert b['shape_match'] == 'map_snap' and [s['time'] for s in b['shape']] == [int(p[2]) for p in raw]
-    assert b['trace_options'] == {'gps_accuracy': 8.0, 'search_radius': 30.0, 'turn_penalty_factor': tl.TURN_PENALTY}
+    assert b['trace_options'] == {'gps_accuracy': 8.0, 'search_radius': 30.0}   # штраф поворотов — по умолчанию
+    assert all('radius' not in x for x in b['shape'])
     assert {'edge.source_percent_along', 'edge.target_percent_along'} <= set(b['filters']['attributes'])
 
 
@@ -290,14 +291,20 @@ def test_implausible_match_rejected_then_next_profile_then_raw():
     mid = [p[:2] for p in raw]
     detour = mid[:5] + [north(mid[4], 900.0), north(mid[5], 900.0)] + mid[5:]   # объезд на 1,8 км: длиннее 1,5× + 300 м
     off = mid[:5] + [north(mid[4], 200.0)] + mid[5:]                             # вершина в 200 м от трека: шаг 100 м
-    for shape, unmatched in ((detour, ()), (off, ()), (mid, (1, 2, 3, 4))):
+    far = [north(q, 200.0) for q in mid]                                          # вся линия в 200 м от трека
+    for shape, unmatched in ((far, ()), (mid, (1, 2, 3, 4))):
         assert tl.match_chunk(chunk, lambda body: fake_response(raw, shape, unmatched), TRIES) == (raw, False)
+    # объезд между соседними точками — местный: этот отрезок — точки трека, кусок привязан
+    for shape in (detour, off):
+        line, ok = tl.match_chunk(chunk, lambda body: fake_response(raw, shape), TRIES)
+        assert ok and all(min(tl._m(v, q) for q in raw) < 1.0 for v in line)
+        assert all(x[2] <= y[2] for x, y in zip(line, line[1:]))
     # грузовик — неправдоподобно, легковой — хорошо
     asked = []
 
     def by_profile(body):
         asked.append(body['costing'])
-        return fake_response(raw, detour if body['costing'] == 'truck' else mid)
+        return fake_response(raw, far if body['costing'] == 'truck' else mid)
     line, ok = tl.match_chunk(chunk, by_profile, TRIES)
     assert ok and asked == ['truck', 'auto'] and len(line) == len(mid)
     assert all(p[:2] == pytest.approx(q, abs=1e-6) for p, q in zip(line, mid))
@@ -329,8 +336,125 @@ def test_engine_failure_is_not_final():
 def test_no_valhalla_gives_none_and_short_chunks_stay_raw():
     chunk = tl.chunks(_run(10), [])[0]
     assert tl.match_chunk(chunk, lambda body: None, TRIES) is None
-    short = tl.chunks(_run(2), [])[0]
+    short = tl.chunks(_run(1), [])[0]
     assert tl.match_chunk(short, lambda body: pytest.fail('не спрашивать'), TRIES) == (short.raw(), False)
+    pair = tl.chunks(_run(2), [])[0]                                   # двух точек Valhalla достаточно
+    assert tl.match_chunk(pair, lambda body: fake_response(pair.raw()), TRIES)[1] is True
+
+
+def test_loop_around_building_replaced_by_in_and_out():
+    """Заехал во двор и выехал тем же путём (разворот на месте), а Valhalla обвёл вокруг дома: между соседними
+    привязанными точками путь по дорогам длиннее 1,5 × пути по точкам + 40 м — там линия по точкам трека, до и после —
+    по дорогам. Обычный поворот за угол (путь по дорогам ≤ √2 × хорды) — не трогается."""
+    a0 = A
+    pts = [east(a0, 60.0 * i) for i in range(4)]                    # по улице на восток
+    yard = north(pts[-1], 35.0)                                      # во двор и назад
+    back = pts[-1]
+    tail = [east(back, 60.0 * i) for i in range(1, 4)]
+    path = pts + [yard, back] + tail
+    fixes = [ac.TrackFix(T0 + timedelta(seconds=10 * i), q[0], q[1], 8.0, 6.0) for i, q in enumerate(path)]
+    chunk = tl.chunks(fixes, [])[0]
+    assert len(chunk.points) == len(path)
+    raw = chunk.raw()
+    ring = [north(pts[-1], 35.0), north(east(pts[-1], 90.0), 35.0), north(east(pts[-1], 90.0), -40.0),
+            north(pts[-1], -40.0), pts[-1]]                          # вокруг дома ~330 м вместо 70
+    shape = [q for q in pts] + ring + tail
+    res = fake_response(raw, shape)
+    res['matched_points'][5] = {'type': 'matched', 'edge_index': 7, 'distance_along_edge': 1.0}   # «назад» — после кольца
+    line, ok = tl.match_chunk(chunk, lambda body: res, TRIES)
+    assert ok and not any(tl._m(v, ring[1]) < 10 or tl._m(v, ring[2]) < 10 for v in line)
+    assert tl._path_m(line) < tl._path_m(raw) + 1.0
+    assert all(x[2] <= y[2] for x, y in zip(line, line[1:]))
+    corner = [pts[0], east(pts[0], 60.0), north(east(pts[0], 60.0), 60.0)]
+    cfix = [ac.TrackFix(T0 + timedelta(seconds=10 * i), q[0], q[1], 8.0, 6.0) for i, q in enumerate([corner[0], corner[2]])]
+    cchunk = tl.chunks(cfix, [])[0]
+    line, ok = tl.match_chunk(cchunk, lambda body: fake_response(cchunk.raw(), corner), TRIES)
+    assert ok and len(line) == 3                                     # за угол по дороге — как привязано
+
+
+def _pair_chunk(a, b, dt, spd, stood=False):
+    """Кусок из двух точек (как после фильтра; stood — перед второй машина стояла: точки «стоит» выброшены)."""
+    t = T0.timestamp()
+    return tl.Chunk(((a[0], a[1], t, 8.0, spd, False), (b[0], b[1], t + dt, 8.0, spd, stood)))
+
+
+def _hairpin(chunk, loop):
+    line, ok = tl.match_chunk(chunk, lambda body: fake_response(chunk.raw(), loop), TRIES)
+    assert ok and all(x[2] <= y[2] for x, y in zip(line, line[1:]))
+    return any(tl._m(v, loop[1]) < 1 for v in line)
+
+
+def test_hairpin_at_speed_is_road_not_detour():
+    """Серпантин (перевал к Севану): 15 м/с, шаг 15 с — 50 м по прямой, ~220 м по дороге; редкий трек — шаг 60 с, 300 м
+    по прямой, 580 м по дороге. Машина это проехала за шаг (скорость × шаг × 1,3 + 40 м) — линия по дороге, не хорда.
+    Тот же разворот во дворе на 2 м/с, без скорости или после стоянки перед второй точкой (шаг 160 с) — объезд:
+    хорда по точкам трека."""
+    a = A
+    b = east(a, 50.0)
+    loop = [a, north(a, 85.0), north(b, 85.0), b]                      # 85 + 50 + 85 ≈ 220 м по дороге
+    for dt, spd, stood, spliced in ((15, 15.0, False, False), (15, 2.0, False, True), (15, None, False, True),
+                                    (160, 15.0, True, True)):
+        assert _hairpin(_pair_chunk(a, b, dt, spd, stood), loop) is not spliced, (dt, spd, stood)
+    far = east(a, 300.0)
+    wide = [a, north(a, 140.0), north(far, 140.0), far]                # 580 м по дороге, шаг 60 с при 15 м/с
+    assert _hairpin(_pair_chunk(a, far, 60, 15.0), wide) is True
+    # без скорости терминала: скорость — медиана соседних шагов (по 900 м за 60 с), а не один шаг 300 м
+    pts = [east(a, -1800.0), east(a, -900.0), a, far, east(far, 900.0), east(far, 1800.0)]
+    t = T0.timestamp()
+    chunk = tl.Chunk(tuple((q[0], q[1], t + 60 * i, 8.0, None, False) for i, q in enumerate(pts)))
+    shape = pts[:3] + wide[1:] + pts[4:]
+    line, ok = tl.match_chunk(chunk, lambda body: fake_response(chunk.raw(), shape), TRIES)
+    assert ok and any(tl._m(v, wide[1]) < 1 for v in line)
+
+
+def test_stood_flag_marks_point_after_dropped_standing():
+    """Признак «стояла перед точкой» — у первой оставленной точки после выброшенных точек «стоит» и после стоянки."""
+    tr = Trip().park(DEPOT, 6).drive(A)
+    stand_to = tr.t + timedelta(minutes=3)
+    tr.park(A, 3, jitter_m=10.0, spd=0.3, step_s=15).drive(B)
+    _, actual, parts = _line(tr.fixes)
+    move = [c for c in parts if not c.stay][0]
+    flagged = [p for p in move.points if tl._stood(p)]
+    assert [round(p[2]) for p in flagged] == [round(move.points[1][2]),
+                                              round(min(p[2] for p in move.points if p[2] > stand_to.timestamp()))]
+
+
+def test_stay_center_marker_is_not_a_real_zero_accuracy_fix():
+    """Середина стоянки в куске — погрешность STAY_ACC (−1): точка трека с погрешностью 0,0 — обычная точка (без
+    радиуса поиска стоянки, в доле непривязанных)."""
+    fixes = [ac.TrackFix(T0 + timedelta(seconds=10 * i), *east(A, 100.0 * i), 0.0, 10.0) for i in range(3)]
+    chunk = tl.chunks(fixes, [])[0]
+    body = tl.match_body(chunk, 'auto', None)
+    assert all('radius' not in x for x in body['shape']) and body['trace_options']['gps_accuracy'] == tl.GPS_ACC_M[0]
+    res = fake_response(chunk.raw(), unmatched=(0,))
+    assert tl._timed(res, chunk.points)[1] == pytest.approx(1 / 3)
+
+
+def test_driving_piece_starts_and_ends_at_stay_centers():
+    """Кусок езды — от середины стоянки в момент отъезда до середины следующей в момент прибытия: соединение идёт
+    по дорогам (середина ищет дорогу в STAY_RADIUS_M), без прямой от стоянки через квартал. Между стоянками без точек
+    езды — кусок из двух середин. Готовый кусок от роста трека не меняется."""
+    tr = Trip().park(DEPOT, 6).drive(A).park(A, 8)
+    stops = [ac.PlanStop('S:A', 1, A, 1.0)]
+    _, actual, parts = _line(tr.fixes, stops)
+    depot, site = actual.stays
+    move = [c for c in parts if not c.stay]
+    assert [c.stay for c in parts] == [True, False, True] and len(move) == 1
+    assert move[0].points[0] == (depot.center[0], depot.center[1], depot.leave.timestamp(), tl.STAY_ACC, None, False)
+    assert move[0].points[-1] == (site.center[0], site.center[1], site.arrive.timestamp(), tl.STAY_ACC, None, False)
+    body = tl.match_body(move[0], 'truck', None)
+    assert body['shape'][0]['radius'] == tl.STAY_RADIUS_M and body['shape'][-1]['radius'] == tl.STAY_RADIUS_M
+    assert all('radius' not in x for x in body['shape'][1:-1]) and body['trace_options']['gps_accuracy'] == 8.0
+    grown = Trip().park(DEPOT, 6).drive(A).park(A, 8).drive(B).park(B, 8)
+    _, _, parts2 = _line(grown.fixes, stops + [ac.PlanStop('S:B', 2, B, 1.0)])
+    assert move[0].key in [c.key for c in parts2]                     # кусок до A — тот же (кэш привязки)
+    # две стоянки рядом друг с другом без езды между ними (вся езда — «стоит»): кусок из двух середин
+    s1 = ac.Stay('site', T0, T0 + timedelta(minutes=5), center=A)
+    s2 = ac.Stay('other', T0 + timedelta(minutes=8), T0 + timedelta(minutes=15), center=east(A, 120.0))
+    parts = tl.chunks([], [s1, s2])
+    assert [c.stay for c in parts] == [True, False, True] and len(parts[1].points) == 2
+    s3 = ac.Stay('other', T0 + timedelta(minutes=8), T0 + timedelta(minutes=15), center=east(A, 10.0))
+    assert [c.stay for c in tl.chunks([], [s1, s3])] == [True, True]   # рядом — соединять нечего
 
 
 # ============================== линия ==============================
@@ -342,7 +466,8 @@ def test_line_uses_matched_where_ready_and_cap_keeps_stays():
     moves = [c for c in parts if not c.stay]
     shifted = {moves[0].key: [(p[0] + 0.0003, p[1], p[2]) for p in moves[0].raw()]}
     line, _, _ = _line(tr.fixes, stops, matched=shifted)
-    assert len(line) == len(full) and sum(1 for x, y in zip(line, full) if x != y) == len(moves[0].points)
+    # привязанный кусок — в линии целиком; его концы (середины стоянок) сдвинуты — и стоянки остались: +2 точки
+    assert all(p in line for p in shifted[moves[0].key]) and len(line) == len(full) + 2
     small, _, _ = _line(tr.fixes, stops, cap=10)
     assert 2 * len(actual.stays) <= len(small) <= 10
     for s in actual.stays:

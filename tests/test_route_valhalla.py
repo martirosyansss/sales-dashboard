@@ -619,6 +619,16 @@ def test_provider_trace_only_with_ready_build_and_never_builds(tmp_path, fake, m
     assert provider.trace({'shape': []}) is None and runs == [] and not _preparers()   # сборки нет — без сборки
     assert _wait(lambda: provider.get(FakeOsm(missing=()), P, 3000))                     # фон собрал тайлы
     assert provider.trace({'shape': [1]}) == {'ok': 1} and bodies == [{'shape': [1]}]
+    from contextlib import contextmanager
+
+    @contextmanager
+    def busy(self, wait=True):
+        assert wait is False                                                  # опрос карты не ждёт пул
+        raise ve.EngineBusy('все Actor заняты')
+        yield
+    with monkeypatch.context() as m:
+        m.setattr(ve._Engine, 'actor', busy)
+        assert provider.trace({'shape': [3]}) is None and len(bodies) == 1   # пул занят сборкой матриц — не окончательно
     monkeypatch.setenv('ROUTES_ROAD_ENGINE', 'osm')
     assert provider.trace({'shape': [2]}) is None and len(bodies) == 1
     assert ve.ValhallaProvider(str(tmp_path / 'none'), str(tmp_path / 'no-map.pbf')).trace({}) is None
