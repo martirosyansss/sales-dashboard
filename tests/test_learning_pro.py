@@ -544,7 +544,7 @@ def test_settings_buffer_pct_and_from_settings():
     assert st._NUMERIC['dispatch_buffer_pct'] == (50, 95, False)
     js = (ROOT / 'static' / 'js' / 'routes_settings.js').read_text(encoding='utf-8')
     assert "key: 'dispatch_buffer_pct'" in js and 'min: 50, max: 95' in js
-    assert "routes_settings.js') }}?v=39" in (ROOT / 'templates' / 'routes_settings.html').read_text(encoding='utf-8')
+    assert "routes_settings.js') }}?v=40" in (ROOT / 'templates' / 'routes_settings.html').read_text(encoding='utf-8')
 
 
 def test_store_migrates_20_to_21_keeps_rows_and_allows_new_kinds(tmp_path):
