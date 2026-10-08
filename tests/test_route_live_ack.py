@@ -63,17 +63,17 @@ def test_schema_27_migrates_copy_of_schema_26_and_acks_roundtrip(tmp_path):
     assert s2.live_explanations('2026-10-03')['CAR1'][0]['note'] == 'խցանում'
     assert _version_tables(src)[0] == '26'   # источник не тронут
     # запись: строка на (день, машина, вид) — новая отметка заменяет случай, кто и когда
-    s2.save_live_acks('2026-10-03', [('CAR1', 'speed', a), ('CAR1', 'late:window', None)], 'boss', a)
-    s2.save_live_acks('2026-10-03', [('CAR1', 'speed', b)], 'garage1', b)
+    s2.live_ack_put('2026-10-03', [('CAR1', 'speed', a), ('CAR1', 'late:window', None)], 'boss', a)
+    s2.live_ack_put('2026-10-03', [('CAR1', 'speed', b)], 'garage1', b)
     assert s2.live_acks('2026-10-03') == [
         {'car': 'CAR1', 'key': 'late:window', 'since': None, 'user': 'boss', 'at': a},
         {'car': 'CAR1', 'key': 'speed', 'since': b, 'user': 'garage1', 'at': b}]
     assert s2.live_acks('2026-10-04') == []
     for bad in ([('', 'speed', None)], [('CAR1', 'Speed', None)], [('CAR1', 'speed', '10:00')], []):
         with pytest.raises(ValueError):
-            s2.save_live_acks('2026-10-03', bad, 'boss', a)
+            s2.live_ack_put('2026-10-03', bad, 'boss', a)
     with pytest.raises(ValueError):
-        s2.save_live_acks('03.10.2026', [('CAR1', 'speed', None)], 'boss', a)
+        s2.live_ack_put('03.10.2026', [('CAR1', 'speed', None)], 'boss', a)
 
 
 @pytest.mark.skipif(not OWNER_DB.exists(), reason='нет базы ПК владельца')
@@ -90,7 +90,7 @@ def test_schema_27_migrates_copy_of_owner_db(tmp_path):
     s.load()
     v1, after = _version_tables(copy)
     assert v1 == str(st.SCHEMA_VERSION) and {k: after[k] for k in before} == before and after['live_ack'] >= 0
-    s.save_live_acks('2026-10-08', [('333DN33', 'deviation', '2026-10-08T12:15:00+04:00')], 'qa', '2026-10-08T12:20:00+04:00')
+    s.live_ack_put('2026-10-08', [('333DN33', 'deviation', '2026-10-08T12:15:00+04:00')], 'qa', '2026-10-08T12:20:00+04:00')
     assert s.live_acks('2026-10-08')[-1]['user'] == 'qa'
 
 

@@ -2767,7 +2767,7 @@ class Store:
             'SELECT car, key, since, user, at FROM live_ack WHERE day = ? ORDER BY car, key', (day,)).fetchall())
         return [{'car': car, 'key': key, 'since': since, 'user': user, 'at': at} for car, key, since, user, at in rows]
 
-    def save_live_acks(self, day: str, items: Sequence[tuple[str, str, str | None]], user: str | None, at: str) -> None:
+    def live_ack_put(self, day: str, items: Sequence[tuple[str, str, str | None]], user: str | None, at: str) -> None:
         """«Տեսա» (check_live_acks) одной транзакцией: строка (день, машина, вид) заменяется — случай, кто, когда.
         Неверные данные — ValueError (API проверяет их раньше и отвечает 400)."""
         listed, error = check_live_acks([{'car': c, 'key': k, 'since': s} for c, k, s in items])

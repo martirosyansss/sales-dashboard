@@ -5152,7 +5152,7 @@ def api_live_ack() -> Any:
         return _bad_request(errors)
     state = _state()
     user = session.get('username')
-    state.store.save_live_acks(today.isoformat(), items, user, now.isoformat(timespec='seconds'))
+    state.store.live_ack_put(today.isoformat(), items, user, now.isoformat(timespec='seconds'))
     logger.info('[Routes] Карта машин: «Տեսա» %s — %s', user, ', '.join(f'{c} {k}' for c, k, _ in items))
     return jsonify({'success': True, 'acks': state.store.live_acks(today.isoformat())})
 
