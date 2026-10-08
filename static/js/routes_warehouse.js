@@ -107,7 +107,9 @@
                     const parts = r.pack && r.packs !== null && r.packs !== undefined
                         ? [r.packs ? fmt(r.packs) + NB + 'փաթ.' : '', r.loose ? fmt(r.loose) + NB + unit : ''].filter(Boolean) : [];
                     const qty = parts.length ? parts.join(' + ') : fmt(r.qty) + NB + unit;
-                    ul.append(h('li', null, h('span', { text: r.name || ('Ապրանք ' + r.code) }), h('span', { text: qty }),
+                    // №90: подарки ERP уже в количестве — gift: сколько из них подарки
+                    const gift = r.gift ? ' · այդ թվում՝ ' + fmt(r.gift) + NB + 'նվեր' : '';
+                    ul.append(h('li', null, h('span', { text: (r.name || ('Ապրանք ' + r.code)) + gift }), h('span', { text: qty }),
                         h('small', { text: (r.code ? r.code + ' · ' : '') + fmt(r.kg) + NB + 'կգ' })));
                 });
                 body.append(ul, h('p', { text: 'Ընդամենը՝ ' + fmt(g.kg) + NB + 'կգ' }));

@@ -18,6 +18,10 @@
   точки — лишь накладные ERP с машиной, порядок — не по плану; `plan` ответа — 'approved' | 'pending' (добавочное поле,
   как `weight_kg`: будущий APK покажет «Պլանը դեռ հաստատված չէ»). Утверждение доходит до терминала не позже
   DAY_TTL_SECONDS кэша + его опрос /day.
+- подарки ERP (SALEDOCGIFTS, ответ владельца №90; контракт §11) — отдельные строки точки после строк документа: тот же
+  product_id, line_id «<fISN>:G<fROWNUM>», цена и сумма 0, название с «(նվեր)», `gift: true` (поле только у них),
+  weight_kg — их вес; amount_due не меняется (сумма документа). Ожидаемая тара — и по подаркам: бутыль-подарок едет в
+  своей таре (товар 200 «19լ» с тарой 202 — среди подарков сентября).
 """
 from __future__ import annotations
 
@@ -38,6 +42,8 @@ from .erp_day import (ContainerLink, CustomerInfo, DayData, Doc, Line, OrdersPic
 from .order import order_customers
 from .routes_link import RoutesView, distance_fn, invoice_owner, orders_window, pick_orders
 from .store import MarkSetting, Store
+
+GIFT_LABEL = 'նվեր'   # к названию строки-подарка (№90): «Գառնի կրիստալլայն 6լ (նվեր)»
 
 DAY_TTL_SECONDS = 60
 DAY_CACHE_MAX = 64
@@ -66,11 +72,14 @@ def _line_json(line: Line, product: Product | None, gtins: tuple[str, ...], mark
                gtin_units: Mapping[str, float | None] | None = None) -> dict[str, Any]:
     marked = mark.marked if mark is not None else bool(product and product.markable)
     pack = mark.pack_qty if mark is not None else (product.pack_qty_erp if product else None)
-    return {
-        'line_id': f'{line.isn}:{line.rownum}',
+    name = product.name if product else ''
+    out = {
+        # подарок (№90): свой счёт fROWNUM — «G» не даёт совпасть с line_id строки документа
+        'line_id': f'{line.isn}:G{line.rownum}' if line.gift else f'{line.isn}:{line.rownum}',
         'product_id': line.product_id,
         'code': product.code if product else '',
-        'name': product.name if product else '',
+        # APK 2.3.0 цену строки не показывает: подарок водитель узнаёт по названию (контракт §11)
+        'name': f'{name} ({GIFT_LABEL})'.strip() if line.gift else name,
         'qty': round(line.qty, 3),
         'unit': product.unit if product else '',
         'price': round(line.price, 2),
@@ -83,6 +92,9 @@ def _line_json(line: Line, product: Product | None, gtins: tuple[str, ...], mark
         # (в weight_kg точки такая строка — 0 кг)
         'weight_kg': round(line.qty * product.weight, 3) if product else None,
     }
+    if line.gift:
+        out['gift'] = True   # добавочное поле только у подарков: точки без подарков — тот же version, что до №90
+    return out
 
 
 def build_stops(data: DayData, order: list[int], points: Mapping[int, Point | None],

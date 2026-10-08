@@ -125,7 +125,8 @@ def test_check_params():
 
 def test_sql_is_read_only():
     check_sql(SQL_CREW_PAY)                    # read-only guard пропускает
-    assert SQL_CREW_PAY.count('WITH (NOLOCK)') == 3 and SQL_CREW_PAY.count('?') == 2
+    # SALES, SALEDOCDETAILS, SALEDOCGIFTS (подарки — тоже груз, №90), PRODUCTS
+    assert SQL_CREW_PAY.count('WITH (NOLOCK)') == 4 and SQL_CREW_PAY.count('?') == 2 and 'SALEDOCGIFTS' in SQL_CREW_PAY
 
 
 def test_one_person_who_switched_code_is_one_row():

@@ -1181,9 +1181,12 @@ def invoice_card(day: date, stop_id: str) -> dict[str, Any] | None:
     lines = [{'line_id': ln.get('line_id'), 'product_id': ln.get('product_id'), 'code': ln.get('code'),
               'name': ln.get('name'), 'unit': ln.get('unit'), 'qty': ln.get('qty'), 'price': ln.get('price'),
               'sum': ln.get('sum'), 'marked': bool(ln.get('marked')),
-              'delivered': None if here is None else here.get(str(ln.get('line_id')), 0.0), 'scanned': None}
+              'delivered': None if here is None else here.get(str(ln.get('line_id')), 0.0), 'scanned': None,
+              **({'gift': True} if ln.get('gift') else {})}
              for ln in basis.get('lines') or () if isinstance(ln, dict)]
-    names = {ln['product_id']: ln['name'] for ln in lines}
+    names: dict[Any, Any] = {}
+    for ln in sorted(lines, key=lambda x: bool(x.get('gift'))):   # название — со строки документа, не «(նվեր)» (№90)
+        names.setdefault(ln['product_id'], ln['name'])
 
     absorbed = [x for x, o in sorted(model.absorbed_by.items()) if o == sid]
     zone = list(dict.fromkeys([sid, *absorbed, *(o for o in s.get('replaces') or () if isinstance(o, str))]))

@@ -257,6 +257,7 @@ class FakeErp:
         self.orders = list(orders)
         self.parents = list(parents)
         self.plan_sales = []      # (строка SQL_DAY_SALES накладной без машины, ISN заказа-родителя)
+        self.gifts = []           # строки SQL_DOC_GIFTS: (fISN, fROWNUM, товар, количество) — подарки (№90)
         self.calls = []
         self.params = []
 
@@ -278,6 +279,8 @@ class FakeErp:
             return [(ISN[1], '5')]
         if sql.startswith(ed.SQL_DOC_LINES.split('{')[0]):
             return [(ISN[0], 1, 135, 40, 150, 6000), (ISN[0], 2, 200, 10, 1200, 12000), (ISN[1], 1, 200, 3, 1200, 3600)]
+        if sql.startswith(ed.SQL_DOC_GIFTS.split('{')[0]):
+            return [r for r in self.gifts if r[0] in params]
         if sql == ed.SQL_CONTAINERS:
             return [(135, 54, 20, 20, 'Ապակե շիշ'), (135, 55, 20, 1, 'Արկղ'), (200, 202, 1, 1, 'Տարա 20լ')]
         if sql.startswith(ed.SQL_PRODUCTS.split('{')[0]):
@@ -3480,3 +3483,100 @@ def test_login_with_reissued_token_is_unauthorized(term, client, st, monkeypatch
     assert st.store.open_session(tid, term['driver_id'], NOW + timedelta(hours=1)) is not None   # без проверок — можно
     st.store.revoke_terminal(tid, 'admin')
     assert st.store.open_session(tid, term['driver_id'], NOW + timedelta(hours=1)) is None       # отозван — никогда
+
+
+# ============================== подарки ERP (SALEDOCGIFTS, ответ владельца №90) ==============================
+
+def test_doc_lines_gifts_after_lines_with_zero_price(fake_erp):
+    """Подарки документа — после его строк, по своему fROWNUM, цена и сумма 0; документ только с подарками — тоже."""
+    fake_erp.gifts = [(ISN[0], 1, 135, 2), (ISN[0], 0, 200, 1), (ISN[2], 0, 200, 3)]
+    got = ed.doc_lines(None, [ISN[0], ISN[1], ISN[2]])
+    assert [(ln.rownum, ln.product_id, ln.qty, ln.price, ln.sum, ln.gift) for ln in got[ISN[0]]] == [
+        (1, 135, 40.0, 150.0, 6000.0, False), (2, 200, 10.0, 1200.0, 12000.0, False),
+        (0, 200, 1.0, 0.0, 0.0, True), (1, 135, 2.0, 0.0, 0.0, True)]
+    assert [ln.gift for ln in got[ISN[1]]] == [False] and [ln.gift for ln in got[ISN[2]]] == [True]
+    erp.check_sql(ed.SQL_DOC_GIFTS)
+    assert ed.SQL_DOC_GIFTS.count('WITH (NOLOCK)') == 1 and 'SALEDOCGIFTS' in ed.SQL_DOC_GIFTS
+
+
+def test_day_payload_gift_lines(fake_erp, tmp_path, now):
+    """Тот же товар продан и подарен: две строки (line_id разные), подарок — цена 0, «(նվեր)», gift: true; сумма точки
+    та же, кг и тара — с подарком; точка без подарков — та же, что без №90 (её version не меняется)."""
+    fake_erp.sales = [(ISN[0], '000318001', 11, 7, '1', 18000), (ISN[1], '000318002', 12, 7, '6', 3600)]
+    store = Store(str(tmp_path / 'c.db'))
+    view = rl.RoutesView(depot=YEREVAN)
+
+    def payload():
+        ed.clear_ref_cache()
+        svc = dy.DayService(store, lambda car, d, w, pick, owner: ed.load_day('cs', car, d, w, pick, owner), lambda d: view)
+        return {s['customer']['id']: s for s in svc.get('991AT61', date(2026, 10, 2))['stops']}
+
+    before = payload()
+    fake_erp.gifts = [(ISN[0], 0, 200, 1)]
+    after = payload()
+    assert after[12] == before[12]                                   # точка без подарков не изменилась
+    s1 = after[11]
+    sold, gift = [ln for ln in s1['lines'] if ln['product_id'] == 200]
+    assert sold['line_id'] == f'{ISN[0]}:2' and 'gift' not in sold and sold['name'] == 'Գառնի 19լ'
+    assert (gift['line_id'], gift['qty'], gift['price'], gift['sum'], gift['gift']) == (f'{ISN[0]}:G0', 1.0, 0.0, 0.0, True)
+    assert gift['name'] == 'Գառնի 19լ (նվեր)' and gift['weight_kg'] == 19.5 and gift['code'] == '2901'
+    assert s1['amount_due'] == 18000.0 == before[11]['amount_due']       # деньги — сумма документа
+    assert s1['weight_kg'] == round(40 * 0.9 + 11 * 19.5, 1)
+    assert {t['tare_id']: t['qty'] for t in s1['tare_expected']}['erp:202'] == 11.0   # бутыль-подарок — в своей таре
+    lines = [{k: ln[k] for k in ('line_id', 'product_id', 'qty', 'price')} for ln in s1['lines']]
+    stop = {'stop_id': s1['stop_id'], 'source': 'invoice', 'collect': 'cash', 'current': True, 'lines': lines}
+
+    def rule(qty):
+        e = {'id': 'd1', 'type': 'delivery', 'stop_id': s1['stop_id'], 'at': '2026-10-02T10:00:00+04:00',
+             'payload': {'lines': [{'line_id': ln['line_id'], 'qty': qty.get(ln['line_id'], ln['qty'])} for ln in lines]}}
+        v = mg.merge([stop], [e]).stops[s1['stop_id']]
+        return v.status, float(v.due)
+
+    assert rule({}) == ('full', 18000.0)
+    assert rule({gift['line_id']: 0}) == ('partial', 18000.0)            # подарок не отдан — деньги те же
+    assert rule({sold['line_id']: 5}) == ('partial', 12000.0)            # часть бутылей — минус их цена, подарок 0 ֏
+    assert rule({ln['line_id']: 0 for ln in lines}) == ('refused', 0.0)
+
+
+@pytest.fixture
+def gift_term(st, client, monkeypatch):
+    """Демо-день, у DEMO-0001 (10 × 19լ, 12 000 ֏) — подарок того же товара: 1 × 19լ без цены."""
+    plain = dy.demo_data
+
+    def with_gift():
+        data, view, at = plain()
+        isn = data.docs[0].isn
+        lines = {**data.lines, isn: data.lines[isn] + (ed.Line(isn, 0, 990019, 1.0, 0.0, 0.0, gift=True),)}
+        return replace(data, lines=lines), view, at
+    monkeypatch.setattr(dy, 'demo_data', with_gift)
+    _, _, h = make_terminal(st)
+    s = login(client, h)
+    return {'s': s, 'day': client.get(f'/api/courier/v1/day?date={DEMO}', headers=s).get_json()}
+
+
+def test_gift_delivery_events_money_and_card(gift_term, client):
+    s = next(x for x in gift_term['day']['stops'] if x['doc_number'] == 'DEMO-0001')
+    sold, gift = s['lines']
+    assert (sold['line_id'].endswith(':1'), gift['line_id'].endswith(':G0'), gift['gift'], s['amount_due']) == \
+        (True, True, True, 12000.0)
+    assert set(gift) == LINE_KEYS | {'gift'} and 'gift' not in sold
+    over = event('delivery', s['stop_id'], {'lines': [{'line_id': sold['line_id'], 'qty': 10.0},
+                                                      {'line_id': gift['line_id'], 'qty': 2.0}]})
+    r = post(client, gift_term['s'], over)
+    assert r['accepted'] == [] and 'գերազանցել' in r['rejected'][0]['message']   # сверх подарка — нельзя (№22)
+    no_gift = event('delivery', s['stop_id'], {'lines': [{'line_id': sold['line_id'], 'qty': 10.0},
+                                                         {'line_id': gift['line_id'], 'qty': 0.0}], 'reason_id': 'closed'},
+                    at='2000-01-01T10:00:00+04:00')
+    pay = event('payment', s['stop_id'], {'amount': 12000.0, 'kind': 'invoice', 'ecr_receipt': None},
+                at='2000-01-01T10:01:00+04:00')
+    assert post(client, gift_term['s'], no_gift, pay)['rejected'] == []
+    c = client.get(f'/api/courier/admin/invoice?date={DEMO}&stop={s["stop_id"]}').get_json()
+    assert (c['stop']['status'], c['stop']['due']) == ('partial', 12000.0)      # подарок не отдан — деньги те же
+    (m,) = c['money']
+    assert (m['expected'], m['invoice'], m['short']) == (12000.0, 12000.0, 0.0)
+    assert [(ln['name'], ln['price'], ln['delivered'], ln.get('gift', False)) for ln in c['lines']] == [
+        ('Գառնի կրիստալլայն 19լ', 1200.0, 10.0, False), ('Գառնի կրիստալլայն 19լ (նվեր)', 0.0, 0.0, True)]
+    full = event('delivery', s['stop_id'], {'lines': full_lines(s)}, at='2000-01-01T10:05:00+04:00')
+    assert post(client, gift_term['s'], full)['rejected'] == []
+    c = client.get(f'/api/courier/admin/invoice?date={DEMO}&stop={s["stop_id"]}').get_json()
+    assert (c['stop']['status'], c['stop']['due'], c['money'][0]['short']) == ('full', 12000.0, 0.0)

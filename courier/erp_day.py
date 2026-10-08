@@ -41,6 +41,13 @@
 План дня не утверждён ни разу или его нет (ответ владельца №80) — pick_orders пуст: ни точек O:, ни накладных без машины
 по плану; остаются только накладные с fDELIVERYCAR = машина (их машину поставил офис — это документ, а не план).
 
+Подарки (ответ владельца №90 «учесть везде»; проверено 08.10.2026, только SELECT): ERP пишет подарки акций отдельной
+таблицей SALEDOCGIFTS (fISN, fPRODUCTID, fQUANTITY, fROWNUM, fADDITIONALINFO) того же документа — и у заказов, и у
+накладных; в SALEDOCDETAILS их нет, цены нет (fTOTALSUM не меняется). fROWNUM подарков — свой счёт с 0 (у строк тоже с 0),
+внутри документа уникален. Подарок — обычно тот же товар, что куплен (на каждые 10 «Գառնի 6լ» — 1 такой же; за сентябрь —
+товары 52, 575, 139, 200), реже — товар, которого в строках нет. Строки точки /day — строки документа, затем его подарки
+(Line.gift: цена и сумма 0) — day._line_json.
+
 Машины терминалов (merge_cars) — ERP CARS ∪ машины накладных ∪ парк «Маршрутов»: fDELIVERYCAR офис часто не
 заполняет, и по одним накладным в списке была треть машин (06.10.2026: 6 из 15 открытых).
 
@@ -165,6 +172,7 @@ class Line:
     qty: float
     price: float
     sum: float
+    gift: bool = False     # подарок SALEDOCGIFTS: price и sum — 0, rownum — fROWNUM подарка (свой счёт)
 
 
 @dataclass(frozen=True)
@@ -245,6 +253,13 @@ SQL_DOC_LINES = """
 SELECT CAST(d.fISN AS nvarchar(36)), d.fROWNUM, d.fPRODUCTID, d.fQUANTITY, d.fDISCOUNTEDPRICE, d.fSUM
 FROM SALEDOCDETAILS d WITH (NOLOCK)
 WHERE d.fISN IN ({ph})
+"""
+
+# Подарки документов (см. docstring модуля) — без цены
+SQL_DOC_GIFTS = """
+SELECT CAST(g.fISN AS nvarchar(36)), g.fROWNUM, g.fPRODUCTID, g.fQUANTITY
+FROM SALEDOCGIFTS g WITH (NOLOCK)
+WHERE g.fISN IN ({ph})
 """
 
 SQL_PRODUCTS = """
@@ -405,12 +420,18 @@ def order_docs(conn: Any, orders: Sequence[DispatchOrder]) -> list[Doc]:
 
 
 def doc_lines(conn: Any, isns: Sequence[str]) -> dict[str, tuple[Line, ...]]:
+    """Строки документов по fROWNUM, за ними — подарки (SALEDOCGIFTS) по своему fROWNUM: цена и сумма 0."""
     out: dict[str, list[Line]] = {}
+    gifts: dict[str, list[Line]] = {}
     for chunk in _chunks(sorted(set(isns))):
         for r in _select(conn, SQL_DOC_LINES.format(ph=_ph(len(chunk))), chunk):
             isn = _str(r[0]).upper()
             out.setdefault(isn, []).append(Line(isn, int(r[1] or 0), int(r[2]), _f(r[3]), _f(r[4]), _f(r[5])))
-    return {k: tuple(sorted(v, key=lambda x: x.rownum)) for k, v in out.items()}
+        for r in _select(conn, SQL_DOC_GIFTS.format(ph=_ph(len(chunk))), chunk):
+            isn = _str(r[0]).upper()
+            gifts.setdefault(isn, []).append(Line(isn, int(r[1] or 0), int(r[2]), _f(r[3]), 0.0, 0.0, gift=True))
+    by_row = lambda ls: tuple(sorted(ls, key=lambda x: x.rownum))   # noqa: E731
+    return {k: by_row(out.get(k, ())) + by_row(gifts.get(k, ())) for k in sorted(set(out) | set(gifts))}
 
 
 def products(conn: Any, ids: Sequence[int]) -> dict[int, Product]:
