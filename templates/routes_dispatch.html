@@ -229,30 +229,15 @@
                         </div>
                     </details>
 
+                    <!-- Магазины без точки (владелец 08.10 «не профессионально»): таблица как «Նախորդ օրերից»,
+                         точку ставят в диалоге «Խանութի տեղը» (dpGeoDlg) — не уходя со страницы -->
                     <details class="rt-fold" id="dpNoCoords" hidden>
                         <summary><span class="rt-fold-t"><i class="fas fa-location-dot" aria-hidden="true"></i>Խանութներ, որոնց տեղը քարտեզում չկա</span>
                             <span class="rt-fold-note" id="dpNoCoordsNote"></span></summary>
                         <div class="rt-fold-body">
-                            <ol class="dp-howto">
-                                <li>Ձախ կողմում ընտրեք խանութը։</li>
-                                <li>Քարտեզի վրա սեղմեք այնտեղ, որտեղ գտնվում է խանութը (կամ տեղադրեք կոորդինատները)։</li>
-                                <li>Սեղմեք «Պահպանել կետը»։ Ծրագիրը կհիշի այն և հաջորդ անգամ նորից չի հարցնի։</li>
-                            </ol>
-                            <div class="dp-pick">
-                                <ul class="dp-picklist" id="dpPickList"></ul>
-                                <div class="dp-pickside">
-                                    <div id="dpPickMap" class="dp-pickmap" role="region" aria-label="Քարտեզ՝ սեղմեք այնտեղ, որտեղ գտնվում է խանութը"></div>
-                                    <div class="dp-pickform">
-                                        <label for="dpPickCoord" class="dp-picklabel" id="dpPickLabel">Նախ ընտրեք խանութը ձախ կողմում</label>
-                                        <div class="rt-coord">
-                                            <input id="dpPickCoord" class="rt-input" type="text" inputmode="decimal" autocomplete="off" spellcheck="false"
-                                                   placeholder="40.17920, 44.49910" disabled aria-describedby="dpPickErr">
-                                            <button type="button" id="dpPickSave" class="rt-btn rt-btn-primary rt-btn-sm" disabled>Պահպանել կետը</button>
-                                        </div>
-                                        <div class="rt-ferr" id="dpPickErr" role="alert"></div>
-                                    </div>
-                                </div>
-                            </div>
+                            <p class="rt-fold-lead">Այս խանութների պատվերները երթերի մեջ չեն մտնում, քանի դեռ կետը նշված չէ։ Նշված կետը պահվում է, և հաջորդ անգամ նորից չի հարցվի։</p>
+                            <div class="dp-nc-hd" aria-hidden="true"><span>Խանութ, մենեջեր և հասցե</span><span>Քաշ և գումար</span><span></span></div>
+                            <ul class="dp-bl dp-nc" id="dpNoCoordsList" aria-label="Խանութներ առանց քարտեզի կետի"></ul>
                         </div>
                     </details>
 
@@ -433,6 +418,8 @@
     <dialog id="dpGeoDlg" class="dp-dlg" aria-labelledby="dpGeoTitle" aria-describedby="dpGeoLead">
         <h2 class="dp-dlg-t" id="dpGeoTitle">Խանութի տեղը</h2>
         <p class="dp-dlg-lead" id="dpGeoLead"></p>
+        <!-- поиск адреса на Яндекс Картах в новой вкладке: найти дом, скопировать координаты, вставить ниже -->
+        <a id="dpGeoFind" class="dp-geo-find" target="_blank" rel="noopener noreferrer" hidden><i class="fas fa-magnifying-glass-location" aria-hidden="true"></i><span>Գտնել հասցեն Yandex քարտեզում</span><span class="rt-sr-only">(նոր ներդիրում)</span><i class="fas fa-arrow-up-right-from-square" aria-hidden="true"></i></a>
         <div id="dpGeoMap" class="dp-pickmap" role="region" aria-label="Քարտեզ՝ քաշեք կետը կամ սեղմեք նոր տեղի վրա"></div>
         <label for="dpGeoCoord" class="dp-picklabel">Կոորդինատներ՝ լայնություն, երկայնություն</label>
         <input id="dpGeoCoord" class="rt-input" type="text" inputmode="decimal" autocomplete="off" spellcheck="false"
