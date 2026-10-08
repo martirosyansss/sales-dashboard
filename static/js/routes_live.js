@@ -48,7 +48,7 @@
     const GPS = { on: 'միացված', off: 'անջատված', no_permission: 'թույլտվություն չկա' };
 
     const state = { date: '', data: null, detail: null, selected: null, timer: null, busy: false, again: false, fitted: false,
-        map: null, markers: new Map(), layer: null, zone: null, pin: null, showPlan: loadPlanToggle(),
+        map: null, markers: new Map(), layer: null, zone: null, lateOpen: false, pin: null, showPlan: loadPlanToggle(),
         // воспроизведение дня: снимок машины на начало (опрос его не меняет), момент t (секунды эпохи), слои
         replay: { on: false, playing: false, t: 0, raf: 0, last: 0, truck: null, prefix: null, ghost: null, stops: [] } };
 
@@ -99,8 +99,16 @@
         if (n < 3600) return Math.round(n / 60) + ' րոպե առաջ';
         return Math.floor(n / 3600) + ' ժ ' + Math.round((n % 3600) / 60) + ' ր առաջ';
     };
-    // нет связи сейчас (сегодня, день не закрыт): «կապ չկա» или активная тревога «нет связи» при другой тревоге
-    const noContact = (t) => !state.date && !t.closed && (t.state === 'offline' || (t.alerts.active || []).includes('no_contact'));
+    // прогноза нет (live.car_view forecast: нет связи, GPS выключен, точки ещё нет) — сегодня, день не закрыт: маркер
+    // серый полупрозрачный в последнем известном положении, данные карточки — «до HH:MM»
+    const noForecast = (t) => !state.date && !t.closed && !t.forecast;
+    // сколько машину не слышно: от последних данных (связь или точка GPS, data_until) до момента расчёта
+    const silentAge = (t) => (t.data_until && state.data ? (Date.parse(state.data.now) - Date.parse(t.data_until)) / 1000 : null);
+    // нет связи: прогноза нет и данных нет дольше порога «կապ չկա» (APK с device — настройка, старый APK — пачками, свой)
+    const noContact = (t) => {
+        const th = state.data ? state.data.thresholds : null, age = silentAge(t);
+        return noForecast(t) && !!th && age !== null && age > 60 * (t.device ? th.no_contact_min : th.old_apk_silent_min);
+    };
     const silentFor = (s) => {   // сколько нет связи: «N րոպե» / «N ժ M ր»
         const n = num(s);
         if (n === null) return '';
@@ -164,7 +172,7 @@
                 + (t.stores.gps_visited ? ' · GPS-ով՝ ' + t.stores.gps_visited : '') })];
             if (pos) meta.push(h('span', { class: ageClass(pos.age_s), text: ago(pos.age_s) }));
             // нет связи — не опоздание «как будто машина ещё там», а сколько её не слышно
-            if (noContact(t)) meta.push(h('span', { class: 'is-bad', text: ('կապ չկա ' + silentFor(t.contact_age_s)).trim() }));
+            if (noContact(t)) meta.push(h('span', { class: 'is-bad', text: ('կապ չկա ' + silentFor(silentAge(t))).trim() }));
             else if (t.next && t.next.delay_min !== null) {
                 const d = delayText(t.next.delay_min);
                 if (d) meta.push(h('span', { class: d[1] === 'is-ok' ? '' : (d[1] === 'is-bad' ? 'is-bad' : 'is-warn'), text: d[0] }));
@@ -197,7 +205,7 @@
                 if (k !== 'late' && k !== 'no_contact') rows.push([0, t, (ALERT[k] || ['fa-bell'])[0], (ALERT[k] || ['', k])[1]]);
             }
             if (noContact(t)) {
-                rows.push([1, t, ALERT.no_contact[0], ('Կապ չկա ' + silentFor(t.contact_age_s)).trim()
+                rows.push([1, t, ALERT.no_contact[0], ('Կապ չկա ' + silentFor(silentAge(t))).trim()
                     + (t.data_until ? ' · վերջինը՝ ' + hm(t.data_until) : '')]);
             }
             if (lateSummary(t.late)) rows.push([2, t, ALERT.late[0], lateSummary(t.late)]);
@@ -225,8 +233,10 @@
         state.layer = L.layerGroup().addTo(state.map);
     }
 
-    // нет связи — серый полупрозрачный маркер в последнем известном положении и «վերջինը՝ HH:MM» под номером
-    const stale = (t) => t.state === 'offline' || t.state === 'nodata' || noContact(t);
+    // нет связи — серый полупрозрачный маркер в последнем известном положении и «վերջինը՝ HH:MM» (время этой точки GPS:
+    // при выключенном GPS связь свежая, а положение — давнее) под номером
+    const lastFix = (t) => (t.position ? hm(t.position.at) : hm(t.data_until));
+    const stale = (t) => t.state === 'offline' || t.state === 'nodata' || noForecast(t);
 
     function markerIcon(t) {
         const [, cls] = STATE[t.state] || STATE.standing;
@@ -238,7 +248,7 @@
             el.append(arrow);
         }
         el.append(h('span', { class: 'lv-marker-body' }, icon('fa-truck')), h('span', { class: 'lv-marker-plate', text: t.car_code }));
-        if (stale(t) && t.data_until) el.append(h('span', { class: 'lv-marker-last', text: 'վերջինը՝ ' + hm(t.data_until) }));
+        if (stale(t)) el.append(h('span', { class: 'lv-marker-last', text: 'վերջինը՝ ' + lastFix(t) }));
         if (t.alerts.count) el.append(h('span', { class: 'lv-marker-count', text: String(t.alerts.count) }));
         return L.divIcon({ html: el.outerHTML, className: '', iconSize: [34, 34], iconAnchor: [17, 17] });
     }
@@ -261,7 +271,7 @@
             m.setIcon(markerIcon(t));
             m.setZIndexOffset(t.car_code === state.selected ? 1000 : 0);
             m.bindTooltip(tip(t.car_code + (t.name ? ' · ' + t.name : '')
-                + (stale(t) && t.data_until ? ' · Վերջին հայտնի դիրքը՝ ' + hm(t.data_until) : '')), { direction: 'top', offset: [0, -16] });
+                + (stale(t) ? ' · Վերջին հայտնի դիրքը՝ ' + lastFix(t) : '')), { direction: 'top', offset: [0, -16] });
         }
         for (const [car, m] of state.markers) {
             if (!seen.has(car)) { m.remove(); state.markers.delete(car); }
@@ -381,14 +391,36 @@
         $('lvState').replaceChildren(h('span', { class: 'lv-dot ' + cls }), label);
 
         const active = (t.alerts_log || []).filter(a => a.active);
+        // «не успеет» по магазинам — одной строкой (машина вышла поздно — опаздывает ко всем: 12 красных строк закрывают
+        // экран телефона); список — по кнопке; возврат на склад — своей строкой
+        const lateStores = active.filter(a => a.kind === 'late' && a.late_kind !== 'return');
+        const grouped = lateStores.length > 1;
+        const rowOf = (a) => h('div', null, icon((ALERT[a.kind] || ['fa-bell'])[0]), h('span', { text: alertText(a)[0] }));
+        const rows0 = active.filter(a => !(grouped && lateStores.includes(a))).map(rowOf);
+        if (grouped) {
+            const over = lateStores.map(a => a.over_min), hi = Math.max(...over), lo = Math.min(...over);
+            const btn = h('button', { type: 'button', class: 'lv-active-more', 'aria-expanded': String(state.lateOpen),
+                'aria-controls': 'lvLateList', text: state.lateOpen ? 'Թաքցնել' : 'Ցույց տալ' });
+            const list = h('ul', { id: 'lvLateList', class: 'lv-late-list' },
+                ...lateStores.map(a => h('li', { text: alertText(a)[0] })));
+            list.hidden = !state.lateOpen;
+            btn.addEventListener('click', () => {
+                state.lateOpen = !state.lateOpen;
+                btn.setAttribute('aria-expanded', String(state.lateOpen));
+                btn.textContent = state.lateOpen ? 'Թաքցնել' : 'Ցույց տալ';
+                list.hidden = !state.lateOpen;
+            });
+            rows0.unshift(h('div', { class: 'lv-active-late' }, icon(ALERT.late[0]),
+                h('span', { text: lateStores.length + ' խանութ ուշանում է՝ ' + (hi - lo <= 10 ? '≈ ' : 'մինչև ') + hi + ' րոպե' }),
+                btn, list));
+        }
+        const refocus = !!document.activeElement && document.activeElement.classList.contains('lv-active-more');
         $('lvActive').hidden = !active.length;
-        $('lvActive').replaceChildren(...active.map(a => {
-            const [text] = alertText(a);
-            return h('div', null, icon((ALERT[a.kind] || ['fa-bell'])[0]), h('span', { text }));
-        }));
+        $('lvActive').replaceChildren(...rows0);
+        if (refocus) { const b = $('lvActive').querySelector('.lv-active-more'); if (b) b.focus({ preventScroll: true }); }
 
         const p = t.position;
-        const off = noContact(t), until = off ? untilText(t) : null;   // нет связи: данные — на момент последней связи
+        const off = noForecast(t), until = off ? untilText(t) : null;   // прогноза нет: данные — на момент последних данных
         const rows = [];
         rows.push(field(off ? 'Վերջին հայտնի դիրքը' : 'Դիրքը', p ? [ago(p.age_s)] : '—', p ? 'GPS՝ ' + hms(p.at) + ' · ' + p.lat.toFixed(5) + ', ' + p.lon.toFixed(5) : 'GPS կետ դեռ չկա', p ? ageClass(p.age_s) : 'is-mute'));
         rows.push(field('Արագություն', p && p.speed_kmh !== null ? p.speed_kmh + ' կմ/ժ' : '—',
@@ -418,7 +450,10 @@
         if (nx) {
             const d = delayText(nx.delay_min);
             // связи нет — прогноза нет: «как будто машина ещё там» вводит в заблуждение (live.car_view, forecast)
-            const when = nx.eta_unknown ? 'Ժամանումը անհայտ է՝ կապ չկա ' + hm(t.data_until) + '-ից'
+            const why = noContact(t) ? 'կապ չկա ' + hm(t.data_until) + '-ից'
+                : (t.device && (t.device.gps === 'off' || t.device.gps === 'no_permission') ? 'GPS-ն անջատված է'
+                    : (!t.position ? 'GPS դիրք դեռ չկա' : 'կապ չկա ' + hm(t.data_until) + '-ից'));
+            const when = nx.eta_unknown ? 'Ժամանումը անհայտ է՝ ' + why
                 : (nx.here ? 'տեղում է' : 'ժամանում ≈ ' + hm(nx.eta) + srcText(nx.eta_source));
             rows.push(field('Հաջորդ խանութը', nx.name || nx.stop_id,
                 when + (nx.planned_eta ? ' · պլան՝ ' + hm(nx.planned_eta) : '') + (d ? ' · ' + d[0] : ''),
@@ -450,7 +485,8 @@
             const g = s.gps;
             const diff = g && s.planned_eta ? Math.round((epoch(g.arrive) - epoch(s.planned_eta)) / 60) : null;
             const cell = (text, cls) => h('td', { class: cls || null, text });
-            const status = lt ? lateText(lt) : (g && g.here && !DONE.includes(s.status) ? 'տեղում է' : lab);
+            const here = (g && g.here) || (t.next && t.next.here && t.next.stop_id === s.stop_id);
+            const status = lt ? lateText(lt) : (here && !DONE.includes(s.status) ? 'տեղում է' : lab);
             return h('tr', { class: [lt ? 'is-late' : null, s.unmarked ? 'is-unmarked' : null].filter(Boolean).join(' ') || null },
                 cell(String(num(s.plan_no) ?? num(s.seq) ?? i + 1), 'is-num'),   // номер — как на карте (место в плане)
                 h('td', { class: 'lv-stop-name' }, h('span', { text: s.name || s.stop_id }), g ? h('small', { text: gpsText(g) }) : null),
@@ -554,7 +590,7 @@
         $('lvReplay').hidden = !canReplay(t);
         if (state.replay.on || !canReplay(t)) return;
         const r = $('lvReplayRange'), last = t.track_t[t.track_t.length - 1];
-        r.min = String(t.track_t[0]);
+        r.min = String(Math.floor(t.track_t[0] / 60) * 60);   // шаг — минута: начало на целой минуте
         r.max = String(last);
         r.value = String(last);
         $('lvReplayTime').textContent = clockOf(last);
@@ -716,6 +752,7 @@
     function select(car) {
         stopReplay();
         clearPoint();
+        state.lateOpen = false;
         state.selected = state.selected === car ? null : car;
         state.detail = null;
         renderCard();
@@ -746,6 +783,7 @@
         state.fitted = false;
         stopReplay();
         clearPoint();
+        state.lateOpen = false;
         state.selected = null;
         state.detail = null;
         refresh();

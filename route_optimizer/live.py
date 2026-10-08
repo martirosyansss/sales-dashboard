@@ -9,7 +9,9 @@
 - км сегодня — км по GPS тем же правилом, что «Առաքում այսօր» и «план — факт» (actuals.reconstruct: стоянки у точек дня
   и склада — 0 км, дрожание на месте км не добавляет);
 - рейсы. Точка дня относится к рейсу плана, где есть её клиент (первое появление; нет в плане или плана нет — к
-  первому рейсу). «Касание» точки — прибытие обслуживающего визита по GPS, без него — момент отметки доставки. Выезды
+  первому рейсу). «Касание» закрытой точки — прибытие обслуживающего визита по GPS, без него — момент отметки доставки;
+  открытой водителем (in_progress) — первого долгого заезда; ожидающей — засчитанного заезда (см. «GPS-визит точки»
+  ниже: долгий, после выезда её рейса). Выезды
   со склада — концы стоянок на складе, после которых машина была вне склада, и начало трека, если он начался вне
   склада. Рейс уехал, если у его точек есть касание (выезд — последний выезд не позже первого касания, нет такого —
   начало трека) или, когда касаний нет, после последнего касания предыдущего рейса (у первого — когда угодно) был
@@ -46,17 +48,30 @@
   положения не старше LATE_FIX_MAX; в журнале тревог — вид late (активен, пока прогноз такой; состояние машины не меняет);
 - прогноз (ETA следующего и каждого магазина, опоздание, возвращение, «не успеет») — только при свежей связи (forecast):
   последняя связь (позже из last_contact и последней точки GPS — data_until) не старше no_contact_min у APK с device и
-  OLD_APK_SILENT_MIN у старого APK, т.е. не «կապ չկա». Стоящая машина со старой точкой, но свежей связью — прогноз есть.
-  Связи нет — прогноза нет (ETA «как будто машина ещё там, где её видели» вводит в заблуждение): следующий магазин
+  OLD_APK_SILENT_MIN у старого APK, т.е. не «կապ չկա», и GPS терминала не выключен (device.gps off / no_permission —
+  положение неизвестно). Стоящая машина со старой точкой, но свежей связью — прогноз есть. Прогноза нет (нет связи, GPS
+  выключен, точки GPS ещё нет) — ETA «как будто машина ещё там, где её видели» вводит в заблуждение: следующий магазин
   называется с плановым ETA, eta/delay_min/eta_source — None, eta_unknown — true, here — false (где машина сейчас,
-  неизвестно); ETA точек и возвращения — None, late — пусто;
+  неизвестно); ETA точек и возвращения — None, late — пусто. Шкала хода дня «Развоза» (views._progress_fill) берёт ETA и
+  «на месте» из той же карточки: у такой машины и у unmarked-точек кружок — «ожидает» без времени;
 - груз по плану (planned_kg) — вес накладных рейса, который машина повезёт следующим: первый рейс с точками после
   последнего уехавшего (ничего не уехало — первый рейс с точками); все уехали — None. До выезда карточка показывает его
   вместо «0 кг»;
-- GPS-визит точки (gps) — обслуживающий визит actuals (served): прибытие, отъезд, минуты стоянки; here — визит идёт
-  сейчас (только сегодня: стоянка продолжается до последней точки трека, и последняя точка в STOP_RADIUS_M точки; отъезд
-  — None). unmarked — точка не закрыта водителем (pending/in_progress), а визит кончился: «GPS-ով այցելած, տերմինալում
-  չնշված». В сводке магазинов — gps_visited (точек с GPS-визитом) и unmarked;
+- GPS-визит точки (gps) — из всех заездов actuals к ней (визиты с точкой в keys: повторный заезд, общее место двух
+  магазинов, стоянка, разорванная дрожанием скорости, — каждый отдельно). Считаются только заезды не раньше выезда её
+  рейса (стоянка у магазина следующего рейса по пути — не посещение) и не короче GPS_VISIT_MIN, кроме идущего сейчас.
+  Рейсы — по порядку: заезды ожидающей точки засчитываются, когда её рейс уехал (departed_trips по отметкам водителя,
+  точкам in_progress и уже засчитанным заездам прежних рейсов), не раньше первого выезда со склада после последнего
+  касания прежних рейсов; засчитанный заезд — её касание. Показывается идущий сейчас заезд (сегодня: стоянка до
+  последней точки трека; отъезд — None), иначе первый. Закрытая точка — обслуживающий визит (нет — первый заезд) без
+  порога и без рейса: доставка отмечена, визит — факт. here («на месте», то же правило, что next.here и «стоит у
+  магазина» в ETA) — есть прогноз (без связи «տեղում է» — не «сейчас»), последняя точка в STOP_RADIUS_M точки и её
+  последний заезд идёт или кончился не раньше JITTER_BREAK до последней точки (стоянку оборвало дрожание скорости —
+  машина там же); тогда показывается этот заезд, отъезд — None, минуты — от его прибытия до сейчас.
+  unmarked — точка не закрыта водителем (pending/in_progress), заезд был, ни один не идёт сейчас и последняя точка
+  сегодня не в STOP_RADIUS_M точки: «GPS-ով այցելած, տերմինալում չնշված». Касание незакрытой точки (рейсы, груз) — тоже
+  только такой долгий заезд. Вес unmarked-точки остаётся в грузе и в расходе топлива (сколько отдали — неизвестно, пока
+  водитель не отметит). В сводке магазинов — gps_visited (точек с таким заездом) и unmarked;
 - воспроизведение дня: track_t — момент (секунды эпохи, UTC) каждой точки линии track, 1:1 с ней (те же упрощённые точки);
 - плановая линия (владелец 08.10, PlanRoute — собирает views): что водитель получил — отправленный план «Развоза» (№81),
   по рейсам склад → магазины плана по порядку → склад, по дорогам в объезд малого центра, как линии «Развоза»; дорог нет
@@ -115,6 +130,9 @@ NO_CONTACT_MAX = timedelta(hours=3)  # связи нет дольше — маш
 # «не успеет» (№87) — только от свежего положения: старый APK шлёт пачками до 20 мин; давнее — прогноз от места, где машины
 # уже нет (телефон выключен), и ложные тревоги
 LATE_FIX_MAX = timedelta(minutes=OLD_APK_SILENT_MIN)
+# заезд к незакрытой точке короче — не посещение (пробка, светофор у магазина): как стоянка «не по плану» actuals; разгрузка
+# по нормам — от 8 мин на точку
+GPS_VISIT_MIN = ac.OTHER_DWELL.total_seconds() / 60.0
 TRACK_LINE_POINTS = 1500            # линия трека на карте (actuals.simplify)
 PLAN_LINE_POINTS = 1500             # плановая линия на карте (на все рейсы); отклонение считается по полной
 DEVIATION_LINE_POINTS = 300         # линия одного отклонения на карте
@@ -404,7 +422,8 @@ def load_of(stops: Sequence[Mapping[str, Any]], trips: Mapping[str, int], gone: 
     """Груз по уехавшим рейсам gone (рейс → выезд): + вес рейса в момент выезда, − доставлено в момент выгрузки точки.
     Недовезённое закрытого рейса (все его точки закрыты) — − в момент первого входа в зону склада (entries) после его
     последнего касания; возврат (returns: at, kg) — + в его момент и − при первом входе в зону склада после него.
-    Нет входа — груз остаётся в машине."""
+    Нет входа — груз остаётся в машине. Точка, посещённая по GPS, но не отмеченная (unmarked), — её вес тоже в машине
+    (и в расходе топлива): сколько отдали, неизвестно, пока водитель не отметит."""
     events: list[tuple[datetime, float]] = []
     loaded = delivered = unloaded = returned = refused = 0.0
     unweighed = 0
@@ -1040,33 +1059,89 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
                   for s in stops]
     actual = ac.reconstruct(fixes, plan_stops, depot)
     visited = actual.visited
+    last = pts[-1] if pts else None
+    last_contact = _moment(facts.get('last_contact'))
+    device = facts.get('device')
+    # данные до: последняя связь или последняя точка GPS, что позже; прогноз — только при свежей связи и включённом GPS
+    data_until = max((t for t in (last_contact, last.at if last is not None else None) if t is not None), default=None)
+    silent = timedelta(minutes=rules.no_contact_min if device is not None else OLD_APK_SILENT_MIN)
+    gps_off = isinstance(device, Mapping) and device.get('gps') in ('off', 'no_permission')
+    forecast = live and data_until is not None and now - data_until <= silent and not gps_off
+
+    # визиты точки по GPS (все заезды, не только обслуживающий): идёт сейчас — стоянка до последней точки трека (сегодня);
+    # долгий — не короче GPS_VISIT_MIN (короче — пробка, светофор у магазина) или идёт сейчас
+    visits: dict[str, list[ac.Visit]] = {}
+    for v in actual.visits:
+        for k in v.keys:
+            visits.setdefault(k, []).append(v)
+    ongoing = {k: v for k, vs in visits.items() for v in vs if live and last is not None and v.leave >= last.at}
+    long = {k: [v for v in vs if v.minutes >= GPS_VISIT_MIN or ongoing.get(k) is v] for k, vs in visits.items()}
+    # касания: закрытые — визит или отметка доставки; открытые водителем у магазина (in_progress) — долгий визит;
+    # ожидающие — долгий визит после выезда своего рейса (ниже, по рейсам)
     touches: dict[str, datetime] = {}
     for s in stops:
-        t = visited.get(s['stop_id']) or (_moment(s.get('delivered_at')) if s.get('status') in DONE else None)
-        if t is not None:
-            touches[s['stop_id']] = t
-    last = pts[-1] if pts else None
-    # GPS-визит точки (обслуживающий визит actuals): идёт сейчас — стоянка до последней точки трека (только сегодня)
-    gps: dict[str, dict[str, Any]] = {}
-    unmarked: set[str] = set()
-    served = dict(actual.served)
-    for s in stops:
         sid = s['stop_id']
-        vi = served.get(sid)
-        if vi is None:
+        if s.get('status') in DONE:
+            t = visited.get(sid) or _moment(s.get('delivered_at'))
+        elif s.get('status') == 'in_progress':
+            t = min((v.arrive for v in long.get(sid, ())), default=None)
+        else:
             continue
-        v = actual.visits[vi]
-        ongoing = live and last is not None and v.leave >= last.at
-        here = (ongoing and s.get('lat') is not None and s.get('lon') is not None
-                and _near(last.point, (s['lat'], s['lon']), ac.STOP_RADIUS_M))   # type: ignore[union-attr]
-        gps[sid] = {'arrive': _iso(v.arrive), 'leave': None if here else _iso(v.leave), 'minutes': round(v.minutes),
-                    'here': here}
-        if s.get('status') in OPEN and not ongoing:
-            unmarked.add(sid)   # машина была и уехала, водитель не отметил — точка посещена
+        if t is not None:
+            touches[sid] = t
     trips = trip_of(stops, plan)
     deps = departures(pts, actual, depot)
-    gone = departed_trips(trips, touches, deps, pts[0].at if pts else None,
-                          {s['stop_id'] for s in stops if s.get('status') in OPEN} - unmarked)
+    start = pts[0].at if pts else None
+    open_ids = {s['stop_id'] for s in stops if s.get('status') in OPEN}
+    seen: dict[str, list[ac.Visit]] = {}   # точка → засчитанные заезды
+    unmarked: set[str] = set()
+    for k in sorted(set(trips.values())):   # рейс уехал — с тем, что известно о прежних рейсах (их визиты уже засчитаны)
+        gone = departed_trips(trips, touches, deps, start, open_ids - unmarked)
+        if k not in gone:
+            continue
+        # заезд засчитывается не раньше первого выезда после последнего касания прежних рейсов (выезд рейса — последний
+        # такой: заезд на склад посреди рейса не отменяет визиты до него)
+        prev = max((t for sid, t in touches.items() if trips[sid] < k), default=None)
+        bound = min([d for d in deps if prev is None or d > prev][:1] + [gone[k]])
+        for s in stops:
+            sid = s['stop_id']
+            if trips[sid] != k or s.get('status') not in OPEN or s.get('lat') is None or s.get('lon') is None:
+                continue   # закрытая точка — визит показывается как есть (ниже), правило заездов — только для незакрытых
+            mine = [v for v in long.get(sid, ()) if v.arrive >= bound]
+            if not mine:
+                continue
+            seen[sid] = mine
+            if s.get('status') == 'pending':
+                touches.setdefault(sid, mine[0].arrive)
+            inside = live and last is not None and _near(last.point, (s['lat'], s['lon']), ac.STOP_RADIUS_M)
+            if sid not in ongoing and not inside:
+                unmarked.add(sid)   # машина была и уехала, водитель не отметил — точка посещена
+    gone = departed_trips(trips, touches, deps, start, open_ids - unmarked)   # посещённые по GPS не держат следующий рейс
+    # «на месте» — одно правило для карточки (next.here) и таблицы: прогноз есть, последняя точка в STOP_RADIUS_M точки и её
+    # последний заезд идёт или кончился не раньше JITTER_BREAK до неё (стоянку оборвало дрожание скорости — машина там же)
+    served = dict(actual.served)
+
+    def at_stop(x: Mapping[str, Any]) -> ac.Visit | None:
+        vs = visits.get(x['stop_id'])
+        if not (forecast and last is not None and vs and x.get('lat') is not None and x.get('lon') is not None
+                and _near(last.point, (x['lat'], x['lon']), ac.STOP_RADIUS_M)):   # type: ignore[union-attr]
+            return None
+        return vs[-1] if vs[-1].leave >= last.at - ac.JITTER_BREAK else None   # type: ignore[union-attr]
+    gps: dict[str, dict[str, Any]] = {}
+    for s in stops:
+        sid = s['stop_id']
+        cur = at_stop(s)
+        if cur is not None:
+            gps[sid] = {'arrive': _iso(cur.arrive), 'leave': None, 'here': True,
+                        'minutes': round(max(0.0, (now - cur.arrive).total_seconds() / 60.0))}
+            continue
+        if s.get('status') in OPEN:   # незакрытая — засчитанный заезд (долгий, после выезда её рейса)
+            v = (ongoing.get(sid) if ongoing.get(sid) in seen.get(sid, ()) else seen[sid][0]) if sid in seen else None
+        else:   # закрытая — обслуживающий визит, нет — первый заезд, как бы короток ни был
+            v = actual.visits[served[sid]] if sid in served else next(iter(visits.get(sid, ())), None)
+        if v is not None:
+            gps[sid] = {'arrive': _iso(v.arrive), 'leave': None if v is ongoing.get(sid) else _iso(v.leave),
+                        'minutes': round(v.minutes), 'here': False}
     entries = depot_entries(pts, depot)
     load = load_of(stops, trips, gone, touches, facts.get('returns') or (), entries)
     moving = ac.moving_track(fixes, actual)
@@ -1076,7 +1151,6 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
     brg = next((p[5] for p in reversed(raw) if last is not None and p[0] == round(last.at.timestamp() * 1000)
                 and len(p) > 5), None)
     contacts = sorted(t for t in (_moment(x) for x in facts.get('contacts') or ()) if t is not None)
-    last_contact = _moment(facts.get('last_contact'))
     closed_at = _moment(facts.get('closed_at'))
     done = sum(1 for s in stops if s.get('status') in DONE)
     at_depot = last is not None and _near(last.point, depot, ac.DEPOT_RADIUS_M)
@@ -1085,10 +1159,6 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
     end = closed_at or (last.at if finished and last is not None else None)
     open_now = live and started is not None and not finished
     age = (now - last.at).total_seconds() if last is not None else None
-    # данные до: последняя связь или последняя точка GPS, что позже; прогноз — только при свежей связи (не «կապ չկա»)
-    data_until = max((t for t in (last_contact, last.at if last is not None else None) if t is not None), default=None)
-    silent = timedelta(minutes=rules.no_contact_min if facts.get('device') is not None else OLD_APK_SILENT_MIN)
-    forecast = live and data_until is not None and now - data_until <= silent
 
     # следующий магазин, ETA, опоздание, возвращение
     current = max(gone) if gone else 0
@@ -1100,7 +1170,7 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
     late: list[dict[str, Any]] = []
     own = {s['stop_id']: e for s in stops if trips[s['stop_id']] < len(plan)
            and (e := plan[trips[s['stop_id']]].etas.get(s.get('customer_id'))) is not None}   # плановое ETA её рейса
-    if nxt is not None and not forecast and not finished:   # связи нет: магазин и план — да, прогноза — нет
+    if nxt is not None and not (forecast and last is not None) and not finished:   # прогноза нет: магазин и план — да
         k = trips[nxt['stop_id']]
         planned = plan[k].etas.get(nxt.get('customer_id')) if k < len(plan) else None   # type: ignore[arg-type]
         next_out = {'stop_id': nxt['stop_id'], 'name': nxt.get('name'), 'here': False, 'eta': None, 'eta_source': None,
@@ -1110,8 +1180,8 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
         queue = _queue(stops, trips, plan, current, nxt, bool(gone), unmarked)
         here = None
         if nxt is not None and _near(last.point, (nxt['lat'], nxt['lon']), ac.STOP_RADIUS_M):
-            arrived = touches.get(nxt['stop_id'])
-            here = (nxt, max(0.0, (now - arrived).total_seconds() / 60.0) if arrived is not None else 0.0)
+            cur = at_stop(nxt)   # стоит у него — разгрузка идёт с прибытия этого заезда (только подъехал — с нуля)
+            here = (nxt, max(0.0, (now - cur.arrive).total_seconds() / 60.0) if cur is not None else 0.0)
             queue = [(k, [x for x in xs if x['stop_id'] != nxt['stop_id']]) for k, xs in queue]
         eta = eta_plan(day, now, last.point, queue, gone, current if gone else None, plan, depot, road, rules,
                        not lunch_taken(actual, day, rules), at_depot, here, windows)
@@ -1194,7 +1264,6 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
     planned_kg = (math.fsum(float(s.get('weight_kg') or 0.0) for s in stops if trips[s['stop_id']] == ahead[0])
                   if ahead else None)
 
-    device = facts.get('device')
     out: dict[str, Any] = {
         'position': ({'lat': round(last.lat, 6), 'lon': round(last.lon, 6), 'at': _iso(last.at),
                       'age_s': round(age) if age is not None else None,

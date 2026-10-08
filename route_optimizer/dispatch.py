@@ -74,6 +74,11 @@
   Машина отдельного рейса не простаивает: сборка не берёт лишнюю машину, если без неё всё помещается (_spare_solo_truck).
   Правки логиста не запрещаются; сборка, перенос конца рейса и новые заказы дня правило соблюдают (_can_carry). Без
   правил — прежний план до байта.
+- «Այսօր չենք տանում» — «Երբ տանել» (владелец 08.10, Draft.later): логист выбирает день, когда везти заказы магазина
+  (рабочий день после дня плана, не дальше LATER_MAX_DAYS, defer_days) — в этот день они сами входят в развоз как
+  перенесённые (views._carried, courier.routes_link: later_carried по планам LATER_SCAN_DAYS дней до него); сам — только
+  по последнему решению о нём (не в два дня); не довезли — виден в «Նախորդ օրերից». «Չգիտեմ» — как раньше, заказы
+  прошлых дней — «Չտանել» (dismissed), сам день — в «Նախորդ օրերից».
 """
 from __future__ import annotations
 
@@ -102,6 +107,12 @@ MAX_TRIPS = 500           # защита от битого черновика
 MAX_BUILT_ORDERS = 20000  # заказов в отметке сборки — тоже защита от битого черновика
 MAX_AGENTS = 500          # менеджеров в «чьи заказы не везём» — защита от битого черновика и запроса
 BACKLOG_WORKDAYS = 2      # «не отгружены с прошлых дней» — заказы ещё двух рабочих дней раньше окна
+LATER_MAX_DAYS = 7        # «Երբ տանել» (владелец 08.10): перенос не дальше недели от дня плана (календарных дней)
+# заказ старше этого (дней до дня плана) «Երբ տանել» не переносится: окно ERP дня, куда он придёт, ограничено (later_carried)
+DEFER_MAX_AGE_DAYS = 14
+# сколько дней назад смотреть планы с «Երբ տանել»: день доставки (≤ LATER_MAX_DAYS, стал праздником — позже) и ещё
+# неделя после него — не довезённый в свой день заказ видно в «Նախորդ օրերից» (сам он больше никуда не входит)
+LATER_SCAN_DAYS = 14
 BYPASS_MIN_KM = 0.01      # пояснение рейса: участок длиннее из-за объезда центра хотя бы на 10 м — «в объезд»
 WEEKDAY_FULL = {1: 'понедельник', 2: 'вторник', 3: 'среда', 4: 'четверг', 5: 'пятница', 6: 'суббота',
                 7: 'воскресенье'}
@@ -249,6 +260,60 @@ def backlog_since(since: date, workdays: Sequence[int], n: int = BACKLOG_WORKDAY
     for _ in range(n):
         since = previous_workday(since, workdays, holidays)
     return since
+
+
+def defer_days(day: date, workdays: Sequence[int], holidays: Collection[date] = ()) -> list[date]:
+    """Куда «Այսօր չենք տանում» переносит заказы магазина («Երբ տանել», владелец 08.10): рабочие дни строго после day и
+    не дальше LATER_MAX_DAYS календарных дней."""
+    days = (day + timedelta(days=i) for i in range(1, LATER_MAX_DAYS + 1))
+    return [d for d in days if is_workday(d, workdays, holidays)]
+
+
+def later_day(to: date, workdays: Sequence[int], holidays: Collection[date] = ()) -> date:
+    """День, когда везут перенесённое «Երբ տանել» на to: сам to, а стал нерабочим (праздник после переноса) — первый
+    рабочий день после него."""
+    return to if is_workday(to, workdays, holidays) else next_workday(to, workdays, holidays)
+
+
+def later_carried(plans: Sequence[tuple[date, Draft]], workdays: Sequence[int],
+                  holidays: Collection[date] = ()) -> dict[str, tuple[date | None, date, date]]:
+    """Перенесённые «Երբ տանել» (Draft.later) в планах plans — (день плана, план, отправленный водителям: for_drivers) по
+    возрастанию дня, LATER_SCAN_DAYS дней до дня, который их смотрит: isn → (день доставки — later_day; None — перенос
+    снят, дата заказа, день плана последнего решения). Одно правило для страницы «Развоза» и терминалов водителей.
+
+    Сам заказ входит в развоз только дня доставки (== день) и только по последнему решению о нём — поэтому он никогда не
+    входит сам в два дня. План после переноса, который сам решил судьбу заказа, заменяет перенос: взял «Տանել այսօր»
+    (added; заказ везут там) или перенёс «Վաղը» (deferred; его сам берёт следующий день, views._carried) — перенос снят
+    (None); снова «Երբ տանել» (later) — новый день. «Не везём сегодня» промежуточного дня (excluded, «Չտանել» —
+    dismissed, убран перенесённый сюда — dropped) — решение только того дня: сам заказ туда не входит, перенос остаётся.
+    Снятый перенос и прошедший день доставки — заказ сам никуда не входит, но его видно в «Նախորդ օրերից» (views) до конца
+    окна LATER_SCAN_DAYS: не отгружен — логист решит сам. Строки битого черновика (заказ старше DEFER_MAX_AGE_DAYS, день
+    не в (день плана, + LATER_MAX_DAYS]) — мимо: окно ERP дня ограничено."""
+    out: dict[str, tuple[date | None, date, date]] = {}
+    for d, plan in plans:
+        for isn in plan.added | plan.deferred:
+            if isn in out:
+                out[isn] = (None, out[isn][1], d)
+        for isn, (to, od) in plan.later.items():
+            if d - timedelta(days=DEFER_MAX_AGE_DAYS) <= od and d < to <= d + timedelta(days=LATER_MAX_DAYS):
+                out[isn] = (later_day(to, workdays, holidays), od, d)
+    return out
+
+
+def later_shown(entry: tuple[date | None, date, date], o: DispatchOrder, day: date, target: Draft | None) -> bool:
+    """Заказ «Երբ տանել» o (entry — его строка later_carried) старше окна «Նախորդ օրերից» дня day всё же виден в нём:
+    перенесён на day (входит сам) или позже (строка «կտանենք»); день доставки прошёл — только если там его, похоже, не
+    везли: отправленного плана того дня (target) нет, магазина нет в его рейсах или заказ там убран (dropped, «Չտանել» —
+    dismissed) — не отгружен, решит логист. Везли или перенос снят решением другого дня («Տանել այսօր», «Վաղը») — сверх
+    обычного окна не виден (как до «Երբ տանել»): иначе строка «не решён», пока нет накладной, и «Տանել բոլորը» взял бы его
+    второй раз."""
+    to = entry[0]
+    if to is None:
+        return False
+    if to >= day:
+        return True
+    return target is None or o.isn in target.dropped or o.isn in target.dismissed \
+        or not any(o.customer_id in t.stops for t in target.trips)
 
 
 # --- Чьи заказы везут машины парка (ответ владельца №74) ---
@@ -486,7 +551,8 @@ class PlanSeen:
     def of(cls, draft: Draft | None) -> PlanSeen:
         if draft is None:
             return cls()
-        return cls(frozenset(draft.built_orders or ()) | frozenset(draft.excluded) | frozenset(draft.deferred),
+        return cls(frozenset(draft.built_orders or ()) | frozenset(draft.excluded) | frozenset(draft.deferred)
+                   | frozenset(draft.later),
                    frozenset(c for t in draft.trips for c in t.stops))
 
     def has(self, o: DispatchOrder) -> bool:
@@ -671,6 +737,9 @@ class Draft:
     # заказы прошлых дней (backlog), которые логист этого дня решил не везти («Չտանել», владелец 08.10): в развоз не идут
     # и в списке «Նախորդ օրերից» свёрнуты; «Տանել այսօր» снимает отметку. Водителям не передаётся (_drivers_key)
     dismissed: set[str] = field(default_factory=set)
+    # «Երբ տանել» (владелец 08.10): заказы магазина, который сегодня не принимает, — fISN → (день доставки, дата заказа);
+    # тот день сам берёт их в развоз как перенесённые (later_carried). Дата заказа — чтобы тот день прочёл их из ERP
+    later: dict[str, tuple[date, date]] = field(default_factory=dict)
 
     def to_json(self) -> dict[str, Any]:
         built = None if self.built_orders is None else {
@@ -697,7 +766,9 @@ class Draft:
                 **({'unmanned': dict(sorted(self.unmanned.items()))} if self.unmanned else {}),
                 **({'absent': sorted(self.absent)} if self.absent else {}),
                 **({'solo_spare': dict(self.solo_spare)} if self.solo_spare is not None else {}),
-                **({'dismissed': sorted(self.dismissed)} if self.dismissed else {})}
+                **({'dismissed': sorted(self.dismissed)} if self.dismissed else {}),
+                **({'later': {k: [to.isoformat(), od.isoformat()] for k, (to, od) in sorted(self.later.items())}}
+                   if self.later else {})}
 
     @classmethod
     def from_json(cls, raw: Any, *, snapshot: bool = False) -> Draft:
@@ -748,7 +819,7 @@ class Draft:
                    absent=sorted({x for x in (raw.get('absent') or [])[:MAX_TRIPS] if isinstance(x, str) and x})
                    if isinstance(raw.get('absent'), list) else [],
                    solo_spare=raw.get('solo_spare') if isinstance(raw.get('solo_spare'), dict) else None,
-                   dismissed=isns('dismissed'))
+                   dismissed=isns('dismissed'), later=_later(raw.get('later')))
         if released is not None and not snapshot:
             draft.sent = _sent(raw.get('sent'))
             if draft.sent is None:   # выпущен до №81 (или снимок битый): водители видят сам черновик — он и отправлен
@@ -781,6 +852,22 @@ def _built_orders(raw: Any) -> dict[str, tuple[float, float]] | None:
         if isinstance(k, str) and ISN_RE.match(k) and isinstance(v, list) and len(v) == 2 \
                 and all(_is_num(x) for x in v):
             out[k] = (float(v[0]), float(v[1]))
+    return out
+
+
+def _later(raw: Any) -> dict[str, tuple[date, date]]:
+    """«Երբ տանել» из черновика: fISN → (день доставки, дата заказа); битые строки — мимо."""
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, tuple[date, date]] = {}
+    for k, v in list(raw.items())[:MAX_BUILT_ORDERS]:
+        if not (isinstance(k, str) and ISN_RE.match(k) and isinstance(v, list) and len(v) == 2
+                and all(isinstance(x, str) and re.fullmatch(r'\d{4}-\d{2}-\d{2}', x) for x in v)):
+            continue
+        try:
+            out[k] = (date.fromisoformat(v[0]), date.fromisoformat(v[1]))
+        except ValueError:
+            continue
     return out
 
 
@@ -1149,6 +1236,7 @@ def build(ctx: DayContext, stops: Sequence[Stop], old: Draft | None, trucks: Seq
     draft = Draft(trucks=sorted(codes), excluded=set(old.excluded), added=set(old.added), next_id=old.next_id,
                   built_at=now, deferred=set(old.deferred), dropped=set(old.dropped), agents_off=set(old.agents_off),
                   same_day=set(old.same_day), same_day_trips=set(old.same_day_trips), dismissed=set(old.dismissed),
+                  later=dict(old.later),
                   released=dict(old.released) if old.released is not None else None,   # №80: пересборка не прячет день
                   sent=old.sent,   # №81: пересборка — правка: водители видят прежний снимок до отправки
                   fleet=dict(old.fleet) if old.fleet is not None else None)
@@ -1851,6 +1939,8 @@ def _guard_loaded(draft: Draft, edit: Mapping[str, Any], routable: Mapping[int, 
         isn = isn.upper() if isinstance(isn, str) else None
         cids = {c for c, s in routable.items() if any(o.isn == isn for o in s.orders)}
         touched = any(cids & set(t.stops) for t in loaded.values())
+    elif action == 'defer_store':   # все заказы магазина — как exclude каждого
+        touched = any(edit.get('customer_id') in t.stops for t in loaded.values())
     if touched:
         raise LoadedEdit(LOADED_EDIT)
 
@@ -1914,9 +2004,63 @@ def _trip_stops(ctx: DayContext, draft: Draft, routable: Mapping[int, Stop], edi
     return draft
 
 
+DEFER_DAY_BAD = f'Այդ օրը չի կարելի ընտրել — ընտրեք առաջիկա {LATER_MAX_DAYS} օրվա աշխատանքային օրերից մեկը'
+DEFER_TOO_OLD = (f'Խանութի պատվերներից մեկը {DEFER_MAX_AGE_DAYS} օրից ավելի հին է — այն այլ օր տեղափոխել չի կարելի։ '
+                 'Որոշեք այսօր կամ ընտրեք «Չգիտեմ»։')
+
+
+def _defer_store(day: date, stops: Sequence[Stop], draft: Draft, edit: Mapping[str, Any], order_ids: Collection[str],
+                 backlog_ids: Collection[str], carried: Collection[str], defer_to: Collection[date]) -> Draft:
+    """«Այսօր չենք տանում» магазина (владелец 08.10) — все его заказы в развозе дня одной правкой: заказы дня — в excluded,
+    прошлых дней — из added (перенесённый сюда — ещё и в dropped); взятые сегодня новые заказы дня (№72, same_day) — снова
+    заказы следующего дня, и только. to (ключ обязателен) — «Երբ տանել»: день из defer_to (рабочий после дня плана,
+    defer_days) — в later (тот день возьмёт их сам); заказ старше DEFER_MAX_AGE_DAYS — нельзя (окно ERP того дня
+    ограничено); null — «Չգիտեմ»: как exclude каждого (прошлых дней — «Չտանել», dismissed)."""
+    if 'to' not in edit:
+        raise DispatchError('Սերվերը չընդունեց հարցումը — թարմացրեք էջը')
+    cid, raw = edit.get('customer_id'), edit.get('to')
+    stop = next((s for s in stops if s.customer_id == cid), None) if _is_int(cid) else None
+    if stop is None:
+        raise DispatchError('Խանութն այս օրվա պատվերներում չէ — թարմացրեք էջը')
+    to: date | None = None
+    if raw is not None:
+        try:
+            to = date.fromisoformat(raw) if isinstance(raw, str) and len(raw) == 10 else None
+        except ValueError:
+            to = None
+        if to is None or to not in set(defer_to):
+            raise DispatchError(DEFER_DAY_BAD)
+        oldest = day - timedelta(days=DEFER_MAX_AGE_DAYS)
+        if any(o.order_date < oldest for o in stop.orders if o.isn in order_ids or o.isn in backlog_ids):
+            raise DispatchError(DEFER_TOO_OLD)
+    for o in stop.orders:
+        isn = o.isn
+        if isn in order_ids:
+            draft.excluded.add(isn)
+        elif isn in backlog_ids:
+            draft.added.discard(isn)
+            if isn in carried:
+                draft.dropped.add(isn)
+            if to is None:
+                draft.dismissed.add(isn)
+        elif isn in draft.same_day:
+            draft.same_day.discard(isn)   # заказ дня, взятый сегодня (№72), — снова заказ следующего дня, не перенос
+            continue
+        else:
+            continue
+        draft.same_day.discard(isn)
+        draft.deferred.discard(isn)
+        if to is None:
+            draft.later.pop(isn, None)
+        else:
+            draft.later[isn] = (to, o.order_date)
+    return draft
+
+
 def apply_edit(ctx: DayContext, stops: Sequence[Stop], draft: Draft, edit: Mapping[str, Any],
                order_ids: set[str], backlog_ids: set[str] = frozenset(), defer_since: date | None = None,
-               carried: Collection[str] = (), now_min: float | None = None, loaded_ok: bool = False) -> Draft:
+               carried: Collection[str] = (), now_min: float | None = None, loaded_ok: bool = False,
+               defer_to: Collection[date] = ()) -> Draft:
     """Правка логиста (§3) поверх черновика; затронутые рейсы пересчитываются (порядок — 2-opt). now_min — сейчас (минуты от
     начала дня машины; только сегодня): resize не меняет рейсы, которые уже грузятся. Загруженный рейс (№78, _guard_loaded)
     меняется только с loaded_ok — логист подтвердил, что товар уже в машине.
@@ -1934,7 +2078,9 @@ def apply_edit(ctx: DayContext, stops: Sequence[Stop], draft: Draft, edit: Mappi
       {"action": "exclude" | "include", "order": fISN} — «не везём сегодня» / вернуть; заказ прошлых
           дней (backlog_ids) — «Չտանել» (не везём: dismissed; перенесённый сюда — carried — ещё и в dropped) /
           «Տանել այսօր» (added, явный выбор логиста — и для менеджера, снятого фильтром «Մենեջերներ»; в рейс его
-          ставит place_added); перенос на завтра снимается;
+          ставит place_added); перенос на завтра и «Երբ տանել» (later) снимаются;
+      {"action": "defer_store", "customer_id", "to": "ГГГГ-ММ-ДД" | null} — «Այսօր չենք տանում» магазина одной правкой
+          (_defer_store): все его заказы дня — не сегодня; to — день из defer_to («Երբ տանել»), null — «Չգիտեմ»;
       {"action": "include", "orders": [fISN, …]} — «Տանել բոլորը»: те же «Տանել այսօր» сразу для заказов прошлых дней;
       {"action": "agents", "off": [agent_id, …]} — фильтр «Մենեջերներ»: заказы этих менеджеров не везём
           (остальные — везём); точки, где заказов не осталось, уходят из рейсов, вернувшиеся — «ещё не в рейсах»;
@@ -1965,6 +2111,7 @@ def apply_edit(ctx: DayContext, stops: Sequence[Stop], draft: Draft, edit: Mappi
             draft.dropped.discard(x.upper())
             draft.dismissed.discard(x.upper())
             draft.deferred.discard(x.upper())
+            draft.later.pop(x.upper(), None)
         return draft
     if action in ('exclude', 'include'):
         isn = edit.get('order')
@@ -1980,12 +2127,16 @@ def apply_edit(ctx: DayContext, stops: Sequence[Stop], draft: Draft, edit: Mappi
                 draft.dropped.discard(isn)
                 draft.dismissed.discard(isn)
             draft.deferred.discard(isn)
+            draft.later.pop(isn, None)
             return draft
         if isn not in order_ids:
             raise DispatchError('Заказ не найден среди заказов дня — обновите страницу')
         (draft.excluded.add if action == 'exclude' else draft.excluded.discard)(isn)
         draft.deferred.discard(isn)
+        draft.later.pop(isn, None)
         return draft
+    if action == 'defer_store':
+        return _defer_store(ctx.day, stops, draft, edit, order_ids, backlog_ids, carried, defer_to)
     if action == 'agents':
         off = parse_agents(edit.get('off'))
         if off is None:
@@ -2004,6 +2155,7 @@ def apply_edit(ctx: DayContext, stops: Sequence[Stop], draft: Draft, edit: Mappi
                     draft.added.discard(o.isn)
                 draft.same_day.discard(o.isn)    # заказ дня, взятый сегодня (№72), — снова заказ следующего дня
                 draft.deferred.add(o.isn)
+                draft.later.pop(o.isn, None)
         moved = set(trip.stops)
         for t in draft.trips:                    # тяжёлый заказ в нескольких рейсах — переносится целиком
             t.stops = [c for c in t.stops if c not in moved]
@@ -2455,7 +2607,7 @@ def _drivers_key(plan: Draft) -> tuple[dict[str, list[int]], tuple[Any, ...]]:
         order.extend(c for c in t.stops if c not in order)
     trucks = {c: v for c, v in trucks.items() if v}
     return trucks, (sorted(plan.excluded), sorted(plan.added), sorted(plan.dropped), sorted(plan.agents_off),
-                    sorted(plan.same_day), FleetRule.from_json(plan.fleet).to_json())
+                    sorted(plan.same_day), FleetRule.from_json(plan.fleet).to_json(), sorted(plan.later.items()))
 
 
 def unsent(draft: Draft) -> dict[str, Any] | None:

@@ -1429,7 +1429,7 @@ def test_forecast_suppressed_when_contact_stale():
     f = facts(tr.pts, stops, [T0, tr.t], NEW_APK)
     card = view(f, tr.t + timedelta(minutes=30), plan, detail=True)
     nxt = card['next']
-    assert card['forecast'] is False and card['data_until'] == tr.t.isoformat()
+    assert card['forecast'] is False and card['state'] == 'offline' and card['data_until'] == tr.t.isoformat()
     assert nxt['stop_id'] == 'S:A' and nxt['planned_eta'] == (tr.t + timedelta(minutes=10)).isoformat()
     assert (nxt['eta'], nxt['delay_min'], nxt['eta_source'], nxt['eta_unknown'], nxt['here']) == (None, None, None,
                                                                                                     True, False)
@@ -2007,3 +2007,131 @@ def test_plan_lines_cache_serves_previous_while_rebuilding_and_one_build_at_a_ti
     for k in range(views.LIVE_LINES_DAYS + 2):
         cache.get(DAY + timedelta(days=k + 1), {'CAR1': 'k'}, lambda todo: {'CAR1': first})
     assert len({d for d, _ in cache._slots}) == views.LIVE_LINES_DAYS
+
+
+# ---- ревью 08.10: все заезды, а не только обслуживающий; рейс точки; без связи — не «на месте» ----
+
+AB = [live.PlanTrip((1, 2), {})]
+
+
+def _ab():
+    return [stop('S:A', 1, A, 600.0, seq=1), stop('S:B', 2, B, 400.0, seq=2)]
+
+
+def test_revisit_store_is_here_and_unload_counts_from_this_visit():
+    """Постоял у A, уехал, вернулся и стоит у A сейчас: A «на месте» (не «посещён и не отмечен»), остаток разгрузки — от
+    прибытия этого заезда."""
+    tr = Track().park(DEPOT, 10).drive(A).park(A, 5).drive(_mid(A, B)).drive(A).park(A, 6)
+    card = view(facts(tr.pts, _ab(), [T0, tr.t], NEW_APK), tr.t, AB, detail=True)
+    st = {x['stop_id']: x for x in card['stops']}
+    g = st['S:A']['gps']
+    assert g['here'] is True and g['leave'] is None and st['S:A']['unmarked'] is False
+    assert card['next']['stop_id'] == 'S:A' and card['next']['here'] is True and card['stores']['unmarked'] == 0
+    stayed = (tr.t - datetime.fromisoformat(g['arrive'])).total_seconds() / 60
+    want = tr.t + timedelta(minutes=max(0.0, 8 + 6 * 0.6 - stayed) + ROAD.minutes(A, B))
+    assert abs((datetime.fromisoformat(st['S:B']['eta']) - want).total_seconds()) < 1.5
+
+
+def test_jitter_split_stay_still_ongoing_is_not_unmarked():
+    """Дыра в треке дольше JITTER_BREAK рвёт стоянку у A на два заезда — второй идёт сейчас: A на месте."""
+    tr = Track().park(DEPOT, 10).drive(A).park(A, 4)
+    t = tr.t + timedelta(seconds=30)
+    tr.pts.append((ms(t), A[0] + 0.0003, A[1], 8.0, 3.0, 90.0))
+    tr.t, tr.pos = t + timedelta(seconds=200), (A[0] + 0.0006, A[1])
+    tr.park(tr.pos, 6)
+    card = view(facts(tr.pts, _ab(), [T0, tr.t], NEW_APK), tr.t, AB, detail=True)
+    a = card['stops'][0]
+    assert a['unmarked'] is False and a['gps']['here'] is True and a['gps']['leave'] is None
+    assert card['next']['stop_id'] == 'S:A'
+
+
+def test_two_stores_one_site_not_unmarked_while_truck_is_there():
+    """Два магазина в 60 м (одно место): стоял у A, переставил машину к A2 и стоит — A не «посещён и не отмечен», пока
+    машина в STOP_RADIUS_M; уехал — оба не отмечены, следующий — B."""
+    a2 = (A[0], A[1] + 0.0007)
+    stops = [stop('S:A', 1, A, 300.0, seq=1), stop('S:A2', 3, a2, 200.0, seq=2), stop('S:B', 2, B, 400.0, seq=3)]
+    plan = [live.PlanTrip((1, 3, 2), {})]
+    tr = Track().park(DEPOT, 10).drive(A).park(A, 6).drive(a2).park(a2, 6)
+    card = view(facts(tr.pts, stops, [T0, tr.t], NEW_APK), tr.t, plan, detail=True)
+    st = {x['stop_id']: x for x in card['stops']}
+    assert card['stores']['unmarked'] == 0 and st['S:A2']['gps']['here'] is True
+    assert st['S:A']['gps']['here'] is False and st['S:A']['gps']['leave'] is not None
+    tr.drive(_mid(a2, B))
+    card = view(facts(tr.pts, stops, [T0, tr.t], NEW_APK), tr.t, plan)
+    assert card['stores']['unmarked'] == 2 and card['next']['stop_id'] == 'S:B'
+
+
+def test_still_inside_radius_after_stay_is_not_unmarked():
+    """Стоянка у A кончилась, машина отъезжает, но ещё в STOP_RADIUS_M — не «уехал, не отметив», а «на месте»."""
+    tr = Track().park(DEPOT, 10).drive(A).park(A, 6).drive((A[0], A[1] + 0.0008))   # ~68 м
+    card = view(facts(tr.pts, _ab(), [T0, tr.t], NEW_APK), tr.t, AB, detail=True)
+    assert card['stops'][0]['unmarked'] is False and card['stores']['unmarked'] == 0
+    assert card['stops'][0]['gps']['here'] is True and card['stops'][0]['gps']['leave'] is None
+    assert card['next']['stop_id'] == 'S:A' and card['next']['here'] is True
+
+
+def test_stop_near_later_trip_store_or_short_stop_is_not_a_visit():
+    """Рейс 1 — A, B; рейс 2 — C. По пути к A машина простояла 8 мин у C (пробка, обед) и 3 мин у B: это не посещения —
+    рейс 2 не уехал, C и B не «посещены, не отмечены», груз по плану — рейс 2 (300 кг) ещё впереди."""
+    stops = _ab() + [stop('S:C', 3, C, 300.0, seq=3)]
+    plan = [live.PlanTrip((1, 2), {}), live.PlanTrip((3,), {})]
+    tr = Track().park(DEPOT, 10).drive(C).park(C, 8).drive(B).park(B, 3).drive(_mid(B, A))
+    card = view(facts(tr.pts, stops, [T0, tr.t], NEW_APK), tr.t, plan, detail=True)
+    st = {x['stop_id']: x for x in card['stops']}
+    assert st['S:C']['gps'] is None and st['S:B']['gps'] is None and card['stores']['unmarked'] == 0
+    assert card['load']['trips_gone'] == 1 and card['load']['planned_kg'] == 300 and card['next']['stop_id'] == 'S:A'
+
+
+def test_visit_before_mid_trip_depot_return_still_counts():
+    """Был у A (не отметил), заехал на склад посреди рейса и поехал к B — визит у A засчитан."""
+    tr = Track().park(DEPOT, 10).drive(A).park(A, 8).drive(DEPOT).park(DEPOT, 5).drive(_mid(DEPOT, B))
+    card = view(facts(tr.pts, _ab(), [T0, tr.t], NEW_APK), tr.t, AB, detail=True)
+    assert card['stops'][0]['unmarked'] is True and card['next']['stop_id'] == 'S:B'
+
+
+def test_offline_truck_at_store_is_neither_here_nor_unmarked():
+    tr = Track().park(DEPOT, 10).drive(A).park(A, 6)
+    card = view(facts(tr.pts, _ab(), [T0, tr.t], NEW_APK), tr.t + timedelta(minutes=90), AB, detail=True)
+    g = card['stops'][0]['gps']
+    assert card['state'] == 'offline' and card['forecast'] is False
+    assert g['here'] is False and g['leave'] is None and card['stops'][0]['unmarked'] is False
+    assert card['next']['stop_id'] == 'S:A' and card['next']['here'] is False and card['next']['eta_unknown'] is True
+
+
+def test_next_store_named_without_gps_fix_and_no_forecast_when_gps_off():
+    card = view(facts([], _ab(), [T0], NEW_APK), T0 + timedelta(minutes=1), AB)   # связь есть, точки GPS ещё нет
+    assert card['next']['stop_id'] == 'S:A' and card['next']['eta_unknown'] is True and card['next']['eta'] is None
+    tr, stops, plan = _to_a()
+    off = {**NEW_APK, 'gps': 'off'}
+    card = view(facts(tr.pts, stops, [T0, tr.t], off, [(tr.t, 'off')]), tr.t + timedelta(minutes=1), plan, detail=True)
+    assert card['forecast'] is False and card['next']['eta_unknown'] is True and card['return_eta'] is None
+    assert all(x['eta'] is None for x in card['stops']) and card['late'] == []
+    card = view(facts(tr.pts, stops, [T0, tr.t], {**NEW_APK, 'gps': 'no_permission'}), tr.t + timedelta(minutes=1), plan)
+    assert card['forecast'] is False
+
+
+def test_short_marked_delivery_keeps_gps_visit():
+    """Доставка отмечена после стоянки короче GPS_VISIT_MIN — визит закрытой точки показывается как есть (CT115, 333DN33)."""
+    tr = Track().park(DEPOT, 10).drive(A)
+    at_a = tr.t
+    tr.park(A, 3).drive(_mid(A, B))
+    stops = [stop('S:A', 1, A, 600.0, 'full', 1.0, at_a + timedelta(minutes=2), seq=1), stop('S:B', 2, B, 400.0, seq=2)]
+    card = view(facts(tr.pts, stops, [T0, tr.t], NEW_APK), tr.t, AB, detail=True)
+    g = card['stops'][0]['gps']
+    assert g is not None and g['here'] is False and g['leave'] is not None and g['minutes'] < live.GPS_VISIT_MIN
+    assert card['stores']['gps_visited'] == 1 and card['stores']['unmarked'] == 0
+
+
+def test_stay_cut_by_speed_jitter_truck_still_there_is_here_in_card_and_table():
+    """Стоянку у A оборвал всплеск скорости, машина стоит в STOP_RADIUS_M (CT115, 333DN33 12:48): карточка и таблица
+    согласны — «на месте», отъезда нет, минуты — от прибытия."""
+    tr = Track().park(DEPOT, 10).drive(A).park(A, 8)
+    t = tr.t + timedelta(seconds=20)
+    tr.pts.append((ms(t), A[0] + 0.0004, A[1], 8.0, 3.0, 90.0))   # мигнула скорость: стоянка кончилась
+    tr.t, tr.pos = t + timedelta(seconds=40), (A[0] + 0.0007, A[1])   # ~78 м: дальше REPOSITION_M, в STOP_RADIUS_M
+    tr.park(tr.pos, 1)
+    card = view(facts(tr.pts, _ab(), [T0, tr.t], NEW_APK), tr.t, AB, detail=True)
+    g = card['stops'][0]['gps']
+    assert card['next']['stop_id'] == 'S:A' and card['next']['here'] is True
+    assert g['here'] is True and g['leave'] is None and card['stops'][0]['unmarked'] is False
+    assert g['minutes'] == round((tr.t - datetime.fromisoformat(g['arrive'])).total_seconds() / 60)

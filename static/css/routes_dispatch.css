@@ -810,6 +810,28 @@
 .dp-unload-hint:empty { display: none; }
 .dp-unload-dlg .rt-ferr { margin-top: 8px; }
 
+/* «Առաքման պայմաններ» (владелец 08.10): условия магазина на странице — поля как в «Условиях магазина» /routes/settings */
+.dp-cond-dlg { width: min(600px, calc(100vw - 32px)); }
+.dp-cond-dlg .rt-select { width: 100%; }
+.dp-cond-dlg input[type="time"] { color-scheme: dark; }
+.dp-cond-load { margin: 0 0 12px; }
+.dp-cond-time { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.dp-cond-time label { display: grid; gap: 6px; min-width: 0; margin-top: 10px; font-size: .875rem; }
+.dp-cond-time label[hidden] { display: none; }
+.dp-cond-label { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--rt-line); }
+.dp-cond-sub { margin: 12px 0 6px; font-size: .875rem; font-weight: 600; }
+.dp-cond-trucks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; max-height: 240px; overflow-y: auto; padding: 2px; }
+.dp-cond-trucks[hidden] { display: none; }
+.dp-cond-truck {
+    display: flex; align-items: center; gap: 8px; padding: 8px; border: 1px solid var(--rt-line); border-radius: 10px;
+    cursor: pointer; font-size: .875rem; overflow-wrap: anywhere;
+}
+.dp-cond-truck input { flex: 0 0 auto; width: 18px; height: 18px; accent-color: var(--rt-acc); }
+.dp-cond-truck:has(input:checked) { border-color: var(--rt-acc); }
+.dp-cond-dlg .dp-crew-day { margin-top: 14px; color: var(--rt-fg); }
+.dp-cond-dlg .dp-unload-hint[hidden] { display: none; }
+@media (max-width: 480px) { .dp-cond-time, .dp-cond-trucks { grid-template-columns: minmax(0, 1fr); } }
+
 /* «Բեռնագիր» (ответ владельца №57): кнопки печати и Excel справа от шапки карточки машины, на телефоне — строкой под ней */
 .dp-ttop { display: flex; align-items: center; }
 .dp-ttop > .dp-thead-h { flex: 1 1 auto; min-width: 0; }
@@ -1293,6 +1315,18 @@ body.dp-ws-on .rt-secbar .rt-tabs a { padding-top: 3px; padding-bottom: 3px; }
 .dp-why-trucks label { display: inline-flex; align-items: center; gap: 6px; font-size: .875rem; cursor: pointer; }
 .dp-why-trucks input { width: 16px; height: 16px; accent-color: var(--rt-acc); }
 .dp-why-trucks label:has(input:disabled) { color: var(--rt-fg-mute); cursor: default; }
+/* «Երբ տանել» (владелец 08.10): день, когда заказы магазина сами войдут в план, — чипы под «Այսօր չենք տանում» */
+.dp-why-days { display: grid; gap: 6px; margin: 8px 0 0 32px; min-width: 0; }
+.dp-why-days-t { font-size: .8125rem; font-weight: 700; color: var(--rt-fg-dim); }
+.dp-why-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.dp-why-chip { position: relative; display: inline-flex; align-items: center; min-height: 32px; padding: 4px 12px; border: 1px solid var(--rt-line); border-radius: 999px; background: var(--rt-panel); color: var(--rt-fg); font-size: .8125rem; cursor: pointer; white-space: nowrap; }
+.dp-why-chip input { position: absolute; width: 1px; height: 1px; margin: 0; opacity: 0; pointer-events: none; }
+.dp-why-chip:hover { border-color: var(--rt-acc-dim); }
+.dp-why-chip:has(input:checked) { border-color: var(--rt-acc); background: var(--rt-acc-glow); color: var(--rt-acc); font-weight: 600; }
+.dp-why-chip:has(input:focus-visible) { outline: 2px solid var(--rt-acc); outline-offset: 2px; }
+.dp-why-days-hint { font-size: .75rem; color: var(--rt-fg-mute); line-height: 1.4; }
+.dp-oitem-t .dp-later { margin-left: 6px; font-size: .6875rem; padding: 0 7px; vertical-align: 1px; font-weight: 600; }
+@media (max-width: 640px) { .dp-why-days { margin-left: 0; } .dp-why-chip { white-space: normal; } }
 .dp-add-row.is-off { cursor: default; }
 .dp-add-row.is-off:hover { background: transparent; }
 .dp-add-row.is-off > i { margin-top: 3px; color: var(--rt-fg-mute); text-align: center; }
