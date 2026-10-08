@@ -102,6 +102,8 @@
 - машина без права въезда в малый центр (настройки машины) — в его границе: подряд не меньше CENTER_MIN_POINTS точек;
 - отклонение от плановой линии (deviation): активно, пока последняя точка (свежая, не старше STALE_S) вне линии плана и
   отклонение ещё идёт.
+Линия трека на карте (владелец 08.10) — track_line: стоянка — одна точка, езда — без дрожания и по дорогам (привязку
+Valhalla делает фон views._LiveTracks); только отображение — все расчёты выше идут по своим точкам.
 """
 from __future__ import annotations
 
@@ -113,6 +115,7 @@ from datetime import date, datetime, timedelta
 from typing import Any, Callable, Collection, Mapping, Protocol, Sequence
 
 from . import actuals as ac
+from . import track_line as tl
 from .geo import Fix, Point, haversine_km, in_city, in_polygon, track_steps
 from .learning import _hhmm, effective_refuels, fuel_intervals, track_fixes
 from .store import DEFAULT_SETTINGS, LIVE_ALERT_KINDS
@@ -133,7 +136,7 @@ LATE_FIX_MAX = timedelta(minutes=OLD_APK_SILENT_MIN)
 # заезд к незакрытой точке короче — не посещение (пробка, светофор у магазина): как стоянка «не по плану» actuals; разгрузка
 # по нормам — от 8 мин на точку
 GPS_VISIT_MIN = ac.OTHER_DWELL.total_seconds() / 60.0
-TRACK_LINE_POINTS = 1500            # линия трека на карте (actuals.simplify)
+TRACK_LINE_POINTS = 1500            # линия трека на карте (track_line.line)
 PLAN_LINE_POINTS = 1500             # плановая линия на карте (на все рейсы); отклонение считается по полной
 DEVIATION_LINE_POINTS = 300         # линия одного отклонения на карте
 DEVIATION_MIN_KM = 0.5              # отклонение — не меньше 0,5 км пути вне линии плана…
@@ -1055,10 +1058,13 @@ def late_forecast(day: date, stops: Sequence[Mapping[str, Any]], arrive: Mapping
 def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[PlanTrip], truck: TruckSpec,
              depot: Point | None, rules: Rules, road: Road, detail: bool = False,
              windows: Mapping[int, tuple[float, float]] | None = None,
-             route: PlanRoute | None = None) -> dict[str, Any]:
+             route: PlanRoute | None = None,
+             track_snap: Callable[[Sequence[tl.Chunk]], Mapping[Any, Sequence[tl.TPoint]]] | None = None) -> dict[str, Any]:
     """Карточка машины (detail — ещё линия трека, точки дня, журнал тревог, плановая линия и линии отклонений). now —
     сейчас (Ереван); день не сегодня — без ETA и тревог «сейчас». windows — окна приёма клиентов (late_forecast), route —
-    плановая линия машины (None — машине план не отправлен)."""
+    плановая линия машины (None — машине план не отправлен). track_snap — куски линии трека → уже привязанные к дорогам
+    (ключ Chunk.key → линия; views._LiveTracks: чего нет — привязывается в фоне); None — линия без привязки. Линия трека
+    (track_line) — только отображение: ни один показатель карточки от неё не зависит."""
     live = now.astimezone(YEREVAN).date() == day
     stops = list(facts.get('stops') or ())
     raw = list(facts.get('track') or ())
@@ -1337,12 +1343,14 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
              'line': [[round(p[0], 6), round(p[1], 6)] for p in ac.simplify([f.point for f in run], DEVIATION_LINE_POINTS)]}
             for a, run in zip(deviations, runs)]
     if detail:
-        # simplify смотрит только на широту и долготу: момент точки едет вместе с ней (track_t — 1:1 с track)
-        line = ac.simplify([(f.lat, f.lon, f.at.timestamp()) for f in pts], TRACK_LINE_POINTS)   # type: ignore[misc]
+        # линия трека (владелец 08.10): стоянка — одна точка, езда — без дрожания, по дорогам (track_line); момент точки
+        # едет вместе с ней (track_t — 1:1 с track)
+        parts = tl.chunks(pts, actual.stays)
+        line = tl.line(parts, track_snap(parts) if track_snap is not None else {}, TRACK_LINE_POINTS)
         marks = {k: v for k, v in visited.items()}
         out.update({
             'track': [[round(p[0], 6), round(p[1], 6)] for p in line],
-            'track_t': [round(p[2]) for p in line],   # type: ignore[misc]
+            'track_t': [round(p[2]) for p in line],
             'stops': [{'stop_id': s['stop_id'], 'customer_id': s.get('customer_id'), 'name': s.get('name'),
                        'lat': s.get('lat'), 'lon': s.get('lon'),
                        'status': s.get('status'), 'seq': s.get('seq'), 'trip': trips[s['stop_id']] + 1,

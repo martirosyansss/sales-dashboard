@@ -16,7 +16,7 @@ import re
 import threading
 import time
 import uuid
-from collections import Counter
+from collections import Counter, OrderedDict
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from functools import wraps
@@ -33,6 +33,7 @@ from . import crew_pay as cp
 from . import dispatch as dp
 from . import evaluate, garage, learning, live, optimize
 from . import scorecard as sc
+from . import track_line as tl
 from . import fleet as fl
 from . import waybill as wb
 from . import terrain as dem
@@ -44,8 +45,8 @@ from .snapshot import CAR_IDLE_DAYS, MIN_REFRESH_SECONDS, ResultCache, Snapshot,
 from .store import (CREW_TABLES, DEFAULT_MANAGER_FUEL, DEFAULT_SETTINGS, KEEP, Bundle, Decision, GarageError, Store, StoreError,
                     big_auto, center_auto, check_driver_name, check_garage_entry, check_unload_min, check_window,
                     validate_payload)
-from .valhalla_engine import (TRUCK_TIME_MODEL, TRUCK_TIME_VALHALLA, ValhallaProvider, ValhallaRoads, truck_leg_minutes,
-                              truck_time_source)
+from .valhalla_engine import (CAR_COSTING, PROFILE_CAR, PROFILE_TRUCK, TRUCK_TIME_MODEL, TRUCK_TIME_VALHALLA, ValhallaProvider,
+                              ValhallaRoads, truck_costing, truck_leg_minutes, truck_time_source)
 from .vehicle_access import check_access
 
 logger = logging.getLogger(__name__)
@@ -202,6 +203,7 @@ class RoutesState:
     # «Մեքենաները առցանց»: дорожная модель ETA (views._LiveRoads) и карточки флота на 10 с (views._live_cards)
     live_roads: _LiveRoads = field(default_factory=lambda: _LiveRoads())
     live_lines: _LivePlanLines = field(default_factory=lambda: _LivePlanLines())   # плановые линии по дорогам (08.10)
+    live_tracks: _LiveTracks = field(default_factory=lambda: _LiveTracks())   # линии треков, привязанные к дорогам (08.10)
     live_cards: dict[date, tuple[Any, float, Any, datetime, dict[str, dict[str, Any]]]] = field(default_factory=dict)
     live_lock: threading.Lock = field(default_factory=threading.Lock)   # только словари кэша: расчёт под ним не идёт
     live_flight: dict[date, threading.Lock] = field(default_factory=dict)   # пересчёт флота — один на день
@@ -4066,8 +4068,11 @@ def _day_map() -> Any:
     days = [d for d in _learning_days(state, bundle, day, day) if d[0] == car]
     data = state.fleet_facts.day(car, day.isoformat())
     track = ac.clean_track(learning.track_fixes(data['track']))
-    line = ac.simplify([f.point for f in track], MAP_TRACK_POINTS)
     stops, actual, draft = (days[0][2], days[0][3], days[0][4]) if days else ([], ac.DayActual(0, 0.0, None, None), None)
+    # линия как на карте машин (08.10): стоянка — одна точка, езда — без дрожания, по дорогам (track_line)
+    truck = bundle.trucks.get(car)
+    line = _track_line(state, day, car, truck.capacity_kg if truck is not None else None, track, actual.stays,
+                       MAP_TRACK_POINTS)
     prediction = (((draft or {}).get('prediction') or {}).get('trucks') or {}).get(car) or {}
     eta = {c[0]: c[1] for t in prediction.get('trips') or () for c in t.get('stops') or ()
            if isinstance(c, list) and len(c) == 2}
@@ -4221,6 +4226,8 @@ class _LiveContext:
     # плановые линии машин (08.10, _live_plan_routes) — только если план отправлен водителям (sent: Draft.released)
     routes: dict[str, live.PlanRoute] = field(default_factory=dict)
     sent: bool = False
+    # линия трека машины по дорогам (08.10, _LiveTracks): (машина, куски линии) → привязанные куски; None — без привязки
+    tracks: Callable[[str, Sequence[tl.Chunk]], Mapping[Any, Sequence[tl.TPoint]]] | None = None
 
 
 LIVE_LINES_MAX = 300   # машино-дней плановых линий в памяти (кэш _LivePlanLines)
@@ -4343,6 +4350,93 @@ def _plan_geometry(roads: Any, todo: Mapping[str, Any]) -> dict[str, live.RouteG
             trips.append(tuple(pts))
         out[car] = live.RouteGeometry(trips, parts, straight)
     return out
+
+
+LIVE_TRACK_POINTS = 200_000   # вершин привязанных кусков треков в памяти (все машино-дни; ~40 МБ)
+
+
+class _LiveTracks:
+    """Линии треков машин по дорогам (владелец 08.10: петли и прямые сквозь дома — «не профессионально»): кэш кусков
+    езды (track_line.Chunk) по (день, машина, ключ куска). Кусок привязывается к дорогам один раз (track_line.match_chunk:
+    Valhalla map matching; не вышло — его точки, тоже в кэш: повторять бессмысленно); у растущего хвоста дня готовые куски
+    не меняются — заново привязывается только последний. Привязывает один фоновый поток на весь процесс: пока он занят,
+    новые куски ждут следующего опроса, а линия там, где привязки ещё нет, — без неё (сразу, без ожидания). Valhalla нет,
+    выключен или сборки нет — ничего не кэшируется (появится — привяжется). Память: не больше LIVE_TRACK_POINTS вершин —
+    уходят куски, которые дольше всего не спрашивали. Свой замок, не live_lock: привязка под ним не идёт."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._items: OrderedDict[tuple[date, str, Any], list[tl.TPoint]] = OrderedDict()
+        self._size = 0
+        self._busy = False
+
+    def get(self, day: date, car: str, parts: Sequence[tl.Chunk],
+            match: Callable[[tl.Chunk], tuple[list[tl.TPoint], bool] | None] | None) -> dict[Any, list[tl.TPoint]]:
+        def serve() -> tuple[dict[Any, list[tl.TPoint]], list[tl.Chunk]]:
+            out: dict[Any, list[tl.TPoint]] = {}
+            todo: list[tl.Chunk] = []
+            for c in parts:
+                if c.stay or len(c.points) < tl.MATCH_MIN_POINTS:
+                    continue
+                k = (day, car, c.key)
+                hit = self._items.get(k)
+                if hit is not None:
+                    self._items.move_to_end(k)
+                    out[c.key] = hit
+                else:
+                    todo.append(c)
+            return out, todo
+        with self._lock:
+            out, todo = serve()
+            start = bool(todo) and match is not None and not self._busy
+            if start:
+                self._busy = True
+
+        def run() -> None:
+            try:
+                for c in todo:
+                    got = match(c)   # type: ignore[misc]
+                    if got is None:   # Valhalla нет — не кэшируем: появится — привяжется
+                        break
+                    with self._lock:
+                        k = (day, car, c.key)
+                        old = self._items.pop(k, None)
+                        self._size += len(got[0]) - (len(old) if old is not None else 0)
+                        self._items[k] = got[0]
+                        while self._size > LIVE_TRACK_POINTS and len(self._items) > 1:
+                            self._size -= len(self._items.popitem(last=False)[1])
+            except Exception:
+                logger.exception('[Routes] Карта машин: линия трека не привязана к дорогам — без привязки')
+            finally:
+                with self._lock:
+                    self._busy = False
+        if not start:
+            return out
+        if LIVE_ROAD_BACKGROUND:
+            threading.Thread(target=run, name='routes-live-tracks', daemon=True).start()
+            return out
+        run()
+        with self._lock:
+            return serve()[0]
+
+
+def _track_matcher(state: RoutesState, capacity_kg: float | None
+                   ) -> Callable[[tl.Chunk], tuple[list[tl.TPoint], bool] | None] | None:
+    """Привязка куска трека машины к дорогам: Valhalla сервера (ValhallaProvider.trace), профиль грузовика с тоннажем
+    машины (как матрицы «Развоза»), не вышло — легкового. Valhalla нет — None (линия без привязки)."""
+    provider = state.valhalla
+    if provider is None:
+        return None
+    tries = ((PROFILE_TRUCK, truck_costing(capacity_kg)), (PROFILE_CAR, CAR_COSTING))
+    return lambda c: tl.match_chunk(c, provider.trace, tries)
+
+
+def _track_line(state: RoutesState, day: date, car: str, capacity_kg: float | None, pts: Sequence[Any],
+                stays: Sequence[ac.Stay], max_points: int) -> list[tl.TPoint]:
+    """Линия трека машино-дня для карты (track_line): стоянка — одна точка, езда — по дорогам, где уже привязана
+    (_LiveTracks; остальное — в фоне), иначе — точки без дрожания."""
+    parts = tl.chunks(pts, stays)
+    return tl.line(parts, state.live_tracks.get(day, car, parts, _track_matcher(state, capacity_kg)), max_points)
 
 
 def _live_plan_routes(state: RoutesState, bundle: Bundle, snap: Any, day: date, draft: dp.Draft,
@@ -4519,18 +4613,26 @@ def _live_context(state: RoutesState, day: date,
     ds = day.isoformat()
     drivers, helpers = state.store.truck_drivers(ds)[0], state.store.truck_drivers(ds, 'helper')[0]
     crew = {car: {'driver': drivers.get(car), 'helper': helpers.get(car)} for car in set(drivers) | set(helpers)}
+    caps = {code: t.capacity_kg for code, t in bundle.trucks.items()}
+
+    def tracks(car: str, parts: Sequence[tl.Chunk]) -> Mapping[Any, Sequence[tl.TPoint]]:
+        return state.live_tracks.get(day, car, parts, _track_matcher(state, caps.get(car)))
     return _LiveContext(rules, road, bundle.depot, plans, trucks, names, crew, tuple(planned),
                         {cid: w.span() for cid, w in bundle.windows.items()}, routes,
-                        stored is not None and full.released is not None)
+                        stored is not None and full.released is not None, tracks)
 
 
 def _live_card(ctx: _LiveContext, day: date, now: datetime, car: str, facts: Mapping[str, Any] | None,
-               detail: bool) -> dict[str, Any]:
+               detail: bool, snap: bool = False) -> dict[str, Any]:
+    """Карточка машины (live.car_view). snap — линия трека по дорогам (_LiveTracks): только карточка машины на карте;
+    ход дня «Развоза» линию не показывает — привязку не заказывает."""
     crew = ctx.crew.get(car, {})
+    tracks = ctx.tracks if snap and detail else None
     return {'car_code': car, 'name': ctx.names.get(car), 'driver': crew.get('driver'), 'helper': crew.get('helper'),
             'planned': car in ctx.planned, 'plan_sent': ctx.sent,
             **live.car_view(day, now, facts or {}, ctx.plans.get(car, []), ctx.trucks.get(car, live.TruckSpec()),
-                            ctx.depot, ctx.rules, ctx.road, detail, ctx.windows, ctx.routes.get(car))}
+                            ctx.depot, ctx.rules, ctx.road, detail, ctx.windows, ctx.routes.get(car),
+                            (lambda parts: tracks(car, parts)) if tracks is not None else None)}
 
 
 def _live_cards(state: RoutesState, day: date) -> tuple[_LiveContext, datetime, dict[str, Any],
@@ -4626,7 +4728,7 @@ def api_live_truck() -> Any:
     if car not in cards:
         return jsonify({'success': False, 'error': 'Այս մեքենան այս օրը տվյալներ չունի'}), 404
     now = _yerevan_now()
-    return jsonify({**_live_head(ctx, day, now), 'truck': _live_card(ctx, day, now, car, fleet.get(car), True)})
+    return jsonify({**_live_head(ctx, day, now), 'truck': _live_card(ctx, day, now, car, fleet.get(car), True, True)})
 
 
 # --- Ход дня на шкале «Развоза» (ответ владельца №82: как мониторинг Яндекса / Routific live) ---

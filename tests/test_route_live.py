@@ -1524,15 +1524,22 @@ def test_unmarked_stop_does_not_hold_next_trip_departure():
 
 
 def test_track_t_aligned_with_simplified_track(monkeypatch):
-    tr = Track().park(DEPOT, 5).drive(A).park(A, 4).drive(B)
+    """track_t — 1:1 с track. Точка линии — точка трека в свой момент или середина стоянки в момент прибытия или
+    отъезда (линия трека 08.10: стоянка — одна точка, track_line)."""
+    tr = Track().park(DEPOT, 5).drive(A).park(A, 6).drive(B)
     raw = {round(p[0] / 1000): [round(p[1], 6), round(p[2], 6)] for p in tr.pts}
+    stays = ac.reconstruct(live.track_fixes(tr.pts), [], DEPOT).stays
+    at_stay = {round(t.timestamp()): [round(s.center[0], 6), round(s.center[1], 6)]
+               for s in stays for t in (s.arrive, s.leave)}
+    assert len(stays) == 2
     for limit in (live.TRACK_LINE_POINTS, 12):     # без упрощения и с упрощением линии
         monkeypatch.setattr(live, 'TRACK_LINE_POINTS', limit)
         card = view(facts(tr.pts, [], [T0, tr.t]), tr.t, detail=True)
         assert len(card['track_t']) == len(card['track']) and len(card['track']) <= max(limit, 2)
         assert card['track_t'] == sorted(card['track_t'])
         assert card['track_t'][0] == round(T0.timestamp()) and card['track_t'][-1] == round(tr.t.timestamp())
-        assert all(raw[t] == p for t, p in zip(card['track_t'], card['track']))
+        assert all(at_stay.get(t) == p or raw.get(t) == p for t, p in zip(card['track_t'], card['track']))
+        assert all(t in card['track_t'] for t in at_stay)   # стоянки остаются и при упрощении
     assert view(facts(), T0, detail=True)['track_t'] == []
 
 
@@ -1546,6 +1553,33 @@ def test_api_live_carries_contact_gps_and_replay_fields(client, live_app):
     assert len(truck['track_t']) == len(truck['track']) > 1
     assert truck['stops'][0]['gps']['here'] is True and truck['stops'][0]['unmarked'] is False
     assert truck['stops'][1]['gps'] is None
+
+
+def test_api_live_truck_track_by_roads_only_on_truck_card(client, live_app, monkeypatch):
+    """Линия трека по дорогам (08.10): привязку заказывает только карточка машины (/truck) — флот и ход дня «Развоза»
+    нет; привязанный кусок — в линии; Valhalla нет — линия без привязки, ответ тот же по составу."""
+    from route_optimizer import views
+    asked = []
+
+    def matcher(state, capacity_kg):
+        def match(c):
+            asked.append((c.key, capacity_kg))
+            return [(p[0] + 0.001, p[1], p[2]) for p in c.raw()], True
+        return match
+    monkeypatch.setattr(views, '_track_matcher', matcher)
+    _session_as(client, 'boss', base=LAN)
+    assert client.get('/api/routes/live', base_url=LAN).status_code == 200
+    assert client.get('/api/routes/dispatch/progress?date=2026-10-03', base_url=LAN).status_code == 200
+    assert asked == []
+    truck = client.get('/api/routes/live/truck?car=CAR1', base_url=LAN).get_json()['truck']
+    assert asked and all(cap == 10000.0 for _, cap in asked)       # тоннаж машины — из настроек (CAR1 — 10 т)
+    plain = live.car_view(DAY, API_NOW, live_app.app.extensions['route_optimizer'].live_facts.fleet('2026-10-03')['CAR1'],
+                          [], TRUCK, DEPOT, RULES, ROAD, True)
+    assert len(truck['track']) == len(truck['track_t']) and truck['track'] != plain['track']
+    monkeypatch.setattr(views, '_track_matcher', lambda state, capacity_kg: None)   # Valhalla нет
+    monkeypatch.setattr(live_app.app.extensions['route_optimizer'], 'live_tracks', views._LiveTracks())
+    bare = client.get('/api/routes/live/truck?car=CAR1', base_url=LAN).get_json()['truck']
+    assert set(bare) == set(truck) and len(bare['track']) == len(bare['track_t']) > 1
 
 
 # ============================== плановая линия, отклонение от неё, показатели дня (владелец 08.10) ==============================
@@ -1669,6 +1703,30 @@ def test_deviation_lunch_stay_itself_is_not_counted():
     assert _route_view(near, near.t, _route())['deviation']['count'] == 0
     morning = _detour_track(1500.0, datetime(2026, 10, 5, 9, 0, tzinfo=Y), park_min=30)
     assert _route_view(morning, morning.t, _route())['deviation']['count'] == 1
+
+
+def test_track_line_changes_nothing_but_the_line():
+    """Линия трека (стоянки — точкой, езда — по дорогам) — только отображение: км, топливо, визиты, тревоги,
+    отклонение, показатели дня — те же, привязана линия или нет; км — reconstruct по тем же точкам."""
+    tr = _detour_track(1500.0)
+    stops = [stop('S:A', 7, A, 100.0), stop('S:B', 8, B, 100.0, seq=2)]
+    f = facts(tr.pts, stops, [T0, tr.t])
+
+    def snap(parts):   # «привязка» всех кусков езды: на 40 м севернее
+        return {c.key: [(p[0] + 40.0 / live.M_PER_DEG_LAT, p[1], p[2]) for p in c.raw()] for c in parts if not c.stay}
+    for now in (tr.t, tr.t + timedelta(minutes=1), tr.t + timedelta(days=1)):
+        plain = live.car_view(DAY, now, f, [], TRUCK, DEPOT, RULES, ROAD, True, None, _route())
+        snapped = live.car_view(DAY, now, f, [], TRUCK, DEPOT, RULES, ROAD, True, None, _route(), snap)
+        assert snapped['track'] != plain['track'] and len(snapped['track']) == len(snapped['track_t'])
+        rest = ('track', 'track_t')
+        assert {k: v for k, v in snapped.items() if k not in rest} == {k: v for k, v in plain.items() if k not in rest}
+        brief = live.car_view(DAY, now, f, [], TRUCK, DEPOT, RULES, ROAD, False, None, _route())
+        rest = ('deviation', 'route')   # у деталей — ещё линии плана и отклонений
+        assert {k: v for k, v in brief.items() if k not in rest} == {k: v for k, v in plain.items() if k in brief and k not in rest}
+    fixes = live.track_fixes(tr.pts)
+    actual = ac.reconstruct(fixes, [ac.PlanStop('S:A', 7, A, 100.0), ac.PlanStop('S:B', 8, B, 100.0)], DEPOT)
+    assert plain['km'] == round(actual.km_gps, 1) and plain['deviation']['count'] == 1
+    assert plain['stats'] == {**live.day_stats(ac.clean_track(fixes)), 'overspeed': plain['stats']['overspeed']}
 
 
 def test_deviation_long_detour_around_lunch_still_counts():

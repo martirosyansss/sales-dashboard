@@ -1105,6 +1105,21 @@ class ValhallaProvider:
             return ValhallaRoads(reg, PROFILE_CAR, fallback, time_only=time_only, truck_time=truck_time,
                                  truck_cost=truck_cost)
 
+    def trace(self, body: dict[str, Any]) -> Any | None:
+        """Привязка трека к дорогам (Actor.trace_attributes) по действующей сборке — линия трека на карте машин
+        (track_line.match_chunk). Режим osm, нет pyvalhalla, карты или готовой сборки — None (линия без привязки); тайлы
+        здесь не собираются и отпечаток карты не считается (это дело фона). Ошибка запроса (путь не найден) —
+        исключение вызывающему. Ждёт свободный Actor пула: звать из фонового потока, не из запроса."""
+        if not self._usable():
+            return None
+        fingerprint = map_fingerprint(self.pbf, compute=False)
+        with self._lock:
+            reg = self._current(fingerprint)
+        if reg is None:
+            return None
+        with reg.engine.actor() as actor:
+            return actor.trace_attributes(body)
+
     # -- под self._lock --
 
     def _want(self, profile: str, costing: dict[str, Any], keys: set[Point]) -> None:
