@@ -83,7 +83,22 @@ def test_dialog_js_loads_fresh_and_posts_without_unload():
     assert posts == ['{ customer_id: stop.customer_id, access, window: win, solo, center }']
     assert 'unload_min' not in save
     assert "center = mode === 'allow' && $('dpCondCenter').checked" in save
-    assert 'առաքման պայմանները պահպանված են։' in save and 'UNLOAD_REBUILD' in save and 'await reloadQuiet()' in save
+    assert 'առաքման պայմանները պահպանված են բոլոր օրերի համար։' in save and 'UNLOAD_REBUILD' in save and 'await reloadQuiet()' in save
     for msg in ('Նշեք ժամը։', 'Միջակայքի վերջը պետք է լինի սկզբից ուշ։', 'Թույլատրելի շեղումը՝ 0-ից մինչև 120 րոպե։'):
         assert msg in js, msg
     assert "$('dpCondDlg').addEventListener('cancel', (e) => { if (state.busy) e.preventDefault(); })" in js
+
+
+def test_dialog_js_review_fixes():
+    """Ревью: «без изменений» не путает коды машин с запятой; «Չեղարկել» заблокирована на время сохранения, а ошибка при
+    закрытом диалоге не теряется; нечисло в допуске — ошибка, а не 0; Enter в полях сохраняет."""
+    js = _js()
+    assert "a.mode + ':' + JSON.stringify([...a.trucks].sort())" in js
+    assert "'select, input, #dpCondSave' + (cancel ? ', #dpCondCancel' : '')" in js
+    save = _function(js, 'saveCond')
+    assert 'lockCond(true, true)' in save and 'lockCond(false, true)' in save
+    assert "if ($('dpCondDlg').open) $('dpCondErr').textContent = e.message; else showActionError(e);" in save
+    read = js[js.index('function readCondWindow('):js.index('const condWindowKey')]
+    assert "$('dpCondTol').validity.badInput" in read and 'Թույլատրելի շեղումը՝ 0-ից մինչև 120 րոպե։' in read
+    assert "e.key === 'Enter' && e.target instanceof HTMLInputElement" in js
+    assert "[': не удалось сохранить водителя машины', '" in js

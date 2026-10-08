@@ -22,8 +22,9 @@ U «Ժամանակ խանութում» (№50) у точки рейса в ре
   выученная норма 8,37 у магазина без GPS — «սովորական 8,4 րոպե», а не «ըստ փաստի»; 10 стоянок по GPS — время по факту;
   в подсказке — правило №60 (пока стоянок по GPS нет — введённое время, со 2-й — время из GPS), смеси с фактом нет;
 K «Առաքման պայմաններ» (владелец 08.10) у той же точки → диалог на странице (адрес не меняется) со свежим окном магазина;
-  без изменений — закрыт без запроса; неверный интервал — ошибка в диалоге; допуск + интервал + «Առանձին երթ» → POST без
+  без изменений — закрыт без запроса; нечисло в допуске и неверный интервал — ошибка в диалоге; допуск + интервал + «Առանձին երթ» → POST без
   unload_min, уведомление с «Վերակազմեք երթերը», в базе условия сохранены, а время у магазина (30 мин) осталось; плашка у точки;
+  сброс условий — Enter в поле времени;
 E ИИ-панель: кнопка открытия → панель с подсказками; подсказка → сообщение пользователя и ответ с пунктом списка,
   у клиента ровно один вызов (в данных дня <day_data); вопрос из поля по Enter → второй ответ с историей из
   двух реплик; Esc закрывает панель, фокус возвращается на кнопку открытия;
@@ -341,6 +342,13 @@ def main() -> int:
             code = page.locator('#dpCondTrucks input[type=checkbox]').first.get_attribute('value')
             page.locator('#dpCondTrucks input[type=checkbox]').first.check()
             page.check('#dpCondSolo')
+            page.select_option('#dpCondKind', 'at')
+            page.fill('#dpCondT1', '10:00')
+            page.fill('#dpCondTol', '')
+            page.locator('#dpCondTol').press_sequentially('e')        # нечисло в допуске — ошибка, а не 0
+            page.click('#dpCondSave')
+            check(page.inner_text('#dpCondErr') == 'Թույլատրելի շեղումը՝ 0-ից մինչև 120 րոպե։' and not cond_bodies,
+                  f'K non-numeric tolerance → error, nothing sent: {page.inner_text("#dpCondErr")!r}')
             page.select_option('#dpCondKind', 'between')
             page.fill('#dpCondT1', '10:00')
             page.fill('#dpCondT2', '09:00')
@@ -353,7 +361,8 @@ def main() -> int:
             page.wait_for_function("() => !document.getElementById('dpCondDlg').open", timeout=10000)
             page.wait_for_function("() => /առաքման պայմանները պահպանված են/.test((document.getElementById('dpToast') || {}).textContent || '')",
                                    timeout=10000)
-            check('Վերակազմեք երթերը' in page.text_content('#dpToast'), 'K saved → toast asks to rebuild')
+            check('առաքման պայմանները պահպանված են բոլոր օրերի համար։ Վերակազմեք երթերը' in page.text_content('#dpToast'),
+                  'K saved → toast «for all days» asks to rebuild')
             check(cond_bodies == [{'customer_id': cid, 'access': {'mode': 'allow', 'trucks': [code]},
                                    'window': {'kind': 'between', 't1': 600, 't2': 720, 'tol': None}, 'solo': True, 'center': False}],
                   f'K POST body without unload_min: {cond_bodies}')
@@ -370,7 +379,7 @@ def main() -> int:
             page.uncheck('#dpCondSolo')
             page.select_option('#dpCondKind', 'before')
             page.fill('#dpCondT1', '23:59')
-            page.click('#dpCondSave')
+            page.press('#dpCondT1', 'Enter')                     # Enter в поле — «Պահպանել»
             page.wait_for_function("(n) => !document.getElementById('dpCondDlg').open && ![...document.querySelectorAll('.dp-trip .dp-stop')]"
                                    ".some(li => li.textContent.includes(n) && li.textContent.includes('Միայն՝'))", arg=name, timeout=10000)
             saved = store.load()

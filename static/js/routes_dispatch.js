@@ -181,7 +181,7 @@
         [': не удалось сохранить время у магазина', 'Չհաջողվեց պահպանել ժամանակը խանութում — կարգավորումների բազան հասանելի չէ'],
         // условия магазина (store.save_customer_constraints): сам текст уже армянский, по-русски — только имя базы перед ним
         [': չհաջողվեց պահպանել խանութի առաքման պայմանները', 'Չհաջողվեց պահպանել խանութի առաքման պայմանները — կարգավորումների բազան հասանելի չէ'],
-        [': не удалось сохранить водителя машины','Չհաջողվեց պահպանել վարորդին — կարգավորումների բազան հասանելի չէ'],
+        [': не удалось сохранить водителя машины', 'Չհաջողվեց պահպանել վարորդին — կարգավորումների բազան հասանելի չէ'],
     ];
     function serverText(s) {
         const t = String(s).trim();
@@ -1851,8 +1851,9 @@
     // {customer_id, access, window, solo, center} — без "unload_min" сервер оставляет время у магазина как есть.
     // Рейсы сами не пересобираются — подсказка в уведомлении, как после смены времени.
     const COND_FIRST = { at: 'Ժամ', between: 'Սկսած', before: 'Մինչև', after: 'Հետո' };
-    // «Չեղարկել» не блокируется — как в «Ժամանակ խանութում»
-    const lockCond = (on) => $('dpCondDlg').querySelectorAll('select, input, #dpCondSave').forEach(el => { el.disabled = on; });
+    // cancel — и «Չեղարկել»: пока идёт сохранение, диалог не закрыть (ошибка не потеряется); при загрузке — можно
+    const lockCond = (on, cancel = false) => $('dpCondDlg').querySelectorAll('select, input, #dpCondSave' + (cancel ? ', #dpCondCancel' : ''))
+        .forEach(el => { el.disabled = on; });
     function syncCondTime() {
         const kind = $('dpCondKind').value;
         $('dpCondFirst').hidden = !kind;
@@ -1886,12 +1887,15 @@
         const tol = $('dpCondTol').value.trim() === '' ? 0 : Number($('dpCondTol').value);
         if (t1 === null || (kind === 'between' && t2 === null)) throw new Error('Նշեք ժամը։');
         if (kind === 'between' && t2 <= t1) throw new Error('Միջակայքի վերջը պետք է լինի սկզբից ուշ։');
-        if (kind === 'at' && (!Number.isInteger(tol) || tol < 0 || tol > 120)) throw new Error('Թույլատրելի շեղումը՝ 0-ից մինչև 120 րոպե։');
+        // нечисло в поле type=number браузер отдаёт как '' — это ошибка, а не «0 минут»
+        if (kind === 'at' && ($('dpCondTol').validity.badInput || !Number.isInteger(tol) || tol < 0 || tol > 120)) {
+            throw new Error('Թույլատրելի շեղումը՝ 0-ից մինչև 120 րոպե։');
+        }
         return { kind, t1, t2: kind === 'between' ? t2 : null, tol: kind === 'at' ? tol : null };
     }
     // окно и допуск строкой — сравнить с открытым (порядок машин в допуске не важен)
     const condWindowKey = (w) => (isObj(w) ? [w.kind, w.t1, w.t2 ?? null, w.tol ?? null].join('|') : '');
-    const condAccessKey = (a) => (isObj(a) && Array.isArray(a.trucks) ? a.mode + ':' + [...a.trucks].sort().join(',') : '');
+    const condAccessKey = (a) => (isObj(a) && Array.isArray(a.trucks) ? a.mode + ':' + JSON.stringify([...a.trucks].sort()) : '');
     async function openCond(stop) {
         if (state.busy) return;
         const seq = ++state.condSeq;
@@ -1964,19 +1968,19 @@
         if (condWindowKey(win) === condWindowKey(x.window) && condAccessKey(access) === condAccessKey(x.vehicle_access)
             && solo === !!x.solo && center === !!x.center) { $('dpCondDlg').close(); return; }
         state.busy = true;
-        lockCond(true);
+        lockCond(true, true);       // и «Չեղարկել»: ошибка сохранения не должна потеряться в закрытом диалоге (Esc — в init)
         $('dpCondErr').textContent = '';
         try {
             await api('POST', '/api/routes/customer-vehicles', { customer_id: stop.customer_id, access, window: win, solo, center });
         } catch (e) {
-            $('dpCondErr').textContent = e.message;
+            if ($('dpCondDlg').open) $('dpCondErr').textContent = e.message; else showActionError(e);
             return;
         } finally {
             state.busy = false;
-            lockCond(false);
+            lockCond(false, true);
         }
         $('dpCondDlg').close();
-        toast('«' + (stop.name || stop.code) + '»՝ առաքման պայմանները պահպանված են։' + (state.data.plan ? ' ' + UNLOAD_REBUILD : ''));
+        toast('«' + (stop.name || stop.code) + '»՝ առաքման պայմանները պահպանված են բոլոր օրերի համար։' + (state.data.plan ? ' ' + UNLOAD_REBUILD : ''));
         try { await reloadQuiet(); } catch (e) { showActionError(e); }   // плашки допуска, окна и центра у точек
     }
 
@@ -5564,6 +5568,10 @@
         ['dpCondT1', 'dpCondT2', 'dpCondTol'].forEach(id => $(id).addEventListener('input', () => { $('dpCondErr').textContent = ''; }));
         $('dpCondDlg').addEventListener('close', () => { state.condStop = null; state.condInfo = null; });
         $('dpCondDlg').addEventListener('cancel', (e) => { if (state.busy) e.preventDefault(); });
+        // Enter в полях — «Պահպանել», как в «Ժամանակ խանութում»; на списках и кнопках Enter остаётся их собственным
+        $('dpCondDlg').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && e.target instanceof HTMLInputElement) { e.preventDefault(); saveCond(); }
+        });
         $('dpMapBox').addEventListener('toggle', () => { if ($('dpMapBox').open && state.data && state.data.plan) drawMap(); });
         initTabs();
         initWs();
