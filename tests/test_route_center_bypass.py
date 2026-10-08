@@ -522,3 +522,17 @@ def test_roads_warm_precomputes_bypass_for_plan_points(tmp_path, monkeypatch):
     monkeypatch.setattr(rd.RoadNetwork, 'distances', lambda self, *a, **k: calls.append(1) or real(self, *a, **k))
     r.ensure([TOP, WEST, EAST, MID])
     assert not calls and r.bypass.size[0] == 3 and r.km(WEST, EAST) == pytest.approx(8 * STEP_KM, rel=1e-3)
+
+
+def test_leg_lines_same_rule_as_lines_with_found_flag():
+    """Участки для плановой линии «Մեքենաները առցանց» — то же правило, что lines (вне центра — в объезд), каждый — своей
+    линией, с отметкой «путь найден»."""
+    r = _bypass()
+    far = (_at(3, 0)[0] + 0.5, _at(3, 0)[1])                # дальше SNAP_MAX_KM от графа
+    legs = [(WEST, EAST), (WEST, MID), (WEST, far)]
+    got = r.leg_lines(legs)
+    assert [line for line, _ in got] == r.lines([list(x) for x in legs])
+    assert [found for _, found in got] == [True, True, False]
+    assert not _crosses(got[0][0], ZONE)
+    r.base.failed = True
+    assert r.leg_lines(legs) is None

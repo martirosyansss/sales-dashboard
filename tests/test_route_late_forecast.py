@@ -478,10 +478,22 @@ def test_alert_kinds_of_old_database_get_late(tmp_path):
     """База до №87 хранит список видов без late (сохранение пишет все ключи): late добавляется включённым — владелец
     просил тревогу в Telegram; выключенное после №87 — остаётся выключенным; пустой список («ничего не слать») — пустым."""
     old = ['speed', 'stop', 'no_contact', 'gps']                     # «центр» владелец снял до №87
+    # deviation (08.10) — не включается сам (LIVE_KINDS_OPT_IN): его включает владелец
     assert _kinds_db(tmp_path, old).load().settings['live_alert_kinds'] == old + ['late']
     assert _kinds_db(tmp_path, old, list(st.LIVE_ALERT_KINDS)).load().settings['live_alert_kinds'] == old
     assert _kinds_db(tmp_path, []).load().settings['live_alert_kinds'] == []
     assert _kinds_db(tmp_path, old, 'garbage').load().settings['live_alert_kinds'] == old + ['late']   # битая отметка
+
+
+def test_deviation_kind_is_not_auto_enabled_in_telegram(tmp_path):
+    """Отклонение от плановой линии (08.10) в Telegram включает только владелец: ни база №87, ни база до №87, ни новая
+    база его сами не включают; отмеченное владельцем — остаётся."""
+    known_87 = ['speed', 'stop', 'no_contact', 'gps', 'center', 'late']
+    assert _kinds_db(tmp_path, ['speed'], known_87).load().settings['live_alert_kinds'] == ['speed']
+    assert _kinds_db(tmp_path, ['speed']).load().settings['live_alert_kinds'] == ['speed', 'late']
+    assert 'deviation' not in st.DEFAULT_SETTINGS['live_alert_kinds']
+    assert _kinds_db(tmp_path, ['speed', 'deviation'], list(st.LIVE_ALERT_KINDS)).load().settings['live_alert_kinds']         == ['speed', 'deviation']
+    assert st.validate_settings({**st.DEFAULT_SETTINGS, 'live_alert_kinds': ['deviation']}, None)[0]['live_alert_kinds']         == ['deviation']
 
 
 def test_saving_kinds_writes_known_marker(tmp_path):

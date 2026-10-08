@@ -610,6 +610,21 @@ def test_provider_modes_gate_and_failed_build(tmp_path, fake, monkeypatch):
     assert broken.get(osm, P, 3000) is None and not _preparers()
 
 
+def test_provider_trace_only_with_ready_build_and_never_builds(tmp_path, fake, monkeypatch):
+    """Привязка трека к дорогам (линия трека на карте машин, 08.10): Actor.trace_attributes по действующей сборке;
+    режим osm, нет карты или сборки — None, тайлы ради неё не собираются."""
+    bodies = []
+    monkeypatch.setattr(FakeActor, 'trace_attributes', lambda self, body: bodies.append(body) or {'ok': 1}, raising=False)
+    provider, runs = _provider(tmp_path, monkeypatch)
+    assert provider.trace({'shape': []}) is None and runs == [] and not _preparers()   # сборки нет — без сборки
+    assert _wait(lambda: provider.get(FakeOsm(missing=()), P, 3000))                     # фон собрал тайлы
+    assert provider.trace({'shape': [1]}) == {'ok': 1} and bodies == [{'shape': [1]}]
+    monkeypatch.setenv('ROUTES_ROAD_ENGINE', 'osm')
+    assert provider.trace({'shape': [2]}) is None and len(bodies) == 1
+    assert ve.ValhallaProvider(str(tmp_path / 'none'), str(tmp_path / 'no-map.pbf')).trace({}) is None
+    assert _wait(lambda: not _preparers())
+
+
 def test_missing_pyvalhalla_falls_back_to_osm_graph(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, 'valhalla', None)     # import valhalla → ImportError
     assert ve.valhalla_module() is None and not ve.valhalla_supported()

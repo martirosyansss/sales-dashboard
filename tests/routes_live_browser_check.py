@@ -20,6 +20,12 @@
 (ползунок времени, шаг 1 мин, «Փակել»). Машина 4 вышла позже плана — «не успеет» к трём магазинам: в карточке одна
 строка «3 խանութ ուշանում է…» с кнопкой «Ցույց տալ» (aria-expanded), а не три красные.
 
+Плановая линия и отклонение (08.10): план отправлен водителям (released), дороги — подделка StraightRoads (линия «по
+дорогам» — та же ломаная: карты в проверке нет, а отклонение считается только по линиям по дорогам). Пунктир плана и
+номера магазинов по плану у выбранной машины, переключатель «Պլանային երթուղի», «Օրվա ցուցանիշներ» (максимальная
+скорость — кнопка к точке на карте); машина 2 уехала от плана к стоянке — активная тревога «Շեղում երթուղուց», красная
+линия отклонения.
+
 Проверяется: список и маркеры всех машин, состояние и счётчик тревог, карточка выбранной машины (поля №76), путь и
 магазины на карте, нет горизонтальной прокрутки на телефоне, опрос раз в 15 с, нет ошибок страницы и консоли (кроме сетевых
 ошибок внешних ресурсов: шрифты, CDN, плитки).
@@ -80,7 +86,25 @@ def build_app(tmp: Path) -> Flask:
     route_optimizer.init_app(app, FakeDb(), db_path=str(tmp / 'route_optimizer.db'))
     courier.init_app(app, FakeDb(), db_path=str(tmp / 'courier.db'))
     route_optimizer.attach_live_facts(app, courier.live_facts(app))
+    app.extensions['route_optimizer'].roads = StraightRoads()
+    from route_optimizer import views
+    views.LIVE_ROAD_BACKGROUND = False   # линии плана — сразу (иначе первые 10 с кэша карточек — «по прямой»)
     return app
+
+
+class StraightRoads:
+    """Провайдер дорог без карты: участок «по дорогам» (путь найден) — тот же отрезок с серединой."""
+    failed = False
+    version = 'live-check'
+
+    def get(self):
+        return self
+
+    def bypass(self, base, zone):
+        return base
+
+    def leg_lines(self, legs):
+        return [([a, ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2), b], True) for a, b in legs]
 
 
 def seed(app: Flask) -> list[str]:
@@ -89,6 +113,8 @@ def seed(app: Flask) -> list[str]:
     cs = app.extensions['courier'].store
     bundle = rs.load()
     depot = bundle.depot or (40.1360, 44.4710)
+    if bundle.depot is None:   # пустая копия: склад нужен линии плана (рейс — склад → магазины → склад) и тревогам
+        rs.save(st.Changes(dict(bundle.settings), True, depot, (), ()), 'live-check')
     cars = [c for c, t in sorted(bundle.trucks.items()) if t.capacity_kg and t.fuel_l_per_100km][:4]
     while len(cars) < 4:
         cars.append(f'TEST{len(cars) + 1}')
@@ -117,6 +143,7 @@ def seed(app: Flask) -> list[str]:
         cs.save_day(day, car, stops_of[car], 'live-check', now.isoformat())
     draft = dp.Draft(trucks=list(cars), trips=trips)
     draft.prediction = {'trucks': pred}
+    draft.released = {'at': now.isoformat(), 'by': 'live-check'}   # №80/№81: план отправлен водителям — линия на карте
     rs.save_dispatch(day, draft.to_json(), 'live-check')
     # №87: окно приёма третьего магазина машины 1 кончилось 30 минут назад — машина к нему опаздывает
     rs.save_customer_window(trips[0].stops[2], st.CustomerWindow('before', max(0, now.hour * 60 + now.minute - 30)),
@@ -251,8 +278,9 @@ def main() -> int:
                 check(page.locator('.lv-marker').count() == 4, 'на карте 4 маркера')
                 states = page.eval_on_selector_all('.lv-item .lv-dot', 'els => els.map(e => e.className)')
                 # машина 3: GPS выключен и связи нет — активная тревога GPS важнее «կապ չկա» (повторное ревью №76)
-                check(sum('is-alert' in s for s in states) >= 3 and not any('is-offline' in s for s in states),
-                      f'состояния: у машин 1-3 «ահազանգ», «կապ չկա» только без других тревог: {states}')
+                # (тревога машины 1 зависит от копии баз — настроек машин парка; на пустой копии её нет)
+                check('is-alert' in states[1] and 'is-alert' in states[2] and not any('is-offline' in s for s in states),
+                      f'состояния: у машин 2-3 «ահազանգ», «կապ չկա» только без других тревог: {states}')
                 probs = page.locator('#lvProbList button.lv-prob')
                 check(probs.count() >= 3, f'«Խնդիրներ հիմա»: строки проблем ({probs.count()})')
                 check('ուշանում' in page.inner_text('#lvProbList'), '«Խնդիրներ հիմա»: «не успеет» машины 1')
@@ -292,12 +320,38 @@ def main() -> int:
                 page.locator('#lvReplayExit').click()
                 check(not page.is_visible('#lvReplayExit'), 'воспроизведение: «Փակել» — обратно к живой карте')
                 check(page.locator('.leaflet-overlay-pane path').count() >= 4, 'путь и магазины выбранной машины на карте')
+                dashed = '.leaflet-overlay-pane path[stroke-dasharray="8 8"]'
+                check(page.locator(dashed).count() == 1, f'плановая линия пунктиром ({page.locator(dashed).count()})')
+                pins = page.eval_on_selector_all('.lv-npin', 'els => els.map(e => e.textContent)')
+                check(sorted(pins) == ['1', '2', '3'], f'номера магазинов по плану: {pins}')
+                stats = page.eval_on_selector_all('#lvStats dt', 'els => els.map(e => e.textContent)')
+                for need in ('Պլանային երթուղի', 'Կմ՝ փաստ / պլան', 'Շեղում երթուղուց', 'Առավելագույն արագություն',
+                             'Միջին արագություն ընթացքում', 'Ընթացքում / կանգնած', 'Արագության գերազանցում'):
+                    check(need in stats, f'«Օրվա ցուցանիշներ»: «{need}»')
+                st_text = page.inner_text('#lvStats')
+                check('1 երթ · 3 խանութ' in st_text and 'ճանապարհներով' in st_text and 'չկա' in st_text,
+                      f'план: 1 рейс, 3 магазина, по дорогам; отклонений у машины 1 нет ({st_text[:160]!r})')
+                page.locator('#lvStats .lv-linkbtn').click()
+                page.wait_for_timeout(500)
+                check('Առավելագույն արագություն' in page.inner_text('.leaflet-tooltip-pane'),
+                      'максимальная скорость: кнопка показывает точку на карте')
+                page.locator('#lvPlanToggle').uncheck()
+                page.wait_for_timeout(200)
+                check(page.locator(dashed).count() == 0, '«Պլանային երթուղի» выключен — пунктира нет')
+                page.locator('#lvPlanToggle').check()
+                page.wait_for_timeout(200)
+                check(page.locator(dashed).count() == 1, '«Պլանային երթուղի» включён снова')
                 page.locator('#lvLogBox summary').click()
                 check('Արագության գերազանցում' in page.inner_text('#lvLog'), 'журнал: превышение скорости')
                 page.screenshot(path=str(SHOTS / 'live_desktop.png'), full_page=False)
                 page.locator(f'.lv-item[data-car="{cars[1]}"]').click()
                 page.wait_for_timeout(1200)
                 check('Երկար կանգառ' in page.inner_text('#lvActive'), 'машина 2: активная тревога «долгая стоянка»')
+                check('Շեղում երթուղուց' in page.inner_text('#lvActive'), 'машина 2: активная тревога «Շեղում երթուղուց»')
+                check('Շեղում երթուղուց' in page.inner_text('#lvProbList'), '«Խնդիրներ հիմա»: отклонение машины 2')
+                check(page.locator('.leaflet-overlay-pane path[stroke="#ff6b79"][stroke-width="6"]').count() >= 1,
+                      'машина 2: линия отклонения красным')
+                check('հիմա երթուղուց դուրս է' in page.inner_text('#lvStats'), 'машина 2: «հիմա երթուղուց դուրս է»')
                 page.screenshot(path=str(SHOTS / 'live_desktop_stop.png'))
                 page.locator(f'.lv-item[data-car="{cars[2]}"]').click()
                 page.wait_for_timeout(1200)

@@ -5,7 +5,10 @@
    «Не успеет» (№87, t.late — live.late_forecast): в списке — красная строка, в карточке — среди тревог и у магазинов.
    Как телематика (08.10): нет связи — последнее известное положение без прогноза (t.forecast false, next.eta_unknown) и
    «данные до HH:MM»; GPS-визиты магазинов (s.gps, s.unmarked — был по GPS, водитель не отметил); «Խնդիրներ հիմա» —
-   только то, что требует внимания; воспроизведение дня по t.track_t (своя отрисовка, опрос её не трогает). */
+   только то, что требует внимания; воспроизведение дня по t.track_t (своя отрисовка, опрос её не трогает).
+   Плановая линия и отклонение (владелец 08.10): t.route — что водитель получил (отправленный план «Развоза»), пунктиром,
+   номера магазинов — место в плане (s.plan_no, route.points); t.deviation.runs — отклонения дальше порога (красным);
+   «Օրվա ցուցանիշներ» — t.stats (максимальная скорость — кнопка к точке на карте). Нет данных — «տվյալ չկա», не нули. */
 (function () {
     'use strict';
 
@@ -26,7 +29,7 @@
         speed: ['fa-gauge-high', 'Արագության գերազանցում'], stop: ['fa-square-parking', 'Երկար կանգառ ոչ խանութում'],
         no_contact: ['fa-tower-broadcast', 'Կապ չկա'], gps: ['fa-location-crosshairs', 'GPS-ն անջատված է'],
         center: ['fa-ban', 'Փոքր կենտրոնում (մուտքը թույլատրված չէ)'],
-        late: ['fa-hourglass-half', 'Չի հասցնում ժամանակին'],
+        late: ['fa-hourglass-half', 'Չի հասցնում ժամանակին'], deviation: ['fa-route', 'Շեղում երթուղուց'],
     };
     // №87: «не успеет» — на сколько позже окна приёма или плана; машина — возврат на склад после конца рабочего дня
     const lateText = (x) => (x.late_kind === 'return' ? 'Չի հասցնում վերադառնալ պահեստ՝ +' + x.over_min + ' րոպե'
@@ -45,9 +48,13 @@
     const GPS = { on: 'միացված', off: 'անջատված', no_permission: 'թույլտվություն չկա' };
 
     const state = { date: '', data: null, detail: null, selected: null, timer: null, busy: false, again: false, fitted: false,
-        map: null, markers: new Map(), layer: null, zone: null, lateOpen: false,
+        map: null, markers: new Map(), layer: null, zone: null, lateOpen: false, pin: null, showPlan: loadPlanToggle(),
         // воспроизведение дня: снимок машины на начало (опрос его не меняет), момент t (секунды эпохи), слои
         replay: { on: false, playing: false, t: 0, raf: 0, last: 0, truck: null, prefix: null, ghost: null, stops: [] } };
+
+    // «Պլանային երթուղի» на карте — удобство одного зрителя: помнится в браузере (нет хранилища — просто включено)
+    function loadPlanToggle() { try { return window.localStorage.getItem('lv.plan') !== '0'; } catch (e) { return true; } }
+    function savePlanToggle(on) { try { window.localStorage.setItem('lv.plan', on ? '1' : '0'); } catch (e) { /* нет хранилища */ } }
 
     function h(tag, props, ...kids) {
         const el = document.createElement(tag);
@@ -285,6 +292,25 @@
     const gpsText = (g) => (!g ? null : g.here ? 'տեղում է ' + g.minutes + ' ր'
         : 'ժամանում ' + hm(g.arrive) + (g.leave ? ' · մեկնում ' + hm(g.leave) : '') + ' · ' + g.minutes + ' ր');
 
+    // номер магазина в плане машины за день: цвет — состояние; без цвета — магазин плана, которого нет у терминала
+    function pinIcon(no, color, late) {
+        const el = h('span', { class: 'lv-npin' + (color ? '' : ' is-plan-only') + (late ? ' is-late' : ''), text: String(no) });
+        if (color) el.style.background = color;
+        return L.divIcon({ html: el.outerHTML, className: '', iconSize: [24, 24], iconAnchor: [12, 12] });
+    }
+
+    // плановая линия (что водитель получил): пунктир по рейсам — под фактическим путём
+    function drawPlan(t, layer) {
+        const r = t.route;
+        if (!state.showPlan || !r || !Array.isArray(r.lines)) return;
+        const how = r.road ? 'ճանապարհներով' : 'ուղիղ գծով';
+        r.lines.forEach((line, i) => {
+            if (line.length < 2) return;
+            L.polyline(line, { color: '#e8edf4', weight: 3, opacity: 0.7, dashArray: '8 8' })
+                .bindTooltip(tip('Պլանային երթուղի' + (r.lines.length > 1 ? ', երթ ' + (i + 1) : '') + ' (' + how + ')')).addTo(layer);
+        });
+    }
+
     function renderTruckLayer(t) {
         if (!state.layer || state.replay.on) return;   // воспроизведение рисует своё — опрос его не стирает
         state.layer.clearLayers();
@@ -293,8 +319,23 @@
             L.circleMarker(state.data.depot, { radius: 8, color: '#e8edf4', weight: 2, fillColor: '#38bdf8', fillOpacity: 1 })
                 .bindTooltip(tip('Պահեստ')).addTo(state.layer);
         }
+        drawPlan(t, state.layer);
         if (t.track && t.track.length > 1) {
             L.polyline(t.track, { color: '#38bdf8', weight: 4, opacity: 0.85 }).addTo(state.layer);
+        }
+        // отклонения от плановой линии — красным поверх пути
+        for (const r of (t.deviation && t.deviation.runs) || []) {
+            if (!Array.isArray(r.line) || r.line.length < 2) continue;
+            L.polyline(r.line, { color: '#ff6b79', weight: 6, opacity: 0.95 })
+                .bindTooltip(tip('Շեղում երթուղուց՝ ' + fmt(r.km, 1) + ' կմ · ' + hm(r.from) + (r.to ? '–' + hm(r.to) : ' — հիմա')))
+                .addTo(state.layer);
+        }
+        // магазины плана, которых нет у терминала, — пустой номер (только вместе с плановой линией)
+        const have = new Set((t.stops || []).map(s => s.customer_id));
+        for (const p of (state.showPlan && t.route && t.route.points) || []) {
+            if (have.has(p.customer_id)) continue;
+            L.marker([p.lat, p.lon], { icon: pinIcon(p.no, null, false), keyboard: false })
+                .bindTooltip(tip('№' + p.no + ' ըստ պլանի · տերմինալում չկա')).addTo(state.layer);
         }
         // магазин с несколькими накладными — прогноз у каждой его ожидающей точки (строка прогноза — по клиенту)
         const lateKey = (x) => x.customer_id ?? 's:' + x.stop_id;   // точка без клиента — своя
@@ -305,8 +346,10 @@
             const lt = s.status === 'pending' ? lateOf.get(lateKey(s)) : null;   // №87: прогноз «не успеет» — красная обводка и строка в подсказке
             const text = (s.name || s.stop_id) + ' — ' + label + (s.planned_eta ? ' · պլան՝ ' + hm(s.planned_eta) : '')
                 + (s.gps ? ' · GPS՝ ' + gpsText(s.gps) : '') + (lt ? ' · ' + lateText(lt) + ' (≈ ' + hm(lt.eta) + ')' : '');
-            L.circleMarker([s.lat, s.lon], { radius: 7, color: lt ? '#ff6b79' : '#0e1116', weight: lt ? 3 : 2, fillColor: color, fillOpacity: 1 })
-                .bindTooltip(tip(text)).addTo(state.layer);
+            // магазин плана — с номером по плану; вне плана — кружок
+            (s.plan_no ? L.marker([s.lat, s.lon], { icon: pinIcon(s.plan_no, color, !!lt), keyboard: false, zIndexOffset: 500 })
+                : L.circleMarker([s.lat, s.lon], { radius: 7, color: lt ? '#ff6b79' : '#0e1116', weight: lt ? 3 : 2, fillColor: color, fillOpacity: 1 }))
+                .bindTooltip(tip((s.plan_no ? '№' + s.plan_no + ' · ' : '') + text)).addTo(state.layer);
         }
         for (const a of t.alerts_log || []) {
             if (num(a.lat) === null || num(a.lon) === null) continue;
@@ -331,6 +374,7 @@
         else if (a.kind === 'stop') more = ', ' + a.minutes + ' րոպե' + (a.lunch ? ' (ճաշի ժամին)' : '');
         else if (a.kind === 'no_contact') more = ', ' + a.minutes + ' րոպե';
         else if (a.kind === 'gps') more = a.gps === 'no_permission' ? ' (թույլտվություն չկա)' : '';
+        else if (a.kind === 'deviation') more = ', ' + fmt(a.km, 1) + ' կմ';
         // прогноз «не успеет»: что и насколько; время — прогноз прибытия (возврата), не начало события
         if (a.kind === 'late') return [lateText(a) + (a.name ? ' — ' + a.name : ''), '≈ ' + hm(a.eta) + ' (մինչև ' + hm(a.limit) + ')'];
         return [title + more, when];
@@ -427,6 +471,7 @@
             : '—', dv ? ['GPS՝ ' + (GPS[dv.gps] || '—'), 'ինտերնետ՝ ' + (NET[dv.net] || '—'), 'APK ' + (dv.app || '—'), 'տվյալ՝ ' + hm(dv.at)].join(' · ')
             : 'տերմինալը չի ուղարկում իր վիճակը (հին տարբերակ)', dv && dv.gps && dv.gps !== 'on' ? 'is-bad' : null, true));
         $('lvGrid').replaceChildren(...rows);
+        renderStats(t);
 
         $('lvStopsBox').hidden = !t.stops;
         const lateKey = (x) => x.customer_id ?? 's:' + x.stop_id;   // магазин с прогнозом; точка без клиента — своя
@@ -443,7 +488,7 @@
             const here = (g && g.here) || (t.next && t.next.here && t.next.stop_id === s.stop_id);
             const status = lt ? lateText(lt) : (here && !DONE.includes(s.status) ? 'տեղում է' : lab);
             return h('tr', { class: [lt ? 'is-late' : null, s.unmarked ? 'is-unmarked' : null].filter(Boolean).join(' ') || null },
-                cell(String(num(s.seq) ?? i + 1), 'is-num'),
+                cell(String(num(s.plan_no) ?? num(s.seq) ?? i + 1), 'is-num'),   // номер — как на карте (место в плане)
                 h('td', { class: 'lv-stop-name' }, h('span', { text: s.name || s.stop_id }), g ? h('small', { text: gpsText(g) }) : null),
                 cell(s.planned_eta ? hm(s.planned_eta) : '—', 'is-num'),
                 cell(g ? hm(g.arrive) : (s.eta ? '≈ ' + hm(s.eta) : '—'), 'is-num' + (g ? '' : ' is-mute')),
@@ -458,6 +503,81 @@
             const [text, when] = alertText(a);
             return h('li', { class: a.active ? 'is-active' : null }, icon((ALERT[a.kind] || ['fa-bell'])[0]), h('span', { text }), h('span', { class: 'when', text: when }));
         }) : [h('li', null, h('span'), h('span', { text: 'Ահազանգ չկա' }), h('span'))]));
+    }
+
+    // ---------- показатели дня, плановая линия, отклонение (08.10) ----------
+    const dur = (m) => (num(m) === null ? '—' : m < 60 ? m + ' ր' : Math.floor(m / 60) + ' ժ ' + (m % 60) + ' ր');
+    const NO_DATA = 'տվյալ չկա';
+
+    // почему плановой линии нет: машина не в плане, план не отправлен водителям, точки магазинов неизвестны
+    const noRouteText = (t) => (!t.planned ? 'մեքենան այս օրվա պլանում չէ'
+        : !t.plan_sent ? 'պլանը վարորդներին ուղարկված չէ' : 'պլանի խանութների կոորդինատները հայտնի չեն');
+
+    // км: факт (GPS) против плана (сборка «Развоза» / длина линии по дорогам)
+    function kmText(t) {
+        const plan = t.route ? num(t.route.km) : null;
+        if (!t.position) return [NO_DATA, plan !== null ? 'պլանով՝ ' + fmt(plan, 1) + ' կմ' : null, 'is-mute'];
+        if (plan === null || plan <= 0) return [fmt(t.km, 1) + ' կմ', 'պլանի կմ-ը հայտնի չէ', null];
+        const pct = Math.round((t.km / plan - 1) * 100);
+        return [fmt(t.km, 1) + ' / ' + fmt(plan, 1) + ' կմ', (pct > 0 ? '+' : '') + pct + '% պլանից' + (t.closed ? '' : ' (օրը դեռ չի ավարտվել)'),
+            t.closed && pct > 15 ? 'is-warn' : null];
+    }
+
+    function deviationText(t) {
+        const d = t.deviation;
+        if (!t.route) return ['—', noRouteText(t), 'is-mute'];
+        if (!d) return ['չի հաշվվում', 'ճանապարհներով պլանային երթուղին դեռ պատրաստ չէ (ուղիղ գծով՝ ոչ)', 'is-mute'];
+        if (!t.position) return [NO_DATA, 'GPS կետեր չկան', 'is-mute'];
+        const sub = 'պլանային երթուղուց ավելի հեռու, քան ' + fmt(d.threshold_m) + ' մ' + (d.active ? ' · հիմա երթուղուց դուրս է' : '');
+        return d.count ? [d.count + ' անգամ · ' + fmt(d.km, 1) + ' կմ', sub, d.active ? 'is-bad' : 'is-warn'] : ['չկա', sub, 'is-ok'];
+    }
+
+    // точка максимальной скорости на карте: отдельный слой (опрос слой машины перерисовывает)
+    function showPoint(lat, lon, text) {
+        if (!state.map) return;
+        if (state.pin) state.pin.remove();
+        state.pin = L.circleMarker([lat, lon], { radius: 9, color: '#ffb547', weight: 3, fillColor: '#0e1116', fillOpacity: 0.9 })
+            .bindTooltip(tip(text), { permanent: true, direction: 'top', offset: [0, -8] }).addTo(state.map);
+        state.map.setView([lat, lon], Math.max(state.map.getZoom(), 15), { animate: !reduced() });
+        if (window.matchMedia('(max-width: 899px)').matches) $('lvMap').scrollIntoView({ block: 'center', behavior: reduced() ? 'auto' : 'smooth' });
+    }
+    function clearPoint() { if (state.pin) { state.pin.remove(); state.pin = null; } }
+
+    function renderStats(t) {
+        const st = t.stats || {}, th = state.data ? state.data.thresholds : {};
+        const r = t.route;
+        const rows = [];
+        rows.push(field('Պլանային երթուղի', r ? r.trips + ' երթ · ' + r.stops + ' խանութ' : '—',
+            r ? (r.road ? 'ճանապարհներով, ինչպես «Առաքում» էջում'
+                + (r.straight ? ' · ' + r.straight + ' հատված՝ ուղիղ գծով (ճանապարհ չգտնվեց, այնտեղ շեղումը չի հաշվվում)' : '')
+                : 'ուղիղ գծով՝ ճանապարհների քարտեզը դեռ պատրաստ չէ') : noRouteText(t),
+            r ? null : 'is-mute', true));
+        const [km, kmSub, kmCls] = kmText(t);
+        rows.push(field('Կմ՝ փաստ / պլան', km, kmSub, kmCls));
+        const [dv, dvSub, dvCls] = deviationText(t);
+        rows.push(field('Շեղում երթուղուց', dv, dvSub, dvCls));
+        const ms = st.max_speed;
+        let top = NO_DATA;
+        if (ms) {
+            top = h('button', { type: 'button', class: 'lv-linkbtn', title: 'Ցույց տալ քարտեզին' }, icon('fa-location-dot'), ms.kmh + ' կմ/ժ');
+            top.addEventListener('click', () => showPoint(ms.lat, ms.lon, 'Առավելագույն արագություն՝ ' + ms.kmh + ' կմ/ժ · ' + hm(ms.at)));
+        }
+        rows.push(field('Առավելագույն արագություն', top, ms ? 'ժամը ' + hm(ms.at) + ' · սեղմեք՝ քարտեզին' : null,
+            ms ? (th && ms.kmh > th.speed_kmh ? 'is-bad' : null) : 'is-mute'));
+        rows.push(field('Միջին արագություն ընթացքում', num(st.avg_kmh) !== null ? st.avg_kmh + ' կմ/ժ' : NO_DATA, null,
+            num(st.avg_kmh) !== null ? null : 'is-mute'));
+        rows.push(field('Ընթացքում / կանգնած', num(st.moving_min) !== null ? dur(st.moving_min) + ' / ' + dur(st.stopped_min) : NO_DATA,
+            st.nodata_min ? 'առանց տվյալի՝ ' + dur(st.nodata_min) : null, num(st.moving_min) !== null ? null : 'is-mute'));
+        const ov = st.overspeed;
+        rows.push(field('Արագության գերազանցում', ov ? (ov.count ? ov.count + ' անգամ · ' + dur(ov.minutes) : 'չկա') : NO_DATA,
+            th ? 'ավելի, քան ' + fmt(th.speed_kmh) + ' կմ/ժ՝ ' + fmt(th.speed_sec) + ' վ-ից երկար' : null,
+            ov ? (ov.count ? 'is-warn' : 'is-ok') : 'is-mute'));
+        $('lvStats').replaceChildren(...rows);
+        // «план — факт» магазинов: та же сводка км и отклонений одной строкой
+        $('lvPf').textContent = [r && num(r.km) !== null ? 'Կմ՝ պլան ' + fmt(r.km, 1) + (t.position ? ' · փաստ ' + fmt(t.km, 1) : '') : null,
+            t.deviation && t.position ? 'շեղում՝ ' + (t.deviation.count ? t.deviation.count + ' անգամ, ' + fmt(t.deviation.km, 1) + ' կմ' : 'չկա') : null]
+            .filter(Boolean).join(' · ');
+        $('lvPf').hidden = !$('lvPf').textContent;
     }
 
     // ---------- воспроизведение дня ----------
@@ -510,6 +630,7 @@
             L.circleMarker(state.data.depot, { radius: 8, color: '#e8edf4', weight: 2, fillColor: '#38bdf8', fillOpacity: 1 })
                 .bindTooltip(tip('Պահեստ')).addTo(state.layer);
         }
+        drawPlan(t, state.layer);   // плановая линия — и при воспроизведении (сравнить путь с планом)
         L.polyline(t.track, { color: '#38bdf8', weight: 4, opacity: 0.25, interactive: false }).addTo(state.layer);   // весь день — тускло
         rp.prefix = L.polyline([], { color: '#38bdf8', weight: 5, opacity: 0.95, interactive: false }).addTo(state.layer);
         rp.stops = (t.stops || []).filter(s => num(s.lat) !== null && num(s.lon) !== null).map(s => [s,
@@ -576,6 +697,13 @@
         if (startReplay()) setReplay(Number($('lvReplayRange').value));
     });
     $('lvReplayExit').addEventListener('click', stopReplay);
+    // «Պլանային երթուղի» на карте: вкл/выкл (воспроизведение — со следующего запуска)
+    $('lvPlanToggle').checked = state.showPlan;
+    $('lvPlanToggle').addEventListener('change', () => {
+        state.showPlan = $('lvPlanToggle').checked;
+        savePlanToggle(state.showPlan);
+        renderTruckLayer(state.detail);
+    });
 
     // ---------- данные ----------
     const query = () => (state.date ? '?date=' + encodeURIComponent(state.date) : '');
@@ -623,6 +751,7 @@
 
     function select(car) {
         stopReplay();
+        clearPoint();
         state.lateOpen = false;
         state.selected = state.selected === car ? null : car;
         state.detail = null;
@@ -653,6 +782,7 @@
         state.date = v && v !== today ? v : '';
         state.fitted = false;
         stopReplay();
+        clearPoint();
         state.lateOpen = false;
         state.selected = null;
         state.detail = null;

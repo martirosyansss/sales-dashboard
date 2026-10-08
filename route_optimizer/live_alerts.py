@@ -2,7 +2,8 @@
 """Тревоги карты «Մեքենաները առցանց» в Telegram-группу (№76, этап 2, docs/plans/live-map-plan.md).
 
 Фоновый поток раз в INTERVAL_S берёт карточки флота (views._live_cards — тот же расчёт, что у карты, кэш 10 с) и шлёт
-сообщение при начале тревоги (скорость, долгая стоянка, нет связи — только APK ≥ 2.2.0, GPS выключен, малый центр) и при
+сообщение при начале тревоги (скорость, долгая стоянка, нет связи — только APK ≥ 2.2.0, GPS выключен, малый центр,
+отклонение от плановой линии) и при
 её окончании — для «нет связи» и GPS. Включается только env ROUTES_LIVE_ALERTS=1 и только если заданы токен
 (ROUTES_LIVE_TG_TOKEN, иначе TELEGRAM_BOT_TOKEN) и чат (ROUTES_LIVE_TG_CHAT): без них поток не стартует. Слать должен
 ровно один процесс — переменная задаётся только на CT115 (deploy/README.md): у ПК та же карта, но терминалы шлют на
@@ -65,7 +66,7 @@ LATE_CLEAR_MIN = 15.0             # …и после стольких минут
 
 TITLE = {'speed': 'Արագության գերազանցում', 'stop': 'Երկար կանգառ ոչ խանութում', 'no_contact': 'Կապ չկա',
          'gps': 'GPS-ն անջատված է', 'center': 'Փոքր կենտրոնում (մուտքը թույլատրված չէ)',
-         'late': 'Չի հասցնում ժամանակին (կանխատեսում)'}
+         'late': 'Չի հասցնում ժամանակին (կանխատեսում)', 'deviation': 'Շեղում երթուղուց'}
 EXIT_TEXT = {'closed': 'հավելվածը փակվել է', 'shutdown': 'հեռախոսն անջատվել է'}   # live.offline_reason (APK 2.2.5)
 TITLE_END = {'no_contact': 'Կապը վերականգնվեց', 'gps': 'GPS-ը կրկին միացված է'}
 
@@ -216,6 +217,12 @@ def build_text(card: Mapping[str, Any], a: Mapping[str, Any], phase: str, rules:
             lines.append(EXIT_TEXT[reason].capitalize() + '։')
     elif kind == 'center':
         lines.append('Մեքենան մտել է փոքր կենտրոն, որտեղ նրան թույլատրված չէ։')
+    elif kind == 'deviation':   # идёт — «уже N км»; кончилось к отправке — «отклонилась на N км (с — до)»
+        km = str(a.get('km')).replace('.', ',')
+        lines.append(f'Մեքենան պլանային երթուղուց {rules.deviation_m:g} մ-ից ավելի հեռու է՝ արդեն {km} կմ։'
+                     if a.get('active') else
+                     f'Մեքենան շեղվել էր պլանային երթուղուց ({rules.deviation_m:g} մ-ից ավելի)՝ {km} կմ, '
+                     f'{_hm(a.get("from"))}–{_hm(a.get("to"))}։')
     lat, lon, last_known = a.get('lat'), a.get('lon'), False
     if lat is None or lon is None:   # «нет связи» и GPS: места события нет — последняя известная точка
         pos = card.get('position') or {}

@@ -752,6 +752,20 @@ class RoadDistances:
             logger.exception('[Routes] Линии по дорогам не построены — на карте по прямой')
             return None
 
+    def leg_lines(self, legs: Sequence[tuple[Point, Point]]) -> list[tuple[list[Point], bool]] | None:
+        """Участки a → b для карты, каждый — своей линией (как lines), и нашёлся ли путь по дорогам (RoadNetwork.paths):
+        нет — участок по прямой (точка не привязана к дороге, пути нет). Дороги сломаны — None."""
+        if self.failed:
+            return None
+        try:
+            net = self._load_network()
+            paths = net.paths(legs)
+            return [(line, (point_key(a), point_key(b)) in paths)
+                    for (a, b), line in zip(legs, net.draw([[a, b] for a, b in legs], paths))]
+        except Exception:
+            logger.exception('[Routes] Участки по дорогам не построены — на карте по прямой')
+            return None
+
     def unsnapped(self, points: Iterable[Point | None]) -> int:
         """Сколько разных точек из набора дальше SNAP_MAX_KM от дороги (из посчитанных)."""
         t = self._table
@@ -1105,6 +1119,27 @@ class CenterBypassRoads:
             return direct.draw(lines, paths)
         except Exception:
             logger.exception('[Routes] Линии по дорогам не построены — на карте по прямой')
+            return None
+
+    def leg_lines(self, legs: Sequence[tuple[Point, Point]]) -> list[tuple[list[Point], bool]] | None:
+        """Участки a → b по тому же правилу, что lines (вне центра — в объезд), и нашёлся ли путь по дорогам; как
+        RoadDistances.leg_lines."""
+        if self.base.failed:
+            return None
+        paths: dict[tuple[Point, Point], tuple[Any, Any]] = {}
+        around = [leg for leg in legs if self.around(*leg)]
+        if around and not self.bypass.failed:
+            try:
+                paths = self.bypass._load_network().paths(around)
+            except Exception:
+                logger.exception('[Routes] Объезд малого центра для участков не построен — по обычному графу')
+        try:
+            direct = self.base._load_network()
+            paths.update(direct.paths([(a, b) for a, b in legs if (point_key(a), point_key(b)) not in paths]))
+            return [(line, (point_key(a), point_key(b)) in paths)
+                    for (a, b), line in zip(legs, direct.draw([[a, b] for a, b in legs], paths))]
+        except Exception:
+            logger.exception('[Routes] Участки по дорогам не построены — на карте по прямой')
             return None
 
 

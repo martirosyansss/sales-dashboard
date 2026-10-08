@@ -35,6 +35,9 @@ CREW_PAY_KEY = 'crew_pay'   # строка settings с параметрами «
 # DEFAULT_SETTINGS — прежние версии её не читают. Нет строки — список сохранён до №87 (знали LIVE_ALERT_KINDS_V1)
 LIVE_KINDS_KNOWN_KEY = 'live_alert_kinds_known'
 LIVE_ALERT_KINDS_V1 = ('speed', 'stop', 'no_contact', 'gps', 'center')
+# виды тревог, которые в Telegram включает только владелец (галочкой в настройках): база, сохранённая до них, получает их
+# выключенными — отклонение от плановой линии (08.10) ещё не измерено на настоящих днях, рассылка не должна начаться сама
+LIVE_KINDS_OPT_IN = ('deviation',)
 COST_MARGIN_KEY = 'cts_margin_pct'   # средняя наценка «Առաքման արժեք», % (Store.cost_margin) — как CREW_PAY_KEY
 
 # manager_profile.included: 1/0 — выбор владельца, NULL — «авто» (в расчёте, если есть работа за 8 недель)
@@ -558,9 +561,12 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     'live_speed_sec': 30,
     'live_stop_min': 15,
     'live_no_contact_min': 5,
+    # отклонение от плановой линии (владелец 08.10): точка трека дальше столько метров от линии отправленного плана
+    # «Развоза» по дорогам; отклонение — не меньше 0,5 км пути и минуты подряд (live.deviation_runs)
+    'live_deviation_m': 300,
     # тревоги карты в Telegram-группу (этап 2): какие слать, тихие часы (с — до, по Еревану; одинаковые — без тихих
     # часов), не чаще раза в столько минут на тревогу того же вида у машины
-    'live_alert_kinds': ['speed', 'stop', 'no_contact', 'gps', 'center', 'late'],
+    'live_alert_kinds': ['speed', 'stop', 'no_contact', 'gps', 'center', 'late'],   # deviation — LIVE_KINDS_OPT_IN
     'live_quiet_from': '20:00',
     'live_quiet_to': '08:00',
     'live_repeat_min': 30,
@@ -647,6 +653,7 @@ _NUMERIC: dict[str, tuple[float, float, bool]] = {
     'live_speed_sec': (5, 600, False),
     'live_stop_min': (1, 240, False),
     'live_no_contact_min': (1, 120, False),
+    'live_deviation_m': (100, 2000, False),
     'live_repeat_min': (1, 1440, False),
     'late_nowin_min': (5, 240, False),     # и целое (validate_settings)
 }
@@ -671,8 +678,9 @@ WINDOW_KINDS = ('before', 'after', 'between', 'at')
 WINDOW_TOL_MAX = 120
 DEFAULT_WINDOW_TOL = 15     # «в 11:00 ± 15 мин» — допуск по умолчанию (№37)
 UNLOAD_MIN_RANGE = (1, 120)  # время у магазина (№50), целые минуты
-# виды тревог карты (live.py) — переключатели настроек; late — прогноз «не успеет» (№87)
-LIVE_ALERT_KINDS = ('speed', 'stop', 'no_contact', 'gps', 'center', 'late')
+# виды тревог карты (live.py) — переключатели настроек; late — прогноз «не успеет» (№87), deviation — отклонение от
+# плановой линии (08.10)
+LIVE_ALERT_KINDS = ('speed', 'stop', 'no_contact', 'gps', 'center', 'late', 'deviation')
 GARAGE_KINDS = ('repair', 'accident', 'fixed', 'odometer')   # журнал гаража (№53), как garage.KINDS
 GARAGE_TEXT_MAX = 300
 GARAGE_AMOUNT_MAX = 100_000_000
@@ -1509,7 +1517,8 @@ def validate_settings(values: Mapping[str, Any],
 def _loaded_alert_kinds(kinds: Any, known_raw: str | None) -> Any:
     """Виды тревог карты из базы (№87). Вид, которого эта версия не знает (база после более новой), — молча мимо, а не
     «база повреждена»; виды этой версии, которых не знала сохранившая список программа (LIVE_KINDS_KNOWN_KEY, нет
-    строки — LIVE_ALERT_KINDS_V1), — добавляются включёнными: по умолчанию слать всё. Пустой список («ничего не слать»)
+    строки — LIVE_ALERT_KINDS_V1), — добавляются включёнными: по умолчанию слать всё (кроме LIVE_KINDS_OPT_IN — их
+    включает владелец). Пустой список («ничего не слать»)
     — как есть.
     Не список строк — без изменений (ошибку покажет validate_settings)."""
     if not isinstance(kinds, list) or not all(isinstance(k, str) for k in kinds) or not kinds:
@@ -1521,7 +1530,7 @@ def _loaded_alert_kinds(kinds: Any, known_raw: str | None) -> Any:
     if not isinstance(known, list) or not all(isinstance(k, str) for k in known):
         known = LIVE_ALERT_KINDS_V1
     have = [k for k in kinds if k in LIVE_ALERT_KINDS]
-    return have + [k for k in LIVE_ALERT_KINDS if k not in known and k not in have]
+    return have + [k for k in LIVE_ALERT_KINDS if k not in known and k not in have and k not in LIVE_KINDS_OPT_IN]
 
 
 def _check_point(lat: Any, lon: Any) -> tuple[Point | None, str | None]:

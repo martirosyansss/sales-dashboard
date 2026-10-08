@@ -16,7 +16,7 @@ import re
 import threading
 import time
 import uuid
-from collections import Counter
+from collections import Counter, OrderedDict
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from functools import wraps
@@ -33,6 +33,7 @@ from . import crew_pay as cp
 from . import dispatch as dp
 from . import evaluate, garage, learning, live, optimize
 from . import scorecard as sc
+from . import track_line as tl
 from . import fleet as fl
 from . import waybill as wb
 from . import terrain as dem
@@ -44,8 +45,8 @@ from .snapshot import CAR_IDLE_DAYS, MIN_REFRESH_SECONDS, ResultCache, Snapshot,
 from .store import (CREW_TABLES, DEFAULT_MANAGER_FUEL, DEFAULT_SETTINGS, KEEP, Bundle, Decision, GarageError, Store, StoreError,
                     big_auto, center_auto, check_driver_name, check_garage_entry, check_unload_min, check_window,
                     until_floor, validate_payload)
-from .valhalla_engine import (TRUCK_TIME_MODEL, TRUCK_TIME_VALHALLA, ValhallaProvider, ValhallaRoads, truck_leg_minutes,
-                              truck_time_source)
+from .valhalla_engine import (CAR_COSTING, PROFILE_CAR, PROFILE_TRUCK, TRUCK_TIME_MODEL, TRUCK_TIME_VALHALLA, ValhallaProvider,
+                              ValhallaRoads, truck_costing, truck_leg_minutes, truck_time_source, valhalla_error)
 from .vehicle_access import check_access
 
 logger = logging.getLogger(__name__)
@@ -201,6 +202,8 @@ class RoutesState:
     live_facts: live.LiveFacts | None = None
     # «Մեքենաները առցանց»: дорожная модель ETA (views._LiveRoads) и карточки флота на 10 с (views._live_cards)
     live_roads: _LiveRoads = field(default_factory=lambda: _LiveRoads())
+    live_lines: _LivePlanLines = field(default_factory=lambda: _LivePlanLines())   # плановые линии по дорогам (08.10)
+    live_tracks: _LiveTracks = field(default_factory=lambda: _LiveTracks())   # линии треков, привязанные к дорогам (08.10)
     live_cards: dict[date, tuple[Any, float, Any, datetime, dict[str, dict[str, Any]]]] = field(default_factory=dict)
     live_lock: threading.Lock = field(default_factory=threading.Lock)   # только словари кэша: расчёт под ним не идёт
     live_flight: dict[date, threading.Lock] = field(default_factory=dict)   # пересчёт флота — один на день
@@ -4156,8 +4159,11 @@ def _day_map() -> Any:
     days = [d for d in _learning_days(state, bundle, day, day) if d[0] == car]
     data = state.fleet_facts.day(car, day.isoformat())
     track = ac.clean_track(learning.track_fixes(data['track']))
-    line = ac.simplify([f.point for f in track], MAP_TRACK_POINTS)
     stops, actual, draft = (days[0][2], days[0][3], days[0][4]) if days else ([], ac.DayActual(0, 0.0, None, None), None)
+    # линия как на карте машин (08.10): стоянка — одна точка, езда — без дрожания, по дорогам (track_line)
+    truck = bundle.trucks.get(car)
+    line = _track_line(state, day, car, truck.capacity_kg if truck is not None else None, track, actual.stays,
+                       MAP_TRACK_POINTS, LIVE_TRACK_WAIT_S)   # страница не переспрашивает — ждём привязку (≤ 3 с)
     prediction = (((draft or {}).get('prediction') or {}).get('trucks') or {}).get(car) or {}
     eta = {c[0]: c[1] for t in prediction.get('trips') or () for c in t.get('stops') or ()
            if isinstance(c, list) and len(c) == 2}
@@ -4308,6 +4314,339 @@ class _LiveContext:
     crew: dict[str, dict[str, str]]       # машина → {'driver': имя, 'helper': имя} по «Վարորդ» / «Առաքիչ» (№62)
     planned: tuple[str, ...]               # машины плана дня
     windows: dict[int, tuple[float, float]] = field(default_factory=dict)   # окна приёма клиентов (№87, late_forecast)
+    # плановые линии машин (08.10, _live_plan_routes) — только если план отправлен водителям (sent: Draft.released)
+    routes: dict[str, live.PlanRoute] = field(default_factory=dict)
+    sent: bool = False
+    # линия трека машины по дорогам (08.10, _LiveTracks): (машина, куски линии) → привязанные куски; None — без привязки
+    tracks: Callable[[str, Sequence[tl.Chunk]], Mapping[Any, Sequence[tl.TPoint]]] | None = None
+
+
+LIVE_LINES_MAX = 300   # машино-дней плановых линий в памяти (кэш _LivePlanLines)
+LIVE_LINES_DAYS = 3    # …и не больше стольких дней
+
+
+class _LivePlanLines:
+    """Плановые линии машин по дорогам (live.RouteGeometry) — кэш по машино-дню: ключ машины — её линии по прямой,
+    граница малого центра и версия карты; сменился план одной машины — строится только она. Строит один фоновый поток
+    на весь процесс (граф дорог ~100 МБ грузится на время построения): пока он занят, новые сборки ждут следующего
+    опроса. Пока линии машины перестраиваются (план поменяли, карта обновилась), отдаются прежние линии того же дня — без
+    мигания «по дорогам → по прямой» и пропадающих отклонений; не построились — по прямой (None), повтор — не раньше
+    LIVE_ROAD_FAIL_TTL_S. Память: не больше LIVE_LINES_DAYS дней и LIVE_LINES_MAX машино-дней — уходят те, которые дольше
+    всего не спрашивали (не самые старые даты: открытый прошлый день не перестраивается на каждом пересчёте); только что
+    построенный день не уходит никогда."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        # (день, машина) → {'key', 'value' (None — сбой), 'at' (когда построено), 'good' — последнее удачное этого дня,
+        # 'used' — когда спрашивали последний раз}
+        self._slots: dict[tuple[date, str], dict[str, Any]] = {}
+        self._busy = False
+
+    def get(self, day: date, wanted: Mapping[str, Any],
+            build: Callable[[dict[str, Any]], dict[str, live.RouteGeometry | None]]) -> dict[str, live.RouteGeometry]:
+        def serve() -> tuple[dict[str, live.RouteGeometry], dict[str, Any]]:
+            out: dict[str, live.RouteGeometry] = {}
+            todo: dict[str, Any] = {}
+            for car, key in wanted.items():
+                slot = self._slots.get((day, car))
+                if slot is not None:
+                    slot['used'] = _monotonic()
+                if slot is not None and slot['key'] == key:
+                    if slot['value'] is not None:
+                        out[car] = slot['value']
+                        continue
+                    if _monotonic() - slot['at'] < LIVE_ROAD_FAIL_TTL_S:   # недавний сбой — по прямой, без повтора
+                        continue
+                todo[car] = key
+                if slot is not None and slot.get('good') is not None:
+                    out[car] = slot['good']   # прежние линии — пока строятся новые
+            return out, todo
+        with self._lock:
+            out, todo = serve()
+            start = bool(todo) and not self._busy
+            if start:
+                self._busy = True
+
+        def run() -> None:
+            try:
+                got = build(todo)
+            except Exception:
+                logger.exception('[Routes] Карта машин: плановые линии по дорогам не построены — по прямой')
+                got = {}
+            try:
+                with self._lock:
+                    for car, key in todo.items():
+                        value = got.get(car)
+                        slot = self._slots.pop((day, car), {})
+                        self._slots[(day, car)] = {'key': key, 'value': value, 'at': _monotonic(), 'used': _monotonic(),
+                                                   'good': value if value is not None else slot.get('good')}
+                    self._trim(day)
+            finally:
+                with self._lock:
+                    self._busy = False
+        if not start:
+            return out
+        if LIVE_ROAD_BACKGROUND:
+            threading.Thread(target=run, name='routes-live-lines', daemon=True).start()
+            return out
+        run()
+        with self._lock:
+            return serve()[0]
+
+
+    def _trim(self, built: date) -> None:
+        """Под замком: дни и машино-дни, которые дольше всего не спрашивали, — вон; день built остаётся."""
+        used: dict[date, float] = {}
+        for (d, _), slot in self._slots.items():
+            used[d] = max(used.get(d, -math.inf), slot['used'])
+        recent = sorted((d for d in used if d != built), key=lambda d: used[d], reverse=True)
+        keep = {built, *recent[:LIVE_LINES_DAYS - 1]}
+        for k in [k for k in self._slots if k[0] not in keep]:
+            del self._slots[k]
+        while len(self._slots) > LIVE_LINES_MAX:
+            old = min((k for k in self._slots if k[0] != built), key=lambda k: self._slots[k]['used'], default=None)
+            if old is None:
+                break
+            del self._slots[old]
+
+
+def _plan_geometry(roads: Any, todo: Mapping[str, Any]) -> dict[str, live.RouteGeometry | None]:
+    """Линии рейсов машин todo (машина → ключ _LivePlanLines: (линии по прямой, граница центра, версия карты)) по дорогам
+    одним построением: каждый участок (магазин → магазин) — своей линией roads.leg_lines, с отметкой, нашёлся ли путь по
+    дорогам (RoadNetwork.paths). Участок без пути (точка дальше roads.SNAP_MAX_KM от дороги, пути нет) — по прямой
+    (RouteGeometry.straight); прямая дорога, упрощённая до двух точек, — по дорогам. Дороги не построились — машине None."""
+    legs = list(dict.fromkeys((a, b) for key in todo.values() for line in key[0] for a, b in zip(line, line[1:])
+                              if a != b))
+    got = roads.leg_lines(legs) if legs else []
+    if got is None:
+        logger.warning('[Routes] Карта машин: дороги для плановых линий не построились — линии по прямой')
+        return {car: None for car in todo}
+    drawn = dict(zip(legs, got))
+    out: dict[str, live.RouteGeometry | None] = {}
+    for car, key in todo.items():
+        trips: list[tuple[Point, ...]] = []
+        parts: list[tuple[Point, ...]] = []
+        straight: list[tuple[Point, Point]] = []
+        for line in key[0]:
+            pts: list[Point] = [line[0]]
+            for a, b in zip(line, line[1:]):
+                road, found = drawn.get((a, b), (None, False)) if a != b else (None, False)
+                if road is not None and found and len(road) > 1:
+                    parts.append(tuple(tuple(p) for p in road))
+                    pts.extend(tuple(p) for p in road[1:])
+                else:
+                    if a != b:
+                        straight.append((a, b))
+                    pts.append(b)
+            trips.append(tuple(pts))
+        out[car] = live.RouteGeometry(trips, parts, straight)
+    return out
+
+
+LIVE_TRACK_POINTS = 200_000   # вершин привязанных кусков треков в памяти (все машино-дни; ~40 МБ)
+LIVE_TRACK_QUEUE = 5_000      # кусков в очереди привязки (больше — уходят самые старые заказы)
+LIVE_TRACK_WAIT_S = 3.0       # карта «план — факт» / «Ավտոտնակ» (не опрашивает) ждёт привязку дня не дольше
+LIVE_TRACK_WARN_S = 600.0     # сбой привязки пишется в журнал не чаще раза в 10 мин (со счётчиком)
+
+
+class _LiveTracks:
+    """Линии треков машин по дорогам (владелец 08.10: петли и прямые сквозь дома — «не профессионально»): кэш кусков
+    езды (track_line.Chunk) по (день, машина, ключ куска). Кусок привязывается к дорогам один раз (track_line.match_chunk:
+    Valhalla map matching; путь не найден — его точки, тоже в кэш: повторять бессмысленно); у растущего хвоста дня
+    готовые куски не меняются — заново привязывается только последний, а прежняя версия хвоста (тот же первый момент)
+    при записи новой уходит из кэша. Заказы — в очередь (не теряются, пока поток занят; не больше LIVE_TRACK_QUEUE),
+    её разбирает один фоновый поток на весь процесс. get не ждёт (wait_s=0 — опрос карты машин: где привязки ещё нет,
+    линия без неё) или ждёт свои куски не дольше wait_s (страницы, которые линию не переспрашивают). Valhalla нет,
+    выключен, сборки нет или сбой движка — ничего не кэшируется (появится — привяжется); сбой — в журнал не чаще
+    LIVE_TRACK_WARN_S, со счётчиком. Память: не больше LIVE_TRACK_POINTS вершин — уходят куски, которые дольше всего
+    не спрашивали. Свой замок, не live_lock: привязка под ним не идёт."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._cond = threading.Condition(self._lock)
+        self._items: OrderedDict[tuple[date, str, Any], list[tl.TPoint]] = OrderedDict()
+        self._size = 0
+        self._tails: dict[tuple[date, str], Any] = {}   # (день, машина) → ключ последнего записанного куска
+        self._queue: OrderedDict[tuple[date, str, Any], tuple[tl.Chunk, Callable[..., Any]]] = OrderedDict()
+        self._current: tuple[date, str, Any] | None = None
+        self._busy = False
+        self._failed = 0          # кусков со сбоем привязки с последней записи в журнал
+        self._warned = -math.inf
+
+    def get(self, day: date, car: str, parts: Sequence[tl.Chunk],
+            match: Callable[[tl.Chunk], tuple[list[tl.TPoint], bool] | None] | None,
+            wait_s: float = 0.0) -> dict[Any, list[tl.TPoint]]:
+        mine = [c for c in parts if not c.stay and len(c.points) >= tl.MATCH_MIN_POINTS]
+
+        def serve() -> dict[Any, list[tl.TPoint]]:
+            out: dict[Any, list[tl.TPoint]] = {}
+            for c in mine:
+                k = (day, car, c.key)
+                hit = self._items.get(k)
+                if hit is not None:
+                    self._items.move_to_end(k)
+                    out[c.key] = hit
+            return out
+        with self._lock:
+            out = serve()
+            if match is None:
+                return out
+            for c in mine:
+                k = (day, car, c.key)
+                if c.key not in out and k not in self._queue and k != self._current:
+                    self._queue[k] = (c, match)
+            while len(self._queue) > LIVE_TRACK_QUEUE:
+                self._queue.popitem(last=False)
+            start = bool(self._queue) and not self._busy
+            if start:
+                self._busy = True
+        if start:
+            if LIVE_ROAD_BACKGROUND:
+                try:
+                    threading.Thread(target=self._work, name='routes-live-tracks', daemon=True).start()
+                except Exception:   # поток не стартовал (нет ресурсов) — следующий опрос попробует снова
+                    logger.exception('[Routes] Карта машин: поток привязки треков не запущен')
+                    with self._lock:
+                        self._busy = False
+                    return out
+            else:
+                self._work()
+        keys = [(day, car, c.key) for c in mine]
+        with self._cond:
+            if wait_s > 0:
+                self._cond.wait_for(lambda: all(k not in self._queue and k != self._current for k in keys), wait_s)
+            return serve()
+
+    def _work(self) -> None:
+        """Фоновый поток: очередь — по порядку заказов, пока не опустеет. «Свободен» — в той же критической секции, где
+        очередь увидена пустой: иначе заказ, пришедший между ними, видел бы «занят» и остался бы в очереди без потока."""
+        done = False
+        try:
+            while True:
+                with self._cond:
+                    if not self._queue:
+                        self._busy, self._current, done = False, None, True
+                        self._cond.notify_all()
+                        return
+                    k, (chunk, match) = self._queue.popitem(last=False)
+                    self._current = k
+                try:
+                    got = match(chunk)
+                except Exception as exc:   # сбой движка — не окончательно: не кэшируем, в журнал — редко, со счётчиком
+                    got = None
+                    self._fail(exc)
+                with self._cond:
+                    self._current = None
+                    if got is not None:
+                        self._put(k, got[0])
+                    self._cond.notify_all()
+        finally:
+            if not done:   # исключение мимо match (не должно быть) — поток всё равно освобождается
+                with self._cond:
+                    self._busy = False
+                    self._current = None
+                    self._cond.notify_all()
+
+    def _put(self, k: tuple[date, str, Any], line: list[tl.TPoint]) -> None:
+        """Под замком: кусок в кэш; прежняя версия хвоста машино-дня (тот же первый момент) — вон; предел вершин."""
+        slot = k[:2]
+        prev = self._tails.get(slot)
+        if prev is not None and prev != k[2] and prev[1] == k[2][1]:
+            old = self._items.pop((*slot, prev), None)
+            self._size -= len(old) if old is not None else 0
+        if prev is None or k[2][1] >= prev[1]:
+            self._tails[slot] = k[2]
+        if len(self._tails) > 1000:
+            self._tails.clear()
+        old = self._items.pop(k, None)
+        self._size += len(line) - (len(old) if old is not None else 0)
+        self._items[k] = line
+        while self._size > LIVE_TRACK_POINTS and len(self._items) > 1:
+            self._size -= len(self._items.popitem(last=False)[1])
+
+    def _fail(self, exc: BaseException) -> None:
+        with self._lock:
+            self._failed += 1
+            now = _monotonic()
+            if now - self._warned < LIVE_TRACK_WARN_S:
+                return
+            self._warned, n, self._failed = now, self._failed, 0
+        logger.warning('[Routes] Карта машин: привязка трека к дорогам не удалась (%s кусков с прошлой записи): %r — '
+                       'линия без привязки', n, exc)
+
+
+def _track_matcher(state: RoutesState, capacity_kg: float | None
+                   ) -> Callable[[tl.Chunk], tuple[list[tl.TPoint], bool] | None] | None:
+    """Привязка куска трека машины к дорогам: Valhalla сервера (ValhallaProvider.trace), профиль грузовика с тоннажем
+    машины (как матрицы «Развоза»), не вышло — легкового; «путь не найден» — ValhallaError. Valhalla нет или выключен
+    (режим osm, нет pyvalhalla или карты) — None (линия без привязки, очередь не растёт)."""
+    provider = state.valhalla
+    if provider is None or not provider.usable():
+        return None
+    tries = ((PROFILE_TRUCK, truck_costing(capacity_kg)), (PROFILE_CAR, CAR_COSTING))
+    unmatchable = (valhalla_error() or RuntimeError,)
+    return lambda c: tl.match_chunk(c, provider.trace, tries, unmatchable)
+
+
+def _track_line(state: RoutesState, day: date, car: str, capacity_kg: float | None, pts: Sequence[Any],
+                stays: Sequence[ac.Stay], max_points: int, wait_s: float = 0.0) -> list[tl.TPoint]:
+    """Линия трека машино-дня для карты (track_line): стоянка — одна точка, езда — по дорогам, где уже привязана
+    (_LiveTracks: остальное — в фоне, ждём не дольше wait_s), иначе — точки без дрожания."""
+    parts = tl.chunks(pts, stays)
+    got = state.live_tracks.get(day, car, parts, _track_matcher(state, capacity_kg), wait_s)
+    return tl.line(parts, got, max_points)
+
+
+def _live_plan_routes(state: RoutesState, bundle: Bundle, snap: Any, day: date, draft: dp.Draft,
+                      fleet: Mapping[str, Mapping[str, Any]]) -> dict[str, live.PlanRoute]:
+    """Плановые линии машин по отправленному плану draft (владелец 08.10: «его маршрут, который дал ему софт»): рейс —
+    склад → магазины по порядку плана → склад, как линии «Развоза» (routes_dispatch.js → /api/routes/road-lines с
+    avoid_center). Точка магазина — с терминала (что водитель видит в «Առաքիչ»), нет — visit_coord снимка в памяти (ERP
+    не читается), нет и её — магазина на линии нет. Линии по дорогам — в фоне (state.live_lines, _plan_geometry); пока не
+    готовы впервые, карты нет или дороги сломаны — по прямой (road false: отклонение не считается). Км плана — прогноз
+    сборки машины (prediction km), если его рейсы — те же клиенты в том же порядке; иначе длина линий, если все участки
+    по дорогам; иначе неизвестно."""
+    known = {x['customer_id']: (x['lat'], x['lon']) for facts in fleet.values() for x in facts.get('stops') or ()
+             if isinstance(x.get('customer_id'), int) and x.get('lat') is not None and x.get('lon') is not None}
+
+    def where(cid: int) -> Point | None:
+        if cid in known:
+            return known[cid]
+        if snap is None:
+            return None
+        return evaluate.visit_coord(snap, cid, 0, bundle.geo_overrides, bundle.driver_points).point
+    depot = bundle.depot
+    trips: dict[str, list[list[int]]] = {}
+    stops: dict[str, list[tuple[int, Point]]] = {}
+    straight: dict[str, list[tuple[Point, ...]]] = {}
+    for t in draft.trips:
+        pts = [(c, p) for c in t.stops if (p := where(c)) is not None]
+        trips.setdefault(t.truck, []).append(list(t.stops))
+        stops.setdefault(t.truck, []).extend(pts)
+        line = (depot, *(p for _, p in pts), depot) if depot is not None else tuple(p for _, p in pts)
+        if pts and len(line) > 1:   # ни одной известной точки магазина — линии рейса нет
+            straight.setdefault(t.truck, []).append(line)
+    drawn: dict[str, live.RouteGeometry] = {}
+    roads = state.roads.get() if state.roads is not None else None
+    if roads is not None and not roads.failed and straight:
+        zone = tuple((float(lat), float(lon)) for lat, lon in bundle.settings['center_zone'])
+        wanted = {car: (tuple(lines), zone, roads.version) for car, lines in straight.items()}
+        provider = state.roads
+
+        def build(todo: dict[str, Any]) -> dict[str, live.RouteGeometry | None]:
+            return _plan_geometry(provider.bypass(roads, zone), todo)   # type: ignore[union-attr]
+        drawn = state.live_lines.get(day, wanted, build)
+    pred = (draft.prediction or {}).get('trucks') or {}
+    out: dict[str, live.PlanRoute] = {}
+    for car, lines in straight.items():
+        geo = drawn.get(car) or live.RouteGeometry(lines, (), [(a, b) for line in lines for a, b in zip(line, line[1:])])
+        p = pred.get(car) if isinstance(pred.get(car), Mapping) else {}
+        same = [[c[0] for c in tr.get('stops') or () if isinstance(c, list) and c]
+                for tr in p.get('trips') or () if isinstance(tr, Mapping)] == trips[car]
+        km = p.get('km') if same and isinstance(p.get('km'), (int, float)) and not isinstance(p.get('km'), bool) else None
+        km = float(km) if km is not None else geo.km
+        out[car] = live.PlanRoute(geo, tuple(stops[car]), km)
+    return out
 
 
 def _live_road_build(state: RoutesState, bundle: Bundle, snap: Any, calib: Any, day: date, base: live.Road,
@@ -4402,6 +4741,7 @@ def _live_context(state: RoutesState, day: date,
     stored = state.store.load_dispatch(day.isoformat())
     plans: dict[str, list[live.PlanTrip]] = {}
     planned: list[str] = []
+    routes: dict[str, live.PlanRoute] = {}
     rules = live.Rules.from_settings(s)
     if stored is not None:
         full = dp.Draft.from_json(stored[0])
@@ -4426,20 +4766,31 @@ def _live_context(state: RoutesState, day: date,
             if car in trucks and mine:
                 trucks[car] = replace(trucks[car], center_customers=mine)
         planned = list(by_truck)
+        if full.released is not None:   # №80/№81: план отправлен водителям — его линия на карте и отклонение от неё
+            routes = _live_plan_routes(state, bundle, snap, day, draft, fleet or {})
     ds = day.isoformat()
     drivers, helpers = state.store.truck_drivers(ds)[0], state.store.truck_drivers(ds, 'helper')[0]
     crew = {car: {'driver': drivers.get(car), 'helper': helpers.get(car)} for car in set(drivers) | set(helpers)}
+    caps = {code: t.capacity_kg for code, t in bundle.trucks.items()}
+
+    def tracks(car: str, parts: Sequence[tl.Chunk]) -> Mapping[Any, Sequence[tl.TPoint]]:
+        return state.live_tracks.get(day, car, parts, _track_matcher(state, caps.get(car)))
     return _LiveContext(rules, road, bundle.depot, plans, trucks, names, crew, tuple(planned),
-                        {cid: w.span() for cid, w in bundle.windows_on(day).items()})
+                        {cid: w.span() for cid, w in bundle.windows_on(day).items()}, routes,
+                        stored is not None and full.released is not None, tracks)
 
 
 def _live_card(ctx: _LiveContext, day: date, now: datetime, car: str, facts: Mapping[str, Any] | None,
-               detail: bool) -> dict[str, Any]:
+               detail: bool, snap: bool = False) -> dict[str, Any]:
+    """Карточка машины (live.car_view). snap — линия трека по дорогам (_LiveTracks): только карточка машины на карте;
+    ход дня «Развоза» линию не показывает — привязку не заказывает."""
     crew = ctx.crew.get(car, {})
+    tracks = ctx.tracks if snap and detail else None
     return {'car_code': car, 'name': ctx.names.get(car), 'driver': crew.get('driver'), 'helper': crew.get('helper'),
-            'planned': car in ctx.planned,
+            'planned': car in ctx.planned, 'plan_sent': ctx.sent,
             **live.car_view(day, now, facts or {}, ctx.plans.get(car, []), ctx.trucks.get(car, live.TruckSpec()),
-                            ctx.depot, ctx.rules, ctx.road, detail, ctx.windows)}
+                            ctx.depot, ctx.rules, ctx.road, detail, ctx.windows, ctx.routes.get(car),
+                            (lambda parts: tracks(car, parts)) if tracks is not None else None)}
 
 
 def _live_cards(state: RoutesState, day: date) -> tuple[_LiveContext, datetime, dict[str, Any],
@@ -4498,7 +4849,7 @@ def _live_head(ctx: _LiveContext, day: date, now: datetime) -> dict[str, Any]:
             'depot': list(ctx.depot) if ctx.depot else None,
             'thresholds': {'speed_kmh': r.speed_kmh, 'speed_sec': r.speed_sec, 'stop_min': r.stop_min,
                            'no_contact_min': r.no_contact_min, 'stale_s': live.STALE_S,
-                           'old_apk_silent_min': live.OLD_APK_SILENT_MIN},
+                           'old_apk_silent_min': live.OLD_APK_SILENT_MIN, 'deviation_m': r.deviation_m},
             'center_zone': [list(p) for p in r.center_zone]}
 
 
@@ -4535,7 +4886,7 @@ def api_live_truck() -> Any:
     if car not in cards:
         return jsonify({'success': False, 'error': 'Այս մեքենան այս օրը տվյալներ չունի'}), 404
     now = _yerevan_now()
-    return jsonify({**_live_head(ctx, day, now), 'truck': _live_card(ctx, day, now, car, fleet.get(car), True)})
+    return jsonify({**_live_head(ctx, day, now), 'truck': _live_card(ctx, day, now, car, fleet.get(car), True, True)})
 
 
 # --- Ход дня на шкале «Развоза» (ответ владельца №82: как мониторинг Яндекса / Routific live) ---

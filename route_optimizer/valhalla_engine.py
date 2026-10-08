@@ -142,6 +142,13 @@ def valhalla_module() -> Any | None:
     return valhalla
 
 
+def valhalla_error() -> type[BaseException] | None:
+    """Ошибка запроса pyvalhalla (ValhallaError: путь не найден, дороги рядом нет); нет pyvalhalla — None."""
+    module = valhalla_module()
+    err = getattr(module, 'ValhallaError', None) if module is not None else None
+    return err if isinstance(err, type) and issubclass(err, BaseException) else None
+
+
 def valhalla_supported() -> bool:
     return np is not None and valhalla_module() is not None
 
@@ -1058,6 +1065,10 @@ class ValhallaProvider:
     def _usable(self) -> bool:
         return engine_enabled() and valhalla_supported() and map_signature(self.pbf) is not None
 
+    def usable(self) -> bool:
+        """Valhalla включён (не режим osm), pyvalhalla есть и карта на месте (готовность сборки не проверяется)."""
+        return self._usable()
+
     def start(self) -> None:
         """Фоновая подготовка с запуска сервера: тайлы (если нужно) и кэш матриц машин менеджеров с диска."""
         if self._usable():
@@ -1104,6 +1115,21 @@ class ValhallaProvider:
             # срез — под той же блокировкой, что и проверка готовности
             return ValhallaRoads(reg, PROFILE_CAR, fallback, time_only=time_only, truck_time=truck_time,
                                  truck_cost=truck_cost)
+
+    def trace(self, body: dict[str, Any]) -> Any | None:
+        """Привязка трека к дорогам (Actor.trace_attributes) по действующей сборке — линия трека на карте машин
+        (track_line.match_chunk). Режим osm, нет pyvalhalla, карты или готовой сборки — None (линия без привязки); тайлы
+        здесь не собираются и отпечаток карты не считается (это дело фона). Ошибка запроса (путь не найден) —
+        исключение вызывающему. Ждёт свободный Actor пула: звать из фонового потока, не из запроса."""
+        if not self._usable():
+            return None
+        fingerprint = map_fingerprint(self.pbf, compute=False)
+        with self._lock:
+            reg = self._current(fingerprint)
+        if reg is None:
+            return None
+        with reg.engine.actor() as actor:
+            return actor.trace_attributes(body)
 
     # -- под self._lock --
 

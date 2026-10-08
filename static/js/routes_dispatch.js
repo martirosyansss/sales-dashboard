@@ -103,7 +103,7 @@
         mapFocus: null,                     // карта только одной машины {truck} или одного рейса {truck, trip}; null — все
         roadCache: new Map(), roadGen: 0,   // линии рейсов по дорогам: ключ — точки линии; номер отрисовки
         dragging: false, undo: null,
-        addFor: null,                       // окно «Ավելացնել խանութ»: {trip, kg, capacity, list, picked}
+        addFor: null,                       // окно «Ավելացնել խանութ»: {trip, kg, capacity, list, blocked, picked, reloading — сколько перечитываний идёт}
         why: null,                          // окно «Ինչու՞» у «×»: {stop, tripId, idx, truck}
         loadSeq: 0,                         // номер последнего запроса дня: ответы на прежние запросы не применяются
         editing: new Set(),                 // рейсы, открытые кнопкой «Փոփոխել»
@@ -1966,8 +1966,19 @@
             lockCond(false, true);
         }
         $('dpCondDlg').close();
-        toast('«' + (stop.name || stop.code) + '»՝ առաքման պայմանները պահպանված են բոլոր օրերի համար։' + (state.data.plan ? ' ' + UNLOAD_REBUILD : ''));
-        try { await reloadQuiet(); } catch (e) { showActionError(e); }   // плашки допуска, окна и центра у точек
+        const text = '«' + (stop.name || stop.code) + '»՝ առաքման պայմանները պահպանված են բոլոր օրերի համար։' + (state.data.plan ? ' ' + UNLOAD_REBUILD : '');
+        toast(text);
+        // Под окном — «Ավելացնել խանութներ»: уведомление скрыто его фоном — тот же текст и в окне. «Ավելացնել» ждёт свежих
+        // списков: правка, ушедшая раньше ответа перечитывания, была бы затёрта им (reloadQuiet о правках не знает)
+        const add = $('dpAddDlg').open ? state.addFor : null;
+        // reloading — счётчик: два сохранения подряд — «Ավելացնել» ждёт последнего перечитывания
+        if (add) { add.reloading = (add.reloading || 0) + 1; addSummary(); $('dpAddOk').textContent = text; }
+        let failed = null;
+        try { await reloadQuiet(); } catch (e) { failed = e; showActionError(e); }   // плашки допуска, окна и центра у точек
+        if (add) add.reloading--;
+        if (!add || state.addFor !== add || !$('dpAddDlg').open) return;
+        if (failed) { $('dpAddErr').textContent = failed.message; addSummary(); return; }   // ошибка под страницей за окном не видна
+        refreshAddStops(stop.customer_id);          // списки окна — по новому правилу
     }
 
     // ---------- «Մինչև ժամը» (владелец 08.10): привезти магазин не позже времени — только в этот день или всегда ----------
@@ -3045,11 +3056,12 @@
         blocked.sort(order);
         return { list, blocked };
     }
-    // Почему магазин нельзя добавить в рейс этой машины — текст для оператора и ссылка, где правило поменять
+    // Почему магазин нельзя добавить в рейс этой машины — текст для оператора и кнопка «Փոխել կանոնը»: окно условий
+    // магазина поверх этого окна (владелец 08.10 — не уходя со страницы)
     function addBlockReason(s, code) {
         const rule = s.vehicle_access;
         if (!vehicleAllowed(s, code)) {
-            const link = { href: '/routes/settings?customer=' + s.customer_id + '#rsCustomerSettings', label: 'Փոխել կանոնը' };
+            const link = { cond: true, label: 'Փոխել կանոնը' };
             if (rule.mode === 'allow' && !rule.trucks.length) return { text: 'Ոչ մի մեքենա թույլատրված չէ այս խանութի համար', link };
             if (rule.mode === 'allow') return { text: 'Այս խանութը տանում են միայն՝ ' + rule.trucks.map(c => truckLabel(truckBy(c))).join(', '), link };
             return { text: '«' + truckLabel(truckBy(code)) + '»-ին արգելված է այս խանութը (' + vehicleText(rule) + ')', link };
@@ -3057,22 +3069,50 @@
         if (s.share > 1) return { text: 'Ծանր պատվեր՝ բաժանված է ' + s.share + ' երթի․ տեղափոխեք «Փոփոխել» կոճակով' };
         return null;
     }
+    const addTitle = (t, i) => 'Ավելացնել խանութներ՝ ' + truckLabel(t) + ', երթ ' + (i + 1);
     function openAddStops(t, tr, i) {
         if (state.busy || !needPlan()) return;
         const { list, blocked } = addCandidates(t, tr);
         state.addFor = { trip: tr.id, kg: num(tr.kg) || 0, capacity: num(truckBy(t.car_code).capacity_kg), list, blocked, picked: new Set() };
-        $('dpAddTitle').textContent = 'Ավելացնել խանութներ՝ ' + truckLabel(t) + ', երթ ' + (i + 1);
-        $('dpAddLead').textContent = (list.length
-            ? 'Նշեք խանութները՝ վերևում «Դեռ երթերում չեն», հետո՝ այլ երթերից, ըստ մոտիկության։ Երթի հերթականությունը կվերահաշվարկվի։'
-            : 'Ավելացնելու խանութ չկա։') + (blocked.length ? ' Ներքևում՝ ինչու որոշները չի կարելի ավելացնել։' : '');
+        $('dpAddTitle').textContent = addTitle(t, i);
         $('dpAddFind').value = '';
-        $('dpAddErr').textContent = '';
+        $('dpAddErr').textContent = $('dpAddOk').textContent = '';
         renderAddList();
         $('dpAddDlg').showModal();
         (list.length ? $('dpAddFind') : $('dpAddCancel')).focus();
     }
+    // Условия магазина сохранены поверх «Ավելացնել խանութներ» (saveCond → reloadQuiet): списки того же рейса — заново из
+    // свежих данных; отмеченные остаются, кроме исчезнувших и ставших запрещёнными; поиск — тот же. Фокус — на строку
+    // этого магазина (кнопки «Փոխել կանոնը» после перерисовки нет). Рейса больше нет — окно закрывается с сообщением,
+    // фокус — на карточки машин.
+    function refreshAddStops(cid) {
+        const a = state.addFor;
+        if (!a || !$('dpAddDlg').open) return;
+        const plan = state.data && state.data.plan;
+        const t = plan && plan.trucks.find(x => x.trips.some(o => o.id === a.trip));
+        const tr = t && t.trips.find(o => o.id === a.trip);
+        if (!tr) {
+            $('dpAddDlg').close();
+            toast('Այս երթն այլևս չկա՝ պլանը փոխվել է։ Ընտրեք երթը նորից։');
+            const back = $('dpTruckCards').querySelector('.dp-addbtn, .dp-thead');
+            if (back) back.focus();
+            return;
+        }
+        $('dpAddTitle').textContent = addTitle(t, t.trips.indexOf(tr));
+        const { list, blocked } = addCandidates(t, tr);
+        const ok = new Set(list.map(c => c.stop.customer_id));
+        Object.assign(a, { kg: num(tr.kg) || 0, capacity: num(truckBy(t.car_code).capacity_kg), list, blocked,
+            picked: new Set([...a.picked].filter(id => ok.has(id))) });
+        renderAddList();
+        const row = $('dpAddList').querySelector('.dp-add-row[data-cid="' + cid + '"]');
+        const el = (row && row.querySelector('input, button')) || $('dpAddFind');
+        if (!$('dpAddDlg').contains(document.activeElement)) el.focus();
+    }
     function renderAddList() {
         const a = state.addFor;
+        $('dpAddLead').textContent = (a.list.length
+            ? 'Նշեք խանութները՝ վերևում «Դեռ երթերում չեն», հետո՝ այլ երթերից, ըստ մոտիկության։ Երթի հերթականությունը կվերահաշվարկվի։'
+            : 'Ավելացնելու խանութ չկա։') + (a.blocked.length ? ' Ներքևում՝ ինչու որոշները չի կարելի ավելացնել։' : '');
         const box = $('dpAddList');
         box.textContent = '';
         const q = $('dpAddFind').value.trim().toLowerCase();
@@ -3092,6 +3132,7 @@
             const s = c.stop;
             const row = document.createElement('label');
             row.className = 'dp-add-row';
+            row.dataset.cid = String(s.customer_id);
             const cb = document.createElement('input');
             cb.type = 'checkbox';
             cb.checked = a.picked.has(s.customer_id);
@@ -3125,6 +3166,7 @@
             const s = c.stop;
             const row = document.createElement('div');
             row.className = 'dp-add-row is-off';
+            row.dataset.cid = String(s.customer_id);
             const ico = document.createElement('i');
             ico.className = 'fas fa-ban';
             ico.setAttribute('aria-hidden', 'true');
@@ -3138,12 +3180,14 @@
             const why = document.createElement('span');
             why.className = 'dp-add-why';
             why.textContent = c.why.text;
-            if (c.why.link) {
-                const ln = document.createElement('a');
-                ln.href = c.why.link.href;
-                ln.target = '_blank';
-                ln.rel = 'noopener';
+            if (c.why.link && c.why.link.cond) {
+                // «Առաքման պայմաններ» — вторым окном поверх этого; Esc/«Չեղարկել» закрывают только его
+                const ln = document.createElement('button');
+                ln.type = 'button';
+                ln.className = 'rt-linkbtn';
                 ln.textContent = c.why.link.label;
+                ln.setAttribute('aria-label', c.why.link.label + '՝ «' + (s.name || s.code) + '»');
+                ln.addEventListener('click', () => openCond(s));
                 why.append(' · ', ln);
             }
             main.append(b, sub, why);
@@ -3179,12 +3223,12 @@
             }
             sum.textContent = text;
         }
-        $('dpAddSave').disabled = !n || state.busy;
+        $('dpAddSave').disabled = !n || state.busy || !!a.reloading;
         $('dpAddSave').lastChild.textContent = n ? 'Ավելացնել (' + n + ')' : 'Ավելացնել';
     }
     async function saveAddStops() {
         const a = state.addFor;
-        if (!a || !a.picked.size || state.busy) return;
+        if (!a || !a.picked.size || state.busy || a.reloading) return;
         const add = a.list.filter(c => a.picked.has(c.stop.customer_id)).map(c => c.stop.customer_id);
         $('dpAddSave').disabled = $('dpAddCancel').disabled = true;
         const ok = await tripStops({ trip: a.trip, add }, 'Երթին ավելացավ ' + pl(add.length, 'խանութ'));
