@@ -6392,8 +6392,9 @@ def api_warehouse_goods() -> Any:
         raise ErpError('Загрузчик строк заказов не подключён')
     lines = state.waybill_loader([o['isn'] for tr in truck['trips'] for s in tr['stops'] for o in s['orders']])
     got = next(x for x in wb.truck_waybill(plan, car, lines)['trips'] if x['id'] == int(trip))
-    keys = ('code', 'name', 'unit', 'qty', 'pack', 'packs', 'loose', 'kg', 'unknown')
-    return jsonify({'success': True, 'kg': got['kg'], 'rows': [{k: r[k] for k in keys} for r in got['rows']]})
+    # gift — только у строк с подарками ERP (№90)
+    keys = ('code', 'name', 'unit', 'qty', 'pack', 'packs', 'loose', 'kg', 'unknown', 'gift')
+    return jsonify({'success': True, 'kg': got['kg'], 'rows': [{k: r[k] for k in keys if k in r} for r in got['rows']]})
 
 
 @bp.get('/api/routes/warehouse/waybill')
