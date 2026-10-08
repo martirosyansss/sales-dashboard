@@ -40,6 +40,14 @@
 возвращает фокус), объяснённая тревога — серой с причиной в журнале и уходит из «Խնդիրներ հիմա», «Չեղարկել» её
 возвращает. Администратор — g.user_role (гейта app_v2 в проверке нет).
 
+Тревоги (08.10, «диспетчер сразу видит проблемы»): машина 1 сейчас превышает скорость (последние 45 с терминал сообщает
+97 км/ч) — красная «новая» проблема; баннер «N նոր խնդիր» мигает, «(N) ⚠» в заголовке вкладки, строка списка и маркер —
+классы важности и новой, у маркера машины 1 — пульсирующее красное кольцо; «нет связи» машины 3 — жёлтая, не красная;
+«Տեսա» у одной строки — строка ровная, в баннере на одну меньше; «Տեսա բոլորը» — баннера и счётчика во вкладке нет,
+отметки переживают перезагрузку; у машины 2 после «Բացատրել» пропущенного магазина остались только жёлтые — корпус маркера
+жёлтый; prefers-reduced-motion: reduce — ни одной анимации, метка «ՆՈՐ» и обводка; телефон 390 px с баннером — без
+горизонтальной прокрутки. Снимки: live_alarm_desktop.png, live_alarm_acked.png, live_alarm_phone.png.
+
 Проверяется: список и маркеры всех машин, состояние и счётчик тревог, карточка выбранной машины (поля №76), путь и
 магазины на карте, нет горизонтальной прокрутки на телефоне, опрос раз в 15 с, нет ошибок страницы и консоли (кроме сетевых
 ошибок внешних ресурсов: шрифты, CDN, плитки).
@@ -49,6 +57,7 @@ from __future__ import annotations
 import logging
 import math
 import os
+import re
 import sqlite3
 import sys
 import tempfile
@@ -223,6 +232,8 @@ def seed(app: Flask) -> list[str]:
     mid = ((s[1]['lat'] + s[2]['lat']) / 2, (s[1]['lon'] + s[2]['lon']) / 2)
     f, t = path([(s[1]['lat'], s[1]['lon']), mid], now - timedelta(minutes=4))
     f = [x for x in f if x[0] <= now]
+    # тревоги (08.10): сейчас превышает скорость — последние 45 с терминал сообщает 97 км/ч (тревога speed активна)
+    f = f[:-4] + [(x[0], x[1], x[2], 27.0, x[4]) for x in f[-4:]]
     extra = [delivery(s[0]['stop_id'], t_a - timedelta(minutes=2)), delivery(s[1]['stop_id'], t_b - timedelta(minutes=2), 0.5),
              # этап 2: возврат 3 пачек товара 1 в магазине 2 и две заправки «до полного бака» (400 км по одометру, 80 л)
              {'id': str(uuid.uuid4()), 'type': 'return', 'stop_id': s[1]['stop_id'], 'date': day,
@@ -265,6 +276,13 @@ POINT_JS = """([sel, at]) => { const p = document.querySelector(sel); if (!p) re
     const len = p.getTotalLength(), q = p.getPointAtLength(at < 1 ? len * at : at), m = p.getScreenCTM();
     const x = q.x * m.a + q.y * m.c + m.e, y = q.x * m.b + q.y * m.d + m.f;
     return document.elementFromPoint(x, y) === p ? [x, y] : null; }"""
+# маркер машины по номеру: классы и число анимаций (вместе с ::before / ::after)
+MARK_JS = """car => { const m = [...document.querySelectorAll('.lv-marker')].find(x => x.querySelector('.lv-marker-plate').textContent === car);
+    return m ? [m.className, m.getAnimations({ subtree: true }).length] : null; }"""
+# анимации тревог на странице: баннер, строки, машины, маркеры, сводка
+ALARM_ANIMS_JS = """() => [...document.querySelectorAll('#lvAlarm, .lv-prob, .lv-item, .lv-marker, .lv-sum')]
+    .reduce((n, e) => n + e.getAnimations({ subtree: true }).length, 0)"""
+NO_SCROLL_JS = 'document.documentElement.scrollWidth <= window.innerWidth + 1'
 TRACK_HIT = '.leaflet-overlay-pane path.lv-hit.is-track'
 PLAN_HIT = '.leaflet-overlay-pane path.lv-hit.is-plan'
 
@@ -292,6 +310,70 @@ def fit_track(page) -> None:
     page.wait_for_timeout(300)
     page.locator('#lvReplayExit').click()
     page.wait_for_timeout(300)
+
+
+def alarm_checks(page, cars, check) -> None:
+    """Тревоги (08.10): важность, новые мигают, «Տեսա» строки и «Տեսա բոլորը», заголовок вкладки, отметки после перезагрузки."""
+    def count() -> int:
+        m = re.search(r'(\d+) նոր խնդիր', page.inner_text('#lvAlarmCount')) if page.is_visible('#lvAlarm') else None
+        return int(m.group(1)) if m else 0
+
+    def row(car, kind):
+        return page.locator(f'#lvProbList li[data-key$="|{car}|{kind}"]')
+
+    def cls(loc) -> str:
+        return (loc.get_attribute('class') or '') if loc.count() == 1 else ''
+
+    base = page.title()
+    n = count()
+    check(n >= 4 and 'is-new lv-sev1' in (page.get_attribute('#lvAlarm', 'class') or '')
+          and page.evaluate("document.getElementById('lvAlarm').getAnimations().length") > 0,
+          f'тревоги: баннер красный, мигает — «{n} նոր խնդիր» ({page.inner_text("#lvAlarm")!r})')
+    check(base.startswith(f'({n}) ⚠ '), f'тревоги: заголовок вкладки — «({n}) ⚠ …» ({base!r})')
+    speed = row(cars[0], 'speed').locator('button.lv-prob')
+    check('lv-sev1' in cls(speed) and 'is-new' in cls(speed), f'тревоги: превышение скорости машины 1 — красная новая ({cls(speed)!r})')
+    for car, kind, sev in ((cars[0], 'late:window', 1), (cars[1], 'stop', 2), (cars[1], 'deviation', 2),
+                           (cars[1], 'sequence', 1), (cars[2], 'gps', 1)):
+        c = cls(row(car, kind).locator('button.lv-prob'))
+        check(f'lv-sev{sev}' in c, f'тревоги: {kind} машины {cars.index(car) + 1} — важность {sev} ({c!r})')
+    nc = row(cars[2], 'no_contact').locator('button.lv-prob')
+    check('lv-sev2' in cls(nc) and 'lv-sev1' not in cls(nc), f'тревоги: «нет связи» машины 3 — жёлтая, не красная ({cls(nc)!r})')
+    sevs = page.eval_on_selector_all('#lvProbList button.lv-prob', 'els => els.map(e => e.className)')
+    rank = [(0 if 'is-new' in c else 2) + (0 if 'lv-sev1' in c else 1 if 'lv-sev2' in c else 9) for c in sevs]
+    check(rank == sorted(rank), f'тревоги: порядок — новые красные, новые жёлтые, отмеченные, сведения ({rank})')
+    check(page.locator('#lvProbList .lv-ack').count() == n, 'тревоги: у каждой новой проблемы — «Տեսա»')
+    item = page.get_attribute(f'.lv-item[data-car="{cars[0]}"]', 'class')
+    check(all(x in item for x in ('lv-sev1', 'is-new', 'lv-new1')), f'тревоги: машина 1 в списке — красная новая ({item!r})')
+    mk = page.evaluate(MARK_JS, cars[0])
+    check(mk and 'is-new' in mk[0] and 'lv-new1' in mk[0] and mk[1] > 0,
+          f'тревоги: маркер машины 1 (превышение скорости) — пульсирующее красное кольцо ({mk})')
+    check('is-new' in (page.get_attribute('.lv-sum.is-alert', 'class') or ''), 'тревоги: плитка «ահազանգ» мигает')
+    page.screenshot(path=str(SHOTS / 'live_alarm_desktop.png'))
+
+    row(cars[2], 'no_contact').locator('.lv-ack').click()
+    page.wait_for_timeout(200)
+    nc = row(cars[2], 'no_contact')
+    check('is-new' not in cls(nc.locator('button.lv-prob')) and nc.locator('.lv-ack').count() == 0 and count() == n - 1,
+          f'тревоги: «Տեսա» — строка ровная, в баннере {count()} из {n}')
+    check(page.evaluate("document.activeElement.classList.contains('lv-prob')"), 'тревоги: после «Տեսա» фокус — на строке')
+    page.click('#lvAlarmAck')
+    page.wait_for_timeout(200)
+    mk = page.evaluate(MARK_JS, cars[0])
+    check(not page.is_visible('#lvAlarm') and '⚠' not in page.title() and page.locator('.is-new').count() == 0,
+          f'тревоги: «Տեսա բոլորը» — баннера и счётчика во вкладке нет ({page.title()!r}, '
+          f'{page.eval_on_selector_all(".is-new", "els => els.map(e => e.className)")})')
+    check(mk and 'lv-sev1' in mk[0] and 'is-new' not in mk[0] and mk[1] == 0,
+          f'тревоги: отмеченная — маркер с ровным красным кольцом, без анимации ({mk})')
+    page.screenshot(path=str(SHOTS / 'live_alarm_acked.png'))
+    page.reload()
+    page.wait_for_selector('.lv-item')
+    page.wait_for_timeout(500)
+    check(not page.is_visible('#lvAlarm') and '⚠' not in page.title() and page.locator('#lvProbList .lv-prob.lv-sev1').count() >= 3,
+          'тревоги: после перезагрузки отметки «Տեսա» сохранились (баннера нет, проблемы — на месте)')
+    page.click('#lvSound')
+    on = page.get_attribute('#lvSound', 'aria-pressed') == 'true' and page.evaluate("localStorage.getItem('lv.sound')") == '1'
+    page.click('#lvSound')
+    check(on and page.get_attribute('#lvSound', 'aria-pressed') == 'false', 'тревоги: «Ձայն» — включается и выключается (aria-pressed)')
 
 
 def main() -> int:
@@ -348,6 +430,7 @@ def main() -> int:
                 check('ուշանում' in page.inner_text('#lvProbList'), '«Խնդիրներ հիմա»: «не успеет» машины 1')
                 first = page.inner_text(f'.lv-item[data-car="{cars[0]}"]')
                 check('1 խանութ ուշանում է' in first, f'№87: в списке у машины 1 — «1 խանութ ուշանում է» ({first!r})')
+                alarm_checks(page, cars, check)
                 page.locator(f'.lv-item[data-car="{cars[0]}"]').click()
                 page.wait_for_selector('#lvCard:not([hidden]) .lv-grid dt')
                 page.wait_for_timeout(800)
@@ -487,6 +570,9 @@ def main() -> int:
                 check(not page.is_visible('#lvExplainDlg'), '«Բացատրել»: сохранено, диалог закрыт')
                 check('Խանութներ բաց են թողնված' not in page.inner_text('#lvProbList'),
                       '«Բացատրել»: объяснённая тревога ушла из «Խնդիրներ հիմա»')
+                mk = page.evaluate(MARK_JS, cars[1])
+                check(mk and 'is-alert' in mk[0] and 'is-warn' in mk[0] and 'lv-sev2' in mk[0],
+                      f'тревоги: у машины 2 остались жёлтые (стоянка, отклонение) — корпус маркера жёлтый ({mk})')
                 if not page.is_visible('#lvLog'):
                     page.locator('#lvLogBox summary').click()
                 done = page.locator('#lvLog li.is-explained')
@@ -524,10 +610,28 @@ def main() -> int:
                 page.wait_for_timeout(16000)
                 check(len(polls) > n, f'опрос раз в 15 с ({n} → {len(polls)})')
 
+                # «меньше движения»: новые — без анимации, обводка и «ՆՈՐ» (свой контекст — отметок «Տեսա» нет)
+                calm = browser.new_page(viewport={'width': 1440, 'height': 900}, reduced_motion='reduce')
+                calm.on('pageerror', lambda e: errors.append(str(e)))
+                calm.goto(BASE + '/routes/live')
+                calm.wait_for_selector('.lv-item')
+                calm.wait_for_timeout(500)
+                anims = calm.evaluate(ALARM_ANIMS_JS)
+                check(calm.is_visible('#lvAlarm') and anims == 0, f'тревоги, reduced motion: баннер есть, анимаций нет ({anims})')
+                new_row = calm.locator('#lvProbList .lv-prob.is-new').first
+                check(calm.is_visible('#lvAlarm .lv-new-tag') and new_row.locator('.lv-new-tag').is_visible()
+                      and new_row.evaluate('e => getComputedStyle(e).outlineWidth') == '3px',
+                      'тревоги, reduced motion: метка «ՆՈՐ» в баннере и строке, обводка 3px')
+                calm.close()
+
                 phone = browser.new_page(viewport={'width': 390, 'height': 860}, is_mobile=True, has_touch=True)
                 phone.on('pageerror', lambda e: errors.append(str(e)))
                 phone.goto(BASE + '/routes/live')
                 phone.wait_for_selector('.lv-item')
+                phone.wait_for_timeout(500)
+                check(phone.is_visible('#lvAlarm') and phone.evaluate(NO_SCROLL_JS),
+                      'тревоги, телефон 390 px: баннер переносится, нет горизонтальной прокрутки')
+                phone.screenshot(path=str(SHOTS / 'live_alarm_phone.png'))
                 phone.locator(f'.lv-item[data-car="{cars[0]}"]').click()
                 phone.wait_for_selector('#lvCard:not([hidden]) .lv-grid dt')
                 phone.wait_for_timeout(800)
