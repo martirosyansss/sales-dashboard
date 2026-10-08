@@ -1,4 +1,6 @@
-{% extends "base_v2.html" %}
+{% extends "routes_base.html" %}
+{#- пункт меню раздела слева (routes_base.html) -#}
+{% set rt_nav = '/routes/araqich' %}
 
 {% block title %}Առաքիչների KPI — Sales Dashboard{% endblock %}
 
@@ -6,26 +8,11 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400..700&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+Armenian:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=24">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=25">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes_araqich.css') }}?v=3">
 {% endblock %}
 
 {% block content %}
-<!-- Вкладки раздела — одинаковая полоса на всех страницах «Маршрутов» (одно место, один вид) -->
-<div class="rt-page rt-secbar" lang="hy">
-    <nav class="rt-tabs" aria-label="Երթուղիների բաժիններ">
-        <a href="/routes">Ակնարկ</a>
-        <a href="/routes/optimize">Օպտիմալացում</a>
-        <a href="/routes/dispatch">Առաքում</a>
-        <a href="/routes/learning">Ուսուցում</a>
-        <a href="/routes/drivers">Վարորդներ</a>
-        <a href="/routes/settings">Կարգավորումներ</a>
-        <a href="/routes/garage">Ավտոտնակ</a>
-        <a href="/routes/pay">Աշխատավարձ</a>
-        <a href="/routes/araqich" aria-current="page">Առաքիչների KPI</a>
-        <a href="/routes/cost">Առաքման արժեք</a>
-    </nav>
-</div>
 <!-- «Առաքիչների KPI» (route_optimizer/crew_kpi.py): показатели առաքիչ за месяц по ERP; только администратору -->
 <div class="rt-page" id="kpPage" lang="hy">
 

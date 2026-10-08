@@ -356,7 +356,7 @@ def test_api_scorecard_for_admin(client, sc_app):
     html = page.get_data(as_text=True)
     assert page.status_code == 200 and 'js/routes_drivers.js?v=7' in html and 'css/routes_drivers.css?v=3' in html
     assert 'data-key="cash"' in html and 'data-cash="1"' in html
-    assert '<a href="/routes/drivers" aria-current="page">Վարորդներ</a>' in html
+    assert '<a class="rt-secnav-link" href="/routes/drivers" aria-current="page">' in html and '<span class="rt-secnav-t">Վարորդներ</span>' in html
 
 
 def test_api_scorecard_period_validation(client, sc_app):
@@ -675,7 +675,7 @@ def test_scorecard_access_roles_and_cash(client, sc_app):
     assert {x['key']: x for x in body['drivers']}['driver:1']['speed_events'] == 1
     html = client.get('/routes/drivers', base_url=LAN).get_data(as_text=True)
     assert 'data-key="cash"' not in html and 'data-cash="0"' in html and 'Կանխիկ' not in html
-    assert 'class="rt-tabs"' not in html and 'href="/routes/garage"' in html
+    assert 'id="rtSecNav"' not in html and 'href="/routes/garage"' in html
     assert 'href="/routes/drivers"' in client.get('/routes/garage', base_url=LAN).get_data(as_text=True)
     assert client.post(url, base_url=LAN, headers=h).status_code == 403   # только чтение
     _session_as(client, 'boss', base=LAN)

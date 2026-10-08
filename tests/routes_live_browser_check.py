@@ -55,10 +55,12 @@ live_alarm_desktop.png, live_alarm_acked.png, live_alarm_phone.png.
 Тревоги, круг 2 (владелец 08.10 «fix all»; alarm2_checks): отклонение машины 2 идёт 3 мин — строка приглушённая, без
 мигания и «Տեսա», не в баннере; 6 мин — новая; все тревоги начались минуту назад — без эскалации, 6 мин назад — баннер
 .is-escalated и «6 րոպե առանց պատասխանի»; «Տեսա» записывается на сервер с именем (сессия проверки — qa), второй браузер
-без localStorage видит строку ровной и «Տեսավ՝ qa HH:MM»; 1440 и 1280 px: без выбора карта до правого края, выбор —
-карточка справа, карта уже и машина посередине (Leaflet пересчитал размер), выбор снят — снова до края; телефон — прежняя
-раскладка. Отметки сервера общие: перед шагами «никто не видел» они снимаются в копии базы, страницы с отметками закрыты.
-Снимки: live_alarm2_desktop.png, live_alarm2_wide_noselect.png, live_alarm2_phone.png.
+без localStorage видит строку ровной и «Տեսավ՝ qa HH:MM»; 1366 и 1440 px с меню «Маршрутов» слева (две колонки:
+карточка под картой) и «Гараж» без меню (cookie qa_role, три колонки: без выбора карта и на месте карточки, выбор —
+карточка справа, карта уже): машина посередине карты (Leaflet пересчитал размер), выбор снят — снова до края; телефон —
+прежняя раскладка. Отметки сервера общие: перед шагами «никто не видел» они снимаются в копии базы, страницы с отметками закрыты.
+Снимки: live_alarm2_desktop.png, live_alarm2_wide_noselect.png («Гараж», 1440), live_alarm2_1366.png (меню слева),
+live_alarm2_phone.png.
 
 Проверяется: список и маркеры всех машин, состояние и счётчик тревог, карточка выбранной машины (поля №76), путь и
 магазины на карте, нет горизонтальной прокрутки на телефоне, опрос раз в 15 с, нет ошибок страницы и консоли (кроме сетевых
@@ -83,7 +85,7 @@ sys.path.insert(0, str(ROOT))
 os.environ['ROUTES_OSM_PATH'] = str(Path(tempfile.gettempdir()) / 'live-check-no-map.osm.pbf')   # карты дорог нет
 os.environ.pop('COURIER_DEMO', None)
 
-from flask import Flask, g, session  # noqa: E402
+from flask import Flask, g, request, session  # noqa: E402
 from playwright.sync_api import sync_playwright  # noqa: E402
 from werkzeug.serving import make_server  # noqa: E402
 
@@ -117,12 +119,15 @@ def build_app(tmp: Path) -> Flask:
     app = Flask(__name__, template_folder=str(ROOT / 'templates'), static_folder=str(ROOT / 'static'))
     app.secret_key = 'test'
     app.add_url_rule('/logout', 'logout', lambda: 'bye', methods=['GET', 'POST'])
+    # роль — администратор; cookie qa_role=garage — «Гараж» (без меню «Маршрутов» слева, routes_base.html)
+    def role() -> str:
+        return 'garage' if request.cookies.get('qa_role') == 'garage' else 'admin'
     app.context_processor(lambda: {'current_user': None, 'current_username': 'qa', 'csrf_token': lambda: 'x',
-                                   'is_admin': True, 'is_garage': False})
+                                   'is_admin': role() == 'admin', 'is_garage': role() == 'garage'})
     route_optimizer.init_app(app, FakeDb(), db_path=str(tmp / 'route_optimizer.db'))
     courier.init_app(app, FakeDb(), db_path=str(tmp / 'courier.db'))
     route_optimizer.attach_live_facts(app, courier.live_facts(app))
-    app.before_request(lambda: setattr(g, 'user_role', 'admin'))   # «Բացատրել» — администратору (гейта app_v2 нет)
+    app.before_request(lambda: setattr(g, 'user_role', role()))   # «Բացատրել» — администратору (гейта app_v2 нет)
     app.before_request(lambda: session.update(username='qa'))     # «Տեսա» на сервере — с именем вошедшего («Տեսավ՝ qa»)
     app.extensions['route_optimizer'].roads = StraightRoads()
     from route_optimizer import views
@@ -308,6 +313,9 @@ PLAN_HIT = '.leaflet-overlay-pane path.lv-hit.is-plan'
 def line_tips(page, sel, ats, tap=False) -> list[str]:
     """Курсор (или касание) в точках линии sel → тексты подсказки точки (пусто — подсказки нет)."""
     out = []
+    # карта целиком на экране: слева меню раздела «Маршруты» — при 1440 px страница в две колонки, карточка машины под
+    # картой, и работа с карточкой прокручивает страницу вниз
+    page.eval_on_selector('#lvMap', "e => e.scrollIntoView({ block: 'nearest' })")
     for at in ats:
         xy = page.evaluate(POINT_JS, [sel, at])
         if xy is None:
@@ -493,9 +501,11 @@ def alarm2_checks(browser, base, cars, check, clear_acks, errors) -> None:
     Начала тревог подменяются в ответе API флота (часы сервера проверки фиксированы — data.now)."""
     clear_acks()
 
-    def open_page(**kw):
+    def open_page(role='admin', **kw):
         p = browser.new_page(**{'viewport': {'width': 1440, 'height': 900}, **kw})   # свой контекст: localStorage пуст
         p.on('pageerror', lambda e: errors.append(str(e)))
+        if role == 'garage':
+            p.context.add_cookies([{'name': 'qa_role', 'value': 'garage', 'url': base}])
         p.goto(base + '/routes/live')
         p.wait_for_selector('.lv-item')
         p.wait_for_timeout(500)
@@ -569,36 +579,48 @@ def alarm2_checks(browser, base, cars, check, clear_acks, errors) -> None:
           f'круг 2: другой браузер без отметок видит «Տեսա» сервера — ровная, «Տեսավ՝ qa HH:MM» ({seen!r}, {text!r})')
     other.close()
 
-    # широкий экран: машина не выбрана — карта до правого края раскладки; выбрана — карточка справа, карта уже
+    # раскладка: страница — контейнер lvpage (три колонки — от 1241 px ширины самой страницы). Администратор — слева меню
+    # «Маршрутов»: 1366 и 1440 — две колонки, карточка под картой; «Гараж» — без меню: три колонки. Машина не выбрана — карта
+    # до правого края раскладки (в три колонки — и на месте карточки); выбрана — в три колонки карточка справа и карта уже,
+    # в две — карточка под картой, ширина карты та же; Leaflet пересчитал размер — выбранная машина посередине карты
     def boxes(p):
         return p.evaluate("""() => { const r = (s) => document.querySelector(s).getBoundingClientRect();
             const l = r('.lv-layout'), m = r('.lv-mapbox'), c = r('#lvCard');
-            return { layR: l.right, mapR: m.right, mapW: m.width, mapH: r('#lvMap').height, cardL: c.left, cardW: c.width,
-                     leaflet: document.querySelector('#lvMap .leaflet-tile-pane') !== null }; }""")
-    for width in (1440, 1280):
-        p = open_page(viewport={'width': width, 'height': 900})
+            return { layR: l.right, mapR: m.right, mapW: m.width, mapB: m.bottom, cardL: c.left, cardT: c.top, cardW: c.width,
+                     cols: getComputedStyle(document.querySelector('.lv-layout')).gridTemplateColumns.split(' ').length }; }""")
+    for width, role in ((1366, 'admin'), (1440, 'admin'), (1366, 'garage'), (1440, 'garage')):
+        name = f'{width} px, {"меню слева" if role == "admin" else "«Гараж» без меню"}'
+        p = open_page(role, viewport={'width': width, 'height': 900})
+        menu = p.locator('#rtShell').count() == 1
         free = boxes(p)
-        check(not p.is_visible('#lvCard') and abs(free['mapR'] - free['layR']) <= 1,
-              f'круг 2, {width} px: без выбора карта до правого края ({free})')
-        if width == 1440:
+        three = role == 'garage'
+        check(menu == (role == 'admin') and free['cols'] == (3 if three else 2) and not p.is_visible('#lvCard')
+              and abs(free['mapR'] - free['layR']) <= 1, f'круг 2, {name}: без выбора карта до правого края ({free})')
+        if (width, role) == (1440, 'garage'):
             p.screenshot(path=str(SHOTS / 'live_alarm2_wide_noselect.png'))
+        if (width, role) == (1366, 'admin'):
+            p.screenshot(path=str(SHOTS / 'live_alarm2_1366.png'))
         p.locator(f'.lv-item[data-car="{cars[0]}"]').click()
         p.wait_for_selector('#lvCard:not([hidden]) .lv-grid dt')
-        p.wait_for_timeout(600)
+        p.wait_for_timeout(900)
         sel = boxes(p)
-        check(p.is_visible('#lvCard') and sel['mapR'] <= sel['cardL'] and sel['mapW'] < free['mapW'] - 300 and sel['cardW'] >= 330,
-              f'круг 2, {width} px: выбрана машина — карточка справа, карта уже ({sel})')
-        # Leaflet пересчитал размер (invalidateSize): выбранная машина после panTo — посередине новой, узкой карты (со
-        # старым размером она оказалась бы правее — Leaflet считал бы карту шире)
+        if three:
+            ok = sel['mapR'] <= sel['cardL'] and sel['mapW'] < free['mapW'] - 300 and sel['cardW'] >= 330
+        else:
+            ok = sel['cardT'] >= sel['mapB'] and abs(sel['mapW'] - free['mapW']) <= 1 and abs(sel['mapR'] - sel['layR']) <= 1
+        check(p.is_visible('#lvCard') and ok, f'круг 2, {name}: выбрана машина — карточка '
+              f'{"справа, карта уже" if three else "под картой, карта той же ширины"} ({sel})')
+        # со старым размером (без invalidateSize) машина после panTo оказалась бы правее середины — Leaflet считал бы карту шире
         mid = p.evaluate("""car => { const m = [...document.querySelectorAll('.lv-marker')].find(x =>
             x.querySelector('.lv-marker-plate').textContent === car).getBoundingClientRect();
             const b = document.querySelector('#lvMap').getBoundingClientRect();
             return [Math.round(m.left + m.width / 2), Math.round(b.left + b.width / 2)]; }""", cars[0])
-        check(abs(mid[0] - mid[1]) <= 12, f'круг 2, {width} px: размер карты пересчитан — машина посередине карты ({mid})')
+        check(abs(mid[0] - mid[1]) <= 12, f'круг 2, {name}: размер карты пересчитан — машина посередине карты ({mid})')
         p.locator(f'.lv-item[data-car="{cars[0]}"]').click()   # снять выбор — снова на всю ширину
         p.wait_for_timeout(600)
         back = boxes(p)
-        check(abs(back['mapR'] - back['layR']) <= 1, f'круг 2, {width} px: выбор снят — карта снова до края ({back})')
+        check(abs(back['mapR'] - back['layR']) <= 1 and abs(back['mapW'] - free['mapW']) <= 1,
+              f'круг 2, {name}: выбор снят — карта снова до края ({back})')
         p.close()
     page.close()
     # телефон: раскладка прежняя (карта во всю ширину, без горизонтальной прокрутки), баннер и строки круга 2
@@ -871,11 +893,30 @@ def main() -> int:
                 page.wait_for_timeout(16000)
                 check(len(polls) > n, f'опрос раз в 15 с ({n} → {len(polls)})')
 
+                # слева меню «Маршрутов»: 1366×650 — две колонки, карточка под картой, выбор машины прокручивает к ней;
+                # 1920 — три колонки, карточка справа на виду, страница не прокручивается
+                for w, h, cols in ((1366, 650, 2), (1920, 1080, 3)):
+                    pc = browser.new_page(viewport={'width': w, 'height': h})
+                    pc.on('pageerror', lambda e: errors.append(str(e)))
+                    pc.goto(base + '/routes/live')
+                    pc.wait_for_selector('.lv-item')
+                    n_cols = pc.eval_on_selector('.lv-layout', "e => getComputedStyle(e).gridTemplateColumns.split(' ').length")
+                    pc.locator(f'.lv-item[data-car="{cars[0]}"]').click()
+                    pc.wait_for_selector('#lvCard:not([hidden]) .lv-grid dt')
+                    pc.wait_for_timeout(900)
+                    top, sy = pc.evaluate("[document.getElementById('lvCard').getBoundingClientRect().top, scrollY]")
+                    check(n_cols == cols and 0 <= top < h - 120 and (sy > 0) == (cols == 2),
+                          f'{w}×{h}: {n_cols} колонки, выбранная машина — карточка на экране (верх {round(top)}, прокрутка {sy})')
+                    if w == 1366:
+                        out = ROOT / 'output' / 'routes-side'
+                        out.mkdir(parents=True, exist_ok=True)
+                        pc.screenshot(path=str(out / 'live-1366x650-car-selected.png'))
+                    pc.close()
                 # «меньше движения»: новые — без анимации, обводка и «ՆՈՐ» (свой контекст и отметки «Տեսա» сервера
                 # сняты — круг 2: они общие; страница с отметками закрыта — иначе её опрос вернул бы их на сервер)
                 page.close()
                 clear_acks()
-                calm =browser.new_page(viewport={'width': 1440, 'height': 900}, reduced_motion='reduce')
+                calm = browser.new_page(viewport={'width': 1440, 'height': 900}, reduced_motion='reduce')
                 calm.on('pageerror', lambda e: errors.append(str(e)))
                 calm.goto(base + '/routes/live')
                 calm.wait_for_selector('.lv-item')
