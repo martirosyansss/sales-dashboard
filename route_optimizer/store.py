@@ -29,7 +29,7 @@ from .patterns import parse_freq_key, parse_pattern_key, parse_plan_freq_key, pa
 from .running_costs import LOAD_COST_FIELDS, profile_fields
 from .vehicle_access import VehicleAccess, check_access
 
-SCHEMA_VERSION = 24
+SCHEMA_VERSION = 26
 CREW_PAY_KEY = 'crew_pay'   # строка settings с параметрами «Աշխատավարձ» (Store.crew_pay_params); не ключ DEFAULT_SETTINGS
 # строка settings: какие виды тревог карты знала программа, сохранившая live_alert_kinds (№87); не ключ
 # DEFAULT_SETTINGS — прежние версии её не читают. Нет строки — список сохранён до №87 (знали LIVE_ALERT_KINDS_V1)
@@ -37,7 +37,7 @@ LIVE_KINDS_KNOWN_KEY = 'live_alert_kinds_known'
 LIVE_ALERT_KINDS_V1 = ('speed', 'stop', 'no_contact', 'gps', 'center')
 # виды тревог, которые в Telegram включает только владелец (галочкой в настройках): база, сохранённая до них, получает их
 # выключенными — отклонение от плановой линии (08.10) ещё не измерено на настоящих днях, рассылка не должна начаться сама
-LIVE_KINDS_OPT_IN = ('deviation',)
+LIVE_KINDS_OPT_IN = ('deviation', 'sequence')
 COST_MARGIN_KEY = 'cts_margin_pct'   # средняя наценка «Առաքման արժեք», % (Store.cost_margin) — как CREW_PAY_KEY
 
 # manager_profile.included: 1/0 — выбор владельца, NULL — «авто» (в расчёте, если есть работа за 8 недель)
@@ -204,6 +204,25 @@ _CUSTOMER_RULE_TABLE = (
     "solo INTEGER NOT NULL CHECK (solo IN (0, 1)), center INTEGER NOT NULL CHECK (center IN (0, 1)), "
     "updated_at TEXT NOT NULL, updated_by TEXT)")
 
+# Схема 25 (владелец 08.10, «Մինչև ժամը», ветка until-time): привезти магазин не позже t1 (минуты от полуночи) только в
+# день day. Здесь — только таблица, байт в байт как у until-time (её читает until-time): миграция 24 → 25 одна и та же,
+# в каком бы порядке ни пришли ветки, — шаг 25 не пропускается ни в одной базе.
+_CUSTOMER_DAY_UNTIL_TABLE = (
+    "CREATE TABLE IF NOT EXISTS customer_day_until(day TEXT NOT NULL, "
+    "customer_id INTEGER NOT NULL CHECK (customer_id > 0), t1 INTEGER NOT NULL CHECK (t1 BETWEEN 0 AND 1439), "
+    "updated_at TEXT NOT NULL, updated_by TEXT, PRIMARY KEY (day, customer_id))")
+
+# Схема 26 (владелец 08.10, «Մեքենաները առցանց»): диспетчер объяснил отклонение или нарушение порядка объезда машины за
+# день — причина (LIVE_EXPLAIN_REASONS) и заметка; t_from / t_to — время тревоги, к которой объяснение привязано
+# (live.apply_explanations: тот же вид и пересечение по времени). «Չեղարկել» — строка удаляется.
+_LIVE_EXPLAIN_TABLE = (
+    "CREATE TABLE IF NOT EXISTS live_explain(id INTEGER PRIMARY KEY AUTOINCREMENT, day TEXT NOT NULL, "
+    "car_code TEXT NOT NULL CHECK (length(car_code) BETWEEN 1 AND 64), "
+    "kind TEXT NOT NULL CHECK (kind IN ('deviation', 'sequence')), t_from TEXT NOT NULL, t_to TEXT NOT NULL, "
+    "reason TEXT NOT NULL CHECK (reason IN ('refuel', 'repair', 'customer', 'road', 'other')), "
+    "note TEXT NOT NULL DEFAULT '' CHECK (length(note) <= 200), created_at TEXT NOT NULL, created_by TEXT)")
+_LIVE_EXPLAIN_INDEX = 'CREATE INDEX IF NOT EXISTS live_explain_day ON live_explain(day, car_code)'
+
 _MEASUREMENT_TABLE = (
     'CREATE TABLE IF NOT EXISTS route_measurement(day TEXT NOT NULL, car_code TEXT NOT NULL, '
     'data TEXT NOT NULL, updated_at TEXT NOT NULL, updated_by TEXT, PRIMARY KEY(day, car_code))')
@@ -282,6 +301,9 @@ _SCHEMA = (
     _TRUCK_HELPER_TABLE,
     _DRIVER_ABSENCE_TABLE,
     _CUSTOMER_RULE_TABLE,
+    _CUSTOMER_DAY_UNTIL_TABLE,
+    _LIVE_EXPLAIN_TABLE,
+    _LIVE_EXPLAIN_INDEX,
     _GEO_OVERRIDE_TABLE,
     _DISPATCH_TABLE,
     _TRUCKS_ONE_VAN,
@@ -430,6 +452,11 @@ _MIGRATIONS: dict[int, tuple[str, ...]] = {
     22: (_DRIVER_ABSENCE_TABLE,),
     # 23 → 24 (№78): только добавляем — магазины «отдельным рейсом»; прежние таблицы и значения не меняются.
     23: (_CUSTOMER_RULE_TABLE,),
+    # 24 → 25 (владелец 08.10, «Մինչև ժամը»): только добавляем — срок магазина на один день (таблица ветки until-time,
+    # та же строка DDL: см. _CUSTOMER_DAY_UNTIL_TABLE); прежнее не меняется.
+    24: (_CUSTOMER_DAY_UNTIL_TABLE,),
+    # 25 → 26 (владелец 08.10): только добавляем — объяснения отклонений и порядка объезда карты машин.
+    25: (_LIVE_EXPLAIN_TABLE, _LIVE_EXPLAIN_INDEX),
 }
 
 FUEL_TYPES = ('diesel', 'petrol', 'lpg')
@@ -554,6 +581,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # отклонение от плановой линии (владелец 08.10): точка трека дальше столько метров от линии отправленного плана
     # «Развоза» по дорогам; отклонение — не меньше 0,5 км пути и минуты подряд (live.deviation_runs)
     'live_deviation_m': 300,
+    # отклонение — тревога (в «Խնդիրներ հիմա» и Telegram), только если перепробег его участка (live.detour_legs: км
+    # GPS между соседними точками фактического порядка минус км плана) не меньше столько км; меньше — «փոքր շեղում»
+    # в журнале (владелец 08.10, п. 5)
+    'live_detour_min_km': 1.0,
     # тревоги карты в Telegram-группу (этап 2): какие слать, тихие часы (с — до, по Еревану; одинаковые — без тихих
     # часов), не чаще раза в столько минут на тревогу того же вида у машины
     'live_alert_kinds': ['speed', 'stop', 'no_contact', 'gps', 'center', 'late'],   # deviation — LIVE_KINDS_OPT_IN
@@ -644,6 +675,7 @@ _NUMERIC: dict[str, tuple[float, float, bool]] = {
     'live_stop_min': (1, 240, False),
     'live_no_contact_min': (1, 120, False),
     'live_deviation_m': (100, 2000, False),
+    'live_detour_min_km': (0.1, 20, False),
     'live_repeat_min': (1, 1440, False),
     'late_nowin_min': (5, 240, False),     # и целое (validate_settings)
 }
@@ -669,8 +701,13 @@ WINDOW_TOL_MAX = 120
 DEFAULT_WINDOW_TOL = 15     # «в 11:00 ± 15 мин» — допуск по умолчанию (№37)
 UNLOAD_MIN_RANGE = (1, 120)  # время у магазина (№50), целые минуты
 # виды тревог карты (live.py) — переключатели настроек; late — прогноз «не успеет» (№87), deviation — отклонение от
-# плановой линии (08.10)
-LIVE_ALERT_KINDS = ('speed', 'stop', 'no_contact', 'gps', 'center', 'late', 'deviation')
+# плановой линии (08.10), sequence — магазины рейса пропущены: обслужен магазин дальше по плану (08.10)
+LIVE_ALERT_KINDS = ('speed', 'stop', 'no_contact', 'gps', 'center', 'late', 'deviation', 'sequence')
+# объяснение тревоги карты диспетчером (схема 26): виды, причины (Լիցքավորում, Վերանորոգում, Հաճախորդի խնդրանքով,
+# Փակ ճանապարհ / խցանում, Այլ) и предел заметки
+LIVE_EXPLAIN_KINDS = ('deviation', 'sequence')
+LIVE_EXPLAIN_REASONS = ('refuel', 'repair', 'customer', 'road', 'other')
+LIVE_EXPLAIN_NOTE_MAX = 200
 GARAGE_KINDS = ('repair', 'accident', 'fixed', 'odometer')   # журнал гаража (№53), как garage.KINDS
 GARAGE_TEXT_MAX = 300
 GARAGE_AMOUNT_MAX = 100_000_000
@@ -910,6 +947,35 @@ def _iso_day(v: Any) -> date | None:
         return date.fromisoformat(v)
     except ValueError:
         return None
+
+
+def _aware_moment(v: Any) -> datetime | None:
+    """ISO-момент с часовым поясом (тревоги карты машин — live._iso) → datetime; иначе None."""
+    try:
+        t = datetime.fromisoformat(v) if isinstance(v, str) and len(v) <= 40 else None
+    except ValueError:
+        return None
+    return t if t is not None and t.utcoffset() is not None else None
+
+
+def check_live_explanation(kind: Any, reason: Any, note: Any) -> tuple[str, dict[str, str]]:
+    """(заметка без пробелов по краям, ошибки по полям) объяснения тревоги карты машин (схема 26): вид — LIVE_EXPLAIN_KINDS,
+    причина — LIVE_EXPLAIN_REASONS, заметка — необязательная строка до LIVE_EXPLAIN_NOTE_MAX символов без управляющих."""
+    errors: dict[str, str] = {}
+    if kind not in LIVE_EXPLAIN_KINDS:
+        errors['kind'] = 'Այս ահազանգը չի բացատրվում'
+    if reason not in LIVE_EXPLAIN_REASONS:
+        errors['reason'] = 'Ընտրեք պատճառը'
+    text = '' if note is None else note
+    if not isinstance(text, str):
+        errors['note'] = 'Նշումը՝ տեքստ'
+        text = ''
+    text = text.strip()
+    if len(text) > LIVE_EXPLAIN_NOTE_MAX:
+        errors['note'] = f'Նշումը՝ առավելագույնը {LIVE_EXPLAIN_NOTE_MAX} նիշ'
+    elif any(unicodedata.category(c) == 'Cc' for c in text):
+        errors['note'] = 'Նշումում կան անթույլատրելի նիշեր'
+    return text, errors
 
 
 def _years_back(d: date, years: int) -> date:
@@ -2512,6 +2578,55 @@ class Store:
         permanent, subs = self._read(query)
         names = dict(permanent) | dict(subs)
         return {code: name for code, name in names.items() if name}, frozenset(code for code, _ in subs)
+
+    # --- объяснения тревог карты машин (схема 26, владелец 08.10) ---
+
+    def live_explanations(self, day: str) -> dict[str, list[dict[str, Any]]]:
+        """Объяснения дня YYYY-MM-DD: машина → [{id, kind, from, to, reason, note, at, by}] по порядку записи. Битая строка
+        — StoreError, а не тихий пропуск: объяснение снимает тревогу, молча потерять его нельзя."""
+        rows = self._read(lambda conn: conn.execute(
+            'SELECT id, car_code, kind, t_from, t_to, reason, note, created_at, created_by FROM live_explain '
+            'WHERE day = ? ORDER BY id', (day,)).fetchall())
+        out: dict[str, list[dict[str, Any]]] = {}
+        for id_, car, kind, a, b, reason, note, at, by in rows:
+            if kind not in LIVE_EXPLAIN_KINDS or reason not in LIVE_EXPLAIN_REASONS or _aware_moment(a) is None \
+                    or _aware_moment(b) is None or not isinstance(note, str):
+                raise StoreError(f'{self._name()}: վնասված է ահազանգի բացատրությունը #{id_}{_FIX_HINT}')
+            out.setdefault(car, []).append({'id': id_, 'kind': kind, 'from': a, 'to': b, 'reason': reason, 'note': note,
+                                            'at': at, 'by': by})
+        return out
+
+    def add_live_explanation(self, day: str, car_code: str, kind: str, t_from: str, t_to: str, reason: str, note: str,
+                             user: str | None) -> int:
+        """Объяснение тревоги (вид, время тревоги t_from–t_to — ISO с поясом, причина, заметка — check_live_explanation)
+        → id записи. Неверные данные — ValueError (API проверяет их раньше и отвечает 400)."""
+        text, errors = check_live_explanation(kind, reason, note)
+        if errors or text != note:
+            raise ValueError('объяснение не прошло проверку: ' + ', '.join(errors or {'note': ''}))
+        if _iso_day(day) is None or not isinstance(car_code, str) or not 0 < len(car_code) <= 64:
+            raise ValueError('day: YYYY-MM-DD, car_code: строка до 64 символов')
+        a, b = _aware_moment(t_from), _aware_moment(t_to)
+        if a is None or b is None or b < a:
+            raise ValueError('t_from ≤ t_to: ISO-моменты с поясом')
+
+        def write(conn: sqlite3.Connection) -> int:
+            cur = conn.execute('INSERT INTO live_explain(day, car_code, kind, t_from, t_to, reason, note, created_at, '
+                               'created_by) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                               (day, car_code, kind, t_from, t_to, reason, note, _now(), user))
+            return int(cur.lastrowid)
+        return self._transaction(write, 'не удалось сохранить объяснение тревоги')
+
+    def delete_live_explanation(self, explanation_id: int) -> tuple[str, str] | None:
+        """«Չեղարկել»: удалить объяснение → (день, машина) удалённого; такого нет — None."""
+        if not _is_int(explanation_id) or explanation_id <= 0:
+            raise ValueError('explanation_id: положительное целое')
+
+        def write(conn: sqlite3.Connection) -> tuple[str, str] | None:
+            row = conn.execute('SELECT day, car_code FROM live_explain WHERE id = ?', (explanation_id,)).fetchone()
+            if row is not None:
+                conn.execute('DELETE FROM live_explain WHERE id = ?', (explanation_id,))
+            return (row[0], row[1]) if row is not None else None
+        return self._transaction(write, 'не удалось отменить объяснение тревоги')
 
     def driver_names(self, since: str = '') -> list[str]:
         """Имена водителей и առաքիչ из записей (№62) с днём записи не раньше since (YYYY-MM-DD; '' — все), по алфавиту:
