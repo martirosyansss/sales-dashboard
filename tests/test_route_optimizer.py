@@ -1281,11 +1281,31 @@ def test_static_erp_queries_pass_guard_and_use_nolock():
         tables = re.findall(r'\b(?:FROM|JOIN)\s+([A-Za-z_]+)\s+\w+\s*(WITH\s*\(NOLOCK\))?', sql)
         assert tables, name
         assert all(hint for _, hint in tables), f'{name}: таблица без WITH (NOLOCK)'
-    # весь SQL в erp.py — только в константах SQL_*
-    selects = [n.value for n in ast.walk(_module_trees()['erp.py'])
-               if isinstance(n, ast.Constant) and isinstance(n.value, str)
-               and re.match(r'\s*(SELECT|WITH)\s', n.value)]
-    assert sorted(selects) == sorted(sql_consts.values())
+    # весь SQL в erp.py — только в константах SQL_*: литералом или f-строкой с общим фрагментом (вес с подарками
+    # erp._KG_APPLY, ответ владельца №90) — f-строка с SELECT только в присваивании SQL_*
+    tree = _module_trees()['erp.py']
+    is_select = lambda v: isinstance(v, str) and re.match(r'\s*(SELECT|WITH)\s', v)   # noqa: E731
+    parts = {id(v) for n in ast.walk(tree) if isinstance(n, ast.JoinedStr) for v in n.values}
+    selects = [n.value for n in ast.walk(tree) if isinstance(n, ast.Constant) and id(n) not in parts and is_select(n.value)]
+    composed = [t.id for n in ast.walk(tree) if isinstance(n, ast.Assign) and isinstance(n.value, ast.JoinedStr)
+                for t in n.targets]
+    f_selects = [n for n in ast.walk(tree) if isinstance(n, ast.JoinedStr) and n.values
+                 and isinstance(n.values[0], ast.Constant) and is_select(n.values[0].value)]
+    assert composed and all(c.startswith('SQL_') for c in composed) and len(f_selects) == len(composed)
+    assert sorted(selects) == sorted(v for k, v in sql_consts.items() if k not in composed)
+
+
+def test_erp_physical_kg_includes_gifts_revenue_does_not():
+    """Ответ владельца №90: кг документа, который везёт машина (план, факт, история машин, экипаж, стоимость доставки), —
+    строки SALEDOCDETAILS и подарки SALEDOCGIFTS того же fISN; суммы — fTOTALSUM (у подарков цены нет), без подарков."""
+    kg = ('SQL_SALES_DOCS', 'SQL_CAR_DAYS', 'SQL_DISPATCH_ORDERS', 'SQL_SHIPPED', 'SQL_CREW_PAY', 'SQL_COST_SALES')
+    for name in kg:
+        sql = getattr(erp, name)
+        assert sql.count('SALEDOCGIFTS g WITH (NOLOCK)') >= 1 and 'UNION ALL' in sql, name
+        assert 'g.fISN = s.fISN' in sql or 'g.fISN = o.fISN' in sql, name
+    assert 'g.fISN = o.fISN' in erp.SQL_DISPATCH_ORDERS                # заказ — подарки самого заказа
+    others = [n for n in dir(erp) if n.startswith('SQL_') and n not in kg]
+    assert all('SALEDOCGIFTS' not in getattr(erp, n) for n in others)   # выручка и прочее — как были
 
 
 # ============================== API без БД ==============================

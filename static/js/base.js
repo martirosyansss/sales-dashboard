@@ -33,7 +33,9 @@ window.RtWaybill = (function () {
     const hhmm = (m) => String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
     const dateRu = (s) => (typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s) ? s.slice(8, 10) + '.' + s.slice(5, 7) + '.' + s.slice(0, 4) : '—');
     const truckLabel = (t) => (t.name ? t.name + ' · ' : '') + t.car_code;
-    const wbName = (r) => r.unknown ? 'ERP-ում անհայտ ապրանք (ID ' + r.product_id + ')' : (r.name || '—');
+    // №90: подарки ERP (SALEDOCGIFTS) уже в количестве строки — gift: сколько из них подарки, склад грузит всё
+    const wbGift = (r) => (num(r.gift) ? ' · այդ թվում՝ ' + fmt(r.gift, 4) + NB + 'նվեր' : '');
+    const wbName = (r) => (r.unknown ? 'ERP-ում անհայտ ապրանք (ID ' + r.product_id + ')' : (r.name || '—')) + wbGift(r);
     const wbQty = (r) => fmt(r.qty, 4) + (r.unit ? NB + r.unit : '');
     // «12 փաթեթ + 3 հատ» — для склада: упаковка «փաթեթ» из доп. единицы товара ERP
     const wbPacks = (r) => !r.pack || r.packs === null ? '' : [r.packs ? fmt(r.packs) + NB + 'փաթեթ' : '',

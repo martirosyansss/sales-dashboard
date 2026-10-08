@@ -354,7 +354,7 @@ def test_api_scorecard_for_admin(client, sc_app):
     assert sorted(crew.calls) == [D1, D1, D2, D2]
     page = client.get('/routes/drivers', base_url=LAN)
     html = page.get_data(as_text=True)
-    assert page.status_code == 200 and 'js/routes_drivers.js?v=6' in html and 'css/routes_drivers.css?v=2' in html
+    assert page.status_code == 200 and 'js/routes_drivers.js?v=7' in html and 'css/routes_drivers.css?v=3' in html
     assert 'data-key="cash"' in html and 'data-cash="1"' in html
     assert '<a href="/routes/drivers" aria-current="page">Վարորդներ</a>' in html
 

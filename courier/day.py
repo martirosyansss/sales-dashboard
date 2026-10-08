@@ -18,6 +18,12 @@
   точки — лишь накладные ERP с машиной, порядок — не по плану; `plan` ответа — 'approved' | 'pending' (добавочное поле,
   как `weight_kg`: будущий APK покажет «Պլանը դեռ հաստատված չէ»). Утверждение доходит до терминала не позже
   DAY_TTL_SECONDS кэша + его опрос /day.
+- подарки ERP (SALEDOCGIFTS, ответ владельца №90; контракт §11) — отдельные строки точки после строк документа: тот же
+  product_id, line_id «<fISN>:G<fROWNUM>», цена и сумма 0, название с «(նվեր)», `gift: true` (поле только у них),
+  weight_kg — их вес; amount_due не меняется (сумма документа). Ожидаемая тара — и по подаркам: бутыль-подарок едет в
+  своей таре (товар 200 «19լ» с тарой 202 — среди подарков сентября). У подарка, который акция ERP воспроизводит точно,
+  — `gift_rule` {base_product_ids, per, qty} (erp_day.gift_rules): терминал пересчитывает подарок по доставленному
+  (ответ владельца №90 «APK сам пересчитывает»); нет правила — подарок ручной.
 """
 from __future__ import annotations
 
@@ -33,11 +39,13 @@ from route_optimizer.erp import ErpError
 from route_optimizer.geo import Point, resolve_coord
 
 from . import clock
-from .erp_day import (ContainerLink, CustomerInfo, DayData, Doc, Line, OrdersPick, Product, collect_for,
+from .erp_day import (ContainerLink, CustomerInfo, DayData, Doc, GiftRule, Line, OrdersPick, Product, collect_for,
                       expected_tare)
 from .order import order_customers
 from .routes_link import RoutesView, distance_fn, invoice_owner, orders_window, pick_orders
 from .store import MarkSetting, Store
+
+GIFT_LABEL = 'նվեր'   # к названию строки-подарка (№90): «Գառնի կրիստալլայն 6լ (նվեր)»
 
 DAY_TTL_SECONDS = 60
 DAY_CACHE_MAX = 64
@@ -63,14 +71,17 @@ def _resolve_points(data: DayData, view: RoutesView) -> dict[int, Point | None]:
 
 
 def _line_json(line: Line, product: Product | None, gtins: tuple[str, ...], mark: MarkSetting | None,
-               gtin_units: Mapping[str, float | None] | None = None) -> dict[str, Any]:
+               gtin_units: Mapping[str, float | None] | None = None, rule: GiftRule | None = None) -> dict[str, Any]:
     marked = mark.marked if mark is not None else bool(product and product.markable)
     pack = mark.pack_qty if mark is not None else (product.pack_qty_erp if product else None)
-    return {
-        'line_id': f'{line.isn}:{line.rownum}',
+    name = product.name if product else ''
+    out = {
+        # подарок (№90): свой счёт fROWNUM — «G» не даёт совпасть с line_id строки документа
+        'line_id': f'{line.isn}:G{line.rownum}' if line.gift else f'{line.isn}:{line.rownum}',
         'product_id': line.product_id,
         'code': product.code if product else '',
-        'name': product.name if product else '',
+        # APK 2.3.0 цену строки не показывает: подарок водитель узнаёт по названию (контракт §11)
+        'name': f'{name} ({GIFT_LABEL})'.strip() if line.gift else name,
         'qty': round(line.qty, 3),
         'unit': product.unit if product else '',
         'price': round(line.price, 2),
@@ -83,6 +94,13 @@ def _line_json(line: Line, product: Product | None, gtins: tuple[str, ...], mark
         # (в weight_kg точки такая строка — 0 кг)
         'weight_kg': round(line.qty * product.weight, 3) if product else None,
     }
+    if line.gift:
+        out['gift'] = True   # поле только у подарков: содержимое точек без подарков — как до №90 (version дня машины
+        #                      меняется, если подарок есть хоть у одной её точки)
+        if rule is not None:  # правило акции ERP (контракт §11 п. 5): терминал пересчитывает подарок по доставленному
+            out['gift_rule'] = {'base_product_ids': list(rule.base_product_ids), 'per': _num(rule.per),
+                                'qty': _num(rule.qty)}
+    return out
 
 
 def build_stops(data: DayData, order: list[int], points: Mapping[int, Point | None],
@@ -116,7 +134,8 @@ def build_stops(data: DayData, order: list[int], points: Mapping[int, Point | No
                 'weight_kg': round(sum(ln.qty * (products[ln.product_id].weight if ln.product_id in products else 0)
                                        for ln in lines), 1),
                 'lines': [_line_json(ln, products.get(ln.product_id), data.gtins.get(ln.product_id, ()),
-                                     marks.get(ln.product_id), data.gtin_units.get(ln.product_id)) for ln in lines],
+                                     marks.get(ln.product_id), data.gtin_units.get(ln.product_id),
+                                     data.gift_rules.get((doc.isn, ln.rownum)) if ln.gift else None) for ln in lines],
                 'tare_expected': [{'tare_id': f'erp:{tid}', 'name': data.tare_names.get(tid, ''), 'qty': round(q, 2)}
                                   for tid, q in sorted(tare.items())],
             })

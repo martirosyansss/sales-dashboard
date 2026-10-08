@@ -12,6 +12,7 @@ import random
 import sqlite3
 import sys
 from contextlib import closing
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -232,6 +233,8 @@ class _Cursor:
             self.rows = [(s.lower(), o) for o, s in self.conn.invoices if s.upper() in p]
         elif 'FROM SALEDOCDETAILS' in sql:
             self.rows = [(d.lower(), pid, q) for d, pid, q in self.conn.lines if d.upper() in p]
+        elif 'FROM SALEDOCGIFTS' in sql:
+            self.rows = [(d.lower(), pid, q) for d, pid, q in self.conn.gifts if d.upper() in p]
         elif 'FROM PRODUCTS' in sql:
             self.rows = [r for r in self.conn.products if r[0] in p]
         else:
@@ -245,8 +248,9 @@ class _Cursor:
 
 
 class _Conn:
-    def __init__(self, invoices, lines, products):
+    def __init__(self, invoices, lines, products, gifts=()):
         self.invoices, self.lines, self.products, self.calls, self.closed = invoices, lines, products, [], False
+        self.gifts = list(gifts)    # подарки SALEDOCGIFTS: (документ, товар, количество) — №90
 
     def cursor(self):
         return _Cursor(self)
@@ -783,3 +787,64 @@ def test_api_crew_scope_per_role(client, day, monkeypatch):
     for bad in ('yes', 1, None):
         r = _post_driver(client, helper='x', helper_only_day=bad)
         assert r.status_code == 400 and 'helper_only_day' in r.get_json()['errors'], bad
+
+
+# ============================== подарки ERP (SALEDOCGIFTS, ответ владельца №90) ==============================
+
+def test_load_lines_reads_gifts_of_the_same_documents(monkeypatch):
+    """Подарки — того же документа, что строки: заказа с накладной — подарки накладной (не заказа), без накладной — заказа;
+    подарок другим товаром, которого в строках нет, — тоже (его товар читается из ERP)."""
+    o1, o2, s1 = _isn(1), _isn(2), _isn(91)
+    conn = _Conn(invoices=[(o1, s1)],
+                 lines=[(o1, 10, 50), (s1, 10, 50), (o2, 11, 12)],
+                 products=[(10, '2801', 'Գառնի 6լ', 'հատ', 6.03, True, 2, 1), (11, '1113', 'Կոլա', 'հատ', 1.65, True, 6, 1),
+                           (12, 'A-1', 'Բաժակ', 'տուփ', 0.2, False, 0, 0)],
+                 gifts=[(o1, 10, 9), (s1, 10, 5), (s1, 12, 2), (o2, 11, 1)])
+    monkeypatch.setattr(erp, 'connect', lambda cs: conn)
+    got = wb.load_lines('DRIVER={none};', [o1, o2])
+    assert got.by_order == {o1: ((10, 50.0),), o2: ((11, 12.0),)}
+    assert got.gifts == {o1: ((10, 5.0), (12, 2.0)), o2: ((11, 1.0),)}       # o1 — подарки накладной s1
+    assert set(got.products) == {10, 11, 12}
+    gifts_sql = [p for sql, p in conn.calls if 'FROM SALEDOCGIFTS' in sql]
+    assert gifts_sql == [sorted([o2, s1])]                  # те же документы, что строки
+    for sql, _ in conn.calls:
+        erp.check_sql(sql)
+        assert sql.count('WITH (NOLOCK)') == sql.count('FROM ') + sql.count('JOIN ')
+    assert wb.Lines({}, frozenset(), {}).gifts == {}         # без подарков — как прежде
+
+
+def test_truck_waybill_gifts_in_qty_kg_and_marked():
+    """Подарок того же товара — в той же строке (qty и кг с подарком, gift — сколько из них подарки); подарок другим
+    товаром — своя строка, вся — подарок; строки без подарков — без поля gift (как до №90)."""
+    lines = wb.Lines(by_order={'O3': ((11, 7.0),)}, invoiced=frozenset({'O3'}), products=PRODUCTS,
+                     gifts={'O3': ((11, 1.0), (12, 2.0))})
+    plan = {'trucks': [{'car_code': 'A', 'name': None, 'trips': [_trip(1, [_stop(102, ['o3'])])]}]}
+    t = wb.truck_waybill(plan, 'A', lines)['trips'][0]
+    rows = {r['product_id']: r for r in t['rows']}
+    assert (rows[11]['qty'], rows[11]['gift'], rows[11]['packs'], rows[11]['loose']) == (8, 1, 1, 2)
+    assert (rows[12]['qty'], rows[12]['gift']) == (2, 2)
+    assert rows[11]['kg'] == round(8 * 1.65, 1) and t['kg'] == round(8 * 1.65 + 2 * 0.2)
+    stop = t['loading'][0]['rows']
+    assert {r['product_id']: r.get('gift') for r in stop} == {11: 1, 12: 2}
+    plain = wb.truck_waybill(plan, 'A', replace(lines, gifts={}))['trips'][0]
+    assert all('gift' not in r for r in plain['rows']) and _qty(plain) == {11: 7}
+
+
+def test_truck_waybill_gifts_of_split_store_sum_exactly():
+    """Магазин на три рейса: товар (строки + подарки) делится как раньше, подарки помечаются по рейсам по порядку плана —
+    не больше товара в рейсе, сумма по рейсам = подаркам документов."""
+    lines = replace(_lines(), gifts={'O1': ((10, 5.0),), 'O2': ((11, 1.0),)})
+    trips = [t for car in ('A', 'B') for t in wb.truck_waybill(_plan(), car, lines)['trips']]
+    shop = [{r['product_id']: (r['qty'], r.get('gift', 0)) for r in x['rows']}
+            for t in trips for x in t['loading'] if x['split']]            # магазин 101 — в каждом из трёх рейсов
+    assert len(shop) == 3
+    total = {p: sum(s[p][0] for s in shop if p in s) for p in (10, 11)}
+    gifts = {p: sum(s[p][1] for s in shop if p in s) for p in (10, 11)}
+    assert total == {10: 50 + 4 + 5, 11: 60 + 1} and gifts == {10: 5, 11: 1}
+    assert all(g <= q for s in shop for q, g in s.values())
+    for t in trips:                                     # итоги рейса = сумме долей магазинов, вместе с подарками
+        by = {}
+        for x in t['loading']:
+            for r in x['rows']:
+                by[r['product_id']] = by.get(r['product_id'], 0) + r.get('gift', 0)
+        assert {r['product_id']: r.get('gift', 0) for r in t['rows']} == by

@@ -288,11 +288,18 @@ button.lv-prob:focus-visible { outline: 2px solid var(--rt-acc); outline-offset:
 .lv-mapbar .lv-legend { margin-top: 0; }
 .lv-toggle { display: inline-flex; align-items: center; gap: 8px; min-height: 36px; font-size: .875rem; font-weight: 600; color: var(--rt-fg); cursor: pointer; }
 .lv-toggle input { width: 16px; height: 16px; margin: 0; accent-color: var(--rt-acc); }
-.lv-ln { display: inline-block; width: 20px; height: 0; border-top: 3px solid #38bdf8; }
-.lv-ln.is-plan { border-top: 3px dashed #e8edf4; opacity: .8; }
-.lv-ln.is-dev { border-top: 4px solid #ff6b79; }
-.lv-ln.is-minor { border-top: 2px dotted #ff6b79; }
-.lv-ln.is-over { border-top: 8px solid rgba(255, 181, 71, .45); }
+/* образцы — как линии на карте (routes_live.js LN): цветная линия с белой обводкой, план — полупрозрачный коридор */
+.lv-ln { display: inline-block; width: 22px; height: 5px; border-radius: 3px; background: #1a73e8; box-shadow: 0 0 0 2px #fff; }
+.lv-ln.is-plan { height: 12px; border-radius: 6px; background: rgba(124, 77, 255, .45); box-shadow: none; }
+.lv-ln.is-dev { background: #d93025; }
+.lv-ln.is-minor { background: #f57c00; }
+.lv-ln.is-explained { background: #80868b; }
+.lv-ln.is-over { height: 14px; border-radius: 7px; background: rgba(217, 48, 37, .28); box-shadow: none; }
+/* стрелка направления на фактическом пути (поворот — в style), мышь не ловит */
+.lv-arrow {
+    display: block; width: 14px; height: 14px; pointer-events: none; filter: drop-shadow(0 0 1px rgba(0, 0, 0, .55));
+    background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'%3E%3Cpath d='M4.5 2.5 9 7l-4.5 4.5' fill='none' stroke='%23fff' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 14px 14px no-repeat;
+}
 .lv-legs { min-width: 420px; }
 .lv-npin {
     display: grid; place-items: center; width: 24px; height: 24px; box-sizing: border-box; border-radius: 50%;
