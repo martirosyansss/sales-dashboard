@@ -102,6 +102,7 @@ HEARTBEAT_GAP = timedelta(seconds=20)   # пустой heartbeat трека ча
 TRACK_FUTURE = timedelta(days=1)   # точка позже «сейчас + сутки» — часы терминала сбиты
 DEVICE_GPS = ('on', 'off', 'no_permission')    # track.device.gps (№76)
 DEVICE_NET = ('wifi', 'cell', 'none')           # track.device.net
+DEVICE_EXIT = frozenset({'closed', 'shutdown'})  # track.device.exit (APK 2.2.5): закрыто смахиванием / телефон выключается
 DEVICE_APP_RE = re.compile(r'^[0-9A-Za-z.+-]{1,20}$')   # track.device.app — версия APK («2.2.0»)
 REFUEL_MAX_LITERS = 400.0
 REFUEL_MAX_ODOMETER = 2_000_000
@@ -508,17 +509,23 @@ def _track_point(raw: Any, now: datetime) -> tuple[TrackPoint | None, str | None
 
 
 def track_device(raw: Any) -> dict[str, Any] | None:
-    """№76: состояние терминала из track.device → {battery, charging, gps, net, app}; неверное значение поля — None,
-    лишние ключи отбрасываются; не объект — None (состояния нет)."""
+    """№76: состояние терминала из track.device → {battery, charging, gps, net, app[, exit]}; неверное значение поля —
+    None, лишние ключи отбрасываются; не объект — None (состояния нет). `exit` (APK 2.2.5: 'closed' | 'shutdown' в
+    последнем пустом heartbeat) — ключ только когда он верный: у старых APK словарь прежний (в т.ч. сравнение с
+    уже сохранёнными строками без ключа)."""
     if not isinstance(raw, dict):
         return None
     battery = _num(raw.get('battery'))
     charging, gps, net, app = raw.get('charging'), raw.get('gps'), raw.get('net'), raw.get('app')
-    return {'battery': round(battery) if battery is not None and 0 <= battery <= 100 else None,
-            'charging': charging if isinstance(charging, bool) else None,
-            'gps': gps if gps in DEVICE_GPS else None,
-            'net': net if net in DEVICE_NET else None,
-            'app': app if isinstance(app, str) and DEVICE_APP_RE.match(app) else None}
+    out = {'battery': round(battery) if battery is not None and 0 <= battery <= 100 else None,
+           'charging': charging if isinstance(charging, bool) else None,
+           'gps': gps if gps in DEVICE_GPS else None,
+           'net': net if net in DEVICE_NET else None,
+           'app': app if isinstance(app, str) and DEVICE_APP_RE.match(app) else None}
+    exit_ = raw.get('exit')
+    if isinstance(exit_, str) and exit_ in DEVICE_EXIT:
+        out['exit'] = exit_
+    return out
 
 
 def track_points(p: Mapping[str, Any], now: datetime) -> tuple[list[TrackPoint], dict[str, int]]:
@@ -741,9 +748,9 @@ def _helper(tx: EventTx, raw: Mapping[str, Any], day: str, at_utc: str, who: Who
 
 
 def _same_state(new: Mapping[str, Any] | None, last: Mapping[str, Any] | None) -> bool:
-    """№76: состояние терминала то же, что в последнем событии (gps, net, charging, app; заряд батареи не в счёт).
+    """№76: состояние терминала то же, что в последнем событии (gps, net, charging, app, exit; заряд батареи не в счёт).
     Любая смена (в первую очередь gps) или отсутствие device у одного из них — не то же."""
-    keys = ('gps', 'net', 'charging', 'app')
+    keys = ('gps', 'net', 'charging', 'app', 'exit')   # exit: у старых строк ключа нет — get() даёт None
     return new is not None and last is not None and all(new.get(k) == last.get(k) for k in keys)
 
 

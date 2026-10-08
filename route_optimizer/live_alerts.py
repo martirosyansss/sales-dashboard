@@ -66,6 +66,7 @@ LATE_CLEAR_MIN = 15.0             # …и после стольких минут
 TITLE = {'speed': 'Արագության գերազանցում', 'stop': 'Երկար կանգառ ոչ խանութում', 'no_contact': 'Կապ չկա',
          'gps': 'GPS-ն անջատված է', 'center': 'Փոքր կենտրոնում (մուտքը թույլատրված չէ)',
          'late': 'Չի հասցնում ժամանակին (կանխատեսում)'}
+EXIT_TEXT = {'closed': 'հավելվածը փակվել է', 'shutdown': 'հեռախոսն անջատվել է'}   # live.offline_reason (APK 2.2.5)
 TITLE_END = {'no_contact': 'Կապը վերականգնվեց', 'gps': 'GPS-ը կրկին միացված է'}
 
 
@@ -207,6 +208,12 @@ def build_text(card: Mapping[str, Any], a: Mapping[str, Any], phase: str, rules:
         lines.append(f'Կանգառի տևողությունը՝ {a.get("minutes")} րոպե' + (' (ճաշի ժամին)։' if a.get('lunch') else '։'))
     elif kind == 'no_contact':
         lines.append(f'Կապ չկա՝ {a.get("minutes")} րոպե։')
+        # причина — из последнего состояния терминала (не из offline_reason: при другой активной тревоге state='alert').
+        # Последнее состояние = то, что было до тишины; позднее сообщение после восстановления видит уже новое (без exit)
+        device = card.get('device')
+        reason = device.get('exit') if isinstance(device, Mapping) else None
+        if reason in EXIT_TEXT:
+            lines.append(EXIT_TEXT[reason].capitalize() + '։')
     elif kind == 'center':
         lines.append('Մեքենան մտել է փոքր կենտրոն, որտեղ նրան թույլատրված չէ։')
     lat, lon, last_known = a.get('lat'), a.get('lon'), False

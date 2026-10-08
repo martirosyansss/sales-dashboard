@@ -180,6 +180,49 @@ def test_track_empty_heartbeat_dropped_only_when_state_unchanged(cs):
     assert _event_row(cs, same['id']) is None
 
 
+def test_track_device_exit_valid_only_and_absent_for_old_apk():
+    """APK 2.2.5: device.exit ∈ {closed, shutdown} — ключ есть только когда верный; у старых APK словарь прежний."""
+    assert ev.track_device({'gps': 'on', 'exit': 'closed'})['exit'] == 'closed'
+    assert ev.track_device({'exit': 'shutdown'})['exit'] == 'shutdown'
+    for bad in ('CLOSED', 'killed', '', None, 1, True, ['closed']):
+        assert 'exit' not in ev.track_device({'gps': 'on', 'exit': bad}), bad
+    assert 'exit' not in ev.track_device({'gps': 'on'})
+
+
+def test_track_exit_only_heartbeat_accepted_and_stored(cs):
+    """Пустой heartbeat, где верен только exit, — состояние терминала есть (принят); с негодным exit — отказ."""
+    who = _who(cs)
+    e = {**_track([], at=f'{DAY}T10:00:00+04:00'), 'payload': {'points': [], 'device': {'exit': 'shutdown'}}}
+    assert ev.ingest(cs, who, [e]).json()['accepted'] == [e['id']]
+    assert _event_row(cs, e['id'])[2]['device']['exit'] == 'shutdown'
+    bad = {**_track([], at=f'{DAY}T10:01:00+04:00'), 'payload': {'points': [], 'device': {'exit': 'killed'}}}
+    assert ev.ingest(cs, who, [bad]).json()['accepted'] == []
+
+
+def test_track_heartbeat_dedup_considers_exit_and_old_rows_without_key(cs):
+    """Тот же state + тот же exit — отброшен; другой exit — пишется; строка без ключа exit (старая) и новый heartbeat
+    без exit — по-прежнему дубликат состояния."""
+    who = _who(cs)
+    on = {'battery': 50, 'charging': False, 'gps': 'on', 'net': 'cell', 'app': '2.2.5'}
+
+    def beat(sec, device):
+        return {**_track([], at=f'{DAY}T10:00:{sec:02d}+04:00'), 'payload': {'points': [], 'device': device}}
+    first = beat(0, on)                                  # без exit
+    again = beat(5, {**on, 'battery': 49})               # то же, без exit — не пишется (как у старых APK)
+    closed = beat(8, {**on, 'exit': 'closed'})           # exit появился — пишется
+    closed2 = beat(10, {**on, 'exit': 'closed'})         # тот же exit — не пишется
+    other = beat(12, {**on, 'exit': 'shutdown'})         # другой exit — пишется
+    after = beat(14, on)                                 # приложение живо, exit пропал — пишется
+    es = [first, again, closed, closed2, other, after]
+    assert ev.ingest(cs, who, es).json()['accepted'] == [e['id'] for e in es]
+    assert [_event_row(cs, e['id']) is not None for e in es] == [True, False, True, False, True, True]
+    # «старая» сохранённая строка (ключа exit нет вовсе) против нового heartbeat без exit
+    assert ev._same_state({'gps': 'on', 'net': 'cell', 'charging': False, 'app': '2.2.0'},
+                          ev.track_device({**on, 'app': '2.2.0'}))
+    assert not ev._same_state({'gps': 'on', 'net': 'cell', 'charging': False, 'app': '2.2.0'},
+                              ev.track_device({**on, 'app': '2.2.0', 'exit': 'closed'}))
+
+
 def test_track_stop_id_not_required_and_date_suspicious(cs):
     who = _who(cs)
     e = _track([_pt(1)], day='2026-09-20', at=f'{DAY}T10:59:00+04:00')        # дата дня ≠ дата момента at

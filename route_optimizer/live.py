@@ -895,6 +895,7 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
         'return_eta': _iso(return_eta),
         'return_source': return_source,
         'device': dict(device) if isinstance(device, Mapping) else None,
+        'offline_reason': device.get('exit') if state == 'offline' and isinstance(device, Mapping) else None,   # 'closed' | 'shutdown' (APK 2.2.5)
         'drivers': list(facts.get('drivers') or ()),
         'last_contact': _iso(last_contact),
         'contact_age_s': round((now - last_contact).total_seconds()) if last_contact is not None and live else None,
