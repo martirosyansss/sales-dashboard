@@ -397,7 +397,8 @@ def test_schema_26_migrates_from_24_and_from_25_and_explanations_roundtrip(tmp_p
             names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'index')")}
         return v, names
     v, names = version_and_tables()
-    assert v == '26' and {'customer_day_until', 'live_explain', 'live_explain_day'} <= names
+    # версия — текущая: дальше 26 — свои шаги (27 — Telegram-бот, №91)
+    assert v == str(st.SCHEMA_VERSION) and {'customer_day_until', 'live_explain', 'live_explain_day'} <= names
     # 24 → 26: база до обеих веток (нет ни срока магазина, ни объяснений)
     with closing(sqlite3.connect(path)) as conn:
         conn.execute('DROP TABLE live_explain')
@@ -406,7 +407,7 @@ def test_schema_26_migrates_from_24_and_from_25_and_explanations_roundtrip(tmp_p
         conn.commit()
     assert st.Store(path).truck_drivers('2026-10-02')[0] == {'CAR1': 'Արամ'}
     v, names = version_and_tables()
-    assert v == '26' and {'customer_day_until', 'live_explain', 'live_explain_day'} <= names
+    assert v == str(st.SCHEMA_VERSION) and {'customer_day_until', 'live_explain', 'live_explain_day'} <= names
     # 25 → 26: база, которую уже мигрировала ветка until-time (её таблица со строкой остаётся как была)
     with closing(sqlite3.connect(path)) as conn:
         conn.execute('DROP TABLE live_explain')
@@ -417,7 +418,7 @@ def test_schema_26_migrates_from_24_and_from_25_and_explanations_roundtrip(tmp_p
     assert s.live_explanations('2026-10-03') == {}
     v, names = version_and_tables()
     with closing(sqlite3.connect(path)) as conn:
-        assert v == '26' and conn.execute('SELECT * FROM customer_day_until').fetchall() == \
+        assert v == str(st.SCHEMA_VERSION) and conn.execute('SELECT * FROM customer_day_until').fetchall() == \
             [('2026-10-03', 501, 660, 'x', 'qa')]
     assert st._MIGRATIONS[24] == (st._CUSTOMER_DAY_UNTIL_TABLE,)
     assert st._MIGRATIONS[25] == (st._LIVE_EXPLAIN_TABLE, st._LIVE_EXPLAIN_INDEX)
@@ -582,20 +583,20 @@ def test_telegram_skips_minor_and_explained_and_texts_sequence():
     seq = {'kind': 'sequence', 'from': T(20).isoformat(), 'to': None, 'active': True, 'lat': A[0], 'lon': A[1],
            'skipped': [{'stop_id': 'S1', 'name': 'Արարատ', 'no': 11, 'open': True}],
            'jump': {'stop_id': 'S3', 'name': 'Նոր', 'no': 13}}
-    state = la.AlertState(str(Path(__file__).parent / '_no_such_file.json'))
+    tg = la.TgRules()   # бот №91: решения — la.plan (записей нет), тексты — HTML, уровень ⚪ (по умолчанию)
     cards = {'CAR1': {'car_code': 'CAR1', 'alerts_log': [{**base, 'minor': True, 'active': False},
                                                          {**seq, 'active': False, 'explained': {'id': 1}}]}}
-    msgs, changed = la.plan_messages(cards, rules, now, state)
-    assert msgs == [] and not changed and state.sent == {}                 # не отмечены: вырастет в тревогу — уйдёт
+    got = la.plan(cards, rules, tg, now, {})
+    assert got.actions == [] and got.active == frozenset()                 # не отмечены: вырастет в тревогу — уйдёт
     cards['CAR1']['alerts_log'] = [base, seq]
-    msgs, _ = la.plan_messages(cards, rules, now, state)
+    msgs = la.plan(cards, rules, tg, now, {}).actions
     assert [m.kind for m in msgs] == ['deviation', 'sequence']
-    assert 'Ավելորդ վազք հատվածում՝ ≈ 3,4 կմ' in msgs[0].text
-    lines = msgs[1].text.splitlines()
-    assert lines[0] == 'Խանութներ բաց են թողնված (հերթականություն)' and 'Բաց թողնված՝ №11 Արարատ։' in lines
+    assert 'Ավելորդ վազք հատվածում՝ ≈ 3,4 կմ' in msgs[0].body
+    lines = msgs[1].body.splitlines()
+    assert lines[0] == '⚪ <b>Խանութներ բաց են թողնված (հերթականություն)</b>' and 'Բաց թողնված՝ №11 Արարատ։' in lines
     assert 'Նախքան դրանք սպասարկվել է՝ №13 Նոր։' in lines
-    assert la.plan_messages(cards, replace(rules, alert_kinds=('deviation',)), now, la.AlertState('x'))[0][0].kind == \
-        'deviation'
+    assert [m.kind for m in la.plan(cards, replace(rules, alert_kinds=('deviation',)), tg, now, {}).actions] == \
+        ['deviation']
 
 
 # ============================== ревью 2: извилистость идущего участка, открытая водителем, столбец stops ==============================

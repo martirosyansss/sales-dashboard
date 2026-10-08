@@ -14,18 +14,18 @@ import logging
 import os
 import threading
 import time
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from flask import Flask
 
-from . import erp, learning, live, live_alerts, scorecard, waybill
+from . import erp, learning, live, live_alerts, scorecard, tg_api, tg_bot, tg_reports, waybill
 from .actuals import YEREVAN
 from .roads import RoadProvider, osm_path
 from .snapshot import ResultCache, SnapshotCache, load_snapshot
 from .store import Store
 from .valhalla_engine import ValhallaProvider
-from .views import EXTENSION_KEY, DriverGeo, RoutesState, _live_cards, bp, run_learning_job, week_score
+from .views import EXTENSION_KEY, DriverGeo, RoutesState, _live_cards, _scorecard, bp, run_learning_job, week_score
 
 logger = logging.getLogger(__name__)
 
@@ -140,41 +140,98 @@ def start_learning_scheduler(app: Flask) -> threading.Thread | None:
     return thread
 
 
-def start_live_alerts(app: Flask, send: Any = None, interval_s: float = live_alerts.INTERVAL_S) -> threading.Thread | None:
-    """Тревоги карты машин в Telegram-группу (№76, этап 2, live_alerts) — фоновый поток процесса сервера. Запускает app_v2
-    только при запуске сервера (не при импорте: тесты его не запускают). Только при ROUTES_LIVE_ALERTS=1 и заданных
-    токене и чате (ROUTES_LIVE_TG_TOKEN | TELEGRAM_BOT_TOKEN, ROUTES_LIVE_TG_CHAT); иначе — None. Переменная задаётся
-    только на CT115: слать должен ровно один процесс. send(text) — подмена отправки (тесты); поток каждые interval_s с
-    считает карточки флота за сегодня (тот же кэш 10 с, что у карты) и шлёт новые тревоги; сбой прохода — в журнал,
-    поток работает дальше. Остановка — thread.stop_event.set()."""
+POLL_IDLE_S = 0.2   # getUpdates вернул пусто — пауза перед следующим (long poll и так ждёт; подделка в тестах — нет)
+
+
+def _bot_feeds(state: RoutesState) -> tg_bot.Feeds:
+    """Данные раздела для бота: карточки флота (тот же кэш 10 с, что у карты), план дня из базы «Развоза» (ERP не
+    читается), строки «Վարորդներ» (сбой расчёта — None: отчёт без баллов)."""
+    def live_feed(day: date) -> tuple[Any, datetime, Any, Any] | None:
+        if state.live_facts is None:
+            return None
+        ctx, now, fleet, cards = _live_cards(state, day)
+        return ctx.rules, now, cards, fleet
+
+    def plan_feed(day: date) -> dict[str, Any] | None:
+        stored = state.store.load_dispatch(day.isoformat())
+        if stored is None:
+            return None
+        bundle = state.store.load()
+        snap = state.snapshots.peek()
+        names: dict[str, str | None] = {code: car.name for code, car in snap.cars.items()} if snap is not None else {}
+        names.update({code: t.name for code, t in bundle.trucks.items() if t.manual and t.name})
+        ds = day.isoformat()
+        return tg_reports.day_plan(stored[0], day, state.store.truck_drivers(ds)[0],
+                                   state.store.truck_drivers(ds, 'helper')[0],
+                                   {cid: w.span() for cid, w in bundle.windows_on(day).items()}, names)
+
+    def scores_feed(since: date, until: date) -> list[dict[str, Any]] | None:
+        if state.crew_facts is None:
+            return None
+        try:
+            return _scorecard(state, since, until)['drivers']
+        except Exception:   # отчёт уйдёт без баллов
+            logger.exception('[Routes] Telegram-бот: «Վարորդներ» за %s…%s не посчитаны', since, until)
+            return None
+
+    return tg_bot.Feeds(settings=lambda: state.store.load().settings, live=live_feed, plan=plan_feed,
+                        scores=scores_feed, now=lambda: datetime.now(YEREVAN))
+
+
+def start_live_alerts(app: Flask, api: Any = None, interval_s: float = live_alerts.INTERVAL_S,
+                      poll_timeout: int = tg_bot.POLL_TIMEOUT_S) -> threading.Thread | None:
+    """Telegram-бот «Araqich Dispatch» (№91, tg_bot): тревоги карты машин, отчёты и команды — два фоновых потока процесса
+    сервера. Запускает app_v2 только при запуске сервера (не при импорте: тесты его не запускают). Только при
+    ROUTES_LIVE_ALERTS=1 и заданных токене и чате (ROUTES_LIVE_TG_TOKEN | TELEGRAM_BOT_TOKEN, ROUTES_LIVE_TG_CHAT); иначе —
+    None. Переменная задаётся только на CT115: слать и читать обновления (getUpdates) должен ровно один процесс. api —
+    подмена Bot API (тесты). Поток тревог каждые interval_s с — проход bot.tick; поток обновлений — long poll
+    (poll_timeout) bot.poll_once; сбой — в журнал, потоки работают дальше (обновления — с паузой до
+    tg_bot.POLL_BACKOFF_MAX_S). Возвращает поток тревог: .bot — бот, .updates — поток обновлений, остановка обоих —
+    .stop_event.set(). База «Маршрутов» не читается — бот не стартует (в журнал), сервер работает."""
     config = live_alerts.config_from_env()
     if config is None:
-        logger.info('[Routes] Тревоги карты в Telegram выключены (нужны %s=1, токен и чат)', live_alerts.ENABLE_ENV)
+        logger.info('[Routes] Telegram-бот выключен (нужны %s=1, токен и чат)', live_alerts.ENABLE_ENV)
         return None
     state = app.extensions[EXTENSION_KEY]
     token, chat = config
-    path = os.path.join(os.path.dirname(os.path.abspath(state.store.path)), live_alerts.STATE_FILE)
-
-    def source() -> tuple[Any, datetime, Any] | None:
-        if state.live_facts is None:
-            return None
-        ctx, now, _, cards = _live_cards(state, datetime.now(YEREVAN).date())
-        return ctx.rules, now, cards
-
-    alerter = live_alerts.LiveAlerter(source, send or (lambda text: live_alerts.send_telegram(token, chat, text)), path)
+    legacy = os.path.join(os.path.dirname(os.path.abspath(state.store.path)), live_alerts.STATE_FILE)
+    try:
+        bot = tg_bot.TgBot(api or tg_api.BotApi(token), chat, state.store, _bot_feeds(state), token, legacy)
+    except Exception:
+        logger.exception('[Routes] Telegram-бот не запущен: база «Маршрутов» не прочитана')
+        return None
     stop = threading.Event()
 
-    def loop() -> None:
+    def alerts_loop() -> None:
         while not stop.is_set():
             try:
                 with app.app_context():
-                    alerter.tick()
+                    bot.tick()
             except Exception:   # поток не должен умереть: следующий проход — новая попытка
                 logger.exception('[Routes] Тревоги в Telegram: сбой прохода')
             stop.wait(interval_s)
 
-    thread = threading.Thread(target=loop, name='routes-live-alerts', daemon=True)
+    def updates_loop() -> None:
+        pause = interval_s
+        while not stop.is_set():
+            try:
+                with app.app_context():
+                    got = bot.poll_once(poll_timeout)
+                pause = interval_s
+                if not got:
+                    stop.wait(POLL_IDLE_S)
+            except Exception as e:   # сеть, 409 (обновления читает другой процесс), токен — пауза с ростом
+                logger.warning('[Routes] Telegram-бот: обновления не получены (%s: %s), повтор через %.0f с',
+                               type(e).__name__, e, pause)
+                stop.wait(pause)
+                pause = min(pause * 2, tg_bot.POLL_BACKOFF_MAX_S)
+
+    thread = threading.Thread(target=alerts_loop, name='routes-live-alerts', daemon=True)
+    updates = threading.Thread(target=updates_loop, name='routes-tg-updates', daemon=True)
     thread.stop_event = stop   # type: ignore[attr-defined]
+    thread.bot = bot   # type: ignore[attr-defined]
+    thread.updates = updates   # type: ignore[attr-defined]
     thread.start()
-    logger.info('[Routes] Тревоги карты машин — в Telegram-чат, каждые %.0f с; «уже отправлено»: %s', interval_s, path)
+    updates.start()
+    logger.info('[Routes] Telegram-бот: тревоги каждые %.0f с, команды и кнопки — getUpdates', interval_s)
     return thread
