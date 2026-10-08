@@ -15,6 +15,11 @@
 №87 «не успеет»: окно приёма третьего магазина машины 1 кончилось полчаса назад — в списке «1 խանութ ուշանում է», в
 карточке — активная строка «Կուշանա պատուհանից N րոպեով», магазин в списке точек отмечен.
 
+Как телематика (08.10): блок «Խնդիրներ հիմա» (строка — кнопка выбора машины), у машины 3 без связи — «կապ չկա N րոպե»
+вместо опоздания и полупрозрачный маркер с «վերջինը՝ HH:MM», таблица «план — факт» магазинов, воспроизведение дня
+(ползунок времени, шаг 1 мин, «Փակել»). Машина 4 вышла позже плана — «не успеет» к трём магазинам: в карточке одна
+строка «3 խանութ ուշանում է…» с кнопкой «Ցույց տալ» (aria-expanded), а не три красные.
+
 Проверяется: список и маркеры всех машин, состояние и счётчик тревог, карточка выбранной машины (поля №76), путь и
 магазины на карте, нет горизонтальной прокрутки на телефоне, опрос раз в 15 с, нет ошибок страницы и консоли (кроме сетевых
 ошибок внешних ресурсов: шрифты, CDN, плитки).
@@ -248,6 +253,9 @@ def main() -> int:
                 # машина 3: GPS выключен и связи нет — активная тревога GPS важнее «կապ չկա» (повторное ревью №76)
                 check(sum('is-alert' in s for s in states) >= 3 and not any('is-offline' in s for s in states),
                       f'состояния: у машин 1-3 «ահազանգ», «կապ չկա» только без других тревог: {states}')
+                probs = page.locator('#lvProbList button.lv-prob')
+                check(probs.count() >= 3, f'«Խնդիրներ հիմա»: строки проблем ({probs.count()})')
+                check('ուշանում' in page.inner_text('#lvProbList'), '«Խնդիրներ հիմա»: «не успеет» машины 1')
                 first = page.inner_text(f'.lv-item[data-car="{cars[0]}"]')
                 check('1 խանութ ուշանում է' in first, f'№87: в списке у машины 1 — «1 խանութ ուշանում է» ({first!r})')
                 page.locator(f'.lv-item[data-car="{cars[0]}"]').click()
@@ -268,7 +276,21 @@ def main() -> int:
                 check('(մոտավոր)' in grid or '(ճանապարհներով)' in grid, 'этап 2: источник ETA подписан')
                 page.locator('#lvStopsBox summary').click()
                 check('≈' in page.inner_text('#lvStops'), 'этап 2: у оставшегося магазина — ETA')
-                check(page.locator('#lvStops li.is-late').count() == 1, '№87: опаздывающий магазин отмечен в списке точек')
+                check(page.locator('#lvStops tr.is-late').count() == 1, '№87: опаздывающий магазин отмечен в списке точек')
+                check(page.locator('#lvStops tr').count() == 3 and 'ժամանում' in page.inner_text('#lvStops'),
+                      'план — факт: 3 строки, у посещённых — прибытие и отъезд по GPS')
+                check(page.is_visible('#lvReplay') and page.get_attribute('#lvReplayRange', 'step') == '60',
+                      'воспроизведение дня: есть у выбранной машины, шаг ползунка — минута')
+                page.eval_on_selector('#lvReplayRange', "r => { r.value = String((Number(r.min) + Number(r.max)) / 2); "
+                                                        "r.dispatchEvent(new Event('input')); }")
+                page.wait_for_timeout(300)
+                check(page.is_visible('#lvReplayExit') and page.inner_text('#lvReplayTime') != '—',
+                      f'воспроизведение: ползунок двигает время ({page.inner_text("#lvReplayTime")})')
+                page.locator('#lvReplayPlay').click()
+                page.wait_for_timeout(600)
+                check('Դադար' in page.inner_text('#lvReplayPlay'), 'воспроизведение: «Նվագարկել» → «Դադար»')
+                page.locator('#lvReplayExit').click()
+                check(not page.is_visible('#lvReplayExit'), 'воспроизведение: «Փակել» — обратно к живой карте')
                 check(page.locator('.leaflet-overlay-pane path').count() >= 4, 'путь и магазины выбранной машины на карте')
                 page.locator('#lvLogBox summary').click()
                 check('Արագության գերազանցում' in page.inner_text('#lvLog'), 'журнал: превышение скорости')
@@ -283,6 +305,22 @@ def main() -> int:
                 late = clock.now().hour >= live.NO_CONTACT_END_H   # после 20:00 «нет связи» — не тревога (ревью №76)
                 check(('Կապ չկա' in act) != late and 'GPS' in act,
                       f'машина 3: «нет связи» {"не " if late else ""}тревога и «GPS выключен» ({act!r})')
+                if not late:
+                    third = page.inner_text(f'.lv-item[data-car="{cars[2]}"]')
+                    check('կապ չկա' in third and 'ուշացում' not in third, f'машина 3: «կապ չկա N րոպե» без опоздания ({third!r})')
+                    check(page.locator('.lv-marker.is-stale .lv-marker-last').count() >= 1,
+                          'машина 3: маркер полупрозрачный, «վերջինը՝ HH:MM»')
+                    check('Վերջին հայտնի դիրքը' in page.inner_text('#lvGrid'), 'машина 3: «Վերջին հայտնի դիրքը» в карточке')
+                page.locator(f'.lv-item[data-car="{cars[3]}"]').click()
+                page.wait_for_timeout(1200)
+                grp = page.locator('#lvActive .lv-active-late')
+                more = page.locator('#lvActive .lv-active-more')
+                check(grp.count() == 1 and '3 խանութ ուշանում է' in grp.inner_text()
+                      and 'Կուշանա' not in page.inner_text('#lvActive') and more.get_attribute('aria-expanded') == 'false',
+                      f'машина 4: «не успеет» одной строкой ({page.inner_text("#lvActive")!r})')
+                more.click()
+                check(more.get_attribute('aria-expanded') == 'true' and page.locator('#lvLateList li').count() == 3
+                      and page.is_visible('#lvLateList'), 'машина 4: «Ցույց տալ» раскрывает 3 магазина')
                 n = len(polls)
                 page.wait_for_timeout(16000)
                 check(len(polls) > n, f'опрос раз в 15 с ({n} → {len(polls)})')

@@ -13,7 +13,7 @@
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=22">
 <!-- Машины на карте сейчас (№76): тема «Развоза», свои классы .lv-*; новые файлы статики — и в _PUBLIC_STATIC app_v2 -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_live.css') }}?v=2">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_live.css') }}?v=4">
 {% endblock %}
 
 {% block content %}
@@ -58,6 +58,13 @@
     </div>
 
     <div class="lv-layout">
+        <!-- «Խնդիրներ հիմա» — управление по исключениям: только то, что требует внимания сейчас (только сегодня);
+             на телефоне — первым, над картой -->
+        <section class="lv-probs" id="lvProbs" aria-labelledby="lvProbsTitle" hidden>
+            <h2 class="lv-probs-title" id="lvProbsTitle">Խնդիրներ հիմա</h2>
+            <ul class="lv-prob-list" id="lvProbList"></ul>
+        </section>
+
         <!-- Список машин: состояние, связь, тревоги -->
         <aside class="lv-side" aria-label="Մեքենաներ">
             <div class="lv-summary" id="lvSummary"></div>
@@ -72,9 +79,12 @@
                 <span><i class="lv-dot is-moving"></i>ընթացքի մեջ</span>
                 <span><i class="lv-dot is-standing"></i>կանգնած</span>
                 <span><i class="lv-dot is-alert"></i>ահազանգ</span>
-                <span><i class="lv-dot is-offline"></i>կապ չկա</span>
-                <span class="lv-legend-stores"><i class="lv-sq is-full"></i>առաքված <i class="lv-sq is-partial"></i>մասնակի
-                    <i class="lv-sq is-refused"></i>մերժված <i class="lv-sq is-pending"></i>դեռ ոչ</span>
+                <span><i class="lv-dot is-offline is-stale"></i>կապ չկա (վերջին հայտնի դիրքը)</span>
+                <span><i class="lv-sq is-full"></i>առաքված</span>
+                <span><i class="lv-sq is-partial"></i>մասնակի</span>
+                <span><i class="lv-sq is-refused"></i>մերժված</span>
+                <span><i class="lv-sq is-unmarked"></i>GPS-ով այցելած, չնշված</span>
+                <span><i class="lv-sq is-pending"></i>դեռ ոչ</span>
             </div>
         </section>
 
@@ -89,9 +99,38 @@
             </div>
             <div class="lv-active" id="lvActive" hidden></div>
             <dl class="lv-grid" id="lvGrid"></dl>
+            <!-- Воспроизведение дня по треку (track_t): ползунок времени, призрак машины, магазины — по состоянию на тот момент -->
+            <div class="lv-replay" id="lvReplay" hidden>
+                <div class="lv-replay-head">
+                    <h3 class="lv-replay-title">Օրվա վերարտադրություն</h3>
+                    <button id="lvReplayExit" type="button" class="rt-btn rt-btn-ghost rt-btn-sm" hidden>Փակել</button>
+                </div>
+                <div class="lv-replay-row">
+                    <button id="lvReplayPlay" type="button" class="rt-btn rt-btn-ghost rt-btn-sm">
+                        <i class="fas fa-play" aria-hidden="true"></i><span>Նվագարկել</span></button>
+                    <label class="rt-sr-only" for="lvReplayRange">Օրվա ժամը</label>
+                    <input id="lvReplayRange" class="lv-replay-range" type="range" min="0" max="0" step="60" value="0">
+                    <output id="lvReplayTime" class="lv-replay-time" for="lvReplayRange">—</output>
+                    <label class="rt-sr-only" for="lvReplaySpeed">Արագություն</label>
+                    <select id="lvReplaySpeed" class="rt-select lv-replay-speed">
+                        <option value="30">×30</option>
+                        <option value="60" selected>×60</option>
+                        <option value="120">×120</option>
+                    </select>
+                </div>
+            </div>
             <details class="lv-more" id="lvStopsBox">
-                <summary>Խանութներ</summary>
-                <ol class="lv-stops" id="lvStops"></ol>
+                <summary>Խանութներ՝ պլան և փաստ</summary>
+                <div class="lv-table-wrap">
+                    <table class="lv-stops">
+                        <thead>
+                            <tr><th scope="col">#</th><th scope="col">Խանութ</th><th scope="col">Պլան</th>
+                                <th scope="col">GPS ժամանում</th><th scope="col">Տարբերություն</th>
+                                <th scope="col">Կանգառ (ր)</th><th scope="col">Կարգավիճակ</th></tr>
+                        </thead>
+                        <tbody id="lvStops"></tbody>
+                    </table>
+                </div>
             </details>
             <details class="lv-more" id="lvLogBox">
                 <summary>Այսօրվա ահազանգերը</summary>
@@ -111,5 +150,5 @@
         integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
 <!-- подложка — Яндекс, как на остальных картах (решение владельца 06.10, см. live_page) -->
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=1" data-yandex-key="{{ yandex_tiles_key }}"></script>
-<script src="{{ url_for('static', filename='js/routes_live.js') }}?v=6"></script>
+<script src="{{ url_for('static', filename='js/routes_live.js') }}?v=9"></script>
 {% endblock %}
