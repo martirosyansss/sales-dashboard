@@ -1546,3 +1546,174 @@ def test_api_live_carries_contact_gps_and_replay_fields(client, live_app):
     assert len(truck['track_t']) == len(truck['track']) > 1
     assert truck['stops'][0]['gps']['here'] is True and truck['stops'][0]['unmarked'] is False
     assert truck['stops'][1]['gps'] is None
+
+
+# ============================== плановая линия, отклонение от неё, показатели дня (владелец 08.10) ==============================
+
+def _off(p, north_m):
+    """Точка north_m метров севернее p (равнопромежуточная проекция live)."""
+    return (p[0] + north_m / live.M_PER_DEG_LAT, p[1])
+
+
+PLAN_LINE = ((DEPOT, A, B, DEPOT),)
+MID_AB = ((A[0] + B[0]) / 2, (A[1] + B[1]) / 2)
+
+
+def _route(lines=PLAN_LINE, road=True, stops=((7, A), (8, B)), km=None):
+    return live.PlanRoute(tuple(tuple(x) for x in lines), road, tuple(stops), km)
+
+
+def _route_view(tr, now, route, rules=RULES, detail=True):
+    stops = [stop('S:A', 7, A, 100.0), stop('S:B', 8, B, 100.0, seq=2)]
+    return live.car_view(DAY, now, facts(tr.pts, stops, [T0, tr.t]), [], TRUCK, DEPOT, rules, ROAD, detail, None, route)
+
+
+def test_segment_and_polyline_distance_in_metres():
+    a, b = (40.18, 44.50), (40.18, 44.52)
+    assert live.segment_m(_off(a, 250.0), a, b) == pytest.approx(250.0, abs=0.01)        # над отрезком — перпендикуляр
+    beyond = (40.18, 44.53)                                                              # за концом — до конца
+    assert live.segment_m(beyond, a, b) == pytest.approx(haversine_km(beyond, b) * 1000, rel=0.01)
+    assert live.segment_m(_off(a, 80.0), a, a) == pytest.approx(80.0, abs=0.01)           # вырожденный отрезок — точка
+    line = [a, b, (40.20, 44.52)]
+    assert live.polyline_m((40.19, 44.525), line) == pytest.approx(
+        min(live.segment_m((40.19, 44.525), x, y) for x, y in zip(line, line[1:])))
+    assert live.polyline_m(a, [a]) == 0.0 and live.polyline_m(a, []) == math.inf
+
+
+def test_route_index_matches_brute_force():
+    import random
+    rnd = random.Random(8)
+    lines = [[(40.15 + 0.002 * i, 44.45 + 0.003 * math.sin(i / 3)) for i in range(60)],
+             [(40.20, 44.40), (40.20, 44.60)]]                                           # и длинный прямой участок
+    index = live.RouteIndex(lines, 300.0)
+    for _ in range(600):
+        p = (40.14 + rnd.random() * 0.14, 44.38 + rnd.random() * 0.25)
+        for r in (100.0, 300.0):
+            assert index.near(p, r) == (min(live.polyline_m(p, x) for x in lines) <= r), (p, r)
+    assert live.RouteIndex([], 300.0).near(A, 300.0) is False
+
+
+def _detour_track(off_m, at=T0, park_min=0):
+    """Склад → A → в сторону от линии A–B на off_m метров (у середины A–B; park_min — стоянка там) → B → склад."""
+    side = _off(MID_AB, off_m)
+    tr = Track(at).park(DEPOT, 5).drive(A).park(A, 3).drive(side)
+    if park_min:
+        tr.park(side, park_min)
+    return tr.drive(B).park(B, 3).drive(DEPOT).park(DEPOT, 2)
+
+
+def test_deviation_counted_only_when_far_long_and_by_road():
+    tr = _detour_track(1500.0)
+    card = _route_view(tr, tr.t, _route())
+    dev = card['deviation']
+    assert dev['count'] == 1 and dev['threshold_m'] == 300 and dev['active'] is False
+    assert 1.5 < dev['km'] < 3.5                                       # туда и обратно дальше 300 м от линии
+    al = [a for a in card['alerts_log'] if a['kind'] == 'deviation']
+    assert len(al) == 1 and al[0]['km'] == dev['km'] and al[0]['to'] is not None and al[0]['lat'] is not None
+    run = dev['runs'][0]
+    assert run['from'] == al[0]['from'] and len(run['line']) > 2
+    assert all(live.polyline_m(tuple(p), PLAN_LINE[0]) > 300 for p in run['line'])
+    # рядом с линией (200 м) — не отклонение; порог из настроек — 100 м: уже отклонение
+    near = _detour_track(200.0)
+    assert _route_view(near, near.t, _route())['deviation']['count'] == 0
+    assert _route_view(near, near.t, _route(), rules=live.Rules(deviation_m=100.0))['deviation']['count'] == 1
+    # линия по прямой (дорог нет) — отклонение не считается: нет ни сводки, ни тревоги
+    card = _route_view(tr, tr.t, _route(road=False))
+    assert card['deviation'] is None and not [a for a in card['alerts_log'] if a['kind'] == 'deviation']
+    assert card['route']['road'] is False and card['route']['lines']   # но линия на карте есть
+    # плана нет — ни линии, ни отклонения
+    card = _route_view(tr, tr.t, None)
+    assert card['route'] is None and card['deviation'] is None
+
+
+def test_deviation_needs_half_km_and_a_minute():
+    """Короткий заезд: дальше порога меньше 0,5 км пути — не отклонение."""
+    tr = _detour_track(450.0)          # вне 300 м — ~2 × 150 м
+    assert _route_view(tr, tr.t, _route())['deviation']['count'] == 0
+    side = _off(MID_AB, 1500.0)
+    fixes = [Fix(T0, *side, 5.0), Fix(T0 + timedelta(seconds=20), *_off(side, 600.0), 5.0)]   # 0,6 км, но 20 с
+    index = live.RouteIndex(PLAN_LINE, 300.0)
+    assert live.deviation_runs(fixes, index, 300.0, [], T0, None) == []
+    fixes[1] = Fix(T0 + timedelta(seconds=90), *_off(side, 600.0), 5.0)
+    assert len(live.deviation_runs(fixes, index, 300.0, [], T0, None)) == 1
+    assert live.deviation_runs(fixes, None, 300.0, [], T0, None) == []                      # линий нет
+    assert live.deviation_runs(fixes, index, 300.0, [], None, None) == []                   # не выезжала
+    assert live.deviation_runs(fixes, index, 300.0, [(side, 800.0)], T0, None) == []         # у магазина / склада
+    assert live.deviation_runs(fixes, index, 300.0, [], T0, T0 + timedelta(seconds=30)) == []   # после закрытия дня
+
+
+def test_deviation_ongoing_is_active_alert():
+    side = _off(MID_AB, 1500.0)
+    tr = Track().park(DEPOT, 5).drive(A).park(A, 3).drive(side)
+    card = _route_view(tr, tr.t + timedelta(seconds=20), _route(), detail=False)
+    assert card['deviation']['active'] is True and 'deviation' in card['alerts']['active'] and card['state'] == 'alert'
+    al = [a for a in card['alerts_log'] if a['kind'] == 'deviation']
+    assert al[0]['active'] is True and al[0]['to'] is None
+    assert 'runs' not in card['deviation'] and 'lines' not in card['route']   # линии — только в деталях
+    # точка давняя (связи нет) — не «сейчас»
+    old = _route_view(tr, tr.t + timedelta(minutes=10), _route(), detail=False)
+    assert old['deviation']['count'] == 1 and old['deviation']['active'] is False
+
+
+def test_deviation_lunch_detour_is_not_counted():
+    """Заезд на обед (стоянка обеда — как у тревоги «стоянка») — не отклонение; тот же заезд не в обед — отклонение."""
+    lunch = _detour_track(1500.0, datetime(2026, 10, 5, 12, 20, tzinfo=Y), park_min=30)
+    assert _route_view(lunch, lunch.t, _route())['deviation']['count'] == 0
+    morning = _detour_track(1500.0, datetime(2026, 10, 5, 9, 0, tzinfo=Y), park_min=30)
+    assert _route_view(morning, morning.t, _route())['deviation']['count'] == 1
+
+
+def test_plan_numbers_on_stops_and_route_stops():
+    tr = _detour_track(0.0)
+    route = _route(lines=((DEPOT, B, DEPOT), (DEPOT, A, B, DEPOT)), stops=((8, B), (7, A), (8, B)), km=12.34)
+    card = _route_view(tr, tr.t, route)
+    assert card['route']['km'] == 12.3 and card['route']['trips'] == 2 and card['route']['stops'] == 2
+    assert [(s['customer_id'], s['no']) for s in card['route']['points']] == [(8, 1), (7, 2)]
+    assert {s['customer_id']: s['plan_no'] for s in card['stops']} == {7: 2, 8: 1}
+    assert len(card['route']['lines']) == 2
+    assert all(s['plan_no'] is None for s in _route_view(tr, tr.t, None)['stops'])
+
+
+def test_day_stats_speed_times_and_no_data():
+    t = T0
+    pts = [ac.TrackFix(t + timedelta(seconds=s), A[0] + i * 0.001, A[1], 8.0, v)
+           for i, (s, v) in enumerate([(0, 0.0), (60, 0.0), (75, 12.0), (90, 25.0), (105, 300 / 3.6), (120, 10.0),
+                                       (720, 10.0), (735, 0.0)])]
+    st = live.day_stats(pts)
+    assert st['max_speed']['kmh'] == 90 and st['max_speed']['at'] == (t + timedelta(seconds=90)).isoformat()
+    assert (st['max_speed']['lat'], st['max_speed']['lon']) == (round(pts[3].lat, 6), round(pts[3].lon, 6))
+    assert (st['nodata_min'], st['moving_min'], st['stopped_min']) == (10, 1, 1)     # 600 с без данных; 60 с езды
+    assert st['avg_kmh'] is None                                                         # езды меньше 5 минут
+    tr = Track().park(DEPOT, 5).drive(B)
+    st = live.day_stats(ac.clean_track(_fixes(tr.pts)))
+    assert st['avg_kmh'] == 36 and st['moving_min'] >= 5 and st['stopped_min'] == 5    # 10 м/с
+    empty = live.day_stats([])
+    assert empty == {'max_speed': None, 'moving_min': None, 'stopped_min': None, 'nodata_min': None, 'avg_kmh': None}
+
+
+def test_card_stats_overspeed_and_honest_without_track():
+    pts = _speed_track([60, 95, 101, 97, 60, 95, 99, 98, 60])
+    card = view(facts(pts, [], [T0]), T0 + timedelta(minutes=5))
+    assert card['stats']['overspeed'] == {'count': 2, 'minutes': 1} and card['stats']['max_speed']['kmh'] == 101
+    card = view(facts(), T0)
+    assert card['stats']['overspeed'] is None and card['stats']['max_speed'] is None
+    assert card['stats']['moving_min'] is None and card['route'] is None and card['deviation'] is None
+
+
+def test_live_deviation_setting():
+    from route_optimizer import store as st
+    vals = dict(st.DEFAULT_SETTINGS)
+    out, errors = st.validate_settings(vals, None)
+    assert not errors and out['live_deviation_m'] == 300 and 'deviation' in out['live_alert_kinds']
+    for bad in (99, 2001, None, True, '300'):
+        _, errors = st.validate_settings({**vals, 'live_deviation_m': bad}, None)
+        assert 'live_deviation_m' in errors, bad
+    assert live.Rules.from_settings({**vals, 'live_deviation_m': 500}).deviation_m == 500
+    assert live.Rules.from_settings(vals).deviation_m == 300
+
+
+def test_build_text_deviation():
+    from route_optimizer import live_alerts as la
+    a = {'kind': 'deviation', 'from': T0.isoformat(), 'to': None, 'active': True, 'km': 1.2, 'lat': A[0], 'lon': A[1]}
+    text = la.build_text({'car_code': 'CAR1', 'driver': 'Արամ'}, a, 'start', RULES)
+    assert text.splitlines()[0] == 'Շեղում երթուղուց' and '300 մ' in text and '1,2 կմ' in text and 'yandex' in text

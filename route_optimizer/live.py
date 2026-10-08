@@ -58,6 +58,18 @@
   — None). unmarked — точка не закрыта водителем (pending/in_progress), а визит кончился: «GPS-ով այցելած, տերմինալում
   չնշված». В сводке магазинов — gps_visited (точек с GPS-визитом) и unmarked;
 - воспроизведение дня: track_t — момент (секунды эпохи, UTC) каждой точки линии track, 1:1 с ней (те же упрощённые точки);
+- плановая линия (владелец 08.10, PlanRoute — собирает views): что водитель получил — отправленный план «Развоза» (№81),
+  по рейсам склад → магазины плана по порядку → склад, по дорогам в объезд малого центра, как линии «Развоза»; дорог нет
+  или линии ещё строятся — по прямой (road false: отклонение не считается). Номер магазина на карте — место клиента в
+  плане машины за день (plan_no, 1…N по всем рейсам);
+- отклонение от плановой линии (deviation_runs): подряд точки км-трека (ac.moving_track) дальше live_deviation_m от линий
+  плана по дорогам, после первого выезда и до закрытия дня; не считаются точки в DEPOT_RADIUS_M склада и в STOP_RADIUS_M
+  магазинов дня (терминала и плана). Отклонение — не меньше DEVIATION_MIN_KM пути (geo.track_steps, как км дня) и
+  DEVIATION_MIN_S от первой до последней точки (скачок GPS и короткий заезд к кафе у дороги — не отклонение); заезд с
+  обедом (та же стоянка обеда, что у тревоги «стоянка») — не отклонение. Сводка — число и км, в деталях — линии отклонений;
+- показатели дня (day_stats): максимальная скорость терминала (момент, место; больше ac.MAX_SPEED_KMH — сбой GPS, мимо),
+  время в движении, на месте и без данных (перерыв трека дольше STATS_GAP), средняя скорость в движении; превышения
+  скорости — число и минуты; км плана — у PlanRoute. Трека нет — None («տվյալ չկա»), а не нули;
 
 Тревоги (пороги — в настройках «Маршрутов», №76):
 - скорость: скорость терминала > live_speed_kmh подряд не меньше live_speed_sec (от первой до последней точки подряд;
@@ -68,7 +80,9 @@
 - нет связи: «день открыт» (с первой связи за день до day_closed или до возвращения на склад со всеми закрытыми
   точками) и с последней связи прошло больше live_no_contact_min; в журнале — и перерывы между получениями событий;
 - GPS выключен или нет разрешения (track.device, APK 2.2.0): от такого состояния до следующего «on»;
-- машина без права въезда в малый центр (настройки машины) — в его границе: подряд не меньше CENTER_MIN_POINTS точек.
+- машина без права въезда в малый центр (настройки машины) — в его границе: подряд не меньше CENTER_MIN_POINTS точек;
+- отклонение от плановой линии (deviation): активно, пока последняя точка (свежая, не старше STALE_S) вне линии плана и
+  отклонение ещё идёт.
 """
 from __future__ import annotations
 
@@ -97,6 +111,13 @@ NO_CONTACT_MAX = timedelta(hours=3)  # связи нет дольше — маш
 # уже нет (телефон выключен), и ложные тревоги
 LATE_FIX_MAX = timedelta(minutes=OLD_APK_SILENT_MIN)
 TRACK_LINE_POINTS = 1500            # линия трека на карте (actuals.simplify)
+PLAN_LINE_POINTS = 1500             # плановая линия на карте (на все рейсы); отклонение считается по полной
+DEVIATION_LINE_POINTS = 300         # линия одного отклонения на карте
+DEVIATION_MIN_KM = 0.5              # отклонение — не меньше 0,5 км пути вне линии плана…
+DEVIATION_MIN_S = 60.0              # …и не меньше минуты от первой до последней точки
+STATS_GAP = timedelta(minutes=5)    # перерыв трека дольше — «нет данных»: ни езда, ни стоянка
+M_PER_DEG_LAT = 110540.0            # равнопромежуточная проекция (как actuals.simplify): метров на градус широты…
+M_PER_DEG_LON = 111320.0            # …и долготы на экваторе (× cos широты)
 
 
 
@@ -130,6 +151,7 @@ class Rules:
     # позже work_end (конец рабочего дня машины, минуты от полуночи; принята переработка №32 — её предел, views)
     late_nowin_min: float = 30.0
     work_end: float = 1080.0
+    deviation_m: float = 300.0   # отклонение от плановой линии дальше столько метров (08.10)
 
     @classmethod
     def from_settings(cls, s: Mapping[str, Any]) -> Rules:
@@ -152,7 +174,7 @@ class Rules:
                    opt('warehouse_load_fixed_min'), opt('warehouse_load_min_per_tonne'),
                    tuple(k for k in LIVE_ALERT_KINDS if k in (s.get('live_alert_kinds', LIVE_ALERT_KINDS))),
                    quiet if quiet[0] != quiet[1] else None, num('live_repeat_min'),
-                   num('late_nowin_min'), hm('truck_work_end', 1080.0))
+                   num('late_nowin_min'), hm('truck_work_end', 1080.0), num('live_deviation_m'))
 
 
 @dataclass(frozen=True)
@@ -514,16 +536,27 @@ def speed_alerts(pts: Sequence[ac.TrackFix], rules: Rules, live: bool) -> list[d
     return out
 
 
+def _unplanned(actual: ac.DayActual, since: datetime, until: datetime | None) -> list[ac.Stay]:
+    """Стоянки не по плану, начавшиеся после первого выезда (since) и до закрытия дня (until)."""
+    return [s for s in actual.stays if s.kind == 'other' and s.arrive >= since and (until is None or s.arrive < until)]
+
+
+def lunch_stay(stays: Sequence[ac.Stay], day: date, rules: Rules) -> ac.Stay | None:
+    """Обед: самая длинная из стоянок не по плану (_unplanned), начавшихся в окне начала обеда; обеда в настройках нет —
+    None."""
+    lo, hi = rules.lunch_window
+    window = [s for s in stays if lo <= ac.day_minutes(day, s.arrive) <= hi]
+    return max(window, key=lambda s: (s.minutes, s.arrive)) if window and rules.lunch_min > 0 else None
+
+
 def stop_alerts(actual: ac.DayActual, day: date, rules: Rules, since: datetime | None, until: datetime | None,
                 last_at: datetime | None, live: bool) -> list[dict[str, Any]]:
     """Стоянки не по плану длиннее stop_min после первого выезда (since) и до закрытия дня (until); обед — самая
     длинная из начавшихся в окне обеда: тревога, только если длиннее обеда + stop_min."""
     if since is None:
         return []
-    stays = [s for s in actual.stays if s.kind == 'other' and s.arrive >= since and (until is None or s.arrive < until)]
-    lo, hi = rules.lunch_window
-    window = [s for s in stays if lo <= ac.day_minutes(day, s.arrive) <= hi]
-    lunch = max(window, key=lambda s: (s.minutes, s.arrive)) if window and rules.lunch_min > 0 else None
+    stays = _unplanned(actual, since, until)
+    lunch = lunch_stay(stays, day, rules)
     out = []
     for s in stays:
         limit = rules.stop_min + (rules.lunch_min if s is lunch else 0.0)
@@ -589,6 +622,137 @@ def center_alerts(pts: Sequence[Fix], rules: Rules, truck: TruckSpec, live: bool
         if len(run) >= CENTER_MIN_POINTS:
             out.append(_alert('center', run[0].at, run[-1].at, live and f is None, lat=run[0].lat, lon=run[0].lon))
         run = []
+    return out
+
+
+# --- плановая линия, отклонение от неё, показатели дня (владелец 08.10) ---
+
+@dataclass(frozen=True)
+class PlanRoute:
+    """Плановая линия машины на день (правило — в описании модуля; собирает views._live_plan_routes): lines — по рейсам
+    склад → магазины плана → склад; road — линии по дорогам (False — по прямой: отклонение не считается); stops —
+    (клиент, точка) по порядку плана за день; km — км плана (прогноз сборки «Развоза», нет — длина линий по дорогам;
+    None — неизвестно)."""
+    lines: tuple[tuple[Point, ...], ...]
+    road: bool
+    stops: tuple[tuple[int, Point], ...] = ()
+    km: float | None = None
+
+
+def _seg_xy(x: float, y: float, x1: float, y1: float, x2: float, y2: float) -> float:
+    """Расстояние на плоскости от (x, y) до отрезка (x1, y1)–(x2, y2)."""
+    dx, dy = x2 - x1, y2 - y1
+    d2 = dx * dx + dy * dy
+    t = 0.0 if d2 == 0 else max(0.0, min(1.0, ((x - x1) * dx + (y - y1) * dy) / d2))
+    return math.hypot(x - x1 - t * dx, y - y1 - t * dy)
+
+
+def segment_m(p: Point, a: Point, b: Point) -> float:
+    """Расстояние, м, от точки p до отрезка a–b: равнопромежуточная проекция у широты p (для Армении достаточно)."""
+    kx = M_PER_DEG_LON * math.cos(math.radians(p[0]))
+    return _seg_xy(p[1] * kx, p[0] * M_PER_DEG_LAT, a[1] * kx, a[0] * M_PER_DEG_LAT, b[1] * kx, b[0] * M_PER_DEG_LAT)
+
+
+def polyline_m(p: Point, line: Sequence[Point]) -> float:
+    """Расстояние, м, от точки p до ломаной line (одна точка — до неё; пусто — бесконечность)."""
+    if len(line) < 2:
+        return segment_m(p, line[0], line[0]) if line else math.inf
+    return min(segment_m(p, a, b) for a, b in zip(line, line[1:]))
+
+
+class RouteIndex:
+    """Ломаные плана в сетке ячеек cell_m × cell_m — чтобы не мерить каждую точку трека до каждого участка (трек дня —
+    тысячи точек, линии по дорогам — тысячи участков, карточки флота — раз в 10 с). near(p, r) при r ≤ cell_m — то же, что
+    min(polyline_m) ≤ r: ближайшая к p точка участка не дальше r лежит в ячейке p или соседней, а участок записан во все
+    ячейки своего охватывающего прямоугольника. Проекция — у широты первой точки линий (в пределах Армении ошибка — доли
+    процента расстояния)."""
+
+    def __init__(self, lines: Sequence[Sequence[Point]], cell_m: float):
+        first = next((p for line in lines for p in line), (40.18, 44.5))
+        self._kx = M_PER_DEG_LON * math.cos(math.radians(first[0]))
+        self._cell = float(cell_m)
+        self._grid: dict[tuple[int, int], list[tuple[float, float, float, float]]] = {}
+        for line in lines:
+            xy = [self._xy(p) for p in line]
+            for (x1, y1), (x2, y2) in (zip(xy, xy[1:]) if len(xy) > 1 else [(xy[0], xy[0])] if xy else ()):
+                seg = (x1, y1, x2, y2)
+                for i in range(math.floor(min(x1, x2) / self._cell), math.floor(max(x1, x2) / self._cell) + 1):
+                    for j in range(math.floor(min(y1, y2) / self._cell), math.floor(max(y1, y2) / self._cell) + 1):
+                        self._grid.setdefault((i, j), []).append(seg)
+
+    def _xy(self, p: Point) -> tuple[float, float]:
+        return p[1] * self._kx, p[0] * M_PER_DEG_LAT
+
+    def near(self, p: Point, radius_m: float) -> bool:
+        """Есть участок линий не дальше radius_m (не больше cell_m) от p."""
+        x, y = self._xy(p)
+        i, j = math.floor(x / self._cell), math.floor(y / self._cell)
+        r = min(radius_m, self._cell)
+        return any(_seg_xy(x, y, *seg) <= r for di in (-1, 0, 1) for dj in (-1, 0, 1)
+                   for seg in self._grid.get((i + di, j + dj), ()))
+
+
+def _path_km(run: Sequence[Fix]) -> float:
+    """Км пути по точкам — тем же правилом, что км дня (geo.track_steps)."""
+    return math.fsum(km for _, km in track_steps(run))
+
+
+def deviation_runs(moving: Sequence[Fix], index: RouteIndex | None, threshold_m: float,
+                   keep_out: Sequence[tuple[Point, float]], since: datetime | None, until: datetime | None,
+                   lunch: tuple[datetime, datetime] | None = None) -> list[list[Fix]]:
+    """Отклонения от плановой линии (правило — в описании модуля): moving — точки км-трека (ac.moving_track), index —
+    линии плана по дорогам (None — их нет: отклонений нет, не тревога), keep_out — (точка, радиус, м) склада и магазинов,
+    since — первый выезд (None — машина не выезжала), until — закрытие дня, lunch — (начало, конец) стоянки обеда."""
+    if index is None or since is None:
+        return []
+    out: list[list[Fix]] = []
+    run: list[Fix] = []
+
+    def close() -> None:
+        if len(run) < 2 or (lunch is not None and any(lunch[0] <= f.at <= lunch[1] for f in run)):
+            return
+        if (run[-1].at - run[0].at).total_seconds() >= DEVIATION_MIN_S and _path_km(run) >= DEVIATION_MIN_KM:
+            out.append(list(run))
+    for f in moving:
+        if (f.at >= since and (until is None or f.at <= until) and not index.near(f.point, threshold_m)
+                and not any(_near(f.point, p, r) for p, r in keep_out)):
+            run.append(f)
+            continue
+        close()
+        run = []
+    close()
+    return out
+
+
+def day_stats(pts: Sequence[Fix]) -> dict[str, Any]:
+    """Показатели дня по очищенному треку (правило — в описании модуля): max_speed — {kmh, at, lat, lon} или None (нет
+    скорости терминала); moving_min / stopped_min / nodata_min — минуты в движении, на месте и без данных; avg_kmh — км
+    отрезков движения / время движения (движения меньше 5 минут — None). Отрезок между соседними точками — движение, если
+    у его конца скорость терминала не ниже MOVING_MS (нет скорости — смещение быстрее MOVING_MS). Трека нет — всё None."""
+    tops = [f for f in pts if getattr(f, 'spd', None) is not None and f.spd * 3.6 <= ac.MAX_SPEED_KMH]   # type: ignore[attr-defined]
+    top = max(tops, key=lambda f: (f.spd, -f.at.timestamp()), default=None)   # type: ignore[attr-defined]
+    out: dict[str, Any] = {
+        'max_speed': {'kmh': round(top.spd * 3.6), 'at': _iso(top.at), 'lat': round(top.lat, 6),   # type: ignore[attr-defined]
+                      'lon': round(top.lon, 6)} if top is not None else None,
+        'moving_min': None, 'stopped_min': None, 'nodata_min': None, 'avg_kmh': None}
+    if len(pts) < 2:
+        return out
+    moving = stopped = nodata = km = 0.0
+    for a, b in zip(pts, pts[1:]):
+        dt = (b.at - a.at).total_seconds()
+        if dt <= 0:
+            continue
+        step_km = haversine_km(a.point, b.point)
+        spd = getattr(b, 'spd', None)
+        if dt > STATS_GAP.total_seconds():
+            nodata += dt
+        elif (spd >= MOVING_MS) if spd is not None else step_km * 1000.0 / dt >= MOVING_MS:
+            moving += dt
+            km += step_km
+        else:
+            stopped += dt
+    out.update(moving_min=round(moving / 60), stopped_min=round(stopped / 60), nodata_min=round(nodata / 60),
+               avg_kmh=round(km / (moving / 3600.0)) if moving >= 300 else None)
     return out
 
 
@@ -792,9 +956,11 @@ def late_forecast(day: date, stops: Sequence[Mapping[str, Any]], arrive: Mapping
 
 def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[PlanTrip], truck: TruckSpec,
              depot: Point | None, rules: Rules, road: Road, detail: bool = False,
-             windows: Mapping[int, tuple[float, float]] | None = None) -> dict[str, Any]:
-    """Карточка машины (detail — ещё линия трека, точки дня и журнал тревог). now — сейчас (Ереван); день не сегодня —
-    без ETA и тревог «сейчас». windows — окна приёма клиентов (late_forecast)."""
+             windows: Mapping[int, tuple[float, float]] | None = None,
+             route: PlanRoute | None = None) -> dict[str, Any]:
+    """Карточка машины (detail — ещё линия трека, точки дня, журнал тревог, плановая линия и линии отклонений). now —
+    сейчас (Ереван); день не сегодня — без ETA и тревог «сейчас». windows — окна приёма клиентов (late_forecast), route —
+    плановая линия машины (None — машине план не отправлен)."""
     live = now.astimezone(YEREVAN).date() == day
     stops = list(facts.get('stops') or ())
     raw = list(facts.get('track') or ())
@@ -899,12 +1065,31 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
     # тревоги
     devices = [(t, gps) for t, gps in ((_moment(a), g) for a, g in facts.get('devices') or ()) if t is not None]
     first_dep = deps[0] if deps else None
-    alerts = (speed_alerts(pts, rules, live and age is not None and age <= STALE_S)   # type: ignore[arg-type]
+    fresh = live and age is not None and age <= STALE_S
+    speeds = speed_alerts(pts, rules, fresh)   # type: ignore[arg-type]
+
+    # отклонение от плановой линии: только по линиям по дорогам; склад и магазины дня (терминала и плана) — не отклонение
+    index = RouteIndex(route.lines, rules.deviation_m) if route is not None and route.road and route.lines else None
+    keep = [(depot, ac.DEPOT_RADIUS_M)] if depot is not None else []
+    keep += [((s['lat'], s['lon']), ac.STOP_RADIUS_M) for s in stops if s.get('lat') is not None and s.get('lon') is not None]
+    keep += [(p, ac.STOP_RADIUS_M) for _, p in (route.stops if route is not None else ())]
+    lunch = lunch_stay(_unplanned(actual, first_dep, end), day, rules) if first_dep is not None else None
+    runs = deviation_runs(moving, index, rules.deviation_m, keep, first_dep, end,
+                          (lunch.arrive, lunch.leave) if lunch is not None else None)
+    deviations = []
+    for k, run in enumerate(runs):   # идёт сейчас — последнее отклонение, и последняя свежая точка всё ещё вне линии
+        ongoing = (fresh and k == len(runs) - 1 and run[-1].at == moving[-1].at and last is not None
+                   and not index.near(last.point, rules.deviation_m)   # type: ignore[union-attr]
+                   and not any(_near(last.point, p, r) for p, r in keep))
+        deviations.append(_alert('deviation', run[0].at, None if ongoing else run[-1].at, ongoing,
+                                 km=round(_path_km(run), 1), lat=round(run[0].lat, 6), lon=round(run[0].lon, 6)))
+    alerts = (speeds
               + stop_alerts(actual, day, rules, first_dep, end, last.at if last else None, open_now)
               + (contact_alerts(contacts, last_contact, now if open_now else None, started, end, rules)
                  if facts.get('device') is not None else [])   # старый APK (<2.2.0) шлёт пачками раз в 2–17 мин
               + gps_alerts(devices, open_now)
-              + center_alerts(pts, rules, truck, live and age is not None and age <= STALE_S, stops)
+              + center_alerts(pts, rules, truck, fresh, stops)
+              + deviations
               + [_alert('late', now, None, True, **x) for x in late])   # прогноз «не успеет» (№87) — пока он такой
     alerts.sort(key=lambda a: a['from'] or '')
     active = sorted({a['kind'] for a in alerts if a['active']})
@@ -965,7 +1150,32 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
         'alerts': {'active': active, 'count': len(alerts)},
         'late': late,   # «не успеет» (№87, late_forecast): магазины и возврат на склад
         'alerts_log': alerts,   # журнал тревог дня: API флота его не отдаёт (views), Telegram и карточка машины — да
+        # плановая линия (None — плана машине не отправляли) и отклонения от неё (None — линии по дорогам нет: не считали)
+        'route': ({'road': route.road, 'km': round(route.km, 1) if route.km is not None else None,
+                   'trips': len(route.lines), 'stops': len({c for c, _ in route.stops})} if route is not None else None),
+        'deviation': ({'threshold_m': rules.deviation_m, 'count': len(runs),
+                       'km': round(math.fsum(_path_km(r) for r in runs), 1),
+                       'active': any(a['active'] for a in deviations)} if index is not None else None),
+        'stats': {**day_stats(pts),
+                  'overspeed': {'count': len(speeds), 'minutes': round(math.fsum(
+                      (datetime.fromisoformat(a['to']) - datetime.fromisoformat(a['from'])).total_seconds()
+                      for a in speeds) / 60)} if pts else None},
     }
+    where: dict[int, Point] = {}   # клиент → точка, по порядку плана машины за день (первое появление)
+    for c, p in (route.stops if route is not None else ()):
+        where.setdefault(c, p)
+    nos = {c: n for n, c in enumerate(where, 1)}   # номер магазина в плане за день (1…N по всем рейсам)
+    if detail and route is not None:
+        per = max(2, PLAN_LINE_POINTS // max(1, len(route.lines)))
+        out['route'].update({
+            'lines': [[[round(p[0], 6), round(p[1], 6)] for p in ac.simplify(list(line), per)] for line in route.lines],
+            'points': [{'customer_id': c, 'no': nos[c], 'lat': round(p[0], 6), 'lon': round(p[1], 6)}
+                      for c, p in where.items()]})
+    if detail and index is not None:
+        out['deviation']['runs'] = [
+            {'from': a['from'], 'to': a['to'], 'km': a['km'], 'active': a['active'],
+             'line': [[round(p[0], 6), round(p[1], 6)] for p in ac.simplify([f.point for f in run], DEVIATION_LINE_POINTS)]}
+            for a, run in zip(deviations, runs)]
     if detail:
         # simplify смотрит только на широту и долготу: момент точки едет вместе с ней (track_t — 1:1 с track)
         line = ac.simplify([(f.lat, f.lon, f.at.timestamp()) for f in pts], TRACK_LINE_POINTS)   # type: ignore[misc]
@@ -981,7 +1191,8 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
                        'eta': _iso(etas[s['stop_id']][0]) if s['stop_id'] in etas else None,
                        'eta_source': ('road' if etas[s['stop_id']][1] else 'model') if s['stop_id'] in etas else None,
                        'arrive': _iso(marks.get(s['stop_id'])), 'delivered_at': s.get('delivered_at'),
-                       'gps': gps.get(s['stop_id']), 'unmarked': s['stop_id'] in unmarked}
+                       'gps': gps.get(s['stop_id']), 'unmarked': s['stop_id'] in unmarked,
+                       'plan_no': nos.get(s.get('customer_id'))}   # type: ignore[arg-type]
                       for s in sorted(stops, key=lambda s: (trips[s['stop_id']],
                                                             s.get('seq') if isinstance(s.get('seq'), int) else 0))],
         })
