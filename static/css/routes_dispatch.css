@@ -252,7 +252,6 @@
 .dp-attn-item.is-warn { border-color: var(--rt-warn-line); background: var(--rt-warn-bg); }
 .dp-attn-item.is-warn > i { color: var(--rt-warn); }
 .dp-attn-t { flex: 1 1 240px; min-width: 0; line-height: 1.45; font-size: .9375rem; }
-.dp-howto { margin: 0 0 12px; padding-left: 22px; display: grid; gap: 4px; line-height: 1.5; }
 #rtDispatch .dp-step .rt-fold { background: var(--rt-inset); border-radius: 12px; }
 #rtDispatch .dp-step .rt-fold > summary { border-radius: 12px; padding-top: 12px; padding-bottom: 12px; }
 #rtDispatch .dp-step .rt-fold-t { font-size: 1rem; }
@@ -589,7 +588,12 @@
 .dp-dlg::backdrop { background: rgba(5, 7, 10, .7); backdrop-filter: blur(2px); }
 .dp-dlg-t { margin: 0 0 6px; font-size: 1.25rem; font-weight: 700; overflow-wrap: anywhere; }
 .dp-dlg-lead { margin: 0 0 12px; color: var(--rt-fg-dim); line-height: 1.5; }
-.dp-dlg .dp-pickmap { margin-bottom: 12px; }
+.dp-dlg .dp-pickmap { margin-bottom: 12px; height: clamp(280px, 50vh, 440px); }
+.dp-geo-find { display: inline-flex; align-items: center; gap: 8px; margin: 0 0 12px; font-size: .875rem; font-weight: 600;
+    color: var(--rt-acc); text-decoration: none; }
+.dp-geo-find:hover { text-decoration: underline; }
+.dp-geo-find[hidden] { display: none; }
+.dp-geo-find .fa-arrow-up-right-from-square { font-size: .75em; opacity: .8; }
 .dp-dlg .rt-input { width: 100%; }
 .dp-dlg-btns { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
 .dp-dlg-btns [hidden] { display: none; }
@@ -1384,4 +1388,28 @@ body.dp-ws-on .rt-secbar .rt-tabs a { padding-top: 3px; padding-bottom: 3px; }
 @container (max-width: 480px) {
     .dp-bl-row { grid-template-areas: "age kg sum" "main main main" "act act act" "st st st"; }
     .dp-bl-act { justify-content: flex-start; }
+}
+/* «Խանութներ, որոնց տեղը քարտեզում չկա» (владелец 08.10): та же таблица, что «Նախորդ օրերից», вместо списка с картой */
+#dpNoCoords .rt-fold-body { container-type: inline-size; }
+/* колонки: магазин (имя, код · менеджер, адрес) | вес и сумма | действия — помещается в узкую колонку шага 2 */
+.dp-nc-hd, .dp-bl-row.dp-nc-row { display: grid; grid-template-columns: minmax(0, 1fr) 112px 206px; gap: 4px 16px; align-items: center; }
+/* области явно: узкие правила «Նախորդ օրերից» (.dp-bl-row, .dp-bl-main, .dp-bl-act в @container) их не перебивают */
+.dp-bl-row.dp-nc-row { grid-template-areas: "main num act"; }
+.dp-nc-row > .dp-bl-main { grid-area: main; }
+.dp-nc-row > .dp-nc-num { grid-area: num; }
+.dp-nc-row > .dp-bl-act { grid-area: act; }
+.dp-nc-hd { padding: 0 13px 6px; font-size: .75rem; font-weight: 600; letter-spacing: .02em; text-transform: uppercase; color: var(--rt-fg-mute); }
+.dp-nc-hd span:nth-child(2) { text-align: right; }
+.dp-nc-row .dp-bl-main .dp-nc-addr { margin-top: 2px; color: var(--rt-fg); }
+.dp-nc-row .dp-bl-main .dp-nc-addr.is-none { font-style: italic; color: var(--rt-warn); }
+.dp-nc-num { display: flex; flex-direction: column; line-height: 1.35; }
+.dp-nc-num span { font-size: .8125rem; color: var(--rt-fg-dim); }
+.dp-nc-row .dp-bl-act { flex-wrap: nowrap; }
+.dp-nc-row .rt-btn { gap: 6px; }
+.dp-nc-find { width: 34px; padding: 0; }
+@container (max-width: 560px) {
+    .dp-nc-hd { display: none; }
+    .dp-bl-row.dp-nc-row { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "main num" "act act"; gap: 8px 14px; }
+    .dp-nc-row > .dp-nc-num { align-self: start; }
+    .dp-nc-row > .dp-bl-act { justify-content: flex-start; }
 }
