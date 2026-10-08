@@ -42,6 +42,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Callable, Mapping
 
+from route_optimizer.actuals import plan_version
 from route_optimizer.erp import ErpError
 from route_optimizer.geo import Point, resolve_coord
 
@@ -170,7 +171,7 @@ def build_stops(data: DayData, order: list[int], points: Mapping[int, Point | No
 def trips_json(stops: list[dict[str, Any]], view: RoutesView, car_code: str) -> list[dict[str, Any]]:
     """Рейсы машины для пересчёта порядка на терминале (№93, контракт §12): точка — в первом рейсе выпущенного плана, где
     есть её магазин (как карта машин, route_optimizer.live.trip_of); вне плана и без плана — рейс 1; номера — рейсы машины
-    в плане с 1, рейс без точек /day не выдаётся. Матрица — _matrix; дорожная модель — одна на машину (view.road), её сбой
+    в плане с 1, рейс без точек /day не выдаётся; plan_version — версия рейса плана (actuals.plan_version), без плана null. Матрица — _matrix; дорожная модель — одна на машину (view.road), её сбой
     — matrix null у всех рейсов (терминал не пересчитывает порядок)."""
     plan = [cids for truck, cids in view.trips if truck == car_code] if view.released else []
     first: dict[int, int] = {}
@@ -189,6 +190,8 @@ def trips_json(stops: list[dict[str, Any]], view: RoutesView, car_code: str) -> 
             logger.warning('[Courier] Дорожная модель рейсов машины %s не собрана — матрицы нет', car_code, exc_info=True)
     departs = view.departs.get(car_code, ())
     return [{'trip': k + 1, 'stop_ids': [s['stop_id'] for s in xs],
+             # версия рейса плана (логист пересобрал и отправил — другая): APK держит свой порядок только на своей версии
+             'plan_version': plan_version(plan[k]) if k < len(plan) else None,
              'matrix': _matrix(xs, view.depot, road, departs[k] if k < len(departs) else None, view.work_start_min)}
             for k, xs in sorted(by_trip.items())]
 

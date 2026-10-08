@@ -110,6 +110,7 @@ DEVICE_EXIT = frozenset({'closed', 'shutdown'})  # track.device.exit (APK 2.2.5)
 DEVICE_APP_RE = re.compile(r'^[0-9A-Za-z.+-]{1,20}$')   # track.device.app — версия APK («2.2.0»)
 REORDER_TRIP_MAX = 50       # reorder (v1.8 §12): номер рейса машины за день — 1…50
 REORDER_ORDER_MAX = 200     # …и точек в новом порядке — не больше, чем в пачке событий
+PLAN_VERSION_MAX = 64
 REFUEL_MAX_LITERS = 400.0
 REFUEL_MAX_ODOMETER = 2_000_000
 
@@ -482,7 +483,8 @@ def _stop_id(v: Any) -> str | None:
 def _reorder(tx: EventTx, p: Mapping[str, Any], day: str, car_code: str) -> tuple[dict[str, Any], list[str]]:
     """Смена порядка рейса водителем «Գնալ առաջինը» (контракт v1.8 §12, ответ владельца №93): trip — номер рейса /day
     (1…REORDER_TRIP_MAX), order — оставшиеся точки рейса в новом порядке (1…REORDER_ORDER_MAX разных stop_id), первая —
-    moved; reason — 'until' (у moved срок под риском) | 'driver'. 'until', а у moved в /day (действующая версия точки)
+    moved; reason — 'until' (у moved срок под риском) | 'driver'; plan_version — версия рейса /day, на которой сделана
+    смена (необязательна: смена на прежней версии рейса — не эталон). 'until', а у moved в /day (действующая версия точки)
     срока нет или точка неизвестна — хранится как 'driver' (reason_sent 'until', флаг no_deadline): без срока перенос —
     нарушение порядка (ответ владельца). → (сохраняемый payload, флаги)."""
     trip = p.get('trip')
@@ -500,6 +502,9 @@ def _reorder(tx: EventTx, p: Mapping[str, Any], day: str, car_code: str) -> tupl
     if reason not in REORDER_REASONS:
         raise Reject("reason՝ 'until' կամ 'driver'")
     stored: dict[str, Any] = {'trip': trip, 'order': order, 'moved': order[0], 'reason': reason}
+    version = _text(p.get('plan_version'), PLAN_VERSION_MAX, 'plan_version')   # версия рейса из /day (необязательна)
+    if version:
+        stored['plan_version'] = version
     if reason == 'until':
         data = _stop_ctx(tx, order[0], day, car_code)[0].data
         if not (data or {}).get('until'):

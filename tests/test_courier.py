@@ -396,7 +396,8 @@ def test_demo_day_matches_contract(term):
     assert set(body) == {'date', 'version', 'loaded_at', 'car', 'depot', 'order_source', 'stops', 'tare_types',
                          'refuse_reasons', 'return_reasons', 'plan', 'trips', 'until_buffer_min'}
     # v1.8 §12: демо — без плана и без дорожной модели: один рейс со всеми точками, матрицы нет; срока нет
-    assert body['trips'] == [{'trip': 1, 'stop_ids': [s['stop_id'] for s in body['stops']], 'matrix': None}]
+    assert body['trips'] == [{'trip': 1, 'stop_ids': [s['stop_id'] for s in body['stops']], 'plan_version': None,
+                              'matrix': None}]
     assert body['until_buffer_min'] == 0.0 and all(s['until'] is None for s in body['stops'])
     assert body['plan'] == 'approved'                    # №80: демо-день — обычный рабочий день, без плашки ожидания
     assert body['date'] == DEMO and isinstance(body['version'], str) and len(body['version']) == 40

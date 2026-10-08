@@ -181,6 +181,8 @@ def test_day_until_fields_trips_and_matrix(tmp_path):
     t1, t2 = body['trips']
     assert (t1['trip'], t1['stop_ids']) == (1, [by_cid[900002]['stop_id'], by_cid[900001]['stop_id']])
     assert (t2['trip'], t2['stop_ids']) == (2, [by_cid[900003]['stop_id']])
+    assert (t1['plan_version'], t2['plan_version']) == (ac.plan_version([900002, 900001]), ac.plan_version([900003]))
+    assert len(t1['plan_version']) == 12 and t1['plan_version'] != ac.plan_version([900001, 900002])
     m = t1['matrix']
     assert m['nodes'] == ['depot', *t1['stop_ids']] and m['depart'] == '09:40' and m['source'] == 'road'
     pts = [(body['depot']['lat'], body['depot']['lon'])] + [(by_cid[c]['lat'], by_cid[c]['lon']) for c in (900002, 900001)]
@@ -202,6 +204,7 @@ def test_day_trip_rules_without_plan_and_degrade(tmp_path):
     data, view_, loaded = _demo()                                     # плана нет — один рейс, все точки
     body = dy.day_payload(data, view_, store, loaded)
     assert [t['trip'] for t in body['trips']] == [1] and len(body['trips'][0]['stop_ids']) == 3
+    assert body['trips'][0]['plan_version'] is None                    # плана нет — версии нет
     assert all(s['until'] is None and s['until_from'] is None for s in body['stops'])
     # сбой дорожной модели (сборка или участок) — matrix null, /day живой
     for road in (lambda pts: 1 / 0, lambda pts: _road(fail=True)):
@@ -270,6 +273,7 @@ def test_reorder_accepted_flags_and_idempotent(term_until, app, client, st):
     s, body, cid = term_until
     assert body['stops'][[x['customer']['id'] for x in body['stops']].index(900001)]['until'] == '11:00'
     ok = _reorder([cid[900001], cid[900002], cid[900003]])
+    ok['payload']['plan_version'] = 'abc123def456'
     no_deadline = _reorder([cid[900002], cid[900003]], at='2000-01-01T10:20:00+04:00')
     driver = _reorder([cid[900003], cid[900002]].copy(), 'driver', at='2000-01-01T10:30:00+04:00')
     got = post(client, s, ok, no_deadline, driver)
@@ -277,7 +281,8 @@ def test_reorder_accepted_flags_and_idempotent(term_until, app, client, st):
     assert post(client, s, ok)['duplicates'] == [ok['id']]                 # тот же id — повтор, не новое событие
     rows = {e['id']: e for e in st.store.events_for_day(DEMO, 'reorder')}
     assert rows[ok['id']]['payload'] == {'trip': 1, 'order': ok['payload']['order'], 'moved': cid[900001],
-                                         'reason': 'until'} and rows[ok['id']]['flags'] == []
+                                         'reason': 'until', 'plan_version': 'abc123def456'} and rows[ok['id']]['flags'] == []
+    assert 'plan_version' not in rows[driver['id']]['payload']
     assert rows[no_deadline['id']]['payload']['reason'] == 'driver'        # срока нет — не «срок под риском»
     assert rows[no_deadline['id']]['payload']['reason_sent'] == 'until' and rows[no_deadline['id']]['flags'] == ['no_deadline']
     assert rows[driver['id']]['payload']['reason'] == 'driver' and rows[driver['id']]['flags'] == []
@@ -285,6 +290,7 @@ def test_reorder_accepted_flags_and_idempotent(term_until, app, client, st):
     assert [(m['car_code'], m['moved'], m['reason']) for m in moves] == [
         ('TEST', cid[900001], 'until'), ('TEST', cid[900002], 'driver'), ('TEST', cid[900003], 'driver')]
     assert moves[0]['at'] == '2000-01-01T10:05:00+04:00' and moves[0]['trip'] == 1
+    assert (moves[0]['plan_version'], moves[1]['plan_version']) == ('abc123def456', None)
     assert st.store.reorders(DEMO, 'OTHER') == [] and FactsSource(st.store).reorders('TEST', DEMO) == moves
     with app.app_context():
         fleet = LiveSource(st.store).fleet(DEMO)
@@ -296,7 +302,7 @@ def test_reorder_accepted_flags_and_idempotent(term_until, app, client, st):
     lambda p: p.update(order=[]), lambda p: p.update(order='S:1'), lambda p: p.update(order=['S:bad']),
     lambda p: p.update(order=p['order'] + [p['order'][0]]), lambda p: p.update(order=p['order'] * 101),
     lambda p: p.update(moved=p['order'][1]), lambda p: p.pop('moved'), lambda p: p.update(reason='late'),
-    lambda p: p.pop('reason')])
+    lambda p: p.pop('reason'), lambda p: p.update(plan_version=12), lambda p: p.update(plan_version='x' * 65)])
 def test_reorder_rejections(term_until, client, mutate):
     s, _, cid = term_until
     e = _reorder([cid[900001], cid[900002]])
@@ -340,6 +346,20 @@ def test_reorder_trip_keeps_served_first_and_unknown_last():
     assert ac.reorder_trip([10, 11, 12, 13], r, {10}) == [10, 13, 11, 12]       # 12 терминал не переставлял — в конце
     assert ac.reorder_trip([10, 11, 12, 13], r, {10, 12}) == [10, 12, 13, 11]
     assert ac.reorder_trip([10, 11], ac.Reorder(T(0), 0, (99,), 99, 'S9', 'until'), set()) == [10, 11]
+
+
+def test_current_reorders_drop_changes_on_previous_plan_version():
+    """Логист пересобрал рейс и отправил водителям после смены водителя — смена на прежней версии рейса не эталон; без
+    версии (старый APK) — эталон."""
+    old, new = [10, 11, 12, 13], [10, 12, 11, 13]
+    on_old = replace(_r(15, ['S3', 'S1'], 'driver'), plan_version=ac.plan_version(old))
+    no_version = _r(16, ['S3', 'S1'], 'driver')
+    other_trip = replace(_r(17, ['S3'], 'driver', trip=5), plan_version=ac.plan_version(old))
+    assert ac.current_reorders([on_old, no_version, other_trip], [old]) == [on_old, no_version]
+    assert ac.current_reorders([on_old, no_version], [new]) == [no_version]
+    raw = [{'at': T(15).isoformat(), 'trip': 1, 'order': ['S3', 'S1'], 'moved': 'S3', 'reason': 'until',
+            'plan_version': ac.plan_version(old)}]
+    assert ac.reorders_of(raw, CUST)[0].plan_version == ac.plan_version(old)
 
 
 def _actual(served):
@@ -472,6 +492,8 @@ def test_car_view_reorder_until_next_eta_and_card():
     assert 'sequence' not in card['alerts']['active']
     etas = {s['stop_id']: s['planned_eta'] for s in card['stops']}
     assert etas['S1'] == (at_a + timedelta(minutes=40)).isoformat(timespec='seconds')
+    stale = dict(f, reorders=[{**f['reorders'][0], 'plan_version': ac.plan_version([10, 12, 11, 13])}])
+    assert view(stale, now, plan)['next']['stop_id'] == 'S1'          # смена на прежней версии рейса — не эталон
     without = view(facts(tr.pts, stops, [T0, now]), now, plan)
     assert without['next']['stop_id'] == 'S1' and without['reorders'] == []
 

@@ -1685,7 +1685,8 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
                 unmarked.add(sid)   # машина была и уехала, водитель не отметил — точка посещена
     gone = departed_trips(trips, touches, deps, start, open_ids - unmarked)   # посещённые по GPS не держат следующий рейс
     # смены порядка водителем (№93): эталон очереди ETA, следующего магазина и плановых ETA — план с ними (reordered_plan)
-    reorders = ac.reorders_of(facts.get('reorders') or (), {s['stop_id']: s.get('customer_id') for s in stops})
+    reorders = ac.current_reorders(ac.reorders_of(facts.get('reorders') or (), {s['stop_id']: s.get('customer_id') for s in stops}),
+                                   [t.customers for t in plan])   # смена до пересборки рейса логистом — не эталон
     order_plan = reordered_plan(plan, reorders, stops, touches)
     # «на месте» — одно правило для карточки (next.here) и таблицы: прогноз есть, последняя точка в STOP_RADIUS_M точки и её
     # последний заезд идёт или кончился не раньше JITTER_BREAK до неё (стоянку оборвало дрожание скорости — машина там же)

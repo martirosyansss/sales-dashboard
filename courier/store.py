@@ -1377,7 +1377,8 @@ class Store:
 
     def reorders(self, day: str, car_code: str | None = None) -> list[dict[str, Any]]:
         """Смены порядка водителем за рабочий день (событие reorder, контракт v1.8 §12, №93; по индексу events_type):
-        [{id, car_code, at — момент терминала (ISO с зоной), at_utc, trip, order, moved, reason}] по моменту и id; car_code —
+        [{id, car_code, at — момент терминала (ISO с зоной), at_utc, trip, order, moved, reason, plan_version}] по моменту
+        и id; car_code —
         только этой машины. Действующий порядок рейса — последний по моменту (читатели: route_optimizer.actuals); прежние —
         с какого момента какой эталон."""
         car_sql, args = ('', (day,)) if car_code is None else (' AND car_code = ?', (day, car_code))
@@ -1392,7 +1393,8 @@ class Store:
                 raise StoreError(f'{self._name()}: повреждено событие {eid!r}{_FIX_HINT}') from e
             p = p if isinstance(p, dict) else {}
             out.append({'id': eid, 'car_code': car, 'at': at, 'at_utc': at_utc, 'trip': p.get('trip'),
-                        'order': list(p.get('order') or ()), 'moved': p.get('moved'), 'reason': p.get('reason')})
+                        'order': list(p.get('order') or ()), 'moved': p.get('moved'), 'reason': p.get('reason'),
+                        'plan_version': p.get('plan_version')})
         return out
 
     def refuels(self, since: str = '') -> list[dict[str, Any]]:

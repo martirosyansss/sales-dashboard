@@ -5455,11 +5455,11 @@ def _scorecard_cars(state: RoutesState, bundle: Bundle, day: date, rules: live.R
         vm = ac.visit_metrics(actual, stops, day)
         order = (vm.order_changes, vm.ordered) if vm.ordered else None
         moves = getattr(facts, 'reorders', None)   # №93: смены порядка водителем (FleetFacts.reorders — необязателен)
-        reorders = (ac.reorders_of(moves(car, ds), {s.key: s.customer_id for s in stops})
+        trips = [[c for c in t.get('stops') or () if isinstance(c, int) and not isinstance(c, bool)]
+                 for t in (draft or {}).get('trips') or () if isinstance(t, dict) and t.get('truck') == car]
+        reorders = (ac.current_reorders(ac.reorders_of(moves(car, ds), {s.key: s.customer_id for s in stops}), trips)
                     if moves is not None and vm.ordered else [])
         if reorders:   # эталон порядка — план со сменами: 'until' без штрафа, 'driver' — за перенесённый (ac.reordered_changes)
-            trips = [[c for c in t.get('stops') or () if isinstance(c, int) and not isinstance(c, bool)]
-                     for t in (draft or {}).get('trips') or () if isinstance(t, dict) and t.get('truck') == car]
             order = ac.reordered_changes(actual, stops, trips, reorders)
         first, _ = _plan_etas(draft, car, day)
         prediction = (((draft or {}).get('prediction') or {}).get('trucks') or {}).get(car)

@@ -44,6 +44,7 @@
 from __future__ import annotations
 
 import bisect
+import hashlib
 import math
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta, timezone
@@ -598,6 +599,7 @@ class Reorder:
     moved: int
     moved_stop: str
     reason: str
+    plan_version: str | None = None   # версия рейса плана, на которой сделана смена (plan_version); None — не знаем
 
 
 def reorders_of(raw: Iterable[Mapping[str, Any]], customer_of: Mapping[str, Any]) -> list[Reorder]:
@@ -621,8 +623,23 @@ def reorders_of(raw: Iterable[Mapping[str, Any]], customer_of: Mapping[str, Any]
             if isinstance(c, int) and c not in cs:
                 cs.append(c)
         if cs and cs[0] == moved:
-            out.append(Reorder(at, trip - 1, tuple(cs), moved, str(r['moved']), str(r['reason'])))
+            version = r.get('plan_version')
+            out.append(Reorder(at, trip - 1, tuple(cs), moved, str(r['moved']), str(r['reason']),
+                               version if isinstance(version, str) else None))
     return sorted(out, key=lambda x: x.at)
+
+
+def plan_version(customers: Sequence[int]) -> str:
+    """Версия рейса плана (№93, /day trips[].plan_version): sha1 клиентов рейса по порядку, 12 знаков. Логист переставил
+    или пересобрал рейс и отправил водителям — версия другая: порядок водителя на прежней версии больше не эталон."""
+    return hashlib.sha1(','.join(str(c) for c in customers).encode('ascii')).hexdigest()[:12]
+
+
+def current_reorders(reorders: Sequence[Reorder], trips: Sequence[Sequence[int]]) -> list[Reorder]:
+    """Смены порядка, которые ещё эталон (№93): на текущей версии рейса плана trips (клиенты рейсов машины) или без версии
+    (старый APK); смена на прежней версии (логист после неё пересобрал и отправил рейс) — не действует."""
+    return [r for r in reorders if r.plan_version is None
+            or (r.trip < len(trips) and plan_version(trips[r.trip]) == r.plan_version)]
 
 
 def reorder_trip(ref: Sequence[int], r: Reorder, done: Collection[int]) -> list[int]:
