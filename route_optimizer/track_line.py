@@ -39,10 +39,11 @@
 - моменты вершин привязанной линии — по положению привязанных точек вдоль неё (edge_index, distance_along_edge), между
   ними — по длине; не убывают;
 - местный объезд: между соседними привязанными точками путь по дорогам длиннее LOCAL_RATIO × пути по точкам +
-  LOCAL_EXTRA_M (машина заехала во двор и выехала тем же путём, а Valhalla обвёл её вокруг дома) и — если машина между
-  ними не стояла (шаг не дольше LOCAL_CONT_S) — длиннее, чем она могла проехать за шаг: max(скорость терминала у
-  точек, путь / шаг) × шаг × LOCAL_SPEED + LOCAL_EXTRA_M (серпантин, крутой поворот — дорога, не объезд) — этот
-  отрезок линии — точки трека, остальное — по дорогам;
+  LOCAL_EXTRA_M (машина заехала во двор и выехала тем же путём, а Valhalla обвёл её вокруг дома) и — если машина
+  перед второй точкой не стояла (признак точки куска: перед ней выброшены точки «стоит» или была стоянка) — длиннее,
+  чем она могла проехать за шаг: max(скорость терминала у точек, путь / шаг; без скорости — и медиана путь / шаг по
+  ±LOCAL_SPEED_STEPS соседним шагам) × шаг × LOCAL_SPEED + LOCAL_EXTRA_M (серпантин, крутой поворот, и на редком
+  треке, — дорога, не объезд) — этот отрезок линии — точки трека, остальное — по дорогам;
 - линия не длиннее max_points: Дуглас — Пекер с допуском от 5 м (×2, пока точек больше), точки стоянок остаются всегда.
 """
 from __future__ import annotations
@@ -64,8 +65,9 @@ CHUNK_POINTS = 120          # точек в куске привязки (6–15 
 MATCH_MIN_POINTS = 2        # кусок короче — без привязки (Valhalla нужно ≥ 2 точек)
 LOCAL_RATIO = 1.5           # между соседними привязанными точками путь по дорогам длиннее 1,5 × пути по точкам + 40 м —
 LOCAL_EXTRA_M = 40.0        # объезд квартала вместо разворота на месте: там — точки трека
-LOCAL_CONT_S = 40.0         # …и, если между точками машина не стояла (шаг не дольше 40 с), длиннее, чем она могла
-LOCAL_SPEED = 1.3           # проехать: max(скорость точек, путь / шаг) × шаг × 1,3 + 40 м (серпантин, разворот — нет)
+LOCAL_SPEED = 1.3           # …и, если машина перед второй точкой не стояла, длиннее, чем могла проехать: max(скорость
+                            # точек, путь / шаг) × шаг × 1,3 + 40 м (серпантин, крутой поворот — дорога, не объезд)
+LOCAL_SPEED_STEPS = 2       # без скорости терминала — ещё медиана путь / шаг по ±2 соседним шагам
 STAY_RADIUS_M = 100.0       # середина стоянки в куске езды: дорогу ищем дальше (стоянка — во дворе, на складе)
 STAY_ACC = -1.0             # «погрешность» середины стоянки в точках куска — её признак (у точки трека ≥ 0)
 LEN_RATIO = 1.5             # привязка длиннее 1,5 × пути по точкам + 300 м — неправдоподобна (ушла в объезд)…
@@ -85,8 +87,8 @@ Trace = Callable[[dict[str, Any]], Any]
 class Chunk:
     """Кусок линии: stay — стоянка (две точки в её середине: прибытие и отъезд), иначе — езда (точки после фильтра).
     points — (широта, долгота, момент — секунды эпохи, погрешность, м — у середины стоянки STAY_ACC, скорость
-    терминала, м/с — None, если нет)."""
-    points: tuple[tuple[float, float, float, float, float | None], ...]
+    терминала, м/с — None, если нет, стояла ли машина перед точкой — выброшены точки «стоит» или была стоянка)."""
+    points: tuple[tuple[float, float, float, float, float | None, bool], ...]
     stay: bool = False
 
     @property
@@ -101,6 +103,11 @@ class Chunk:
 
 def _m(a: Sequence[float], b: Sequence[float]) -> float:
     return haversine_km((a[0], a[1]), (b[0], b[1])) * 1000.0
+
+
+def _stood(p: Sequence[Any]) -> bool:
+    """Машина стояла перед точкой куска (выброшены точки «стоит» или была стоянка)."""
+    return len(p) > 5 and bool(p[5])
 
 
 def _spd(p: Sequence[Any]) -> float | None:
@@ -138,9 +145,9 @@ def _despike(run: list[tuple[float, float, float, float, float | None]]) -> list
 
 def _split(run: Sequence[tuple[float, float, float, float, float | None]]) -> list[Chunk]:
     """Участок езды без перерывов → куски привязки (не больше CHUNK_POINTS, соседние делят край)."""
-    parts: list[list[tuple[float, float, float, float, float | None]]] = []
+    parts: list[list[tuple[float, float, float, float, float | None, bool]]] = []
     for f in run:
-        p = (f[0], f[1], f[2], f[3], f[4])
+        p = (f[0], f[1], f[2], f[3], f[4], _stood(f))
         if not parts:
             parts.append([p])
         elif len(parts[-1]) >= CHUNK_POINTS:
@@ -185,7 +192,7 @@ def chunks(pts: Sequence[Fix], stays: Sequence[ac.Stay]) -> list[Chunk]:
         if last is not None and _still(last, p, standing):
             standing = standing or p[4] is None or p[4] < ac.STOP_MS
             return
-        run.append(p)
+        run.append((*p, standing))   # стояла перед ней — признак для местного объезда
         last, standing = p, False
     i = 0
     for arrive, leave, center in spans:
@@ -298,9 +305,15 @@ def _timed(res: Mapping[str, Any], pts: Sequence[Sequence[float]]) -> tuple[list
         path, dt = walk[ib] - walk[ia], pts[ib][2] - pts[ia][2]
         if road <= LOCAL_RATIO * path + LOCAL_EXTRA_M:
             return False
-        if dt > LOCAL_CONT_S:   # между точками машина стояла (точки «стоит» выброшены) — успеть могла бы что угодно
+        if _stood(pts[ib]):   # перед точкой машина стояла (точки «стоит» выброшены) — успеть могла бы что угодно
             return True
-        v = max([path / dt if dt > 0 else 0.0] + [x for x in (_spd(pts[ia]), _spd(pts[ib])) if x is not None])
+        speeds = [x for x in (_spd(pts[ia]), _spd(pts[ib])) if x is not None]
+        if not speeds:   # без скорости терминала — по соседним шагам (один шаг мог быть коротким)
+            steps = [(walk[k + 1] - walk[k]) / (pts[k + 1][2] - pts[k][2])
+                     for k in range(max(0, ia - LOCAL_SPEED_STEPS), min(len(pts) - 1, ib + LOCAL_SPEED_STEPS))
+                     if pts[k + 1][2] > pts[k][2]]
+            speeds = [median(steps)] if steps else []
+        v = max([path / dt if dt > 0 else 0.0] + speeds)
         return road > v * dt * LOCAL_SPEED + LOCAL_EXTRA_M
     for k in range(len(xs) - 1):
         ia, ib = idx[k], idx[k + 1]

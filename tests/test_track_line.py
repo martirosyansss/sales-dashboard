@@ -372,25 +372,51 @@ def test_loop_around_building_replaced_by_in_and_out():
     assert ok and len(line) == 3                                     # за угол по дороге — как привязано
 
 
-def _pair_chunk(a, b, dt, spd):
-    """Кусок из двух точек (как после фильтра: между ними могли быть выброшенные точки «стоит»)."""
+def _pair_chunk(a, b, dt, spd, stood=False):
+    """Кусок из двух точек (как после фильтра; stood — перед второй машина стояла: точки «стоит» выброшены)."""
     t = T0.timestamp()
-    return tl.Chunk(((a[0], a[1], t, 8.0, spd), (b[0], b[1], t + dt, 8.0, spd)))
+    return tl.Chunk(((a[0], a[1], t, 8.0, spd, False), (b[0], b[1], t + dt, 8.0, spd, stood)))
+
+
+def _hairpin(chunk, loop):
+    line, ok = tl.match_chunk(chunk, lambda body: fake_response(chunk.raw(), loop), TRIES)
+    assert ok and all(x[2] <= y[2] for x, y in zip(line, line[1:]))
+    return any(tl._m(v, loop[1]) < 1 for v in line)
 
 
 def test_hairpin_at_speed_is_road_not_detour():
-    """Серпантин (перевал к Севану): 15 м/с, шаг 15 с — между точками 50 м по прямой, 225 м по дороге. Машина это
-    проехала за шаг (15 × 15 × 1,3 + 40 м) — линия по дороге, не хорда. Тот же разворот во дворе на 2 м/с или после
-    стоянки между точками (шаг дольше LOCAL_CONT_S) — объезд: хорда по точкам трека."""
+    """Серпантин (перевал к Севану): 15 м/с, шаг 15 с — 50 м по прямой, ~220 м по дороге; редкий трек — шаг 60 с, 300 м
+    по прямой, 580 м по дороге. Машина это проехала за шаг (скорость × шаг × 1,3 + 40 м) — линия по дороге, не хорда.
+    Тот же разворот во дворе на 2 м/с, без скорости или после стоянки перед второй точкой (шаг 160 с) — объезд:
+    хорда по точкам трека."""
     a = A
     b = east(a, 50.0)
     loop = [a, north(a, 85.0), north(b, 85.0), b]                      # 85 + 50 + 85 ≈ 220 м по дороге
-    for dt, spd, spliced in ((15, 15.0, False), (15, 2.0, True), (15, None, True), (160, 15.0, True)):
-        chunk = _pair_chunk(a, b, dt, spd)
-        line, ok = tl.match_chunk(chunk, lambda body: fake_response(chunk.raw(), loop), TRIES)
-        hairpin = any(tl._m(v, loop[1]) < 1 for v in line)
-        assert ok and hairpin is not spliced, (dt, spd)
-        assert all(x[2] <= y[2] for x, y in zip(line, line[1:]))
+    for dt, spd, stood, spliced in ((15, 15.0, False, False), (15, 2.0, False, True), (15, None, False, True),
+                                    (160, 15.0, True, True)):
+        assert _hairpin(_pair_chunk(a, b, dt, spd, stood), loop) is not spliced, (dt, spd, stood)
+    far = east(a, 300.0)
+    wide = [a, north(a, 140.0), north(far, 140.0), far]                # 580 м по дороге, шаг 60 с при 15 м/с
+    assert _hairpin(_pair_chunk(a, far, 60, 15.0), wide) is True
+    # без скорости терминала: скорость — медиана соседних шагов (по 900 м за 60 с), а не один шаг 300 м
+    pts = [east(a, -1800.0), east(a, -900.0), a, far, east(far, 900.0), east(far, 1800.0)]
+    t = T0.timestamp()
+    chunk = tl.Chunk(tuple((q[0], q[1], t + 60 * i, 8.0, None, False) for i, q in enumerate(pts)))
+    shape = pts[:3] + wide[1:] + pts[4:]
+    line, ok = tl.match_chunk(chunk, lambda body: fake_response(chunk.raw(), shape), TRIES)
+    assert ok and any(tl._m(v, wide[1]) < 1 for v in line)
+
+
+def test_stood_flag_marks_point_after_dropped_standing():
+    """Признак «стояла перед точкой» — у первой оставленной точки после выброшенных точек «стоит» и после стоянки."""
+    tr = Trip().park(DEPOT, 6).drive(A)
+    stand_to = tr.t + timedelta(minutes=3)
+    tr.park(A, 3, jitter_m=10.0, spd=0.3, step_s=15).drive(B)
+    _, actual, parts = _line(tr.fixes)
+    move = [c for c in parts if not c.stay][0]
+    flagged = [p for p in move.points if tl._stood(p)]
+    assert [round(p[2]) for p in flagged] == [round(move.points[1][2]),
+                                              round(min(p[2] for p in move.points if p[2] > stand_to.timestamp()))]
 
 
 def test_stay_center_marker_is_not_a_real_zero_accuracy_fix():
@@ -414,8 +440,8 @@ def test_driving_piece_starts_and_ends_at_stay_centers():
     depot, site = actual.stays
     move = [c for c in parts if not c.stay]
     assert [c.stay for c in parts] == [True, False, True] and len(move) == 1
-    assert move[0].points[0] == (depot.center[0], depot.center[1], depot.leave.timestamp(), tl.STAY_ACC, None)
-    assert move[0].points[-1] == (site.center[0], site.center[1], site.arrive.timestamp(), tl.STAY_ACC, None)
+    assert move[0].points[0] == (depot.center[0], depot.center[1], depot.leave.timestamp(), tl.STAY_ACC, None, False)
+    assert move[0].points[-1] == (site.center[0], site.center[1], site.arrive.timestamp(), tl.STAY_ACC, None, False)
     body = tl.match_body(move[0], 'truck', None)
     assert body['shape'][0]['radius'] == tl.STAY_RADIUS_M and body['shape'][-1]['radius'] == tl.STAY_RADIUS_M
     assert all('radius' not in x for x in body['shape'][1:-1]) and body['trace_options']['gps_accuracy'] == 8.0
