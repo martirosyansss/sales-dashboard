@@ -150,8 +150,28 @@ def test_erp_down_store_still_listed_by_id_and_retry_is_throttled(client, monkey
     assert _listed(client)[OFF_PLAN]['name'] == 'ՍԱՍ ս/մ'
 
 
-def test_store_missing_in_erp_listed_by_id(client):
+def test_store_missing_in_erp_listed_by_id_erp_read_once(client):
     state = _with_conditions(client)
-    state.customer_ref_loader = lambda query, ids: []
+    calls = []
+    state.customer_ref_loader = lambda query, ids: calls.append(list(ids)) or []
     row = _listed(client)[OFF_PLAN]
     assert (row['code'], row['name']) == (str(OFF_PLAN), '')
+    assert _listed(client)[OFF_PLAN]['code'] == str(OFF_PLAN) and _row(client, OFF_PLAN)[0]['code'] == str(OFF_PLAN)
+    assert calls == [[OFF_PLAN]]
+
+
+def test_erp_down_conditions_still_removable_without_erp(client):
+    """ERP недоступен: магазин со своими условиями виден по id, условия снимаются — сохранение ERP не читает."""
+    state = _with_conditions(client)
+    calls = []
+
+    def down(query, ids):
+        calls.append(list(ids))
+        raise ErpError('Не удалось подключиться к ERP')
+
+    state.customer_ref_loader = down
+    r = client.post('/api/routes/customer-vehicles',
+                    json={'customer_id': OFF_PLAN, 'access': None, 'window': None, 'unload_min': None})
+    assert r.status_code == 200, r.get_json()
+    assert calls == []
+    assert OFF_PLAN not in _listed(client)

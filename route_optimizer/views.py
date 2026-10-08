@@ -3462,7 +3462,8 @@ def _known_customers(state: RoutesState, snap: Snapshot | None,
                 logger.warning('[Routes] Названия магазинов с условиями из ERP не прочитаны', exc_info=True)
                 with state.dispatch_lock:
                     state.customer_names_retry = time.monotonic() + CUSTOMER_NAMES_RETRY_S
-            else:
+            else:   # клиента нет в ERP — тоже запоминается (код = id): иначе ERP читался бы на каждом запросе
+                found.update({cid: (str(cid), '') for cid in missing if cid not in found})
                 with state.dispatch_lock:
                     state.customer_names.update(found)
                 names.update(found)
@@ -3495,7 +3496,8 @@ def api_customer_vehicles() -> Any:
         return _bad_request({'customer_id': 'Սպասվում էր հաճախորդի կոդ'})
     state = _state()
     snap, _ = state.snapshots.get(allow_stale=True)
-    if cid not in _known_customers(state, snap, state.store.load()):
+    # свои условия уже есть — магазин известен без ERP (названия сохранению не нужны)
+    if cid not in _configured_customers(state.store.load()) and cid not in _known_customers(state, snap):
         return _bad_request({'customer_id': 'Խանութը չի գտնվել — թարմացրեք էջը'})
     if 'access' not in payload:     # только время у магазина
         minutes = None
