@@ -2674,8 +2674,10 @@ def _capture_prediction(dd, draft):
     # (обучение загрузки и обеда — learning.plan_trips, «время работы» — learning._plan_minutes)
     def back(tr: Mapping[str, Any]) -> str:
         return tr['buffer']['start'] if tr.get('buffer') else tr['return']
+    # kg — вес плана машины (план дня в Telegram, №91)
     draft.prediction = {'created_at': now.isoformat(), 'prospective': now < start,
-        'trucks': {t['car_code']: {**{key: t.get(key) for key in ('km', 'minutes', 'liters', 'loading_minutes', 'wear_amd')},
+        'trucks': {t['car_code']: {**{key: t.get(key) for key in ('km', 'minutes', 'liters', 'loading_minutes', 'wear_amd',
+                                                                   'kg')},
                                    'depart': t['trips'][0]['depart'] if t['trips'] else None,
                                    'return': back(t['trips'][-1]) if t['trips'] else t.get('return'),
                                    'trips': [{'loading_start': tr['loading_start'], 'depart': tr['depart'],

@@ -4,8 +4,9 @@
 Правило (live.late_forecast): магазин с окном приёма — прибытие позже конца окна (виды окна — store.CustomerWindow);
 без окна — позже плана не меньше чем на late_nowin_min (30); машина — возвращение на склад после всех рейсов позже конца
 рабочего дня (принята переработка — её предела). Только незакрытые точки, только сегодня, только от свежего положения.
-Показ: карточка машины и журнал тревог (вид late), «Развоз» (/api/routes/dispatch/progress), Telegram (live_alerts:
-одно сообщение на магазин в день, снова — при ухудшении на repeat_min). Настройка late_nowin_min — 5…240, целое.
+Показ: карточка машины и журнал тревог (вид late), «Развоз» (/api/routes/dispatch/progress), Telegram (бот №91,
+live_alerts + tg_bot: одно сообщение на машину в день, строка на магазин, со звуком — при ухудшении на шаг). Настройка
+late_nowin_min — 5…240, целое.
 
 Синтетические данные, без ERP; базы — временные. Запуск из корня проекта:  python -m pytest tests/test_route_late_forecast.py -q
 """
@@ -26,7 +27,7 @@ from route_optimizer import store as st  # noqa: E402
 from route_optimizer import views  # noqa: E402
 from test_route_live import (A, API_NOW, B, C, DAY, DEPOT, LAN, T0, TRUCK, Track, _session_as, app_v2,  # noqa: E402,F401
                              client, facts, live_app, stop)
-from test_route_live_alerts import NOW, Sender, card, make  # noqa: E402
+from test_route_live_alerts import NOW, card, make  # noqa: E402
 
 Y = ac.YEREVAN
 MIDNIGHT = datetime(DAY.year, DAY.month, DAY.day, tzinfo=Y)
@@ -314,76 +315,93 @@ def late_alert(target, over, kind='plan', name=None, eta='2026-10-06T11:40:00+04
             'eta': eta, 'limit': limit, 'over_min': over}
 
 
+NO_ESCALATION = {'tg_escalate_min': 0}   # здесь — правила «не успеет»; эскалация — tests/test_route_tg_bot.py
+
+
 def test_late_message_groups_stores_of_a_car_once_per_day(tmp_path):
+    """Бот №91: одно сообщение на машину в день; «со звуком» — новое сообщение или ответ на него (sendMessage),
+    остальное — беззвучные правки того же сообщения."""
     a = late_alert('c7', 12, 'window', 'Խանութ 7', '2026-10-06T11:12:00+04:00')
     b = late_alert('c8', 40, 'plan', 'Խանութ 8')
     r = late_alert('return', 25, 'return', eta='2026-10-06T18:25:00+04:00', limit='2026-10-06T18:00:00+04:00')
-    alerter, sender, box = make(tmp_path, {'CAR1': card(a, b, r)})
-    assert alerter.tick() == 1
-    assert sender.sent[0].splitlines() == [
-        'Չի հասցնում ժամանակին (կանխատեսում)', 'Մեքենա՝ CAR1 · JAC', 'Վարորդ՝ Արամ',
+    h = make(tmp_path, {'CAR1': card(a, b, r)}, settings=NO_ESCALATION)
+    assert h.tick() == 1
+    first = h.api.sent()[0]
+    assert first['text'].splitlines() == [
+        '🔴 <b>Չի հասցնում ժամանակին (կանխատեսում)</b>', 'Մեքենա՝ <b>CAR1</b> · JAC', 'Վարորդ՝ Արամ',
         'Խանութ 7 — կուշանա պատուհանից 12 րոպեով (ժամանում ≈ 11:12, պատուհանը՝ մինչև 11:00)։',
         'Խանութ 8 — կուշանա պլանից 40 րոպեով (ժամանում ≈ 11:40, պլանով՝ 11:00)։',
-        'Չի հասցնում վերադառնալ պահեստ՝ +25 րոպե (վերադարձ ≈ 18:25, աշխատանքային օրը՝ մինչև 18:00)։',
-        'Որտեղ է հիմա՝ https://yandex.ru/maps/?pt=44.5133,40.1812&z=16&l=map', 'Ժամ՝ 11:00']
-    assert alerter.tick() == 0                                       # тот же прогноз — не повторяется
-    # хуже, но меньше чем на repeat_min (30) — молчим; на 30 и больше — снова, только этот магазин
-    box['cards'] = {'CAR1': card({**a, 'over_min': 41}, b, r)}
-    assert alerter.tick() == 0
-    box['cards'] = {'CAR1': card({**a, 'over_min': 42}, b, r)}
-    assert alerter.tick() == 1 and 'Խանութ 7 — կուշանա պատուհանից 42 րոպեով' in sender.sent[1]
-    assert 'Խանութ 8' not in sender.sent[1] and 'պահեստ' not in sender.sent[1]
-    # прогноз улучшился (строки нет) и сразу вернулся — тот же случай, без сообщения (ревью: удержание LATE_CLEAR_MIN)
-    box['cards'] = {'CAR1': card(b, r)}
-    assert alerter.tick() == 0 and alerter.state.sent['CAR1|late|2026-10-06|c7'].get('calm_since')
-    box['cards'] = {'CAR1': card({**a, 'over_min': 42}, b, r)}
-    assert alerter.tick() == 0 and 'calm_since' not in alerter.state.sent['CAR1|late|2026-10-06|c7']
-    # спокойно 16 минут подряд — запись снята; снова «опаздывает» — снова сообщение (ревью L3)
-    box['cards'] = {'CAR1': card(b, r)}
-    alerter.tick()
-    box['now'] = NOW + timedelta(minutes=16)
-    assert alerter.tick() == 0 and not [k for k in alerter.state.sent if k.endswith('|c7')]
-    box['cards'] = {'CAR1': card({**a, 'over_min': 42}, b, r)}
-    assert alerter.tick() == 1 and 'Խանութ 7' in sender.sent[2] and 'Խանութ 8' not in sender.sent[2]
-    # перезапуск — «уже отправлено» в файле
-    again, sender2, _ = make(tmp_path, {'CAR1': card({**a, 'over_min': 42}, b, r)}, now=box['now'])
-    assert again.tick() == 0 and sender2.sent == []
-    # другой день — снова
-    box['now'] = NOW + timedelta(days=1)
-    assert alerter.tick() == 1
+        'Չի հասցնում վերադառնալ պահեստ՝ +25 րոպե (վերադարձ ≈ 18:25, աշխատանքային օրը՝ մինչև 18:00)։', 'Ժամ՝ 11:00']
+    assert first['reply_markup']['inline_keyboard'][0][1]['url'] == 'https://yandex.ru/maps/?pt=44.5133,40.1812&z=16&l=map'
+    mid = h.rec('late:CAR1|2026-10-06').message_id
+    assert h.tick() == 0                                             # тот же прогноз — не повторяется
+    # хуже, но меньше чем на repeat_min (30) — без звука; на 30 и больше — ответ со звуком, только этот магазин
+    h.set(cards={'CAR1': card({**a, 'over_min': 41}, b, r)})
+    h.tick()
+    assert len(h.api.sent()) == 1
+    h.set(cards={'CAR1': card({**a, 'over_min': 42}, b, r)})
+    assert h.tick() == 2                                             # правка + ответ
+    reply = h.api.sent()[1]
+    assert reply['reply_parameters']['message_id'] == mid and 'Խանութ 7 — կուշանա պատուհանից 42 րոպեով' in reply['text']
+    assert 'Խանութ 8' not in reply['text'] and 'պահեստ' not in reply['text']
+    assert 'Խանութ 7 — կուշանա պատուհանից 42 րոպեով' in h.api.text('-100', mid)
+    # прогноз улучшился (строки нет) и сразу вернулся — тот же случай, без звука (ревью: удержание LATE_CLEAR_MIN)
+    h.set(cards={'CAR1': card(b, r)})
+    h.tick()
+    assert h.rec('late:').payload['lines']['c7']['calm'] and len(h.api.sent()) == 2
+    h.set(cards={'CAR1': card({**a, 'over_min': 42}, b, r)})
+    h.tick()
+    assert not h.rec('late:').payload['lines']['c7']['calm'] and len(h.api.sent()) == 2
+    # спокойно 16 минут подряд — строка снята; снова «опаздывает» — снова со звуком (ревью L3)
+    h.set(cards={'CAR1': card(b, r)})
+    h.tick()
+    h.set(now=NOW + timedelta(minutes=16))
+    h.tick()
+    assert 'c7' not in h.rec('late:').payload['lines'] and 'Խանութ 7' not in h.api.text('-100', mid)
+    h.set(cards={'CAR1': card({**a, 'over_min': 42}, b, r)})
+    h.tick()
+    assert len(h.api.sent()) == 3 and 'Խանութ 7' in h.api.texts()[2] and 'Խանութ 8' not in h.api.texts()[2]
+    # перезапуск — записи в базе
+    h.restart()
+    assert h.tick() == 0 and len(h.api.sent()) == 3
+    # другой день — новое сообщение
+    h.set(now=NOW + timedelta(days=1))
+    assert h.tick() == 1 and h.api.sent()[-1]['text'].startswith('🔴') and 'reply_parameters' not in h.api.sent()[-1]
 
 
 def test_late_flapping_at_threshold_is_one_message(tmp_path):
-    """Прогноз у порога: «опаздывает» / нет каждые 10 с в течение 10 минут — одно сообщение; потом спокойно 16 минут
-    подряд — новый случай, снова «опаздывает» — новое сообщение. Нет свежего GPS (строки нет) — так же, как «не опаздывает»."""
+    """Прогноз у порога: «опаздывает» / нет каждые 10 с в течение 10 минут — одно сообщение (и правки не чаще
+    LATE_EDIT_MIN); потом спокойно 16 минут подряд — новый случай, снова «опаздывает» — снова со звуком. Нет свежего
+    GPS (строки нет) — так же, как «не опаздывает»."""
     a = late_alert('c7', 30, name='Խանութ 7')
-    alerter, sender, box = make(tmp_path, {'CAR1': card(a)})
+    h = make(tmp_path, {'CAR1': card(a)})
     for i in range(60):                                              # 10 минут, пересчёт раз в 10 с
-        box['now'] = NOW + timedelta(seconds=10 * i)
-        box['cards'] = {'CAR1': card(a) if i % 2 == 0 else card()}
-        alerter.tick()
-    assert len(sender.sent) == 1
-    box['cards'] = {'CAR1': card()}
-    start = box['now'] + timedelta(seconds=10)
+        h.set(now=NOW + timedelta(seconds=10 * i), cards={'CAR1': card(a) if i % 2 == 0 else card()})
+        h.tick()
+    assert len(h.api.sent()) == 1 and len(h.api.of('editMessageText')) <= 2
+    h.set(cards={'CAR1': card()})
+    start = h.box['now'] + timedelta(seconds=10)
     for i in range(0, 16 * 60 + 1, 10):                              # 16 минут без опоздания
-        box['now'] = start + timedelta(seconds=i)
-        alerter.tick()
-    box['cards'] = {'CAR1': card(a)}
-    box['now'] += timedelta(seconds=10)
-    assert alerter.tick() == 1 and len(sender.sent) == 2
+        h.set(now=start + timedelta(seconds=i))
+        h.tick()
+    assert h.rec('late:').phase == 'ended'                           # все строки снялись — ✅
+    h.set(cards={'CAR1': card(a)}, now=h.box['now'] + timedelta(seconds=10))
+    assert h.tick() == 2 and len(h.api.sent()) == 2                  # снова: правка (снят ✅) + ответ со звуком
 
 
 def test_late_repeat_step_at_least_15_minutes(tmp_path):
-    """Повтор при ухудшении — на max(live_repeat_min, 15): при повторе 5 мин прогноз, скачущий на минуты, не шлёт
-    сообщение каждые 5 минут."""
+    """Повтор при ухудшении — на max(live_repeat_min, 15): при повторе 5 мин прогноз, скачущий на минуты, не звенит
+    каждые 5 минут."""
     a = late_alert('c7', 35, name='Խանութ 7')
-    alerter, sender, box = make(tmp_path, {'CAR1': card(a)}, rules=live.Rules(repeat_min=5.0))
-    assert alerter.tick() == 1
-    box['cards'] = {'CAR1': card({**a, 'over_min': 49})}
-    assert alerter.tick() == 0                                       # +14 < 15
-    box['cards'] = {'CAR1': card({**a, 'over_min': 50})}
-    assert alerter.tick() == 1                                       # +15
-    assert alerter.state.sent['CAR1|late|2026-10-06|c7']['over'] == 50
+    h = make(tmp_path, {'CAR1': card(a)}, settings={'live_repeat_min': 5})
+    assert h.tick() == 1
+    h.set(cards={'CAR1': card({**a, 'over_min': 49})})
+    h.tick()
+    assert len(h.api.sent()) == 1                                    # +14 < 15
+    h.set(cards={'CAR1': card({**a, 'over_min': 50})})
+    h.tick()
+    assert len(h.api.sent()) == 2                                    # +15
+    assert h.rec('late:').payload['lines']['c7']['sent'] == 50
 
 
 def test_store_plan_eta_of_its_own_trip():
@@ -397,28 +415,28 @@ def test_store_plan_eta_of_its_own_trip():
 def test_late_quiet_hours_toggle_and_other_kinds_unaffected(tmp_path):
     a = late_alert('c7', 35, name='Խանութ 7')
     quiet = NOW.replace(hour=21)
-    alerter, sender, box = make(tmp_path, {'CAR1': card(a)}, now=quiet)
-    assert alerter.tick() == 0 and not [k for k in alerter.state.sent if '|late|' in k]   # тихие часы: не отмечено
-    box['now'] = NOW.replace(hour=21) + timedelta(hours=11, minutes=30)                   # 08:30 следующего дня
-    assert alerter.tick() == 1                                       # прогноз ещё в силе — уходит после тихих часов
+    h = make(tmp_path, {'CAR1': card(a)}, now=quiet)
+    assert h.tick() == 0 and not [k for k in h.bot.records if k.startswith('late:')]   # тихие часы: не отмечено
+    h.set(now=quiet + timedelta(hours=11, minutes=30))                                  # 08:30 следующего дня
+    assert h.tick() == 1                                             # прогноз ещё в силе — уходит после тихих часов
     # вид выключен в настройках — не шлём
-    off, sender_off, _ = make(tmp_path, {'CAR1': card(a)}, rules=live.Rules(alert_kinds=('speed',)), name='off.json')
+    off = make(tmp_path, {'CAR1': card(a)}, settings={'live_alert_kinds': ['speed']}, db='off.db')
     assert off.tick() == 0
     # «не успеет» не занимает окно повтора других видов машины и само им не ограничено
     sp = {'kind': 'speed', 'from': NOW.isoformat(), 'to': None, 'active': True, 'max_kmh': 100, 'lat': 1.0, 'lon': 1.0}
-    both, sender_b, box_b = make(tmp_path, {'CAR1': card(a, sp)}, name='both.json')
-    assert both.tick() == 2 and 'CAR1|late' not in both.state.last
-    box_b['cards'] = {'CAR1': card(a, late_alert('c9', 31, name='Խանութ 9'), sp)}
-    assert both.tick() == 1 and 'Խանութ 9' in sender_b.sent[-1]
+    both = make(tmp_path, {'CAR1': card(a, sp)}, db='both.db')
+    assert both.tick() == 2 and la._last_starts(both.bot.records).keys() == {'CAR1|speed'}
+    both.set(cards={'CAR1': card(a, late_alert('c9', 31, name='Խանութ 9'), sp)})
+    assert both.tick() == 2 and 'Խանութ 9' in both.api.texts()[-1]   # правка + ответ со звуком
 
 
 def test_late_send_failure_not_recorded_and_retried(tmp_path):
-    sender = Sender()
-    sender.fail = True
-    alerter, _, _ = make(tmp_path, {'CAR1': card(late_alert('c7', 35, name='Խանութ 7'))}, sender=sender)
-    assert alerter.tick(lambda: 0.0) == 0 and not [k for k in alerter.state.sent if '|late|' in k]
-    sender.fail = False
-    assert alerter.tick(lambda: 1e9) == 1 and len(sender.sent) == 1
+    from tg_fake import err
+    h = make(tmp_path, {'CAR1': card(late_alert('c7', 35, name='Խանութ 7'))})
+    h.api.fail['sendMessage'] = [err(502, 'Bad Gateway')]
+    assert h.tick() == 0 and not [k for k in h.bot.records if k.startswith('late:')]
+    h.clock[0] += 1e9
+    assert h.tick() == 1 and len(h.api.sent()) == 2                  # первая попытка — сбой, вторая дошла
 
 
 def test_real_cards_flow_into_late_message(live_app):
@@ -426,11 +444,11 @@ def test_real_cards_flow_into_late_message(live_app):
     state.store.save_customer_window(8, st.CustomerWindow('before', 600), 'qa')
     _refresh(state)
     ctx, now, _, cards = views._live_cards(state, API_NOW.date())
-    msgs, _ = la.plan_messages(cards, ctx.rules, now, la.AlertState('nonexistent-dir/none.json'))
-    m = next(m for m in msgs if m.kind == 'late')
-    assert m.text.startswith('Չի հասցնում ժամանակին (կանխատեսում)\nՄեքենա՝ CAR1')
-    assert 'Խանութ 8 — կուշանա պատուհանից' in m.text and 'պատուհանը՝ մինչև 10:00' in m.text
-    assert [k for k, _ in m.late] == ['CAR1|late|2026-10-03|c8']
+    m = next(m for m in la.plan(cards, ctx.rules, la.TgRules(), now, {}).actions if isinstance(m, la.Late))
+    assert m.op == 'send' and m.level == 'critical'
+    assert m.body.startswith('🔴 <b>Չի հասցնում ժամանակին (կանխատեսում)</b>\nՄեքենա՝ <b>CAR1</b>')
+    assert 'Խանութ 8 — կուշանա պատուհանից' in m.body and 'պատուհանը՝ մինչև 10:00' in m.body
+    assert m.key == 'late:CAR1|2026-10-03' and list(m.lines) == ['c8']
 
 
 # ============================== настройки ==============================
