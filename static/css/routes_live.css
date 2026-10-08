@@ -75,6 +75,9 @@ button.lv-prob:focus-visible { outline: 2px solid var(--rt-acc); outline-offset:
 .lv-prob.is-pending { background: transparent; border-style: dashed; color: var(--rt-fg-dim); }
 /* «Տեսավ՝ кто HH:MM» — отмеченная на сервере (общая «Տեսա») */
 .lv-seen-by { display: block; margin-top: 2px; font-size: .75rem; color: var(--rt-fg-mute); }
+/* «Տեսա» не сохраняется на сервере (сбои подряд) — одна спокойная строка, не тревога */
+.lv-ack-err { margin: 0 0 8px; font-size: .8125rem; color: var(--rt-warn); }
+.lv-ack-err[hidden] { display: none; }
 .lv-prob.is-none { grid-template-columns: 16px minmax(0, 1fr); color: var(--rt-ok); background: var(--rt-ok-bg); }
 /* строка проблемы с «Տեսա» и «Բացատրել» (администратор): кнопка выбора машины и кнопки рядом */
 .lv-prob-row { display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: stretch; justify-content: flex-end; }

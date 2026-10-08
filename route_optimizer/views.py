@@ -5008,7 +5008,7 @@ def api_live() -> Any:
     ctx, now, _, cards = _live_cards(state, day)
     return jsonify({**_live_head(ctx, day, now),
                     'trucks': [{k: v for k, v in card.items() if k not in ('alerts_log', 'stops_off')} for card in cards.values()],
-                    'acks': state.store.live_acks(day.isoformat())})   # «Տեսա» всех зрителей (схема 28)
+                    'acks': _live_acks_or_none(state, day)})   # «Տեսա» всех зрителей (схема 28)
 
 
 @bp.get('/api/routes/live/truck')
@@ -5028,8 +5028,7 @@ def api_live_truck() -> Any:
     if car not in cards:
         return jsonify({'success': False, 'error': 'Այս մեքենան այս օրը տվյալներ չունի'}), 404
     now = _yerevan_now()
-    return jsonify({**_live_head(ctx, day, now), 'truck': _live_card(ctx, day, now, car, fleet.get(car), True, True),
-                    'acks': [a for a in state.store.live_acks(day.isoformat()) if a['car'] == car]})
+    return jsonify({**_live_head(ctx, day, now), 'truck': _live_card(ctx, day, now, car, fleet.get(car), True, True)})
 
 
 # «Բացատրել» (владелец 08.10): диспетчер объясняет отклонение или нарушение порядка объезда — причина и заметка (схема 26).
@@ -5130,11 +5129,24 @@ def api_live_unexplain() -> Any:
 LIVE_ACK_ROLES = ('admin', 'garage')
 
 
+def _live_acks_or_none(state: RoutesState, day: date) -> list[dict[str, Any]]:
+    """Отметки «Տեսա» дня для ответа карты; не прочитались — пусто и строка в журнале: карта машин из-за них не падает
+    (страница держит свои отметки, lv.ack)."""
+    try:
+        return state.store.live_acks(day.isoformat())
+    except StoreError:
+        logger.exception('[Routes] Карта машин: отметки «Տեսա» не прочитаны — без них')
+        return []
+
+
 @bp.post('/api/routes/live/ack')
 @_api
 def api_live_ack() -> Any:
-    """{date?, items: [{car, key, since}]} — до store.LIVE_ACK_MAX отметок (check_live_acks), date — только сегодня (нет —
-    сегодня). → {success, acks: отметки дня [{car, key, since, user, at}]}: страница сразу показывает «Տեսավ՝ …»."""
+    """{date?, items: [{car, key, since}], refresh?} — до store.LIVE_ACK_MAX отметок (check_live_acks), date — только
+    сегодня (нет — сегодня). refresh: true — страница подтверждает уже отмеченное (дребезг, отметка без since): кто и когда
+    нажал, не меняется (Store.live_ack_put refresh). Машины не из сегодняшнего парка карты (_live_cards) отбрасываются —
+    отметки входа «Гаража» из интернета не раздувают таблицу. → {success, acks: отметки дня [{car, key, since, user, at,
+    seen_at}]}: страница сразу показывает «Տեսավ՝ …»."""
     if g.get('user_role') not in LIVE_ACK_ROLES:
         logger.warning('[Routes] «Տեսա» карты машин: отказ роли %r', g.get('user_role'))
         return jsonify({'success': False, 'error': 'Մուտքն արգելված է'}), 403
@@ -5151,12 +5163,19 @@ def api_live_ack() -> Any:
     items, bad = check_live_acks(payload.get('items'))
     if bad:
         errors['items'] = bad
+    refresh = payload.get('refresh', False)
+    if not isinstance(refresh, bool):
+        errors['refresh'] = 'refresh՝ true / false'
     if errors:
         return _bad_request(errors)
     state = _state()
+    fleet = _live_cards(state, today)[3] if state.live_facts is not None else {}
+    items = [x for x in items if x[0] in fleet]
     user = session.get('username')
-    state.store.live_ack_put(today.isoformat(), items, user, now.isoformat(timespec='seconds'))
-    logger.info('[Routes] Карта машин: «Տեսա» %s — %s', user, ', '.join(f'{c} {k}' for c, k, _ in items))
+    if items:
+        state.store.live_ack_put(today.isoformat(), items, user, now.isoformat(timespec='seconds'), refresh)
+        logger.info('[Routes] Карта машин: «Տեսա»%s %s — %s', ' (подтверждение)' if refresh else '', user,
+                    ', '.join(f'{c} {k}' for c, k, _ in items))
     return jsonify({'success': True, 'acks': state.store.live_acks(today.isoformat())})
 
 

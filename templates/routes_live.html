@@ -65,6 +65,8 @@
              на телефоне — первым, над картой -->
         <section class="lv-probs" id="lvProbs" aria-labelledby="lvProbsTitle" hidden>
             <h2 class="lv-probs-title" id="lvProbsTitle">Խնդիրներ հիմա</h2>
+            <!-- «Տեսա» не уходит на сервер (3 сбоя подряд) — одна строка, страница работает дальше (routes_live.js postAcks) -->
+            <p class="lv-ack-err" id="lvAckErr" role="status" hidden>«Տեսա»-ն չի պահպանվում սերվերում՝ նշումները տեսանելի են միայն այս սարքում։</p>
             <ul class="lv-prob-list" id="lvProbList"></ul>
         </section>
 

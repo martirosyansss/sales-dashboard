@@ -245,12 +245,15 @@ _TG_MESSAGE_INDEX = 'CREATE INDEX IF NOT EXISTS tg_message_sent ON tg_message(se
 _TG_KV_TABLE = 'CREATE TABLE IF NOT EXISTS tg_kv(key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL)'
 TG_MESSAGE_FIELDS = ('id', 'key', 'kind', 'car', 'level', 'chat', 'message_id', 'thread_id', 'phase', 'sent_at',
                      'acked_by', 'acked_name', 'acked_at', 'resolved_at', 'escalated_at', 'payload')
+
 # Схема 28 (владелец 08.10, «fix all» тревог карты): «Տեսա» общая для всех зрителей (ПК диспетчера и телефон владельца) —
 # строка на (день, машина, вид проблемы): since — начало идущей тревоги вида (alerts.since карты; у «не успеет» — NULL),
-# кто и когда отметил. Новая отметка того же вида заменяет прежнюю (случай — по since). Чистка не нужна: строки дня крошечные.
+# кто и когда нажал «Տեսա» (user, at), seen_at — последнее подтверждение страницей (подтверждение — refresh: меняет since и
+# seen_at, но не кто и когда). Новая отметка того же вида заменяет прежнюю (случай — по since). Чистка не нужна: строки дня
+# крошечные.
 _LIVE_ACK_TABLE = (
     "CREATE TABLE IF NOT EXISTS live_ack(day TEXT NOT NULL, car TEXT NOT NULL, key TEXT NOT NULL, since TEXT, "
-    "user TEXT, at TEXT NOT NULL, PRIMARY KEY (day, car, key))")
+    "user TEXT, at TEXT NOT NULL, seen_at TEXT NOT NULL, PRIMARY KEY (day, car, key))")
 
 _MEASUREMENT_TABLE = (
     'CREATE TABLE IF NOT EXISTS route_measurement(day TEXT NOT NULL, car_code TEXT NOT NULL, '
@@ -2160,6 +2163,7 @@ class Store:
             if version < SCHEMA_VERSION:
                 Store._migrate(conn)
             Store._live_explain_stops(conn)   # и после миграции: база 26 первой версии ветки могла прийти без stops
+            Store._live_ack_table(conn)
             return
         if tables:
             raise StoreError('Ֆայլը երթուղիների բազա չէ (կան օտար աղյուսակներ)')
@@ -2186,6 +2190,27 @@ class Store:
         try:
             if 'stops' not in {r[1] for r in conn.execute('PRAGMA table_info(live_explain)')}:
                 conn.execute("ALTER TABLE live_explain ADD COLUMN stops TEXT NOT NULL DEFAULT '[]'")
+            conn.execute('COMMIT')
+        except BaseException:
+            conn.execute('ROLLBACK')
+            raise
+
+    @staticmethod
+    def _live_ack_table(conn: sqlite3.Connection) -> None:
+        """Таблица «Տեսա» карты (схема 28) есть и с seen_at — при каждом открытии, как _live_explain_stops: база, у которой
+        номер схемы уже 28, а таблицы нет (перенумерация 27 → 28 при слиянии с Telegram-ботом) или она первой версии ветки
+        (без seen_at), карту машин не роняет."""
+        cols = {r[1] for r in conn.execute('PRAGMA table_info(live_ack)')}
+        if 'seen_at' in cols:
+            return
+        conn.execute('BEGIN IMMEDIATE')
+        try:
+            cols = {r[1] for r in conn.execute('PRAGMA table_info(live_ack)')}
+            if not cols:
+                conn.execute(_LIVE_ACK_TABLE)
+            elif 'seen_at' not in cols:
+                conn.execute("ALTER TABLE live_ack ADD COLUMN seen_at TEXT NOT NULL DEFAULT ''")
+                conn.execute('UPDATE live_ack SET seen_at = at')
             conn.execute('COMMIT')
         except BaseException:
             conn.execute('ROLLBACK')
@@ -2902,22 +2927,28 @@ class Store:
     # --- «Տեսա» карты машин (схема 28, владелец 08.10) ---
 
     def live_acks(self, day: str) -> list[dict[str, Any]]:
-        """Отметки «Տեսա» дня YYYY-MM-DD: [{car, key, since, user, at}] по машине и виду."""
+        """Отметки «Տեսա» дня YYYY-MM-DD: [{car, key, since, user, at, seen_at}] по машине и виду."""
         rows = self._read(lambda conn: conn.execute(
-            'SELECT car, key, since, user, at FROM live_ack WHERE day = ? ORDER BY car, key', (day,)).fetchall())
-        return [{'car': car, 'key': key, 'since': since, 'user': user, 'at': at} for car, key, since, user, at in rows]
+            'SELECT car, key, since, user, at, seen_at FROM live_ack WHERE day = ? ORDER BY car, key', (day,)).fetchall())
+        return [{'car': car, 'key': key, 'since': since, 'user': user, 'at': at, 'seen_at': seen or at}
+                for car, key, since, user, at, seen in rows]
 
-    def live_ack_put(self, day: str, items: Sequence[tuple[str, str, str | None]], user: str | None, at: str) -> None:
+    def live_ack_put(self, day: str, items: Sequence[tuple[str, str, str | None]], user: str | None, at: str,
+                     refresh: bool = False) -> None:
         """«Տեսա» (check_live_acks) одной транзакцией: строка (день, машина, вид) заменяется — случай, кто, когда.
+        refresh — подтверждение страницей уже отмеченного (дребезг сдвинул since, отметка без since держится): у
+        имеющейся строки меняются только since и seen_at — кто и когда нажал, остаётся; строки нет — пишется как нажатие.
         Неверные данные — ValueError (API проверяет их раньше и отвечает 400)."""
         listed, error = check_live_acks([{'car': c, 'key': k, 'since': s} for c, k, s in items])
         if error or _iso_day(day) is None or _aware_moment(at) is None:
             raise ValueError('отметки «Տեսա»: день YYYY-MM-DD, at — ISO с поясом, ' + (error or 'данные верны'))
+        update = 'since = excluded.since, seen_at = excluded.seen_at' + (
+            '' if refresh else ', user = excluded.user, at = excluded.at')
 
         def write(conn: sqlite3.Connection) -> None:
-            conn.executemany('INSERT INTO live_ack(day, car, key, since, user, at) VALUES(?, ?, ?, ?, ?, ?) '
-                             'ON CONFLICT(day, car, key) DO UPDATE SET since = excluded.since, user = excluded.user, '
-                             'at = excluded.at', [(day, c, k, s, user, at) for c, k, s in listed])
+            conn.executemany('INSERT INTO live_ack(day, car, key, since, user, at, seen_at) VALUES(?, ?, ?, ?, ?, ?, ?) '
+                             f'ON CONFLICT(day, car, key) DO UPDATE SET {update}',
+                             [(day, c, k, s, user, at, at) for c, k, s in listed])
         self._transaction(write, 'не удалось сохранить «Տեսա»')
 
     def driver_names(self, since: str = '') -> list[str]:
