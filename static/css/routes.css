@@ -119,7 +119,7 @@
    ------------------------------------------------------------------------ */
 .rt-shell {
     --rt-secnav-w: 244px;
-    --rt-secnav-top: 80px;   /* под закреплённой шапкой дашборда; точное значение ставит routes_side.js */
+    --rt-secnav-top: 70px;   /* под закреплённой шапкой дашборда (+12 px); точное значение ставит routes_side.js */
     display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 20px; align-items: start;
 }
 .rt-shell-main { min-width: 0; }
@@ -128,25 +128,27 @@
 .rt-page.rt-secnav-bar::before, .rt-page.rt-secnav::before { content: none; }   /* фон рисует сама страница */
 .rt-page.rt-secnav {
     position: sticky; top: var(--rt-secnav-top); z-index: 5;
-    width: var(--rt-secnav-w); height: calc(100vh - var(--rt-secnav-top) - 16px); min-height: 0;
-    display: flex; flex-direction: column; padding: 12px 10px 10px;
+    width: var(--rt-secnav-w); height: calc(100vh - var(--rt-secnav-top) - 12px); min-height: 0;
+    display: flex; flex-direction: column; padding: 8px 10px;
     background: var(--rt-panel); border: 1px solid var(--rt-line); border-radius: var(--rt-radius); box-shadow: var(--rt-shadow);
     overflow: hidden;
     transition: width .2s ease;
 }
-.rt-secnav-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 36px; padding: 0 4px 0 12px; }
+/* шапка меню: «Երթուղիներ» и справа кнопка свернуть (на узком экране — закрыть) */
+.rt-secnav-head { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 36px; padding: 0 0 0 12px; }
 .rt-secnav-title { display: flex; align-items: center; gap: 12px; min-width: 0; font-size: .9375rem; font-weight: 700; color: var(--rt-fg); white-space: nowrap; }
 .rt-secnav-title > i { width: 20px; text-align: center; color: var(--rt-acc); }
-/* пункты прокручиваются внутри (низкое окно), «Կարգավորումներ» и «Փակել» всегда внизу на виду */
+/* окно ниже ~600 px — пункты прокручиваются внутри, «Կարգավորումներ» всегда внизу на виду (ноутбук 1366×650 — без прокрутки) */
 .rt-secnav-nav { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
-.rt-secnav-scroll { flex: 1 1 auto; min-height: 0; padding-bottom: 12px; overflow: hidden auto; overscroll-behavior: contain; scrollbar-width: thin; }
+.rt-secnav-scroll { flex: 1 1 auto; min-height: 0; padding-bottom: 2px; overflow: hidden auto; overscroll-behavior: contain; scrollbar-width: thin; }
 .rt-secnav-glabel {
-    margin: 14px 12px 5px; font-size: .6875rem; font-weight: 700; line-height: 1.2; letter-spacing: .09em; text-transform: uppercase;
+    margin: 9px 12px 3px; font-size: .6875rem; font-weight: 700; line-height: 1.2; letter-spacing: .09em; text-transform: uppercase;
     color: var(--rt-fg-mute); white-space: nowrap; overflow: hidden;
 }
-.rt-secnav-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.rt-secnav-grp:first-child .rt-secnav-glabel { margin-top: 7px; }
+.rt-secnav-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
 .rt-secnav .rt-secnav-link {
-    position: relative; display: flex; align-items: center; gap: 12px; height: 40px; padding: 0 12px; border-radius: 10px;
+    position: relative; display: flex; align-items: center; gap: 12px; height: 36px; padding: 0 12px; border-radius: 10px;
     color: var(--rt-fg-dim); font-size: .9375rem; font-weight: 500; line-height: 1.2; text-decoration: none; white-space: nowrap;
     transition: background .15s, color .15s;
 }
@@ -157,30 +159,30 @@
 .rt-secnav .rt-secnav-link[aria-current="page"] { background: var(--rt-acc-glow); color: var(--rt-acc); font-weight: 600; }
 .rt-secnav .rt-secnav-link[aria-current="page"] > i { color: var(--rt-acc); }
 .rt-secnav .rt-secnav-link[aria-current="page"]::before {
-    content: ""; position: absolute; left: 0; top: 8px; bottom: 8px; width: 3px; border-radius: 0 3px 3px 0; background: var(--rt-acc);
+    content: ""; position: absolute; left: 0; top: 7px; bottom: 7px; width: 3px; border-radius: 0 3px 3px 0; background: var(--rt-acc);
 }
 /* фокус — внутри пункта: снаружи его обрезала бы прокрутка меню */
 .rt-secnav .rt-secnav-link:focus-visible, .rt-page .rt-secnav-fold:focus-visible, .rt-page .rt-secnav-close:focus-visible, .rt-page .rt-secnav-open:focus-visible {
     outline: 2px solid var(--rt-acc); outline-offset: -2px; border-radius: 10px;
 }
-.rt-secnav-foot { flex: none; padding-top: 10px; border-top: 1px solid var(--rt-line-soft); }
+.rt-secnav-foot { flex: none; padding-top: 6px; border-top: 1px solid var(--rt-line-soft); }
 .rt-secnav-fold, .rt-secnav-close {
-    align-items: center; gap: 12px; border: 0; background: none; color: var(--rt-fg-mute); cursor: pointer;
-    font-family: var(--rt-font); transition: background .15s, color .15s;
+    flex: none; place-items: center; width: 36px; height: 36px; padding: 0; border: 0; border-radius: 10px;
+    background: none; color: var(--rt-fg-mute); cursor: pointer; transition: background .15s, color .15s;
 }
-.rt-secnav-fold { display: flex; flex: none; height: 36px; margin-top: 4px; padding: 0 12px; border-radius: 10px; font-size: .8125rem; font-weight: 500; white-space: nowrap; }
-.rt-secnav-fold > i { width: 20px; text-align: center; transition: transform .2s ease; }
+.rt-secnav-fold { display: grid; }
+.rt-secnav-fold > i { transition: transform .2s ease; }
 .rt-secnav-fold:hover, .rt-secnav-close:hover { background: var(--rt-panel-2); color: var(--rt-fg); }
 
 /* свёрнуто — только иконки; подписи — в подсказках (title) и для экранного диктора */
 @media (min-width: 992px) {
     .rt-shell.is-collapsed { --rt-secnav-w: 64px; }
-    .rt-shell.is-collapsed :is(.rt-secnav-t, .rt-secnav-title-t, .rt-secnav-fold-t) {
+    .rt-shell.is-collapsed :is(.rt-secnav-t, .rt-secnav-title) {
         position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
     }
     .rt-shell.is-collapsed .rt-secnav-head { justify-content: center; padding: 0; }
-    .rt-shell.is-collapsed .rt-secnav-glabel { height: 1px; margin: 12px 8px; color: transparent; background: var(--rt-line-soft); }
-    .rt-shell.is-collapsed :is(.rt-secnav .rt-secnav-link, .rt-secnav-fold, .rt-secnav-title) { justify-content: center; gap: 0; padding: 0; }
+    .rt-shell.is-collapsed .rt-secnav-glabel { height: 1px; margin: 10px 8px; color: transparent; background: var(--rt-line-soft); }
+    .rt-shell.is-collapsed .rt-secnav .rt-secnav-link { justify-content: center; gap: 0; padding: 0; }
     .rt-shell.is-collapsed .rt-secnav-fold > i { transform: rotate(180deg); }
 }
 

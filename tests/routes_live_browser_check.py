@@ -272,6 +272,9 @@ PLAN_HIT = '.leaflet-overlay-pane path.lv-hit.is-plan'
 def line_tips(page, sel, ats, tap=False) -> list[str]:
     """Курсор (или касание) в точках линии sel → тексты подсказки точки (пусто — подсказки нет)."""
     out = []
+    # карта целиком на экране: слева меню раздела «Маршруты» — при 1440 px страница в две колонки, карточка машины под
+    # картой, и работа с карточкой прокручивает страницу вниз
+    page.eval_on_selector('#lvMap', "e => e.scrollIntoView({ block: 'nearest' })")
     for at in ats:
         xy = page.evaluate(POINT_JS, [sel, at])
         if xy is None:

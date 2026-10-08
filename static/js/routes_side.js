@@ -14,7 +14,7 @@
     // меню закреплено под шапкой дашборда: её высота (на узком экране она раскрывается — пересчитать)
     const nav = document.querySelector('.app-nav');
     const navH = () => shell.style.setProperty('--rt-secnav-top',
-        ((nav && getComputedStyle(nav).position === 'sticky' ? Math.ceil(nav.getBoundingClientRect().height) : 0) + 16) + 'px');
+        ((nav && getComputedStyle(nav).position === 'sticky' ? Math.ceil(nav.getBoundingClientRect().height) : 0) + 12) + 'px');
     navH();
     if (nav && typeof window.ResizeObserver !== 'undefined') new ResizeObserver(navH).observe(nav); else window.addEventListener('resize', navH);
 
@@ -22,8 +22,9 @@
     function syncFold() {
         const on = shell.classList.contains('is-collapsed');
         fold.setAttribute('aria-expanded', String(!on));
-        fold.querySelector('.rt-secnav-fold-t').textContent = on ? 'Բացել' : 'Փակել';
-        fold.title = on ? 'Բացել ընտրացանկը' : '';
+        const label = on ? 'Բացել ընտրացանկը' : 'Փակել ընտրացանկը';
+        fold.setAttribute('aria-label', label);
+        fold.title = label;
         links.forEach((a) => { if (on) a.title = a.textContent.trim(); else a.removeAttribute('title'); });
     }
     // карты Leaflet (Развоз, «Մեքենաները առցանց», Ուսուցում…) слушают resize окна — ширина страницы поменялась, перерисовать

@@ -6,9 +6,11 @@
 tests/routes_cost_browser_check.py (настоящие шаблоны, статика и blueprint, поддельная ERP, планы 01.10 и 30.09 — на
 «Развозе» рабочий экран), роль — администратор; всё во временной папке. Порт 8791 на 127.0.0.1.
 
-A 1920 и 1366: на всех 11 страницах меню видно колонкой, текущий пункт — своя страница, кнопки «☰» нет,
+A 1920×1080, 1366×768 и 1366×650 (ноутбук владельца): на всех 11 страницах меню видно колонкой, текущий пункт — своя страница, кнопки «☰» нет,
   горизонтальной прокрутки страницы нет;
-B свернуть (1366, «Ակնարկ»): меню 64 px, подписи — подсказками, после анимации — событие resize (карты Leaflet
+  всё меню без прокрутки внутри, кнопка свернуть (в шапке меню) и «Կարգավորումներ» на экране; на «Մեքենաները առցանց»
+  при 1366 карта ≥ 600 px (три колонки — только когда ширины страницы хватает);
+B свернуть (1366×650, «Ակնարկ»): меню 64 px, подписи — подсказками, после анимации — событие resize (карты Leaflet
   перерисовываются); переход на «Առաքում» — меню сразу свёрнуто (помнится), рабочий экран и карта по ширине окна,
   шапка рабочего экрана помещается; развернуть — снова 244 px; без хранилища (localStorage бросает) страница цела;
 C «Առաքում» 1366 и 1920: рабочий экран виден, карта не уже 600 px и не выходит за окно, до низа окна;
@@ -89,24 +91,36 @@ def main() -> int:
             no_hscroll = lambda pg: pg.evaluate('document.documentElement.scrollWidth <= document.documentElement.clientWidth')  # noqa: E731
             side_w = lambda pg: round(pg.eval_on_selector('#rtSecNav', 'e => e.getBoundingClientRect().width'))  # noqa: E731
             current = lambda pg: pg.get_attribute('#rtSecNav a[aria-current="page"]', 'href')  # noqa: E731
+            # ноутбук владельца ~1366×650: пункты не прокручиваются внутри меню, кнопка свернуть и «Կարգավորումներ» на экране
+            menu_fit = lambda pg: pg.evaluate('''() => {
+                const sc = document.querySelector('.rt-secnav-scroll'), vis = (s) => { const r = document.querySelector(s).getBoundingClientRect();
+                    return r.width > 0 && r.top >= 0 && r.bottom <= innerHeight; };
+                return { fits: sc.scrollHeight <= sc.clientHeight, sh: sc.scrollHeight, ch: sc.clientHeight,
+                         fold: vis('#rtSecNavFold'), foot: vis('.rt-secnav-foot a') }; }''')  # noqa: E731
 
             # A
-            for w, h in ((1920, 1080), (1366, 768)):
+            for w, h in ((1920, 1080), (1366, 768), (1366, 650)):
                 pg = new_page(w, h)
                 for url, _ in PAGES:
                     go(pg, url)
                     path = url.split('?')[0]
                     check(pg.is_visible('#rtSecNav') and not pg.is_visible('#rtSecNavOpen') and current(pg) == path
                           and side_w(pg) == 244 and no_hscroll(pg),
-                          f'A {w} {path}: меню колонкой ({side_w(pg)} px), текущий {current(pg)}, без прокрутки вбок')
-                    if w == 1366 and url in SHOTS:
-                        pg.screenshot(path=str(OUT / f'{SHOTS[url]}-1366-expanded.png'))
+                          f'A {w}×{h} {path}: меню колонкой ({side_w(pg)} px), текущий {current(pg)}, без прокрутки вбок')
+                    fit = menu_fit(pg)
+                    check(fit['fits'] and fit['fold'] and fit['foot'],
+                          f'A {w}×{h} {path}: всё меню без прокрутки внутри, «Փակել» и «Կարգավորումներ» видны {fit}')
+                    if path == '/routes/live' and w < 1600:
+                        mw = round(pg.eval_on_selector('#lvMap', 'e => e.getBoundingClientRect().width'))
+                        check(mw >= 600, f'A {w}×{h} /routes/live: карта {mw} px (две колонки, не 320 px)')
+                    if h == 650 and url in SHOTS:
+                        pg.screenshot(path=str(OUT / f'{SHOTS[url]}-1366x650-expanded.png'))
                     if w == 1920:
                         pg.screenshot(path=str(OUT / f'all-1920-{path.strip("/").replace("/", "-")}.png'))
                 pg.context.close()
 
             # B + C
-            pg = new_page(1366, 768)
+            pg = new_page(1366, 650)
             go(pg, '/routes')
             pg.evaluate('window.__rs = 0; window.addEventListener("resize", () => { window.__rs++; })')
             pg.click('#rtSecNavFold')
@@ -116,12 +130,14 @@ def main() -> int:
                   and pg.evaluate('window.__rs') >= 1 and no_hscroll(pg),
                   f'B свёрнуто: {side_w(pg)} px, подсказки, resize {pg.evaluate("window.__rs")}')
             check(pg.evaluate("localStorage.getItem('rtSecNavCollapsed')") == '1', 'B запомнено в браузере')
-            pg.screenshot(path=str(OUT / 'overview-1366-collapsed.png'))
+            fit = menu_fit(pg)
+            check(fit['fits'] and fit['fold'] and fit['foot'], f'B свёрнуто: кнопка «Բացել» видна, всё без прокрутки {fit}')
+            pg.screenshot(path=str(OUT / 'overview-1366x650-collapsed.png'))
             for url in ('/routes/live', '/routes/dispatch?date=2026-10-01'):
                 go(pg, url)
                 check(side_w(pg) == 64 and 'is-collapsed' in pg.get_attribute('#rtShell', 'class') and no_hscroll(pg),
                       f'B {url}: меню сразу свёрнуто после перехода ({side_w(pg)} px)')
-                pg.screenshot(path=str(OUT / f'{SHOTS[url]}-1366-collapsed.png'))
+                pg.screenshot(path=str(OUT / f'{SHOTS[url]}-1366x650-collapsed.png'))
 
             def ws_ok(tag):
                 pg.wait_for_selector('#dpWs:not([hidden])', timeout=30000)
