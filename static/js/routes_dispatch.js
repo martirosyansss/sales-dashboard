@@ -102,7 +102,7 @@
         mapFitting: false, mapUserMoved: false,   // логист сам двигал или приближал карту — не перевписывать
         mapFocus: null,                     // карта только одной машины {truck} или одного рейса {truck, trip}; null — все
         roadCache: new Map(), roadGen: 0,   // линии рейсов по дорогам: ключ — точки линии; номер отрисовки
-        pickMap: null, pickMarker: null, pickCid: null, dragging: false, undo: null,
+        dragging: false, undo: null,
         addFor: null,                       // окно «Ավելացնել խանութ»: {trip, kg, capacity, list, picked}
         why: null,                          // окно «Ինչու՞» у «×»: {stop, tripId, idx, truck}
         loadSeq: 0,                         // номер последнего запроса дня: ответы на прежние запросы не применяются
@@ -111,7 +111,7 @@
         dragStop: null,                     // №81: магазин, который тянут мышью на другой рейс: {stop, from}
         boardFolded: false,                 // №81: шкала дня свёрнута (как «скрыть таймлайн» у Routific)
         fetchedAt: 0,                       // когда последний раз спрашивали сервер о заказах дня
-        geoMap: null, geoMarker: null, geoStop: null,   // «Փոխել տեղը»: карта диалога и магазин
+        geoMap: null, geoMarker: null, geoStop: null, geoMissing: false,   // «Փոխել տեղը»: карта диалога и магазин; geoMissing — точки ещё не было
         sugMap: null, sugLayer: null, sugSel: null,     // предложения водителей: карта и выбранное (event_id)
         geoChanged: null,                   // день, в котором после сборки меняли точку магазина — подсказать пересборку
         unloadStop: null, unloadInfo: null, unloadSeq: 0,   // «Ժամանակ խանութում»: магазин диалога, его данные с сервера, номер запроса
@@ -536,7 +536,7 @@
     // тогда обновляются только подсказки, а страница — при следующей проверке.
     const interacting = () => {
         const a = document.activeElement;
-        return state.pickCid !== null || state.dragging || !!state.mapDrag || (!!state.stopCard && state.stopCard.isOpen() && wsOn()) || $('dpGeoDlg').open || $('dpUnloadDlg').open || $('dpCondDlg').open || $('dpDriverDlg').open
+        return state.dragging || !!state.mapDrag || (!!state.stopCard && state.stopCard.isOpen() && wsOn()) || $('dpGeoDlg').open || $('dpUnloadDlg').open || $('dpCondDlg').open || $('dpDriverDlg').open
             || $('dpSameDayDlg').open || $('dpAbsentDlg').open || $('dpSendFirstDlg').open || $('dpAddDlg').open || $('dpWhyDlg').open
             || (!!a && $('dpBody').contains(a) && /^(SELECT|INPUT|TEXTAREA)$/.test(a.tagName));
     };
@@ -1246,14 +1246,14 @@
         if (state.stepsOpen.has(id)) state.stepsOpen.delete(id); else state.stepsOpen.add(id);
         renderSteps();
         // карты внутри шага, нарисованные пока он был свёрнут (0×0), — перерисовать по настоящему размеру
-        if (id === 'dpStep2' && state.stepsOpen.has(id)) { if ($('dpNoCoords').open) ensurePickMap(); if ($('dpGeoSug').open) renderGeoSug(); }
+        if (id === 'dpStep2' && state.stepsOpen.has(id)) { if ($('dpGeoSug').open) renderGeoSug(); }
     }
     // Открыть свёрнутый шаг (кнопка внутри него или «тут нужно поправить»)
     function unfoldStep(id) {
         if (!state.data.plan || state.stepsOpen.has(id)) return;
         state.stepsOpen.add(id);
         renderSteps();
-        if (id === 'dpStep2') { if ($('dpNoCoords').open) ensurePickMap(); if ($('dpGeoSug').open) renderGeoSug(); }
+        if (id === 'dpStep2') { if ($('dpGeoSug').open) renderGeoSug(); }
     }
     // Кнопка в подсказке «…в 1-ին քայլ…»: раскрыть шаг и перейти к нему
     function stepButton(id, text) {
@@ -1452,75 +1452,56 @@
     }
 
     // ---------- Магазины без точки ----------
+    // Таблица как «Նախորդ օրերից»; точку ставят в диалоге «Խանութի տեղը» (openGeo) — тот же, что «Փոխել տեղը»
     function renderNoCoords() {
         const list = state.data.stops_no_coords || [];
-        const box = $('dpNoCoords');
-        box.hidden = !list.length;
-        $('dpNoCoordsNote').textContent = list.length ? pl(list.length, 'խանութ') : '';
-        const ul = $('dpPickList');
+        $('dpNoCoords').hidden = !list.length;
+        const kg = list.reduce((t, s) => t + (num(s.kg) || 0), 0);
+        $('dpNoCoordsNote').textContent = list.length ? pl(list.length, 'խանութ') + (kg > 0 ? ' · ' + kgText(kg) : '') : '';
+        const ul = $('dpNoCoordsList');
         ul.textContent = '';
-        if (!list.some(s => s.customer_id === state.pickCid)) resetPick();
-        list.forEach(s => {
-            const li = document.createElement('li');
-            const b = document.createElement('button');
-            b.type = 'button';
-            b.className = 'dp-pickitem';
-            b.setAttribute('aria-pressed', String(s.customer_id === state.pickCid));
-            b.innerHTML = '<b></b><span class="dp-pick-addr"></span><span class="dp-pick-kg"></span>';
-            b.querySelector('b').textContent = s.name || s.code;
-            b.querySelector('.dp-pick-addr').textContent = (s.code ? s.code + ' · ' : '') + (s.address || 'ERP-ում հասցե չկա');
-            b.querySelector('.dp-pick-kg').textContent = kgText(s.kg) + ' · ' + (s.agent_name || s.agent_code || '');
-            b.addEventListener('click', () => choosePick(s));
-            li.appendChild(b);
-            ul.appendChild(li);
-        });
+        list.forEach(s => ul.appendChild(noCoordsRow(s)));
     }
-    function resetPick() {
-        state.pickCid = null;
-        $('dpPickLabel').textContent = 'Նախ ընտրեք խանութը ձախ կողմում';
-        $('dpPickCoord').value = '';
-        $('dpPickCoord').disabled = true;
-        $('dpPickSave').disabled = true;
-        $('dpPickErr').textContent = '';
-        if (state.pickMarker) { state.pickMarker.remove(); state.pickMarker = null; }
-    }
-    function choosePick(s) {
-        state.pickCid = s.customer_id;
-        $('dpPickList').querySelectorAll('.dp-pickitem').forEach((b, i) => b.setAttribute('aria-pressed', String(state.data.stops_no_coords[i].customer_id === s.customer_id)));
-        $('dpPickLabel').textContent = '«' + (s.name || s.code) + '» խանութի կետը՝ սեղմեք քարտեզի վրա կամ տեղադրեք կոորդինատները';
-        $('dpPickCoord').disabled = false;
-        $('dpPickCoord').value = '';
-        $('dpPickSave').disabled = true;
-        $('dpPickErr').textContent = '';
-        ensurePickMap();
-        $('dpPickCoord').focus();
-    }
-    function ensurePickMap() {
-        if (state.pickMap || typeof window.L === 'undefined') {
-            if (state.pickMap) state.pickMap.invalidateSize();
-            return;
+    function noCoordsRow(s) {
+        const li = document.createElement('li');
+        li.className = 'dp-bl-row dp-nc-row';
+        const cell = (cls, ...kids) => { const el = document.createElement('div'); el.className = cls; el.append(...kids); return el; };
+        const span = (text, cls) => { const x = document.createElement('span'); x.textContent = text; if (cls) x.className = cls; return x; };
+        const label = s.name || s.code || ('հաճախորդ ' + s.customer_id);
+        const name = document.createElement('b');
+        name.textContent = label;
+        const addr = span(s.address || 'ERP-ում հասցե չկա', 'dp-nc-addr' + (s.address ? '' : ' is-none'));
+        const main = cell('dp-bl-main', name, span([s.code, s.agent_name || s.agent_code].filter(Boolean).join(' · ')), addr);
+        const kg = document.createElement('b');
+        kg.textContent = s.kg > 0 ? kgText(s.kg) : '—';
+        const qty = cell('dp-bl-num dp-nc-num', kg, span(money(s.revenue)));
+        const act = cell('dp-bl-act');
+        const find = mapSearchUrl(s.address);
+        if (find) {
+            const a = document.createElement('a');
+            a.className = 'rt-btn rt-btn-ghost rt-btn-sm dp-nc-find';
+            a.href = find;
+            a.target = '_blank';
+            a.rel = 'noopener noreferrer';
+            a.innerHTML = '<i class="fas fa-magnifying-glass-location" aria-hidden="true"></i>';
+            a.title = 'Գտնել հասցեն Yandex քարտեզում (նոր ներդիրում)';
+            a.setAttribute('aria-label', 'Գտնել Yandex քարտեզում (նոր ներդիրում) — ' + label);
+            act.append(a);
         }
-        const map = L.map($('dpPickMap'), { zoomSnap: 0.5, scrollWheelZoom: false });
-        RoutesBasemap.add(map);
-        map.setView(state.data.depot ? [state.data.depot.lat, state.data.depot.lon] : YEREVAN, 11);
-        map.on('click focus', () => map.scrollWheelZoom.enable());
-        map.on('mouseout blur', () => map.scrollWheelZoom.disable());
-        map.on('click', (e) => {
-            if (state.pickCid === null) return;
-            setPick(e.latlng.lat, e.latlng.lng);
-        });
-        state.pickMap = map;
-        watchSize($('dpPickMap'), map, () => null);
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'rt-btn rt-btn-primary rt-btn-sm';
+        b.innerHTML = '<i class="fas fa-location-dot" aria-hidden="true"></i><span>Նշել քարտեզում</span>';
+        b.setAttribute('aria-label', 'Նշել քարտեզում — ' + label);
+        b.addEventListener('click', () => openGeo(s, true));
+        act.append(b);
+        li.append(main, qty, act);
+        return li;
     }
-    function setPick(lat, lon) {
-        $('dpPickCoord').value = lat.toFixed(6) + ', ' + lon.toFixed(6);
-        $('dpPickSave').disabled = false;
-        $('dpPickErr').textContent = '';
-        if (state.pickMap) {
-            if (!state.pickMarker) state.pickMarker = L.marker([lat, lon], { draggable: true, keyboard: false }).addTo(state.pickMap)
-                .on('dragend', (ev) => { const p = ev.target.getLatLng(); setPick(p.lat, p.lng); });
-            else state.pickMarker.setLatLng([lat, lon]);
-        }
+    // Поиск адреса на Яндекс Картах: найти дом, скопировать координаты (клик по карте) и вставить в диалог
+    function mapSearchUrl(address) {
+        const q = String(address || '').trim();
+        return q ? 'https://yandex.com/maps/?ll=44.5126%2C40.1811&z=12&text=' + encodeURIComponent(q) : '';   // ll — Ереван (долгота, широта)
     }
     function parseCoord(s) {
         const m = /^\s*(-?\d{1,2}(?:[.,]\d+)?)\s*[,;\s]\s*(-?\d{1,3}(?:[.,]\d+)?)\s*$/.exec(String(s || ''));
@@ -1528,22 +1509,6 @@
         const lat = parseFloat(m[1].replace(',', '.')), lon = parseFloat(m[2].replace(',', '.'));
         if (!(lat >= 38.8 && lat <= 41.4 && lon >= 43.4 && lon <= 46.7)) return null;
         return [lat, lon];
-    }
-    async function savePick() {
-        const p = parseCoord($('dpPickCoord').value);
-        if (!p) { $('dpPickErr').textContent = 'Անհրաժեշտ են լայնություն և երկայնություն Հայաստանում, օրինակ՝ 40.17920, 44.49910'; return; }
-        if (state.pickCid === null || state.busy) return;
-        state.busy = true;
-        $('dpPickSave').disabled = true;
-        try {
-            await api('POST', '/api/routes/geo-override', { customer_id: state.pickCid, lat: p[0], lon: p[1] });
-            toast('Կետը պահպանված է։ Խանութը կարելի է տանել — այն կհայտնվի «Դեռ երթերում չեն» ցուցակում կամ երթերը կազմելիս։');
-            resetPick();
-            await reloadQuiet();
-        } catch (e) {
-            $('dpPickErr').textContent = e.message;
-            $('dpPickSave').disabled = false;
-        } finally { state.busy = false; }
     }
     async function reloadQuiet() {
         const seq = state.loadSeq;
@@ -1576,16 +1541,21 @@
         return map;
     }
 
-    // «Փոխել տեղը»: диалог с картой — перетащить точку, кликнуть или вставить координаты; «авто» — убрать ручную
-    function openGeo(stop) {
+    // «Փոխել տեղը»: диалог с картой — перетащить точку, кликнуть или вставить координаты; «авто» — убрать ручную.
+    // missing — магазин из «Խանութներ, որոնց տեղը քարտեզում չկա» (точки ещё нет)
+    function openGeo(stop, missing) {
         if (state.busy) return;
         state.geoStop = stop;
+        state.geoMissing = !!missing;
         const src = COORD_HY[stop.coord_source];
         const has = num(stop.lat) !== null && num(stop.lon) !== null;
         $('dpGeoTitle').textContent = '«' + (stop.name || stop.code) + '» — խանութի տեղը';
         $('dpGeoLead').textContent = (stop.address ? stop.address + '։ ' : '') + (src ? 'Հիմա՝ ' + src[1] + '։ ' : '')
-            + 'Քաշեք կետը կամ սեղմեք քարտեզի վրա այնտեղ, որտեղ մեքենան բեռնաթափում է, կամ տեղադրեք կոորդինատները։';
+            + (has ? 'Քաշեք կետը կամ սեղմեք' : 'Սեղմեք') + ' քարտեզի վրա այնտեղ, որտեղ մեքենան բեռնաթափում է, կամ տեղադրեք կոորդինատները։';
         $('dpGeoAuto').hidden = stop.coord_source !== 'manual';
+        const find = mapSearchUrl(stop.address);
+        $('dpGeoFind').hidden = !find;
+        if (find) $('dpGeoFind').href = find; else $('dpGeoFind').removeAttribute('href');
         $('dpGeoAuto').disabled = false;
         $('dpGeoErr').textContent = '';
         $('dpGeoCoord').value = has ? stop.lat.toFixed(6) + ', ' + stop.lon.toFixed(6) : '';
@@ -1627,8 +1597,19 @@
         $('dpGeoAuto').disabled = true;
         try {
             await api('POST', '/api/routes/geo-override', { customer_id: stop.customer_id, lat: p ? p[0] : null, lon: p ? p[1] : null });
+            const missing = state.geoMissing;
             $('dpGeoDlg').close();
             state.busy = false;
+            // точки не было: магазин теперь можно везти — без плана войдёт в расчёт, с планом ждёт в «Դեռ երթերում չեն»
+            if (missing) {
+                toast('«' + (stop.name || stop.code) + '»՝ կետը պահպանված է։ ' + (state.data.plan
+                    ? 'Խանութն այժմ «Դեռ երթերում չեն» ցուցակում է։' : 'Խանութը կմտնի երթերի մեջ դրանք կազմելիս։'));
+                await reloadQuiet();
+                // строка ушла из таблицы — фокус на следующий магазин или на заголовок раздела (не на <body>)
+                const next = $('dpNoCoords').hidden ? null : $('dpNoCoordsList').querySelector('button');
+                if (next) next.focus(); else if (!$('dpNoCoords').hidden) $('dpNoCoords').querySelector('summary').focus();
+                return;
+            }
             await geoSaved('«' + (stop.name || stop.code) + '»՝ ' + (auto ? 'կետը նորից ավտոմատ է։' : 'նոր կետը պահպանված է։'), true);
         } catch (e) {
             $('dpGeoErr').textContent = e.message;
@@ -4830,7 +4811,6 @@
         $('dpPrepOpen').setAttribute('aria-expanded', String(open));
         renderSteps();   // в панели шаги открыты (renderSteps смотрит на панель), закрыли — снова свёрнуты в строку
         if (open) {
-            if ($('dpNoCoords').open) ensurePickMap();
             if ($('dpGeoSug').open) renderGeoSug();
             $('dpDrawerClose').focus();
         } else if (!$('dpPrepOpen').closest('[hidden]')) $('dpPrepOpen').focus();
@@ -5493,18 +5473,11 @@
         $('dpExcel').addEventListener('click', exportExcel);
         $('dpFactBtn').addEventListener('click', loadFact);
         $('dpActionReload').addEventListener('click', () => { hideActionError(); load(state.day); });
-        $('dpPickSave').addEventListener('click', savePick);
-        $('dpPickCoord').addEventListener('input', () => {
-            const p = parseCoord($('dpPickCoord').value);
-            $('dpPickSave').disabled = !p;
-            if (p) setPick(p[0], p[1]);
-        });
-        $('dpNoCoords').addEventListener('toggle', () => { if ($('dpNoCoords').open) ensurePickMap(); });
         $('dpGeoSug').addEventListener('toggle', () => { if ($('dpGeoSug').open) renderGeoSug(); });
         $('dpGeoSave').addEventListener('click', () => saveGeo(false));
         $('dpGeoAuto').addEventListener('click', () => saveGeo(true));
         $('dpGeoCancel').addEventListener('click', () => $('dpGeoDlg').close());
-        $('dpGeoDlg').addEventListener('close', () => { state.geoStop = null; });
+        $('dpGeoDlg').addEventListener('close', () => { state.geoStop = null; state.geoMissing = false; });
         $('dpGeoCoord').addEventListener('input', () => {
             const p = parseCoord($('dpGeoCoord').value);
             $('dpGeoSave').disabled = !p;
