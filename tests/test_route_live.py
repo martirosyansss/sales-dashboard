@@ -585,6 +585,30 @@ def test_ongoing_stop_is_active():
     assert 'stop' in card['alerts']['active'] and card['state'] == 'alert'
 
 
+@pytest.mark.parametrize('minutes, long', [(6, False), (16, True)])
+def test_stops_off_lists_every_unplanned_stay_with_alert_flag(minutes, long):
+    """Владелец 08.10 «очень чётко покажи остановки вне маршрута»: все стоянки не по плану, и короткие (не тревога)."""
+    tr, _ = _stay_day(minutes)
+    card = view(facts(tr.pts, [stop('S:A', 1, A, 100.0)], [tr.t]), tr.t, detail=True)
+    [s] = card['stops_off']
+    assert s['minutes'] == minutes and s['long'] is long and s['lunch'] is False and s['ongoing'] is False
+    assert s['to'] is not None and s['from'] < s['to']
+    assert haversine_km((s['lat'], s['lon']), (40.1650, 44.4600)) < 0.05
+    assert s['off_line'] is None                                      # плановой линии по дорогам нет — не сравнивали
+
+
+def test_stops_off_skips_store_and_depot_marks_lunch_and_ongoing():
+    tr = Track().park(DEPOT, 40).drive(A).park(A, 40).drive(DEPOT)
+    assert view(facts(tr.pts, [stop('S:A', 1, A, 100.0)], [T0, tr.t]), tr.t, detail=True)['stops_off'] == []
+    tr, _ = _stay_day(40, (13, 0))                                     # обед 30 мин в окне: не тревога, но стоянка
+    [s] = view(facts(tr.pts, [stop('S:A', 1, A, 100.0)], [tr.t]), tr.t, detail=True)['stops_off']
+    assert s['lunch'] is True and s['long'] is False
+    tr = Track().park(DEPOT, 5).drive((40.1650, 44.4600)).park((40.1650, 44.4600), 20)
+    [s] = view(facts(tr.pts, [stop('S:A', 1, A, 100.0)], [T0, tr.t]), tr.t + timedelta(seconds=30),
+               detail=True)['stops_off']
+    assert s['ongoing'] is True and s['to'] is None and s['long'] is True
+
+
 def test_no_contact_current_and_journal():
     tr = Track().park(DEPOT, 5).drive(A)
     contacts = [T0, T0 + timedelta(minutes=3), T0 + timedelta(minutes=11), T0 + timedelta(minutes=12)]
@@ -1218,6 +1242,7 @@ def test_live_cards_cached_per_fleet_for_ten_seconds(client, live_app, monkeypat
     assert len(calls) == first + 4
     body = client.get('/api/routes/live', base_url=LAN).get_json()
     assert all('alerts_log' not in t for t in body['trucks'])   # журнал тревог — только в деталях и для Telegram
+    assert all('stops_off' not in t for t in body['trucks'])    # стоянки не по плану — только в деталях машины
 
 
 # ============================== по ревью этапа 2 ==============================
@@ -1710,6 +1735,16 @@ def test_deviation_counted_only_when_far_long_and_by_road():
     # плана нет — ни линии, ни отклонения
     card = _route_view(tr, tr.t, None)
     assert card['route'] is None and card['deviation'] is None
+
+
+def test_stops_off_compares_with_plan_line_by_road():
+    far, near = _detour_track(1500.0, park_min=8), _detour_track(150.0, park_min=8)
+    [s] = _route_view(far, far.t, _route())['stops_off']
+    assert s['off_line'] is True and s['minutes'] == 8
+    [s] = _route_view(near, near.t, _route())['stops_off']
+    assert s['off_line'] is False                                     # у самой линии плана — стоял по пути
+    [s] = _route_view(far, far.t, _route(road=False))['stops_off']
+    assert s['off_line'] is None                                      # линия по прямой — не сравниваем
 
 
 def test_deviation_needs_half_km_and_a_minute():

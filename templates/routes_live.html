@@ -13,7 +13,7 @@
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=22">
 <!-- Машины на карте сейчас (№76): тема «Развоза», свои классы .lv-*; новые файлы статики — и в _PUBLIC_STATIC app_v2 -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_live.css') }}?v=10">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_live.css') }}?v=12">
 {% endblock %}
 
 {% block content %}
@@ -85,6 +85,9 @@
                     <span><i class="lv-ln is-minor"></i>փոքր շեղում</span>
                     <span><i class="lv-ln is-explained"></i>բացատրված շեղում</span>
                     <span><i class="lv-ln is-over"></i>ավելորդ վազք</span>
+                    <span><i class="lv-spin is-sample"><b>12 ր</b></i>կանգառ ոչ խանութում</span>
+                    <span><i class="lv-spin is-long is-sample"><b>25 ր</b></i>երկար կանգառ (ահազանգ)</span>
+                    <span><i class="lv-spin is-off is-sample"><b>ր</b></i>կարմիր եզր՝ երթուղուց դուրս</span>
                     <span><i class="lv-dot is-moving"></i>ընթացքի մեջ</span>
                     <span><i class="lv-dot is-standing"></i>կանգնած</span>
                     <span><i class="lv-dot is-alert"></i>ահազանգ</span>
@@ -133,6 +136,20 @@
                     </select>
                 </div>
             </div>
+            <!-- Стоянки не по плану (владелец 08.10 «очень чётко покажи остановки вне маршрута»): t.stops_off — открыто сразу -->
+            <details class="lv-more" id="lvOffBox" open hidden>
+                <summary>Կանգառներ ոչ խանութում</summary>
+                <p class="lv-pf" id="lvOffNote"></p>
+                <div class="lv-table-wrap">
+                    <table class="lv-stops lv-offs">
+                        <thead>
+                            <tr><th scope="col">#</th><th scope="col">Ժամը</th><th scope="col">Ր</th>
+                                <th scope="col">Որտեղ</th><th scope="col"><span class="rt-sr-only">Քարտեզ</span></th></tr>
+                        </thead>
+                        <tbody id="lvOff"></tbody>
+                    </table>
+                </div>
+            </details>
             <details class="lv-more" id="lvStopsBox">
                 <summary>Խանութներ՝ պլան և փաստ</summary>
                 <p class="lv-pf" id="lvPf" hidden></p>
@@ -205,5 +222,5 @@
         integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
 <!-- подложка — Яндекс, как на остальных картах (решение владельца 06.10, см. live_page) -->
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=1" data-yandex-key="{{ yandex_tiles_key }}"></script>
-<script src="{{ url_for('static', filename='js/routes_live.js') }}?v=17"></script>
+<script src="{{ url_for('static', filename='js/routes_live.js') }}?v=19"></script>
 {% endblock %}
