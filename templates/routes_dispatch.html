@@ -454,7 +454,7 @@
         <p class="dp-dlg-lead" id="dpCondLead"></p>
         <p class="dp-unload-hint dp-cond-load" id="dpCondLoad" role="status"></p>
         <label for="dpCondKind" class="dp-picklabel">Ընդունման ժամ</label>
-        <select id="dpCondKind" class="rt-select" aria-describedby="dpCondTimeHint dpCondErr">
+        <select id="dpCondKind" class="rt-select" aria-describedby="dpCondTimeHint dpCondDayNote dpCondErr">
             <option value="">Առանց սահմանափակման</option>
             <option value="at">Որոշակի ժամի</option>
             <option value="between">Միջակայքում</option>
@@ -467,6 +467,8 @@
             <label id="dpCondTolerance" hidden><span>Թույլատրելի շեղում, ± րոպե</span><input id="dpCondTol" class="rt-input" type="number" min="0" max="120" step="1" inputmode="numeric" value="0" aria-describedby="dpCondErr"></label>
         </div>
         <p class="dp-unload-hint" id="dpCondTimeHint">Խանութում ժամանման և բեռնաթափման սկզբի ժամը։</p>
+        <!-- «Մինչև ժամը» этого дня: в этот день конец окна — он (страница пишет, до скольки) -->
+        <p class="dp-unload-hint dp-cond-daynote" id="dpCondDayNote" hidden></p>
         <label for="dpCondMode" class="dp-picklabel dp-cond-label">Որ մեքենաները կարող են սպասարկել</label>
         <select id="dpCondMode" class="rt-select" aria-describedby="dpCondVehicleHint">
             <option value="">Բոլոր մեքենաները</option>

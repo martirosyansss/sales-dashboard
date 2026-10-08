@@ -43,7 +43,7 @@ from .roads import SNAP_MAX_KM, CenterBypassRoads, RoadDistances, RoadProvider, 
 from .snapshot import CAR_IDLE_DAYS, MIN_REFRESH_SECONDS, ResultCache, Snapshot, SnapshotCache
 from .store import (CREW_TABLES, DEFAULT_MANAGER_FUEL, DEFAULT_SETTINGS, KEEP, Bundle, Decision, GarageError, Store, StoreError,
                     big_auto, center_auto, check_driver_name, check_garage_entry, check_unload_min, check_window,
-                    validate_payload)
+                    until_floor, validate_payload)
 from .valhalla_engine import (TRUCK_TIME_MODEL, TRUCK_TIME_VALHALLA, ValhallaProvider, ValhallaRoads, truck_leg_minutes,
                               truck_time_source)
 from .vehicle_access import check_access
@@ -1629,7 +1629,8 @@ def _stop_info(dd: _DispatchDay) -> Callable[[dp.Stop], dict[str, Any]]:
             'window': windows[s.customer_id].to_json() if s.customer_id in windows else None,
             'vehicle_access': dd.bundle.vehicle_access[s.customer_id].to_json()
                               if s.customer_id in dd.bundle.vehicle_access else None,
-            **({'until_day': True} if s.customer_id in until else {}),   # window — срок только этого дня
+            # срок «Մինչև ժամը» только этого дня, минуты от полуночи (window — уже с ним)
+            **({'until_day': until[s.customer_id]} if s.customer_id in until else {}),
         }
     return info
 
@@ -2193,6 +2194,8 @@ _UNTIL_RE = re.compile(r'^(\d{2}):([0-5]\d)$')   # часы 24 и больше �
 PAST_DAY_UNTIL = 'Անցած օրվա պլանում ժամը չի փոխվում'
 UNTIL_GONE = 'Այս ժամն արդեն նշված չէ — թարմացրեք էջը'
 UNTIL_OTHER_KIND = 'Խանութի մշտական ընդունման ժամը «մինչև» չէ — այն փոխվում է «Առաքման պայմաններ»-ում'
+UNTIL_BEFORE_FLOOR = ('Խանութն ընդունում է {}-ից ոչ շուտ (մշտական ընդունման ժամը) — նշեք ավելի ուշ ժամ '
+                      'կամ փոխեք մշտական ժամը «Առաքման պայմաններ»-ում')
 
 
 def _until_edit(state: RoutesState, bundle: Bundle, dd: _DispatchDay,
@@ -2201,8 +2204,9 @@ def _until_edit(state: RoutesState, bundle: Bundle, dd: _DispatchDay,
     "scope": "day" | "always"}. day — срок только этого дня (store.customer_day_until: в этот день — вместо окна магазина);
     always — постоянное окно «до» (store.customer_window; прежнее окно любого вида заменяется, срок этого дня снимается —
     иначе он перекрыл бы новое окно). time null — снять: day — срок дня (снова постоянное окно), always — постоянное окно,
-    только если оно «до» (окна других видов меняют в «Առաքման պայմաններ»). Время проверяет check_window. Рейсы с магазином
-    переставляются под новое окно (dp.fit_until; закреплённые логистом, загруженные и уже грузящиеся — нет). Ничего не
+    только если оно «до» (окна других видов меняют в «Առաքման պայմաններ»). Время проверяет check_window. Срок дня — конец
+    окна этого дня, начало постоянного окна остаётся (Bundle.windows_on): срок не позже начала — отказ. Рейс, где магазин
+    опаздывает, переставляется под окно (dp.fit_until; закреплённые логистом, загруженные и уже грузящиеся — нет). Ничего не
     сохраняет сама: срок пишется в транзакции плана (_StopRule.also); «Չեղարկել» его не отменяет — undo у правки нет.
     Второе значение — ответ fit_until (странице: успевает ли магазин, подсказка машины)."""
     cid, raw, scope = payload.get('customer_id'), payload.get('time'), payload.get('scope')
@@ -2224,6 +2228,9 @@ def _until_edit(state: RoutesState, bundle: Bundle, dd: _DispatchDay,
     if scope == 'day':
         if window is None and cid not in mine:
             raise dp.DispatchError(UNTIL_GONE)
+        floor = until_floor(old)
+        if window is not None and floor is not None and window.t1 <= floor:   # срок дня — конец окна, начало — постоянное
+            raise dp.DispatchError(UNTIL_BEFORE_FLOOR.format(f'{floor // 60:02d}:{floor % 60:02d}'))
         if window is None:
             del mine[cid]
         else:
@@ -2240,7 +2247,10 @@ def _until_edit(state: RoutesState, bundle: Bundle, dd: _DispatchDay,
     ctx = replace(dd.ctx, windows={c: w.span() for c, w in new.windows_on(dd.day).items()})
     draft = dd.draft
     draft.undo = None
-    fit = dp.fit_until(ctx, dd.stops, draft, cid, now_min=_today_min(dd))
+    now_min = _today_min(dd)
+    # начатые рейсы — по плану до правки (окна прежние): срок не делает рейс «ещё не грузящимся»
+    frozen = dp.started_trips(dd.ctx, dd.stops, draft, now_min) if now_min is not None else set()
+    fit = dp.fit_until(ctx, dd.stops, draft, cid, now_min=now_min, frozen=frozen)
     user = session.get('username')
 
     def also(conn: Any) -> None:

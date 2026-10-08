@@ -1890,6 +1890,10 @@
         $('dpCondTrucks').textContent = '';
         syncCondTime();
         syncCondTrucks();
+        // «Մինչև ժամը» этого дня: в этот день конец окна — срок дня, начало — постоянного окна ниже (Bundle.windows_on)
+        $('dpCondDayNote').hidden = !isMin(stop.until_day);
+        $('dpCondDayNote').textContent = isMin(stop.until_day) ? 'Այս օրը գործում է նաև «Մինչև ժամը»՝ մինչև ' + hhmm(stop.until_day)
+            + ' (միայն այս օրվա համար)։ Ստորև նշվածը մշտական ժամն է։' : '';
         $('dpCondLoad').textContent = 'Բեռնում եմ խանութի տվյալները…';
         lockCond(true);             // пока не пришли свежие условия магазина — сохранять нечего
         $('dpCondDlg').showModal();
@@ -1967,13 +1971,19 @@
     }
 
     // ---------- «Մինչև ժամը» (владелец 08.10): привезти магазин не позже времени — только в этот день или всегда ----------
-    // «Միայն այսօր» (по умолчанию) — срок только дня плана: в этот день вместо окна приёма магазина; «Միշտ» — постоянное
-    // окно «մինչև» вместо прежнего окна любого вида. Сохраняет правка «Развоза» {action: 'until', customer_id, time, scope}:
+    // «Միայն այսօր» (по умолчанию) — срок только дня плана: в этот день конец окна приёма магазина (начало постоянного окна
+    // остаётся — untilFloor; stop.until_day — срок, минуты); «Միշտ» — постоянное окно «մինչև» вместо прежнего окна любого вида. Сохраняет правка «Развоза» {action: 'until', customer_id, time, scope}:
     // программа сама переставляет магазины его рейса (кроме закреплённого, загруженного и уже грузящегося); не успеть —
     // плашка красная и подсказка машины, которая успела бы («Տեղափոխել» — перенос с порядком под окна, fit). Постоянное
     // окно для подсказки в диалоге — GET /api/routes/customer-vehicles?customer_id=… (свежее, как у «Առաքման պայմաններ»).
     const untilScope = () => ($('dpUntilAlways').checked ? 'always' : 'day');
     const untilDayWord = () => (state.day === state.data.today ? 'այսօր' : 'միայն այս օրը');
+    // начало постоянного окна, которое срок дня оставляет (как store.until_floor): после / между — t1, «в T ± tol» — T − tol
+    function untilFloor(w) {
+        if (!isObj(w) || w.kind === 'before' || !isMin(w.t1)) return null;
+        const lo = w.kind === 'at' ? w.t1 - (Number.isInteger(w.tol) ? w.tol : 0) : w.t1;
+        return lo > 0 ? lo : null;
+    }
     // cancel — и «Չեղարկել»: пока идёт сохранение, диалог не закрыть (ошибка не потеряется)
     const lockUntil = (on, cancel = false) => ['dpUntilTime', 'dpUntilDay', 'dpUntilAlways', 'dpUntilSave', 'dpUntilClear',
         ...(cancel ? ['dpUntilCancel'] : [])].forEach(id => { $(id).disabled = on; });
@@ -1983,12 +1993,14 @@
         if (!stop) return;
         const always = untilScope() === 'always';
         const lines = [];
-        if (stop.until_day) lines.push('Այս օրվա համար նշված է՝ ' + windowText(stop.window) + '։');
+        if (isMin(stop.until_day)) lines.push('Այս օրվա համար նշված է՝ մինչև ' + hhmm(stop.until_day) + '։');
         lines.push(w ? 'Մշտական ընդունման ժամը՝ ' + windowText(w) + '։' : 'Մշտական ընդունման ժամ նշված չէ։');
         if (always && w && w.kind !== 'before') lines.push('Ուշադրություն՝ «Միշտ»-ը կփոխարինի այն։');
+        const floor = untilFloor(w);
+        if (!always && floor !== null) lines.push('Այս օրը խանութը կընդունի ' + hhmm(floor) + '-ից ոչ շուտ (մշտական ժամը) և մինչև ձեր նշած ժամը։');
         lines.push('Ծրագիրը ինքը կփոխի երթի խանութների հերթականությունը, որ մեքենան հասցնի։ Ամրացված երթը չի փոխվում։');
         $('dpUntilHint').textContent = lines.join(' ');
-        $('dpUntilClear').hidden = always ? !(w && w.kind === 'before') : !stop.until_day;
+        $('dpUntilClear').hidden = always ? !(w && w.kind === 'before') : !isMin(stop.until_day);
         $('dpUntilErr').textContent = '';
     }
     async function openUntil(stop) {
@@ -1999,7 +2011,7 @@
         $('dpUntilLead').textContent = '«' + (stop.name || stop.code) + '»' + (stop.address ? '՝ ' + stop.address : '');
         $('dpUntilDayT').textContent = state.day === state.data.today ? 'Միայն այսօր' : 'Միայն ' + dayHuman(state.day, true);
         $('dpUntilDay').checked = true;
-        $('dpUntilTime').value = stop.until_day && isObj(stop.window) && isMin(stop.window.t1) ? hhmm(stop.window.t1) : '';
+        $('dpUntilTime').value = isMin(stop.until_day) ? hhmm(stop.until_day) : '';
         $('dpUntilHint').textContent = 'Բեռնում եմ խանութի տվյալները…';
         $('dpUntilErr').textContent = '';
         $('dpUntilClear').hidden = true;
@@ -2033,7 +2045,7 @@
             if (!m || Number(m[1]) > 23 || Number(m[2]) > 59) { $('dpUntilErr').textContent = 'Նշեք ժամը։'; $('dpUntilTime').focus(); return; }
             time = m[1] + ':' + m[2];
             const t1 = Number(m[1]) * 60 + Number(m[2]), w = isObj(x.window) ? x.window : null;
-            if (scope === 'day' ? stop.until_day && stop.window.t1 === t1 : !stop.until_day && w && w.kind === 'before' && w.t1 === t1) {
+            if (scope === 'day' ? stop.until_day === t1 : !isMin(stop.until_day) && w && w.kind === 'before' && w.t1 === t1) {
                 $('dpUntilDlg').close();
                 return;
             }
@@ -2061,6 +2073,10 @@
             return;
         }
         const h = isObj(u.hint) ? u.hint : null;
+        if (!h && u.split) {   // тяжёлый заказ в нескольких рейсах: подсказки нет — переносят «Տեղափոխել այլ երթ…»
+            toast(what + 'Չի հասցնում․ խանութի ծանր պատվերը բաժանված է մի քանի երթի՝ տեղափոխեք այն «Տեղափոխել այլ երթ…»-ով։');
+            return;
+        }
         if (!h) {
             toast(what + (Array.isArray(u.kept) && u.kept.length
                 ? 'Չի հասցնում․ երթն ամրացված է, բեռնված կամ արդեն ճանապարհին՝ ծրագիրը այն չի փոխում։'
@@ -3222,7 +3238,7 @@
         };
         const win = windowText(stop.window);
         // «Մինչև ժամը» только этого дня (владелец 08.10) — своя плашка вместо постоянного окна
-        if (win && stop.until_day) tag(stop.window_miss ? 'b-danger' : 'dp-b-until', (stop.window_miss ? 'չի հասցնում՝ ' : '') + win + ' · ' + untilDayWord(), 'fa-clock');
+        if (win && isMin(stop.until_day)) tag(stop.window_miss ? 'b-danger' : 'dp-b-until', (stop.window_miss ? 'չի հասցնում՝ ' : '') + win + ' · ' + untilDayWord(), 'fa-clock');
         else if (win) tag(stop.window_miss ? 'b-danger' : 'b-gps', (stop.window_miss ? 'չի հասցնում՝ ' : 'ընդունում է՝ ') + win, 'fa-door-open');
         // своё время у магазина (№50) — только у магазинов, где оно задано; у остальных — общая норма
         const own = ownUnload(stop);

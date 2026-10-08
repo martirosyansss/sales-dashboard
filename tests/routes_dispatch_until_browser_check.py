@@ -11,10 +11,11 @@ A сборка рейсов, режим «Փոփոխել»: в строке по
   подсказка о постоянном окне, «Հանել» скрыт (снимать нечего); пустое время — ошибка, запроса нет;
 B 09:40 «Միայն …» → одна правка until {customer_id, time, scope: day}; магазин — первым в рейсе, плашка «մինչև 09:40 ·
   միայն այս օրը» (не красная), уведомление «Երթի հերթականությունը փոխվեց»;
-C повторно: время подставлено, «Հանել» виден; у магазина постоянное окно другого вида — при «Միշտ» предупреждение,
-  «Հանել» для «Միշտ» скрыт; Esc закрывает без запроса;
-D 09:05 — не успеть никому: плашка красная «չի հասցնում՝ …», уведомление «Չի հասցնում»;
-E «Հանել» (срок дня) → until с time null; плашки срока дня больше нет, снова постоянное окно;
+C повторно: время подставлено, «Հանել» виден; у магазина постоянное окно 10:00–12:00 — при «Միշտ» предупреждение,
+  «Հանել» для «Միշտ» скрыт, при «Միայն …» — что начало 10:00 остаётся; Esc закрывает без запроса; срок 09:30 (не позже
+  начала) — отказ в самом диалоге; 11:00 — плашка «10:00–11:00 · միայն այս օրը»; в «Առաքման պայմաններ» — заметка о сроке;
+D постоянное окно снято; 09:05 — не успеть никому: плашка красная «չի հասցնում՝ …», уведомление «Չի հասցնում»;
+E «Հանել» (срок дня) → until с time null; плашки срока дня больше нет;
 H телефон 390×860: в диалоге и на странице нет горизонтальной прокрутки.
 Ошибки страницы и консоли — провал (кроме внешних ресурсов, как в основной проверке).
 """
@@ -159,12 +160,37 @@ def main() -> int:
             check('Ուշադրություն՝ «Միշտ»-ը կփոխարինի այն' in page.locator('#dpUntilHint').inner_text()
                   and page.locator('#dpUntilClear').is_hidden(), 'C «Միշտ»: warning, nothing to clear for a «between» window')
             dlg.screenshot(path=str(SHOTS / 'c-always.png'))
+            page.check('#dpUntilDay')
+            check('կընդունի 10:00-ից ոչ շուտ' in page.locator('#dpUntilHint').inner_text(),
+                  'C «Միայն …»: the permanent start stays that day')
             n = len(posts)
             page.keyboard.press('Escape')
             page.wait_for_timeout(200)
             check(not dlg.evaluate('(d) => d.open') and not edits(n), 'C Esc closes without a request')
+            open_until(cid)
+            page.fill('#dpUntilTime', '09:30')
+            e0 = len(errors)
+            page.click('#dpUntilSave')
+            page.wait_for_timeout(600)
+            errors[e0:] = [x for x in errors[e0:] if 'status of 400' not in x]   # отказ сервера здесь и ожидается
+            check(dlg.evaluate('(d) => d.open') and page.locator('#dpUntilErr').inner_text().startswith('Խանութն ընդունում է 10:00-ից ոչ շուտ'),
+                  'C deadline before the permanent start — refused in the dialog: ' + page.locator('#dpUntilErr').inner_text())
+            page.fill('#dpUntilTime', '11:00')
+            save_and_wait()
+            editing()
+            tag = row(cid).locator('.rt-badge.dp-b-until')
+            check(tag.count() == 1 and tag.inner_text().strip() == '10:00–11:00 · միայն այս օրը',
+                  'C day tag keeps the permanent start: ' + (tag.inner_text() if tag.count() else '—'))
+            row(cid).locator('.dp-vehiclebtn').click()
+            page.wait_for_function("() => !document.getElementById('dpCondSave').disabled", timeout=15000)
+            note = page.locator('#dpCondDayNote')
+            check(note.is_visible() and 'մինչև 11:00' in note.inner_text(), 'C «Առաքման պայմաններ» notes the day deadline')
+            page.locator('#dpCondDlg').screenshot(path=str(SHOTS / 'c-cond-note.png'))
+            page.keyboard.press('Escape')
+            page.wait_for_timeout(200)
 
             # D
+            store.save_customer_window(cid, None, 'qa')
             open_until(cid)
             page.fill('#dpUntilTime', '09:05')
             save_and_wait()
@@ -185,8 +211,8 @@ def main() -> int:
             check(len(e) == 1 and e[0].get('action') == 'until' and e[0].get('time') is None and e[0].get('scope') == 'day',
                   'E clear → until with time null: ' + str(e))
             editing()
-            check(row(cid).locator('.dp-b-until').count() == 0 and 'ընդունում է՝ 10:00–12:00' in row(cid).inner_text()
-                  or 'չի հասցնում՝ 10:00–12:00' in row(cid).inner_text(), 'E day tag gone, permanent window back')
+            check(row(cid).locator('.dp-b-until').count() == 0 and 'մինչև' not in row(cid).locator('.dp-stop-tags').inner_text(),
+                  'E day tag gone (no permanent window now)')
             check(store.load().day_until == {}, 'E day deadline removed in the store')
 
             # H

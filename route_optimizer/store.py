@@ -769,6 +769,15 @@ def check_window(raw: Any) -> tuple[CustomerWindow | None, str | None]:
     return CustomerWindow(kind, t1, t2, tol), None
 
 
+def until_floor(window: CustomerWindow | None) -> int | None:
+    """Начало окна приёма (минуты от полуночи), которое «Մինչև ժամը» дня оставляет в силе: after и between — t1, at —
+    t1 − tol; нет окна, окно «до» или начало не позже полуночи — None (магазин принимает с начала дня)."""
+    if window is None or window.kind == 'before':
+        return None
+    lo = window.t1 - window.tol if window.kind == 'at' else window.t1
+    return lo if lo > 0 else None
+
+
 def check_unload_min(raw: Any) -> tuple[float | None, str | None]:
     """Время у магазина (№50) из запроса или из базы → (минуты, None) или (None, ошибка). Целое число минут от 1 до
     120: логист вводит минуты, дробные не нужны; 40.0 (REAL из базы) — то же, что 40. Логическое — не число. Предел
@@ -1068,12 +1077,18 @@ class Bundle:
     day_until: dict[date, dict[int, int]] = field(default_factory=dict)
 
     def windows_on(self, day: date) -> dict[int, CustomerWindow]:
-        """Окна приёма дня day: срок «Մինչև ժամը» этого дня (day_until) — вместо постоянного окна клиента; другие дни и
-        клиенты без срока — постоянные окна (windows)."""
+        """Окна приёма дня day: срок «Մինչև ժամը» этого дня (day_until) — новый конец окна, начало — как у постоянного окна
+        клиента («после 10:00» + срок 11:00 → 10:00–11:00; «в T ± tol» — с T − tol), иначе «до срока»; срок не позже начала
+        (окно сменили в «Առաքման պայմաններ» уже после срока) — решение дня: «до срока». Другие дни и клиенты без срока —
+        постоянные окна (windows)."""
         over = self.day_until.get(day)
         if not over:
             return self.windows
-        return {**self.windows, **{cid: CustomerWindow('before', t1) for cid, t1 in over.items()}}
+        out = dict(self.windows)
+        for cid, t1 in over.items():
+            lo = until_floor(self.windows.get(cid))
+            out[cid] = CustomerWindow('between', lo, t1) if lo is not None and lo < t1 else CustomerWindow('before', t1)
+        return out
 
     def profile(self, agent_id: int) -> ManagerProfile:
         return self.managers.get(agent_id) or ManagerProfile(agent_id)
@@ -2536,6 +2551,8 @@ class Store:
         conn.execute('INSERT INTO customer_day_until(day, customer_id, t1, updated_at, updated_by) VALUES(?, ?, ?, ?, ?) '
                      'ON CONFLICT(day, customer_id) DO UPDATE SET t1 = excluded.t1, updated_at = excluded.updated_at, '
                      'updated_by = excluded.updated_by', (day.isoformat(), customer_id, t1, _now(), user))
+        # сроки дней, чьих планов уже нет (dispatch_plan хранит DISPATCH_KEPT_DAYS), — тоже: таблица не растёт без конца
+        conn.execute('DELETE FROM customer_day_until WHERE day < date(?, ?)', (day.isoformat(), f'-{DISPATCH_KEPT_DAYS} days'))
 
     def truck_drivers(self, day: str, role: str = 'driver') -> tuple[dict[str, str], frozenset[str]]:
         """Водители (role='driver') или առաքիչ (role='helper') машин на день YYYY-MM-DD (№62): (машина → имя, машины с
