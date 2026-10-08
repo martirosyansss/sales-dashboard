@@ -1625,7 +1625,7 @@ def test_live_page_refetches_card_while_track_pending():
     (прошлый день не опрашивается). ?v= поднят."""
     js = (ROOT / 'static' / 'js' / 'routes_live.js').read_text(encoding='utf-8')
     assert 'retrack(one.truck)' in js and 't.track_pending' in js and 'r.tries >= 2' in js and '!state.replay.on' in js
-    assert "js/routes_live.js') }}?v=14" in (ROOT / 'templates' / 'routes_live.html').read_text(encoding='utf-8')
+    assert "js/routes_live.js') }}?v=15" in (ROOT / 'templates' / 'routes_live.html').read_text(encoding='utf-8')
 
 
 # ============================== плановая линия, отклонение от неё, показатели дня (владелец 08.10) ==============================
@@ -2342,7 +2342,9 @@ def test_track_hover_snapped_vertices_take_nearest_fix_or_step_speed():
         return out
     card = live.car_view(DAY, tr.t, facts(tr.pts, [], [T0, tr.t]), [], TRUCK, DEPOT, RULES, ROAD, True, None, None, snap)
     stays = _stay_idx(card)
-    driving = [i for i in range(len(card['track'])) if i not in stays]
+    # кусок езды начинается в середине стоянки (track_line 08.10): вершина сразу после неё — посередине между точкой «стоит»
+    # и первой точкой езды, скорость там любая из двух
+    driving = [i for i in range(len(card['track'])) if i not in stays and i - 1 not in stays]
     assert len(driving) > 10 and all(card['track_v'][i] == round(12.0 * 3.6) for i in driving)
     assert card['track_km'] == sorted(card['track_km']) and card['track_km'][-1] == card['km']
     no_spd = [p[:4] + (None,) + p[5:] for p in tr.pts]   # старый терминал: скорости нет
