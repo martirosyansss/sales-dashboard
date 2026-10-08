@@ -90,7 +90,8 @@ class RateLimiter:
 
 
 CHAT_WIDE_400 = ('chat not found', 'chat was deactivated', 'was kicked', 'not a member', 'have no rights to send',
-                 'not enough rights to send')
+                 'not enough rights to send', 'peer_id_invalid', 'chat_id is empty', 'chat_id_invalid',
+                 'chat_write_forbidden', 'chat_restricted')
 
 
 def chat_wide(e: TelegramError) -> bool:
@@ -135,7 +136,8 @@ class BotApi:
 
     def _once(self, method: str, params: dict[str, Any]) -> Any:
         req = urllib.request.Request(API_URL.format(token=self._token, method=method), method='POST',
-                                     data=json.dumps(params, ensure_ascii=False).encode('utf-8'),
+                                     # ensure_ascii: одиночный суррогат (имя человека) не уронит кодирование тела
+                                     data=json.dumps(params, ensure_ascii=True).encode('ascii'),
                                      headers={'Content-Type': 'application/json'})
         timeout = self.timeout + float(params.get('timeout') or 0)   # getUpdates: long poll + запас
         try:

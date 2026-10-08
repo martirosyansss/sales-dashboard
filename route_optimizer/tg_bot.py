@@ -16,8 +16,9 @@
   /late /help. Доступ: в группе — все; в личке — участники группы (getChatMember, кэш ACCESS_TTL_S) и люди эскалации
   (tg_escalate_to); чужим и другим чатам — молчание. Данные кнопок подписаны (HMAC от токена, короткий id записи):
   подделанные — мимо.
-Общее состояние (записи) — под self.lock; долгие расчёты (карточки флота, план, «Վարորդներ») — до него; эскалация
-перепроверяет «Տեսա» под замком. Запись — после удачного вызова Telegram (сбой — повтор), сначала в память, потом в
+Общее состояние (записи) — под self.lock, взятым на одно действие прохода (не на весь проход); долгие расчёты
+(карточки флота, план, «Վարորդներ») — до него, их сбой отчётам не даёт пройти, тревогам — не мешает; эскалация
+перепроверяет «Տեսա» под замком; на нажатие «Տեսա» бот отвечает сразу, не дожидаясь замка. Запись — после удачного вызова Telegram (сбой — повтор), сначала в память, потом в
 базу (сбой базы — в журнал, без повтора сообщения). Сообщение, которое Telegram отверг само по себе (400: тема закрыта,
 разметка, длина, кнопка), — в журнал и запись failed, проход идёт дальше (tg_api.per_message); к остановке рассылки
 ведут только ошибки всего чата (tg_api.chat_wide).
@@ -99,8 +100,12 @@ def fit(text: str) -> str:
     if len(text) <= TEXT_MAX:
         return text
     cut = text.rfind('\n', 0, TEXT_MAX - 2)
-    if cut <= 0:   # одна огромная строка — без разметки (обрезанный тег сломал бы разбор HTML)
-        return html.escape(re.sub(r'<[^>]*>', '', text), quote=False)[:TEXT_MAX - 1] + '…'
+    if cut <= 0:   # одна огромная строка — простым текстом (обрезанный тег или «&am…» сломали бы разбор HTML)
+        plain = html.unescape(re.sub(r'<[^>]*>', '', text))
+        n = TEXT_MAX - 1
+        while len(html.escape(plain[:n], quote=False)) > TEXT_MAX - 1:
+            n -= 64
+        return html.escape(plain[:n], quote=False) + '…'
     return text[:cut] + '\n…'
 
 
@@ -119,6 +124,7 @@ class TgBot:
         self._key = hashlib.sha256(b'araqich-tg|' + secret.encode('utf-8')).digest()
         self.monotonic = monotonic
         self.lock = threading.RLock()
+        self.names_lock = threading.Lock()
         self.me: dict[str, Any] | None = None
         self.ready = False
         self.setup_at: float | None = None
@@ -248,8 +254,11 @@ class TgBot:
         if not isinstance(raw, str) or '|' not in raw:
             return None
         data = raw.rsplit('|', 1)[0]
-        good = self.sign(data)   # байты: compare_digest на str не с ASCII бросает TypeError
-        return data if good is not None and hmac.compare_digest(good.encode('utf-8'), raw.encode('utf-8')) else None
+        try:   # байты: compare_digest на str не с ASCII бросает TypeError; одиночный суррогат — UnicodeEncodeError
+            good = self.sign(data)
+            return data if good is not None and hmac.compare_digest(good.encode('utf-8'), raw.encode('utf-8')) else None
+        except UnicodeEncodeError:
+            return None
 
     # --- Telegram ---
 
@@ -278,6 +287,9 @@ class TgBot:
                 if chat == self.chat:
                     self._migrated(e.migrate_to)
                 return self.api('sendMessage', **{**params, 'chat_id': str(e.migrate_to), 'message_thread_id': None})
+            if thread is not None and e.status == 400 and 'topic_closed' in e.description.lower():
+                logger.warning('[Routes] Telegram-бот: тема %s закрыта — сообщение в общий чат (откройте тему)', thread)
+                return self.api('sendMessage', **{**params, 'message_thread_id': None})
             if thread is not None and e.status == 400 and 'thread not found' in e.description.lower():
                 logger.warning('[Routes] Telegram-бот: тема %s не найдена — сообщение в общий чат, тему создам заново',
                                thread)
@@ -375,6 +387,8 @@ class TgBot:
         except TelegramError as e:
             logger.warning('[Routes] Telegram-бот: настройка не удалась (%s) — повтор через %.0f мин', e,
                            SETUP_RETRY_S / 60)
+        except Exception:   # битый ответ Telegram, сбой базы — тревоги идут и без тем
+            logger.exception('[Routes] Telegram-бот: настройка не удалась — повтор через %.0f мин', SETUP_RETRY_S / 60)
 
     def _setup_topics(self, me: Mapping[str, Any]) -> None:
         chat = self.api('getChat', chat_id=self.chat) or {}
@@ -420,21 +434,31 @@ class TgBot:
         fleet: Mapping[str, Mapping[str, Any]] = {}
         if live is not None:
             rules, now, cards, fleet = live
-        inputs = self._report_inputs(day, now, settings, rules, tg, cards)   # долгие расчёты — вне замка
+        try:   # долгие расчёты — вне замка; сбой данных отчётов (база, план) не мешает тревогам
+            inputs = self._report_inputs(day, now, settings, rules, tg, cards)
+        except Exception:
+            logger.exception('[Routes] Telegram-бот: данные отчётов не прочитаны — тревоги идут без отчётов')
+            inputs = None
         done = 0
+        quiet = la.in_quiet(rules, now)
+        # замок — на одно действие, не на весь проход: «Տեսա» ждёт не дольше одного сообщения
         with self.lock:
             self._prune(now)
-            try:
-                quiet = la.in_quiet(rules, now)
-                p = la.plan(cards, rules, tg, now, self.records)   # без «Առաքիչ» — только закрытие прошлых дней
-                for act in p.actions:
+            p = la.plan(cards, rules, tg, now, self.records)   # без «Առաքիչ» — только закрытие прошлых дней
+        try:
+            for act in p.actions:
+                with self.lock:
                     done += self._guard(act.key, lambda act=act: self._apply(act, cards, now, quiet), act, now)
-                for rec in la.due_escalations(self.records, p.active, tg, now, quiet) if live is not None else ():
+            with self.lock:
+                due = la.due_escalations(self.records, p.active, tg, now, quiet) if live is not None else []
+            for rec in due:
+                with self.lock:
                     done += self._guard(rec.key, lambda rec=rec: self._escalate(rec.key, tg, now), None, now)
-                if inputs is not None:
+            if inputs is not None:
+                with self.lock:
                     done += self._reports(inputs, day, now, rules, tg, cards, fleet)
-            except TelegramError as e:   # сеть, Telegram, ошибка всего чата: повтор позже (несделанное не записано)
-                self._failed(e, sig)
+        except TelegramError as e:   # сеть, Telegram, ошибка всего чата: повтор позже (несделанное не записано)
+            self._failed(e, sig)
         return done
 
     def _guard(self, key: str, run: Callable[[], int], act: la.Action | None, now: datetime) -> int:
@@ -448,6 +472,10 @@ class TgBot:
                 raise
             logger.warning('[Routes] Telegram-бот: сообщение %s отклонено Telegram (%s) — пропущено', key, e)
             self._rejected(key, act, e, now)
+            return 0
+        except Exception as e:   # битые данные одного действия не останавливают остальные (и не повторяются)
+            logger.exception('[Routes] Telegram-бот: действие %s не выполнено — пропущено', key)
+            self._rejected(key, act, TelegramError(type(e).__name__, description=type(e).__name__), now)
             return 0
 
     def _rejected(self, key: str, act: Any, e: TelegramError, now: datetime) -> None:
@@ -535,15 +563,23 @@ class TgBot:
         if act.notify:
             if not done:   # править нечего (перенесено, удалено, отвергнуто) — новое сообщение вместо прежнего
                 rec.payload.pop('updated', None)
-                rec.phase = 'active'
+                rec.payload.pop('critical_at', None)
+                # группа видит его впервые — отсчёт эскалации отсюда, прежнее «Տեսա» и эскалация не в счёт
+                rec.phase, rec.sent_at, rec.escalated_at = 'active', now.isoformat(), None
+                rec.acked_by = rec.acked_name = rec.acked_at = None
                 self._post(rec, silent=rec.level == 'info')
                 done = 1
             elif rec.level != 'info':   # ухудшилось на шаг — короткий ответ со звуком
                 card = cards.get(act.car) or {}
                 text = (f'⏰ <b>{la.esc(act.car)}</b>' + (f' · {la.esc(card["driver"])}' if card.get('driver') else '')
                         + ' — ուշացումը մեծացավ\n' + '\n'.join(act.notify))
-                self._send(rec.chat or self.chat, text, thread=rec.thread_id, reply_to=rec.message_id)
-                done += 1
+                try:
+                    self._send(rec.chat or self.chat, text, thread=rec.thread_id, reply_to=rec.message_id)
+                    done += 1
+                except TelegramError as e:   # ответ отвергнут — правка уже сделана: её состояние записать
+                    if not per_message(e):
+                        raise
+                    logger.warning('[Routes] Telegram-бот: ответ «не успеет» %s отклонён (%s)', act.key, e)
         self._persist(rec)
         return done
 
@@ -557,8 +593,15 @@ class TgBot:
         mention = ', '.join(f'<a href="tg://user?id={uid}">{la.esc(self.names.get(str(uid)) or "ղեկավար")}</a>'
                             for uid in tg.escalate_to)
         what = f'{la.EMOJI["critical"]} {la.esc(la.TITLE.get(rec.kind, rec.kind))} · <b>{la.esc(rec.car or "")}</b>'
-        self._send(rec.chat or self.chat, f'❗ <b>{n} րոպե առանց պատասխանի</b>\n{what}' + (f'\n{mention}' if mention else ''),
-                   thread=rec.thread_id, reply_to=rec.message_id)
+        sent = 1
+        try:
+            self._send(rec.chat or self.chat, f'❗ <b>{n} րոպե առանց պատասխանի</b>\n{what}' + (f'\n{mention}' if mention else ''),
+                       thread=rec.thread_id, reply_to=rec.message_id)
+        except TelegramError as e:   # ответ в группе отвергнут — личные копии всё равно (ради них эскалация)
+            if not per_message(e):
+                raise
+            logger.warning('[Routes] Telegram-бот: эскалация %s в группе отклонена (%s) — только лично', rec.key, e)
+            sent = 0
         rec = replace(rec, escalated_at=now.isoformat(), payload=dict(rec.payload))
         self._persist(rec)   # ответ в группе ушёл — повторов не будет, даже если личные не дойдут
         copies = []
@@ -573,7 +616,7 @@ class TgBot:
         if copies:
             rec.payload['copies'] = copies
             self._persist(rec)
-        return 1 + len(copies)
+        return sent + len(copies)
 
     def _report_inputs(self, day: date, now: datetime, settings: Mapping[str, Any], rules: Rules, tg: la.TgRules,
                        cards: Mapping[str, Mapping[str, Any]]) -> dict[str, Any] | None:
@@ -664,7 +707,14 @@ class TgBot:
             return 0
         if not edited:   # удалили — новое сообщение
             rec.payload.pop('updated')
-            self._post(rec, silent=True)
+            try:
+                self._post(rec, silent=True)
+            except TelegramError as e:
+                if not per_message(e):
+                    raise
+                logger.warning('[Routes] Telegram-бот: план %s заново не отправлен (%s) — до изменения плана', ds, e)
+                self._persist(replace(old, payload={**old.payload, 'sig': sig}))
+                return 0
             self._pin(rec)
         self._persist(rec)
         return 1
@@ -746,7 +796,7 @@ class TgBot:
     def _remember(self, user: Mapping[str, Any]) -> None:
         uid, name = user.get('id'), _person(user)
         if isinstance(uid, int) and self.names.get(str(uid)) != name:
-            with self.lock:
+            with self.names_lock:   # свой замок: имя не ждёт прохода тревог
                 self.names[str(uid)] = name
                 while len(self.names) > NAMES_MAX:
                     self.names.pop(next(iter(self.names)))
@@ -816,9 +866,18 @@ class TgBot:
             return
         self._remember(user)
         if data.startswith('a:') and data[2:].isdigit():
-            with self.lock:
-                text = self._ack(int(data[2:]), user)
-            self._answer(cq, text)
+            rid = int(data[2:])
+            # ответ на нажатие — сразу, до замка (проход тревог держит его на время одного сообщения, а Telegram ждёт
+            # ответа считанные секунды); исход — по снимку записей, «Տեսա» записывается под замком
+            seen = next((r for r in list(self.records.values()) if r.id == rid), None)
+            if seen is None or seen.message_id is None:
+                self._answer(cq, 'Հնացած է')
+            elif seen.acked_by is not None:
+                self._answer(cq, f'Արդեն նշված է՝ {seen.acked_name}')
+            else:
+                self._answer(cq, ACKED)
+                with self.lock:
+                    self._ack(rid, user)
         elif data.startswith('w:'):
             self._answer(cq, None)
             car = data[2:]

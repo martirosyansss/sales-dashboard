@@ -761,8 +761,8 @@ def test_review_high1_rejected_late_escalation_and_report_do_not_loop(tmp_path):
     h2.tick()
     h2.set(now=NOW + timedelta(minutes=11))
     h2.api.fail['sendMessage'] = [err(400, 'Bad Request: message to be replied not found')]
-    assert h2.tick() == 0 and h2.rec('alert:').escalated_at is not None
-    assert h2.tick() == 0
+    assert h2.tick() == 1 and h2.rec('alert:').escalated_at is not None   # в группе отвергнуто — лично всё равно
+    assert h2.api.sent(str(OWNER)) and h2.tick() == 0
     # план отвергнут — до его изменения не повторяем
     h3 = Harness(tmp_path, {}, NOW, db='c.db')
     h3.set(plan=plan_of())
@@ -935,6 +935,140 @@ def test_review_low9_repeat_window_applies_within_one_pass(tmp_path):
     h = Harness(tmp_path, cards, NOW)
     assert h.tick() == 1 and len(h.api.messages) == 1
     assert sorted(r.payload.get('why') or r.phase for r in h.bot.records.values()) == ['ended', 'repeat']
+
+
+# ============================== ревью 2 ==============================
+
+def test_review2_high_report_data_failure_does_not_block_alerts(tmp_path, caplog):
+    h = Harness(tmp_path, gps_card(), NOW)
+
+    def broken(day):
+        raise st.StoreError('database is locked')
+    h.feeds.plan = broken
+    assert h.tick() == 1 and 'данные отчётов не прочитаны' in caplog.text and h.bot.failures == 0
+
+
+def test_review2_medium_ack_is_answered_without_waiting_for_the_pass_lock(tmp_path):
+    import threading
+    h = Harness(tmp_path, gps_card(), NOW)
+    h.tick()
+    rec = h.rec('alert:')
+    h.bot.lock.acquire()                       # проход тревог занят отправкой
+    worker = threading.Thread(target=h.bot.handle, args=(callback(h, h.bot.sign(f'a:{rec.id}')),))
+    try:
+        worker.start()
+        for _ in range(100):
+            if h.api.of('answerCallbackQuery'):
+                break
+            threading.Event().wait(0.01)
+        assert h.api.of('answerCallbackQuery')[-1]['text'] == tg_bot.ACKED and rec.acked_by is None
+    finally:
+        h.bot.lock.release()
+    worker.join(2)
+    assert h.rec('alert:').acked_name == 'Գոռ'
+
+
+def test_review2_low_rejected_late_reply_keeps_edit_state_and_repost_restarts_escalation(tmp_path):
+    h = Harness(tmp_path, {'CAR1': card(late('c1', 20))}, NOW)
+    h.tick()
+    t = NOW + timedelta(minutes=3)
+    h.set(now=t, cards={'CAR1': card(late('c1', 60, now=t))})
+    h.api.fail['sendMessage'] = [err(400, 'Bad Request: message to be replied not found')]
+    h.tick()
+    rec = h.rec('late:')
+    assert rec.phase == 'active' and '60 րոպեով' in rec.payload['body'] and rec.payload['lines']['c1']['sent'] == 60
+    # отвергнутое «не успеет» потом всё же ушло — эскалация через 10 мин от этого момента, не от первой попытки
+    h2 = Harness(tmp_path, {'CAR1': card(late('c1', 20))}, NOW, db='b.db')
+    h2.api.fail['sendMessage'] = [err(400, 'Bad Request: TOPIC_CLOSED')]
+    h2.tick()
+    t = NOW + timedelta(minutes=30)
+    h2.set(now=t, cards={'CAR1': card(late('c1', 60, now=t))})
+    h2.tick()
+    assert h2.rec('late:').sent_at == t.isoformat() and h2.rec('late:').escalated_at is None
+    h2.set(now=t + timedelta(minutes=10))
+    h2.tick()
+    assert h2.rec('late:').escalated_at is not None
+
+
+def test_review2_low_deleted_plan_repost_rejected_is_not_retried_every_pass(tmp_path):
+    h = Harness(tmp_path, {}, NOW)
+    h.set(plan=plan_of())
+    h.tick()
+    h.api.messages.clear()                                                 # план удалили в группе
+    changed = {**STORED_PLAN, 'trips': STORED_PLAN['trips'] + [{'id': 4, 'truck': 'CAR2', 'stops': [505]}]}
+    h.set(plan=plan_of(changed))
+    h.api.fail['sendMessage'] = [err(400, 'Bad Request: TOPIC_CLOSED')]
+    h.tick()
+    calls = len(h.api.calls)
+    h.tick()
+    assert len(h.api.calls) == calls and h.bot.failures == 0
+
+
+def test_review2_low_wrong_chat_errors_are_chat_wide_and_fit_keeps_entities():
+    for d in ('Bad Request: PEER_ID_INVALID', 'Bad Request: chat_id is empty', 'Bad Request: CHAT_WRITE_FORBIDDEN'):
+        assert tg_api.chat_wide(err(400, d)) and not tg_api.per_message(err(400, d))
+    text = tg_bot.fit('Ա &amp; Բ ' * 800)
+    assert len(text) <= tg_bot.TEXT_MAX and '&amp;amp;' not in text and '&amp;' in text
+    assert not text[:-1].rstrip().endswith(('&', '&a', '&am', '&amp'))
+
+
+def test_review2_low_lone_surrogate_callback_is_ignored(tmp_path):
+    h = Harness(tmp_path, {}, NOW)
+    assert h.bot.verify('w:\ud800|abc') is None
+    h.bot.handle(callback(h, 'a:\ud800|x'))
+    assert 'text' not in h.api.of('answerCallbackQuery')[-1]
+
+
+# ============================== ревью 3 ==============================
+
+def test_review3_closed_topic_falls_back_to_main_chat_and_keeps_topic_ids(tmp_path):
+    api = FakeTelegram(forum=True)
+    h = Harness(tmp_path, gps_card(), NOW, api=api)
+    api.fail['sendMessage'] = [err(400, 'Bad Request: TOPIC_CLOSED')]
+    assert h.tick() == 1 and h.rec('alert:').phase == 'active' and 'message_thread_id' not in api.sent()[-1]
+    assert len(h.bot.topics) == 4
+
+
+def test_review3_answers_from_snapshot_without_lock_for_every_outcome(tmp_path):
+    import threading
+    h = Harness(tmp_path, gps_card(), NOW)
+    h.tick()
+    rec = h.rec('alert:')
+    h.bot.handle(callback(h, h.bot.sign(f'a:{rec.id}')))
+    h.bot.lock.acquire()
+    try:
+        for data in (h.bot.sign(f'a:{rec.id}'), h.bot.sign('a:9999')):
+            t = threading.Thread(target=h.bot.handle, args=(callback(h, data, uid=8),))
+            t.start()
+            t.join(2)
+            assert not t.is_alive()                                            # ответ — без замка прохода
+    finally:
+        h.bot.lock.release()
+    assert [p['text'] for p in h.api.of('answerCallbackQuery')][-2:] == ['Արդեն նշված է՝ Գոռ', 'Հնացած է']
+
+
+def test_review3_surrogate_in_name_and_broken_action_do_not_stop_the_pass(tmp_path, caplog, monkeypatch):
+    h = Harness(tmp_path, gps_card(), NOW)
+    h.tick()
+    rec = h.rec('alert:')
+    h.bot.handle(callback(h, h.bot.sign(f'a:{rec.id}'), first='Ա\ud800'))
+    assert h.rec('alert:').acked_by == 7
+    body = json.loads(json.dumps({'t': 'Ա\ud800'}, ensure_ascii=True))     # тело запроса кодируется (ASCII)
+    assert body['t'] == 'Ա\ud800'
+    cards = {'CAR1': card(alert('center', 1, lat=1.0, lon=1.0)), 'CAR2': card(alert('center', 1, lat=1.0, lon=1.0), car='CAR2')}
+    h2 = Harness(tmp_path, cards, NOW, db='b.db')
+    real = la.keyboard
+    monkeypatch.setattr(la, 'keyboard', lambda rec, sign: (_ for _ in ()).throw(KeyError('x')) if rec.car == 'CAR1'
+                        else real(rec, sign))
+    assert h2.tick() == 1 and h2.rec('alert:CAR1').phase == 'failed' and 'не выполнено' in caplog.text
+    assert h2.tick() == 0
+
+
+def test_review3_setup_error_of_any_kind_does_not_abort_the_pass(tmp_path, caplog):
+    api = FakeTelegram(forum=True)
+    api.fail['createForumTopic'] = [KeyError('message_thread_id')]
+    h = Harness(tmp_path, gps_card(), NOW, api=api)
+    assert h.tick() == 1 and 'настройка не удалась' in caplog.text
 
 
 def test_settings_page_has_telegram_block():
