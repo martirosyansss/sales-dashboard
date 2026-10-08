@@ -12,6 +12,12 @@
   этих рейсах, напр. «не везём сегодня»), её товар всё равно весь здесь — такой заказ в mixed, накладная предупреждает;
 - накладной ещё нет — строки самого заказа (SALEDOCDETAILS по fISN заказа, из них же план считает кг).
 
+Подарки (ответ владельца №90 «учесть везде», erp._KG_APPLY): ERP пишет их отдельно — SALEDOCGIFTS того же документа (заказа
+или накладной), без цены; склад грузит и их. Подарок складывается с тем же товаром строк (грузят один товар), gift строки
+листа — сколько из qty подарки (подарок бывает и товаром, которого в строках документа нет: 3 накладные за 01.09–08.10.2026,
+проверено 08.10.2026). Кг рейса — с подарками, как у плана. Магазин нескольких рейсов: подарки товара помечаются в его
+рейсах по порядку плана, не больше количества товара в рейсе (_gift_parts) — сколько грузить, от этого не меняется.
+
 Тяжёлый магазин план везёт несколькими рейсами поровну (dispatch._shares, у точки share; рейсы бывают на разных машинах).
 Товары магазина делит split_stop: каждый товар (сумма по заказам магазина) — поровну ЦЕЛЫМИ упаковками «փաթեթ», затем
 целыми штуками; что поровну не делится, по одной упаковке / штуке получает самый лёгкий на тот момент рейс, товары — от
@@ -23,7 +29,7 @@ ERP — только чтение: route_optimizer.erp._select (SELECT, WITH (NO
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Collection, Iterable, Mapping, Sequence
 
@@ -53,6 +59,13 @@ SQL_DOC_LINES = """
 SELECT CAST(d.fISN AS nvarchar(36)), d.fPRODUCTID, d.fQUANTITY
 FROM SALEDOCDETAILS d WITH (NOLOCK)
 WHERE d.fISN IN ({ph})
+"""
+
+# Подарки документов (см. docstring модуля): товар и количество, цены нет
+SQL_DOC_GIFTS = """
+SELECT CAST(g.fISN AS nvarchar(36)), g.fPRODUCTID, g.fQUANTITY
+FROM SALEDOCGIFTS g WITH (NOLOCK)
+WHERE g.fISN IN ({ph})
 """
 
 # Товары: базовая единица (код ERP, напр. «հատ»), вес единицы; упаковка «փաթեթ» = fBASEUNITQUANTITY / fADDITIONALUNITQUANTITY
@@ -104,11 +117,13 @@ class Product:
 class Lines:
     """Строки заказов точек: заказ (fISN, верхний регистр) → ((товар, количество), …) — из проведённых накладных заказа,
     если они есть, иначе из самого заказа (накладная из нескольких заказов — у одного из них, у прочих пусто); invoiced —
-    заказы с накладной; mixed — заказы, чья накладная сделана и из заказа вне запроса (её товар весь здесь)."""
+    заказы с накладной; mixed — заказы, чья накладная сделана и из заказа вне запроса (её товар весь здесь); gifts — подарки
+    тех же документов (SALEDOCGIFTS) по заказу, как by_order; заказа без подарков в gifts нет."""
     by_order: Mapping[str, tuple[tuple[int, float], ...]]
     invoiced: frozenset[str]
     products: Mapping[int, Product]
     mixed: frozenset[str] = frozenset()
+    gifts: Mapping[str, tuple[tuple[int, float], ...]] = field(default_factory=dict)
 
 
 def pack_size(used: Any, base_qty: Any, add_qty: Any) -> int | None:
@@ -124,7 +139,7 @@ def pack_size(used: Any, base_qty: Any, add_qty: Any) -> int | None:
 
 
 def load_lines(connection_string: str, isns: Sequence[str]) -> Lines:
-    """Строки заказов isns и товары к ним — одним соединением (четыре запроса чанками)."""
+    """Строки и подарки заказов isns и товары к ним — одним соединением (пять запросов чанками)."""
     want = sorted({i.upper() for i in isns})
     conn = erp.connect(connection_string)
     try:
@@ -148,18 +163,25 @@ def load_lines(connection_string: str, isns: Sequence[str]) -> Lines:
                 mixed.add(owner)
         docs = sorted({i for i in want if i not in invoices} | set(found))
         raw: dict[str, list[tuple[int, float]]] = {}
-        for chunk in erp._chunks(docs):
-            for r in erp._select(conn, SQL_DOC_LINES.format(ph=erp._placeholders(len(chunk))), chunk):
-                raw.setdefault(erp._str(r[0]).upper(), []).append((int(r[1]), float(r[2] or 0)))
-        by_order = {i: tuple(x for doc in owned.get(i, ()) for x in raw.get(doc, ())) if i in invoices
-                    else tuple(raw.get(i, ())) for i in want}
+        gift_raw: dict[str, list[tuple[int, float]]] = {}
+        for sql, out in ((SQL_DOC_LINES, raw), (SQL_DOC_GIFTS, gift_raw)):
+            for chunk in erp._chunks(docs):
+                for r in erp._select(conn, sql.format(ph=erp._placeholders(len(chunk))), chunk):
+                    out.setdefault(erp._str(r[0]).upper(), []).append((int(r[1]), float(r[2] or 0)))
+
+        def of_order(src: Mapping[str, list[tuple[int, float]]], i: str) -> tuple[tuple[int, float], ...]:
+            if i in invoices:
+                return tuple(x for doc in owned.get(i, ()) for x in src.get(doc, ()))
+            return tuple(src.get(i, ()))
+        by_order = {i: of_order(raw, i) for i in want}
+        gifts = {i: g for i in want if (g := of_order(gift_raw, i))}
         products: dict[int, Product] = {}
-        ids = sorted({pid for v in by_order.values() for pid, _ in v})
+        ids = sorted({pid for v in (*by_order.values(), *gifts.values()) for pid, _ in v})
         for chunk in erp._chunks(ids):
             for r in erp._select(conn, SQL_PRODUCTS.format(ph=erp._placeholders(len(chunk))), chunk):
                 products[int(r[0])] = Product(int(r[0]), erp._str(r[1]), erp._str(r[2]), erp._str(r[3]),
                                               float(r[4] or 0), pack_size(r[5], r[6], r[7]))
-        return Lines(by_order, frozenset(invoices), products, frozenset(mixed))
+        return Lines(by_order, frozenset(invoices), products, frozenset(mixed), gifts)
     finally:
         erp.close_quietly(conn)
 
@@ -305,21 +327,44 @@ def _code_key(p: Product) -> tuple[Any, ...]:
     return (0, int(p.code), p.name) if p.code.isdecimal() else (1, p.code, p.name)
 
 
-def _row(p: Product, qty: float, known: bool) -> dict[str, Any]:
+def _row(p: Product, qty: float, known: bool, gift: float = 0.0) -> dict[str, Any]:
+    """Строка листа; gift — сколько из qty подарки (поле есть, только если подарки есть: строки без них — как прежде)."""
     whole = qty.is_integer() and qty >= 0 and p.pack is not None
     packs, loose = divmod(int(qty), p.pack) if whole else (None, None)
-    return {'product_id': p.id, 'code': p.code, 'name': p.name, 'unit': p.unit, 'unknown': not known,
-            'qty': int(qty) if qty.is_integer() else round(qty, 4),
-            'pack': p.pack, 'packs': packs, 'loose': loose, 'kg': round(qty * p.kg, 1)}
+    row = {'product_id': p.id, 'code': p.code, 'name': p.name, 'unit': p.unit, 'unknown': not known,
+           'qty': int(qty) if qty.is_integer() else round(qty, 4),
+           'pack': p.pack, 'packs': packs, 'loose': loose, 'kg': round(qty * p.kg, 1)}
+    if gift > 1e-9:
+        row['gift'] = int(gift) if float(gift).is_integer() else round(gift, 4)
+    return row
 
 
-def _goods(qty: Mapping[int, float], lines: Lines) -> tuple[list[dict[str, Any]], float, int]:
+def _goods(qty: Mapping[int, float], lines: Lines,
+           gifts: Mapping[int, float] | None = None) -> tuple[list[dict[str, Any]], float, int]:
     """Строки листа по количествам товаров (по коду; товар, которого нет в ERP, — unknown, без кода), их кг и сколько
-    товаров не найдено в ERP."""
+    товаров не найдено в ERP. gifts — сколько из количества товара подарки (они уже в qty)."""
+    gifts = gifts or {}
     items = [(lines.products.get(pid) or Product(pid, '', '', '', 0.0, None), q)
              for pid, q in qty.items() if abs(q) > 1e-9]
-    rows = [_row(p, round(q, 4), p.id in lines.products) for p, q in sorted(items, key=lambda x: _code_key(x[0]))]
+    rows = [_row(p, round(q, 4), p.id in lines.products, round(gifts.get(p.id, 0.0), 4))
+            for p, q in sorted(items, key=lambda x: _code_key(x[0]))]
     return rows, math.fsum(q * p.kg for p, q in items), sum(1 for p, _ in items if p.id not in lines.products)
+
+
+def _gift_parts(gifts: Sequence[tuple[int, float]], shares: Sequence[Mapping[int, float]]) -> list[dict[int, float]]:
+    """Подарки магазина по его рейсам (shares — split_stop всех его рейсов по порядку плана, подарки в них уже входят):
+    каждый товар — первым рейсам, не больше количества товара в рейсе. Σ по рейсам = подаркам документов точно."""
+    left: dict[int, int] = {}                # в десятитысячных (точность ERP), как split_stop
+    for pid, q in gifts:
+        left[pid] = left.get(pid, 0) + round(q * QTY_SCALE)
+    out: list[dict[int, float]] = [{} for _ in shares]
+    for i, share in enumerate(shares):
+        for pid in sorted(left):
+            take = min(left[pid], max(0, round(share.get(pid, 0.0) * QTY_SCALE)))
+            if take > 0:
+                out[i][pid] = take / QTY_SCALE
+                left[pid] -= take
+    return out
 
 
 def _whole_kg(kgs: Sequence[float], total: int) -> list[int]:
@@ -353,8 +398,10 @@ def truck_waybill(plan: Mapping[str, Any], car_code: str, lines: Lines) -> dict[
     trips = []
     for no, tr in enumerate(truck['trips'], 1):
         qty: dict[int, float] = {}
+        gift_qty: dict[int, float] = {}
         orders = invoiced = mixed = split = 0
-        loads: list[tuple[Mapping[str, Any], bool, dict[int, float]]] = []   # (точка, делится ли, её доля) по объезду
+        # (точка, делится ли, её доля, из неё подарки) по объезду
+        loads: list[tuple[Mapping[str, Any], bool, dict[int, float], dict[int, float]]] = []
         for s in tr['stops']:
             parts, index = visits[(tr['id'], s['customer_id'])]
             split += parts > 1
@@ -362,14 +409,19 @@ def truck_waybill(plan: Mapping[str, Any], car_code: str, lines: Lines) -> dict[
             orders += len(isns)
             invoiced += sum(i in lines.invoiced for i in isns)
             mixed += sum(i in lines.mixed for i in isns)
-            share = split_stop([x for i in isns for x in lines.by_order.get(i, ())], parts, lines.products)[index]
-            loads.append((s, parts > 1, share))
+            gifts = [x for i in isns for x in lines.gifts.get(i, ())]
+            shares = split_stop([x for i in isns for x in lines.by_order.get(i, ())] + gifts, parts, lines.products)
+            share = shares[index]
+            gift = _gift_parts(gifts, shares)[index] if gifts else {}
+            loads.append((s, parts > 1, share, gift))
             for pid, q in share.items():
                 qty[pid] = qty.get(pid, 0.0) + q
-        rows, kg, unknown = _goods(qty, lines)
+            for pid, q in gift.items():
+                gift_qty[pid] = gift_qty.get(pid, 0.0) + q
+        rows, kg, unknown = _goods(qty, lines, gift_qty)
         loading = []
-        for k, (s, many, share) in enumerate(reversed(loads), 1):
-            goods, stop_kg, _ = _goods(share, lines)
+        for k, (s, many, share, gift) in enumerate(reversed(loads), 1):
+            goods, stop_kg, _ = _goods(share, lines, gift)
             loading.append({'no': k, 'stop': len(loads) - k + 1, 'code': s.get('code') or '', 'name': s.get('name') or '',
                             'split': many, 'rows': goods, 'kg': stop_kg})
         for x, w in zip(loading, _whole_kg([x['kg'] for x in loading], round(kg)), strict=True):

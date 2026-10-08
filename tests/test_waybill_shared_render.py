@@ -29,9 +29,9 @@ def test_one_renderer_for_both_pages():
     assert 'const wbNotes = (tr) => window.RtWaybill.notes(tr);' in dispatch               # при вызове, не при загрузке
     assert '/api/routes/warehouse/waybill?' in warehouse and '/api/routes/dispatch' not in warehouse
     tpl = (ROOT / 'templates' / 'base_v2.html').read_text(encoding='utf-8')
-    assert "filename='js/base.js') }}?v=3\"" in tpl                                    # новый base.js — мимо кэша
+    assert "filename='js/base.js') }}?v=4\"" in tpl                                    # новый base.js — мимо кэша
     page = (ROOT / 'templates' / 'routes_warehouse.html').read_text(encoding='utf-8')
-    assert "routes_warehouse.js') }}?v=7" in page and "routes_warehouse.css') }}?v=5" in page
+    assert "routes_warehouse.js') }}?v=8" in page and "routes_warehouse.css') }}?v=5" in page
 
 
 NODE = r'''
@@ -46,6 +46,7 @@ const wb = { rev: 7, driver: 'Արամ', helper: null, trips: [
     { id: 9, no: 2, loading_start: '12:00', depart: '12:20', stops: 1, kg: 0, orders: 1, invoiced: 0, rows: [] }] };
 process.stdout.write(JSON.stringify({ html: W.html({ car_code: 'CAR1', name: 'HOWO' }, { day: '2026-10-06', weekday: 2 }, wb),
     unknown: W.name({ unknown: true, product_id: 77 }), notes: W.notes(wb.trips[1]),
+    gift: W.name({ name: 'Գառնի 6լ', qty: 11, gift: 1 }), nogift: W.name({ name: 'Գառնի 6լ', qty: 10 }),
     load: [W.loadNo(wb.trips[0].loading[0]), W.loadStore(wb.trips[0].loading[0]), W.loadNo(wb.trips[0].loading[1]),
         W.loadStore({ no: 1, stop: 4, split: false, rows: [] })] }));
 '''
@@ -63,6 +64,8 @@ def test_renderer_output():
     assert '2 փաթեթ + 6 հատ' in html and 'Վարորդ՝ <b>Արամ</b>' in html and 'պլան № 7' in html
     assert 'Ապրանքներ չկան' in html
     assert got['unknown'] == 'ERP-ում անհայտ ապրանք (ID 77)'
+    # №90: подарки ERP — уже в количестве строки; лист, порядок погрузки и Excel пишут, сколько из них подарки
+    assert (got['gift'], got['nogift']) == ('Գառնի 6լ · այդ թվում՝ 1 նվեր', 'Գառնի 6լ')
     assert got['notes'] == ['Քանակները՝ պատվերներից․ ապրանքագրեր դեռ չկան։']
     # №87 п. 4: блок порядка погрузки — только у рейса, где он есть; магазины по номеру погрузки, имя — через esc
     assert html.count('<h2 class="ld">Բեռնման հերթականություն</h2>') == 1

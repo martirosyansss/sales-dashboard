@@ -17,7 +17,7 @@
         on_time: ['Ժամանակին', '%'], order: ['Հերթականություն', '%'], speed: ['Արագություն', ' / 100 կմ'],
         stops: ['Կանգառներ խանութից դուրս', ' ր/օր'], liters: ['Վառելիք՝ նորմից', '%'],
         clean: ['Առանց խնդրի (առանց մերժման և պակասի)', '%'], unload: ['Բեռնաթափում՝ նորմի նկատմամբ', '%'],
-        day: ['Օրվա տևողություն՝ պլանի նկատմամբ', '%'],
+        day: ['Օրվա տևողություն՝ պլանի նկատմամբ', '%'], route: ['Երթուղուն հետևում', '%'],
     };
 
     const state = { data: null, sort: { key: 'score', dir: -1 }, open: new Set(), seq: 0, today: null,
@@ -194,9 +194,9 @@
         const items = Object.entries(r.parts || {});
         const head = !r.enough_data ? scoreTitle(r) + '։ Ցուցանիշները՝ տեղեկության համար։'
             : 'Միավոր՝ ' + fmt(r.score) + (num(r.rank) !== null ? ' (' + place(r.rank, r.role) + ')' : '');
-        // «Երթուղի» (08.10) — пока только показатель: в балл не входит (вес владелец не решил)
+        // «Երթուղի» (08.10) — в балле (scorecard.WEIGHTS): здесь — по скольким дням и км он посчитан
         const route = num(r.route_pct) === null ? null : h('p', { class: 'dr-parts-head', text: 'Երթուղուն հետևում՝ '
-            + fmt(r.route_pct, 1) + '% (' + fmt(r.route_days) + ' օր, ' + fmt(r.route_km) + ' կմ) — միավորում չի մտնում' });
+            + fmt(r.route_pct, 1) + '% (' + fmt(r.route_days) + ' օր, ' + fmt(r.route_km) + ' կմ)' });
         return h('div', { class: 'dr-parts' }, h('p', { class: 'dr-parts-head', text: head }), route,
             items.length ? h('ul', {}, items.map(([k, p]) => h('li', {},
                 h('span', { class: 'l', text: (PART[k] || [k])[0] }),

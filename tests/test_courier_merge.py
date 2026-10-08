@@ -55,9 +55,9 @@ def payment(eid, sid, when, amount, kind='invoice', cancel_of=None):
 # --- контрольные примеры ---
 
 def test_vectors_fixture():
-    assert VECTORS['version'] == '1.2.3'
-    assert len(CASES) == 28
-    assert len(BY_NAME) == 28
+    assert VECTORS['version'] == '1.2.4'   # v1.2.4 — подарки ERP (контракт §11)
+    assert len(CASES) == 34
+    assert len(BY_NAME) == 34
 
 
 @pytest.mark.parametrize('case', CASES, ids=[c['name'] for c in CASES])

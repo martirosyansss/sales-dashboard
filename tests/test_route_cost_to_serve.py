@@ -294,7 +294,7 @@ def test_plan_source_drafts_only_before_first_sent_day():
 
 def test_sql_is_read_only():
     check_sql(SQL_COST_SALES)
-    assert SQL_COST_SALES.count('WITH (NOLOCK)') == 3 and 'GROUP BY' in SQL_COST_SALES
+    assert SQL_COST_SALES.count('WITH (NOLOCK)') == 4 and 'GROUP BY' in SQL_COST_SALES and 'SALEDOCGIFTS' in SQL_COST_SALES
 
 
 # ============================== API ==============================
