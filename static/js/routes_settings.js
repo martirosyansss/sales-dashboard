@@ -113,6 +113,22 @@
             { key: 'live_quiet_to', label: 'Հանգիստ ժամեր՝ ավարտվում են', type: 'time' },
             { key: 'live_repeat_min', label: 'Նույն տեսակի ահազանգը նույն մեքենայի համար՝ ոչ ավելի հաճախ, քան, րոպե', min: 1, max: 1440, step: 1 },
         ] },
+        // Telegram-բոտ «Araqich Dispatch» (ответ владельца №91): важность, SIM, эскалация, отчёты. Токен и чат — только в .env
+        { title: 'Telegram', items: [
+            { key: 'tg_levels', kind: 'tglevels', label: 'Ահազանգերի կարևորությունը',
+                hint: '🔴 կրիտիկական՝ ձայն, «✔ Տեսա» կոճակ և էսկալացիա․ 🟠 ուշադրություն՝ ձայն և «✔ Տեսա»․ ⚪ տեղեկություն՝ առանց ձայնի և կոճակների' },
+            { key: 'tg_sim_installed', kind: 'check', label: 'Տերմինալներում կա բջջային ինտերնետ (SIM)',
+                hint: 'առանց SIM-ի տերմինալը կապ ունի միայն պահեստի Wi-Fi-ով, և «Կապ չկա»-ն ⚪ է՝ առանց ձայնի և էսկալացիայի․ նշված՝ ըստ աղյուսակի' },
+            { key: 'tg_escalate_min', label: 'Էսկալացիա՝ 🔴 ահազանգին «✔ Տեսա» չեն սեղմել, րոպե', min: 0, max: 240, step: 1,
+                hint: 'խմբում՝ կրկին ձայնով և նշումով, և անձնական հաղորդագրություն ստորև նշվածներին․ 0՝ առանց էսկալացիայի' },
+            { key: 'tg_escalate_to', kind: 'ids', label: 'Էսկալացիան ում (Telegram id, ստորակետով)',
+                hint: 'անձնական հաղորդագրությունը հասնում է, եթե մարդը բացել է բոտը և սեղմել /start' },
+            { key: 'tg_report_plan', kind: 'check', label: 'Օրվա պլանը՝ հաստատելուց անմիջապես հետո',
+                hint: 'պլանը փոխելիս նույն հաղորդագրությունը թարմացվում է' },
+            { key: 'tg_report_summary', kind: 'check', label: 'Օրվա ամփոփումը՝ երբ բոլոր մեքենաները վերադարձել են պահեստ' },
+            { key: 'tg_summary_at', label: 'Օրվա ամփոփումը՝ ոչ ուշ, քան', type: 'time' },
+            { key: 'tg_report_week', kind: 'check', label: 'Վարորդների շաբաթվա վարկանիշը՝ շաբաթվա առաջին պլանի հետ' },
+        ] },
         { title: 'Այցի տևողությունը, րոպե', items: [
             { key: 'visit_min_small', label: 'Փոքր խանութ', min: 1, max: 120, step: 0.5, nullable: true, auto: true, hint: 'դատարկ՝ վերցնում ենք GPS հետագծերում խանութների մոտ կանգառներից' },
             { key: 'visit_min_medium', label: 'Միջին խանութ', min: 1, max: 120, step: 0.5, nullable: true, auto: true },
@@ -1508,9 +1524,58 @@
             it.hint ? h('div', { class: 'rt-field-hint', text: it.hint }) : null, err);
     }
 
+    // Telegram-բոտ (№91): կարևորությունը ըստ ահազանգի տեսակի (tg_levels; «Չի հասցնում»՝ ըստ տողի տեսակի)
+    const TG_KINDS = [['no_contact', 'Կապ չկա'], ['gps', 'GPS-ն անջատված է'], ['center', 'Փոքր կենտրոնում'],
+        ['late_window', 'Չի հասցնում՝ ընդունման ժամին'], ['late_return', 'Չի հասցնում վերադառնալ պահեստ'],
+        ['late_plan', 'Չի հասցնում՝ պլանից ուշ (առանց ընդունման ժամի)'], ['speed', 'Արագության գերազանցում'],
+        ['stop', 'Երկար կանգառ ոչ խանութում'], ['deviation', 'Շեղում երթուղուց'], ['sequence', 'Խանութներ բաց են թողնված']];
+    const TG_LEVELS = [['critical', '🔴 կրիտիկական'], ['warning', '🟠 ուշադրություն'], ['info', '⚪ տեղեկություն']];
+    // вид, которого нет в сохранённых уровнях, — уровень по умолчанию (store.DEFAULT_SETTINGS tg_levels), не первый в списке
+    const TG_DEFAULT = { no_contact: 'critical', gps: 'critical', center: 'critical', late_window: 'critical',
+        late_return: 'critical', late_plan: 'warning', speed: 'warning', stop: 'warning', deviation: 'info', sequence: 'info' };
+    function tgLevelsField(it, s, err) {
+        const cur = (s[it.key] && typeof s[it.key] === 'object') ? s[it.key] : {};
+        const box = h('div', { style: 'display:flex;flex-direction:column;gap:6px', role: 'group', 'aria-labelledby': 'rsTgLevelsLabel', id: 'rsN_' + it.key });
+        TG_KINDS.forEach(([code, text]) => {
+            const sel = h('select', { class: 'rt-select', style: 'flex:0 0 auto;width:184px;max-width:100%',
+                'aria-label': 'Կարևորությունը — ' + text, dataset: { tgLevel: code } },
+                TG_LEVELS.map(([v, t]) => h('option', { value: v, selected: (cur[code] || TG_DEFAULT[code]) === v, text: t })));
+            box.append(h('div', { class: 'rt-field-row' }, h('span', { text: text }), sel));
+        });
+        reg(['settings.' + it.key], box, err, it.label);
+        return h('div', { class: 'rt-field' }, h('span', { class: 'rt-field-label', id: 'rsTgLevelsLabel', text: it.label }), box,
+            it.hint ? h('div', { class: 'rt-field-hint', text: it.hint }) : null, err);
+    }
+    function tgCheckField(it, s, err) {
+        const id = 'rsN_' + it.key;
+        const cb = h('input', { type: 'checkbox', id, checked: s[it.key] === true, dataset: { tgFlag: it.key } });
+        const hint = it.hint ? h('div', { class: 'rt-field-hint', id: id + '_h', text: it.hint }) : null;
+        if (hint) cb.setAttribute('aria-describedby', hint.id);
+        reg(['settings.' + it.key], cb, err, it.label);
+        return h('div', { class: 'rt-field' }, h('label', { style: 'display:flex;gap:8px;align-items:flex-start;cursor:pointer' }, cb, it.label), hint, err);
+    }
+    function tgIdsField(it, s, err) {
+        const id = 'rsN_' + it.key;
+        const inp = h('input', { class: 'rt-input', id, type: 'text', inputmode: 'numeric', autocomplete: 'off', spellcheck: 'false',
+            value: Array.isArray(s[it.key]) ? s[it.key].join(', ') : '', placeholder: '838786551' });
+        const hint = it.hint ? h('div', { class: 'rt-field-hint', id: id + '_h', text: it.hint }) : null;
+        if (hint) inp.setAttribute('aria-describedby', hint.id);
+        reg(['settings.' + it.key], inp, err, it.label);
+        return h('div', { class: 'rt-field' }, h('label', { for: id, text: it.label }), inp, hint, err);
+    }
+    // «838786551, 5» → [838786551, 5]; пусто — []; не число — ошибка у поля
+    function readIds(value) {
+        const parts = String(value).split(/[,;\s]+/).filter(Boolean);
+        if (parts.some(p => !/^\d{1,13}$/.test(p) || Number(p) <= 0)) return { error: 'Telegram id-ն՝ դրական ամբողջ թիվ, ստորակետով' };
+        return { value: [...new Set(parts.map(Number))] };
+    }
+
     function normField(it, s) {
         const id = 'rsN_' + it.key;
         const err = errNode();
+        if (it.kind === 'tglevels') return tgLevelsField(it, s, err);
+        if (it.kind === 'check') return tgCheckField(it, s, err);
+        if (it.kind === 'ids') return tgIdsField(it, s, err);
         if (it.kind === 'coord') {
             const inp = h('input', { class: 'rt-input rt-num', type: 'text', id, inputmode: 'decimal', autocomplete: 'off', spellcheck: 'false',
                 value: fmtCoord(s[it.lat], s[it.lon]), placeholder: '40.17920, 44.49910' });
@@ -1919,6 +1984,16 @@
             else s[key] = r.value;
         });
         s.live_alert_kinds = [...document.querySelectorAll('#rsForm [data-live-kind]:checked')].map(i => i.value);
+        // Telegram-բոտ (№91): уровни (виды без поля — как были), флаги, кому эскалация
+        const levels = Object.assign({}, state.data.settings.tg_levels || {});
+        document.querySelectorAll('#rsForm [data-tg-level]').forEach(sel => { levels[sel.dataset.tgLevel] = sel.value; });
+        s.tg_levels = levels;
+        document.querySelectorAll('#rsForm [data-tg-flag]').forEach(cb => { s[cb.dataset.tgFlag] = cb.checked; });
+        if ($('rsN_tg_escalate_to')) {
+            const ids = readIds($('rsN_tg_escalate_to').value);
+            if (ids.error) errors['settings.tg_escalate_to'] = ids.error;
+            else s.tg_escalate_to = ids.value;
+        }
         s.workdays = [...document.querySelectorAll('#rsForm [data-wd]:checked')].map(i => Number(i.value));
         if (!s.workdays.length) errors['settings.workdays'] = 'Նշեք գոնե մեկ աշխատանքային օր';
         const picked = $('rsHolidayNew').value;   // выбрали дату и сразу «Պահպանել», не нажав «Ավելացնել»

@@ -1,62 +1,55 @@
 # -*- coding: utf-8 -*-
-"""Тревоги карты «Մեքենաները առցանց» в Telegram-группу (№76, этап 2, docs/plans/live-map-plan.md).
+"""Тревоги карты «Մեքենաները առցանց» для Telegram-бота: что слать, править и поднимать (№76 этап 2 → №91,
+docs/plans/telegram-bot-plan.md §3). Чистые функции — без сети и базы: карточки флота (views._live_cards: alerts_log,
+position, driver) + правила + записи бота (Rec, таблица tg_message) → действия (plan). Отправку, правки и запись делает
+tg_bot.
 
-Фоновый поток раз в INTERVAL_S берёт карточки флота (views._live_cards — тот же расчёт, что у карты, кэш 10 с) и шлёт
-сообщение при начале тревоги (скорость, долгая стоянка, нет связи — только APK ≥ 2.2.0, GPS выключен, малый центр,
-отклонение от плановой линии, пропущенные магазины рейса) и при
-её окончании — для «нет связи» и GPS. Включается только env ROUTES_LIVE_ALERTS=1 и только если заданы токен
-(ROUTES_LIVE_TG_TOKEN, иначе TELEGRAM_BOT_TOKEN) и чат (ROUTES_LIVE_TG_CHAT): без них поток не стартует. Слать должен
-ровно один процесс — переменная задаётся только на CT115 (deploy/README.md): у ПК та же карта, но терминалы шлют на
-CT115, и сообщений ПК не нужно.
+Включение — env ROUTES_LIVE_ALERTS=1 и заданы токен (ROUTES_LIVE_TG_TOKEN, иначе TELEGRAM_BOT_TOKEN) и чат
+(ROUTES_LIVE_TG_CHAT): без них бот не стартует. Слать должен ровно один процесс — переменная задаётся только на CT115
+(deploy/README.md): у ПК та же карта, но терминалы шлют на CT115, и сообщений ПК не нужно.
 
-Правила (настройки «Маршрутов», Rules):
-- виды тревог — alert_kinds (по умолчанию все); тихие часы quiet (по умолчанию 20:00–08:00, Ереван): тревога, замеченная
-  в них, не отправляется вовсе (и не отправится утром, если ещё идёт); повтор — не чаще раза в repeat_min минут на
-  тревогу одного вида одной машины (следующая в этом окне пропускается, а не откладывается);
-- «փոքր շեղում» (отклонение с перепробегом участка меньше live_detour_min_km, live: minor) и объяснённые диспетчером
-  тревоги (explained) не рассылаются и не отмечаются: малое отклонение, которое вырастет в тревогу (то же начало), уйдёт
-  тогда; порядок объезда (sequence) — как отклонение, только по галочке владельца (LIVE_KINDS_OPT_IN);
-- «уже отправлено» — файл рядом с базой «Маршрутов» (route_live_alerts.json; новая схема SQLite ради нескольких строк не
-  нужна): ключ тревоги — машина, вид и момент её начала; запись после каждой успешной отправки (перезапуск не
-  повторяет), недельные хвосты сами уходят. Тревога, которой не было видно в этот момент и которая кончилась больше
-  RECENT_MIN назад, не рассылается задним числом (после простоя сервера и при первом запуске);
-- «не успеет» (late, №87) — прогноз, а не событие: одно сообщение на магазин (и на возврат машины на склад) в день; снова —
-  если прогноз ухудшился не меньше чем на max(repeat_min, LATE_STEP_MIN) минут против отправленного или если строка
-  не «опаздывала» (или не было свежего GPS) подряд LATE_CLEAR_MIN минут — тогда запись снимается — и опаздывает опять;
-  вернулась раньше — тот же случай (прогноз у порога не шлёт сообщение на каждом пересчёте). Новые строки одной машины
-  за проход — одним сообщением. В тихие часы не шлётся и не отмечается: прогноз, который ещё в силе после них, уйдёт тогда. Окно повтора
-  вида у машины к нему не применяется (иначе второй опаздывающий магазин той же машины пропал бы);
-- эскалация (владелец 08.10, «fix all» тревог карты; ISA-18.2): идущая красная тревога (RED_KINDS — как важность 1
-  routes_live.js alarmSev; «не успеет» — к окну приёма или возврату на склад, ключ страницы late:window), которую через
-  ESCALATE_MIN минут никто не отметил «Տեսա» на сервере (store.live_acks, схема 27: та же машина, вид и начало), — одно
-  сообщение «⚠ Չի տեսել ոչ ոք N րոպե՝ …» на (день, машина, вид, начало); N — сколько тревога идёт. Срок — от позднего из
-  начала тревоги и момента, когда поток впервые увидел этот случай (запись first в AlertState): при первом включении и
-  после простоя давние красные не приходят разом. У «не успеет» начала нет: срок — от первого взгляда потока, а отметка без
-  начала в силе ACK_GRACE_MIN от последнего подтверждения (её держит открытая страница, у которой проблема отмечена,
-  — routes_live.js ACK_REFRESH_MS); все страницы закрыты — через ACK_GRACE_MIN случай снова «никто не видел». Тихие часы —
-  как у начала: срок, наступивший в них, не рассылается. Отметки прочитать не удалось — эскалации в этот проход нет;
-- сбой отправки (сеть, Telegram) — в журнал без токена, повтор со всё большей паузой (до BACKOFF_MAX_S); поток не падает.
-  Тайм-аут ответа не значит «не доставлено»: сообщение, дошедшее без ответа, при повторе придёт второй раз (редкий дубль
-  принят — потерять тревогу хуже). CLIENT_ERRORS_MAX ошибок 4xx подряд (токен отозван, бота убрали из группы) — рассылка
-  останавливается до перезапуска или смены настроек тревог, в журнале одна понятная строка.
-Сообщения — по-армянски (глоссарий раздела), ссылка на карту Яндекса: https://yandex.ru/maps/?pt=<lon>,<lat>&z=16&l=map.
+Правила (настройки «Маршрутов»: Rules — виды, тихие часы, повтор; TgRules — уровни, эскалация, отчёты):
+- виды тревог — alert_kinds (по умолчанию все, кроме LIVE_KINDS_OPT_IN); тихие часы quiet (по умолчанию 20:00–08:00,
+  Ереван): тревога, замеченная в них, не отправляется вовсе (и не отправится утром, если ещё идёт); повтор — не чаще
+  раза в repeat_min минут на тревогу одного вида одной машины (следующая в этом окне пропускается, а не откладывается);
+  (и в одном проходе: две новые тревоги вида у машины — уходит первая);
+- «փոքր շեղում» (minor) и объяснённые диспетчером тревоги (explained) не рассылаются и не отмечаются: малое отклонение,
+  которое вырастет в тревогу (то же начало), уйдёт тогда; уже отправленная, а потом объяснённая или ставшая «փոքր», —
+  закрывается правкой (End reason), как и запись прошлого дня, ещё «идущая» (тревога пропала из журнала без конца);
+- запись тревоги — машина, вид и момент начала (alert_key); решение «не слать» (тихие часы, окно повтора, старая)
+  записывается тоже (phase skipped) — перезапуск его не пересматривает. Тревога, которой не было видно в этот момент и
+  которая кончилась больше RECENT_MIN назад, не рассылается задним числом (после простоя сервера и при первом запуске);
+- уровень (level_of): 🔴 critical — звук, «Տեսա», эскалация; 🟠 warning — звук, «Տեսա»; ⚪ info — без звука и кнопок.
+  По виду из настроек tg_levels («не успеет» — по виду строки: окно, возврат, план); «Կապ չկա» — ⚪, пока не отмечено
+  «в терминалах есть SIM» (tg_sim_installed: до SIM терминал на связи только на Wi-Fi склада);
+- окончание тревоги (у всех видов, кроме «не успеет») — правка того же сообщения: «✅ Վերջացավ · տևեց N րոպե», кнопка
+  «Տեսա» убирается; правка беззвучна и идёт и в тихие часы. Сообщения нет (запись перенесена из route_live_alerts.json
+  или правка невозможна) — новое ⚪ сообщение об окончании: у перенесённых — только «нет связи» и GPS (как слал прежний
+  поток), и не в тихие часы. Тревога, уже кончившаяся к отправке (не старше RECENT_MIN), уходит сразу с ✅ и без «Տեսա»;
+- «не успеет» (late, №87) — прогноз, а не событие: одно сообщение на машину в день (late_key), строка на магазин (и на
+  возврат машины на склад). Новая строка или ухудшившаяся не меньше чем на max(repeat_min, LATE_STEP_MIN) минут против
+  отправленного — правка сообщения + короткий ответ на него со звуком (у нового сообщения — само сообщение); прочие
+  изменения прогноза — беззвучная правка не чаще LATE_EDIT_MIN (появилась или ушла строка — сразу). Строка, которая не
+  «опаздывает» (или нет свежего GPS) LATE_CLEAR_MIN минут подряд, снимается; снова опаздывает — новый случай (со звуком);
+  вернулась раньше — тот же случай. Снялись все строки — ✅. В тихие часы «не успеет» не решается вовсе: прогноз, который
+  ещё в силе после них, уйдёт тогда. Окно повтора вида у машины к нему не применяется;
+- эскалация (due_escalations): 🔴 с сообщением, не подтверждённая «Տեսա» escalate_min минут и всё ещё идущая (active) —
+  один раз; не в тихие часы.
+Сообщения — HTML (parse_mode), по-армянски (глоссарий раздела); все данные экранируются. Карта — Яндекс:
+https://yandex.ru/maps/?pt=<lon>,<lat>&z=16&l=map.
 """
 from __future__ import annotations
 
-import json
+import html
 import logging
 import os
-import tempfile
-import time
-import urllib.error
-import urllib.parse
-import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Callable, Mapping, Sequence
 
 from . import actuals as ac
 from .live import Rules
+from .store import DEFAULT_SETTINGS, TG_LEVEL_KINDS
 
 logger = logging.getLogger(__name__)
 
@@ -65,32 +58,33 @@ TOKEN_ENV = 'ROUTES_LIVE_TG_TOKEN'
 TOKEN_FALLBACK_ENV = 'TELEGRAM_BOT_TOKEN'
 CHAT_ENV = 'ROUTES_LIVE_TG_CHAT'
 INTERVAL_S = 30.0
-HTTP_TIMEOUT_S = 10.0
 BACKOFF_MAX_S = 600.0
 RECENT_MIN = 10.0                 # кончившаяся тревога старше — не рассылается задним числом
-STATE_FILE = 'route_live_alerts.json'
-STATE_KEEP = timedelta(hours=48)
+STATE_FILE = 'route_live_alerts.json'   # «уже отправлено» прежнего потока (до №91) — переносит tg_bot
 CLIENT_ERRORS_MAX = 5             # ошибок 4xx подряд (кроме 429) — дальше не шлём, пока не перезапустят или не сменят настройки
-END_KINDS = ('no_contact', 'gps')   # окончание сообщается только у них
+LEGACY_END_KINDS = ('no_contact', 'gps')   # прежний поток сообщал окончание только у них
 MAP_URL = 'https://yandex.ru/maps/?pt={lon},{lat}&z=16&l=map'
-LATE_STEP_MIN = 15.0              # «не успеет»: повтор — при ухудшении прогноза на столько (и не меньше repeat_min)
-LATE_CLEAR_MIN = 15.0             # …и после стольких минут подряд без опоздания — запись снимается (новый случай)
-ESCALATE_MIN = 10.0               # красная тревога без «Տեսա» столько минут от начала — сообщение «никто не видел»
-ACK_GRACE_MIN = 10.0              # «Տեսա» без начала тревоги (у «не успеет») — в силе столько (routes_live.js ACK_GRACE_MS)
-# красные виды (важность 1) — как routes_live.js alarmSev; «не успеет» к окну / возврату — отдельно (ключ late:window)
-RED_KINDS = ('speed', 'center', 'gps', 'sequence')
-LATE_RED = ('window', 'return')
+LATE_STEP_MIN = 15.0              # «не успеет»: со звуком — при ухудшении прогноза на столько (и не меньше repeat_min)
+LATE_CLEAR_MIN = 15.0             # …строка без опоздания столько минут подряд — снимается (новый случай)
+LATE_EDIT_MIN = 5.0               # беззвучная правка «не успеет» без новых строк — не чаще
+LATE_LINES_SHOWN = 15             # строк «не успеет» в сообщении — не больше (остальные числом: предел Telegram 4096)
 
+LEVELS = ('critical', 'warning', 'info')   # по убыванию важности
+EMOJI = {'critical': '🔴', 'warning': '🟠', 'info': '⚪'}
 TITLE = {'speed': 'Արագության գերազանցում', 'stop': 'Երկար կանգառ ոչ խանութում', 'no_contact': 'Կապ չկա',
          'gps': 'GPS-ն անջատված է', 'center': 'Փոքր կենտրոնում (մուտքը թույլատրված չէ)',
          'late': 'Չի հասցնում ժամանակին (կանխատեսում)', 'deviation': 'Շեղում երթուղուց',
          'sequence': 'Խանութներ բաց են թողնված (հերթականություն)'}
 EXIT_TEXT = {'closed': 'հավելվածը փակվել է', 'shutdown': 'հեռախոսն անջատվել է'}   # live.offline_reason (APK 2.2.5)
 TITLE_END = {'no_contact': 'Կապը վերականգնվեց', 'gps': 'GPS-ը կրկին միացված է'}
+END_TEXT = {'explained': 'Բացատրված է', 'minor': 'Փոքր շեղում՝ ահազանգ չէ', 'day': 'Օրն ավարտվեց'}
+ACK_TEXT = '✔ Տեսա'
+MAP_TEXT = '🗺 Քարտեզ'
+WHERE_TEXT = '📍 Որտեղ է'
 
 
 def config_from_env(env: Mapping[str, str] | None = None) -> tuple[str, str] | None:
-    """(токен, чат), если рассылка включена и настроена; иначе None (поток не стартует)."""
+    """(токен, чат), если бот включён и настроен; иначе None (бот не стартует)."""
     env = os.environ if env is None else env
     if env.get(ENABLE_ENV, '').strip() != '1':
         return None
@@ -99,33 +93,8 @@ def config_from_env(env: Mapping[str, str] | None = None) -> tuple[str, str] | N
     return (token, chat) if token and chat else None
 
 
-class TelegramError(RuntimeError):
-    """Сбой отправки; текст — без токена (он в адресе запроса). status — код HTTP, если он был."""
-
-    def __init__(self, text: str, status: int | None = None):
-        super().__init__(text)
-        self.status = status
-
-
-def send_telegram(token: str, chat: str, text: str, timeout: float = HTTP_TIMEOUT_S,
-                  opener: Callable[..., Any] = urllib.request.urlopen) -> None:
-    """sendMessage (простой текст — имена и ссылки без разметки); ошибка — TelegramError."""
-    req = urllib.request.Request(f'https://api.telegram.org/bot{token}/sendMessage', method='POST',
-                                 data=urllib.parse.urlencode({'chat_id': chat, 'text': text,
-                                                              'disable_web_page_preview': 'true'}).encode('utf-8'))
-    try:
-        with opener(req, timeout=timeout) as resp:
-            body = json.load(resp)
-    except urllib.error.HTTPError as e:
-        raise TelegramError(f'HTTP {e.code}', e.code) from None
-    except (urllib.error.URLError, OSError, ValueError) as e:   # сеть, тайм-аут, не JSON
-        raise TelegramError(type(e).__name__) from None
-    if not isinstance(body, dict) or not body.get('ok'):
-        raise TelegramError(str((body or {}).get('description', 'ok=false'))[:120] if isinstance(body, dict) else 'ответ')
-
-
 def _moment(raw: Any) -> datetime | None:
-    """ISO-момент с часовым поясом или None (битые значения файла состояния отбрасываются)."""
+    """ISO-момент с часовым поясом или None (битые значения записей отбрасываются)."""
     try:
         t = datetime.fromisoformat(raw) if isinstance(raw, str) else None
     except ValueError:
@@ -133,52 +102,56 @@ def _moment(raw: Any) -> datetime | None:
     return t if t is not None and t.utcoffset() is not None else None
 
 
-# --- что уже отправлено ---
+def _hhmm(raw: Any) -> float | None:
+    if not isinstance(raw, str) or len(raw) != 5 or raw[2] != ':' or not (raw[:2] + raw[3:]).isdigit():
+        return None
+    return float(int(raw[:2]) * 60 + int(raw[3:]))
 
-class AlertState:
-    """Файл «уже отправлено»: sent — ключ тревоги → {at, start, end, skipped}; last — «машина|вид» → момент последнего
-    начала (окно повтора). Нечитаемый файл — пустое состояние (и предупреждение): задним числом не рассылается (RECENT_MIN)."""
-
-    def __init__(self, path: str):
-        self.path = path
-        self.sent: dict[str, dict[str, Any]] = {}
-        self.last: dict[str, str] = {}
-        try:
-            with open(path, encoding='utf-8') as f:
-                raw = json.load(f)
-            self.sent = {k: v for k, v in (raw.get('sent') or {}).items()
-                         if isinstance(v, dict) and _moment(v.get('at')) is not None
-                         and all(v.get(x) is None or isinstance(v.get(x), str) for x in ('start', 'end'))}
-            self.last = {k: v for k, v in (raw.get('last') or {}).items() if _moment(v) is not None}
-        except FileNotFoundError:
-            pass
-        except (OSError, ValueError, AttributeError):
-            logger.warning('[Routes] Тревоги в Telegram: файл «уже отправлено» не прочитан — начинаем заново')
-
-    def save(self, now: datetime) -> None:
-        """Атомарно (временный файл + замена); хвосты старше STATE_KEEP убираются. Ошибка записи — в журнал."""
-        keep = (now - STATE_KEEP).isoformat()
-        self.sent = {k: v for k, v in self.sent.items() if str(v.get('at', '')) >= keep}
-        self.last = {k: v for k, v in self.last.items() if v >= keep}
-        try:
-            fd, tmp = tempfile.mkstemp(dir=os.path.dirname(self.path) or '.', prefix='.route_live_alerts-', suffix='.tmp')
-            with os.fdopen(fd, 'w', encoding='utf-8') as f:
-                json.dump({'sent': self.sent, 'last': self.last}, f, ensure_ascii=False)
-            os.replace(tmp, self.path)
-        except OSError:
-            logger.exception('[Routes] Тревоги в Telegram: «уже отправлено» не записано')
-
-
-# --- решения и тексты ---
 
 @dataclass(frozen=True)
-class Message:
-    key: str          # машина|вид|начало тревоги
-    phase: str        # start | end
-    car: str
-    kind: str
-    text: str
-    late: tuple[tuple[str, int], ...] = ()   # «не успеет»: (ключ строки на день, опоздание, мин) — все строки сообщения
+class TgRules:
+    """Настройки бота (store.DEFAULT_SETTINGS tg_*): уровни по виду, SIM в терминалах, эскалация (минуты, кому), отчёты и
+    предел итога дня (минуты от полуночи). Неизменяемый и хешируемый — входит в подпись остановки рассылки."""
+    levels: tuple[tuple[str, str], ...] = tuple(DEFAULT_SETTINGS['tg_levels'].items())
+    sim: bool = False
+    escalate_min: float = 10.0
+    escalate_to: tuple[int, ...] = tuple(DEFAULT_SETTINGS['tg_escalate_to'])
+    report_plan: bool = True
+    report_summary: bool = True
+    report_week: bool = True
+    summary_at: float = 19 * 60 + 30.0
+
+    @classmethod
+    def from_settings(cls, s: Mapping[str, Any]) -> TgRules:
+        levels = s.get('tg_levels') if isinstance(s.get('tg_levels'), Mapping) else {}
+        base = DEFAULT_SETTINGS['tg_levels']
+        wait = s.get('tg_escalate_min', DEFAULT_SETTINGS['tg_escalate_min'])
+        to = s.get('tg_escalate_to', DEFAULT_SETTINGS['tg_escalate_to'])
+        at = _hhmm(s.get('tg_summary_at'))
+        return cls(tuple((k, levels.get(k) if levels.get(k) in LEVELS else base[k]) for k in TG_LEVEL_KINDS),
+                   s.get('tg_sim_installed') is True,
+                   float(wait) if isinstance(wait, (int, float)) and not isinstance(wait, bool) else 10.0,
+                   tuple(x for x in to if isinstance(x, int) and not isinstance(x, bool)) if isinstance(to, list) else (),
+                   s.get('tg_report_plan', True) is not False, s.get('tg_report_summary', True) is not False,
+                   s.get('tg_report_week', True) is not False,
+                   at if at is not None else 19 * 60 + 30.0)
+
+    def level(self, key: str) -> str:
+        return dict(self.levels).get(key, 'warning')
+
+
+def level_of(kind: str, a: Mapping[str, Any], tg: TgRules) -> str:
+    """Уровень тревоги: по виду из настроек; «не успеет» — по виду строки; «нет связи» без SIM — ⚪."""
+    if kind == 'no_contact' and not tg.sim:
+        return 'info'
+    if kind == 'late':
+        return tg.level({'window': 'late_window', 'return': 'late_return'}.get(a.get('late_kind'), 'late_plan'))
+    return tg.level(kind)
+
+
+def top_level(levels: Sequence[str]) -> str | None:
+    """Самый важный из уровней (None — пусто)."""
+    return min(levels, key=LEVELS.index) if levels else None
 
 
 def in_quiet(rules: Rules, now: datetime) -> bool:
@@ -191,7 +164,45 @@ def in_quiet(rules: Rules, now: datetime) -> bool:
     return lo <= m < hi if lo < hi else (m >= lo or m < hi)
 
 
-def _hm(iso: Any) -> str:
+# --- записи бота ---
+
+@dataclass
+class Rec:
+    """Запись бота (строка tg_message, store.TG_MESSAGE_FIELDS). phase: active — сообщение тревоги идёт (или «не успеет»
+    со строками), ended — кончилась (✅), skipped — решено не слать (payload.why), report — отчёт."""
+    key: str
+    kind: str
+    phase: str
+    sent_at: str
+    car: str | None = None
+    level: str | None = None
+    id: int | None = None
+    chat: str | None = None
+    message_id: int | None = None
+    thread_id: int | None = None
+    acked_by: int | None = None
+    acked_name: str | None = None
+    acked_at: str | None = None
+    resolved_at: str | None = None
+    escalated_at: str | None = None
+    payload: dict[str, Any] = field(default_factory=dict)
+
+
+def alert_key(car: str, kind: str, start: str) -> str:
+    return f'alert:{car}|{kind}|{start}'
+
+
+def late_key(car: str, day: str) -> str:
+    return f'late:{car}|{day}'
+
+
+# --- тексты (HTML) ---
+
+def esc(x: Any) -> str:
+    return html.escape(str(x), quote=False)
+
+
+def hm(iso: Any) -> str:
     try:
         return datetime.fromisoformat(iso).astimezone(ac.YEREVAN).strftime('%H:%M')
     except (TypeError, ValueError):
@@ -205,328 +216,362 @@ def _minutes(a: Mapping[str, Any]) -> int | None:
         return None
 
 
-def build_text(card: Mapping[str, Any], a: Mapping[str, Any], phase: str, rules: Rules) -> str:
-    """Сообщение: что случилось, машина, водитель, где (ссылка на карту Яндекса), время — по-армянски."""
-    kind = a['kind']
-    lines = [TITLE_END[kind] if phase == 'end' else TITLE[kind]]
-    if kind == 'gps' and phase == 'start' and a.get('gps') == 'no_permission':
-        lines[0] = 'GPS-ի թույլտվությունը չկա'
-    plate = [x for x in (card.get('car_code'), card.get('name')) if x]
-    lines.append('Մեքենա՝ ' + ' · '.join(plate))
+def who(card: Mapping[str, Any]) -> list[str]:
+    """Строки «машина» и «водитель (+ առաքիչ)»."""
+    plate = []
+    if card.get('car_code'):
+        plate.append(f'<b>{esc(card["car_code"])}</b>')
+    if card.get('name'):
+        plate.append(esc(card['name']))
+    lines = ['Մեքենա՝ ' + ' · '.join(plate)]
     driver = card.get('driver') or next(iter(card.get('drivers') or ()), None)
     if driver:
-        lines.append('Վարորդ՝ ' + str(driver))
-    if phase == 'end':
-        minutes = _minutes(a)
-        word = 'Կապ չկար' if kind == 'no_contact' else 'Անջատված էր'
-        if minutes is not None:
-            lines.append(f'{word}՝ {minutes} րոպե։')
-    elif kind == 'speed':
-        lines.append(f'Արագություն՝ {a.get("max_kmh")} կմ/ժ (սահմանը՝ {rules.speed_kmh:g} կմ/ժ)։')
-    elif kind == 'stop':
-        lines.append(f'Կանգառի տևողությունը՝ {a.get("minutes")} րոպե' + (' (ճաշի ժամին)։' if a.get('lunch') else '։'))
-    elif kind == 'no_contact':
-        lines.append(f'Կապ չկա՝ {a.get("minutes")} րոպե։')
-        # причина — из последнего состояния терминала (не из offline_reason: при другой активной тревоге state='alert').
-        # Последнее состояние = то, что было до тишины; позднее сообщение после восстановления видит уже новое (без exit)
+        helper = card.get('helper')
+        lines.append('Վարորդ՝ ' + esc(driver) + (f' + {esc(helper)}' if helper and helper != driver else ''))
+    return lines
+
+
+def map_url(card: Mapping[str, Any], a: Mapping[str, Any]) -> tuple[str | None, bool]:
+    """(ссылка на карту места тревоги, это последняя известная точка машины — у «нет связи» и GPS места события нет)."""
+    lat, lon = a.get('lat'), a.get('lon')
+    if lat is not None and lon is not None:
+        return MAP_URL.format(lat=lat, lon=lon), False
+    pos = card.get('position') or {}
+    if pos.get('lat') is not None and pos.get('lon') is not None:
+        return MAP_URL.format(lat=pos['lat'], lon=pos['lon']), True
+    return None, False
+
+
+def detail(card: Mapping[str, Any], a: Mapping[str, Any], rules: Rules) -> list[str]:
+    """Что случилось — строки по виду тревоги (как прежние сообщения, №76)."""
+    kind = a['kind']
+    if kind == 'speed':
+        return [f'Արագություն՝ {esc(a.get("max_kmh"))} կմ/ժ (սահմանը՝ {rules.speed_kmh:g} կմ/ժ)։']
+    if kind == 'stop':
+        return [f'Կանգառի տևողությունը՝ {esc(a.get("minutes"))} րոպե' + (' (ճաշի ժամին)։' if a.get('lunch') else '։')]
+    if kind == 'no_contact':
+        out = [f'Կապ չկա՝ {esc(a.get("minutes"))} րոպե։']
+        # причина — из последнего состояния терминала (не из offline_reason: при другой активной тревоге state='alert')
         device = card.get('device')
         reason = device.get('exit') if isinstance(device, Mapping) else None
         if reason in EXIT_TEXT:
-            lines.append(EXIT_TEXT[reason].capitalize() + '։')
-    elif kind == 'center':
-        lines.append('Մեքենան մտել է փոքր կենտրոն, որտեղ նրան թույլատրված չէ։')
-    elif kind == 'deviation':   # идёт — «уже N км»; кончилось к отправке — «отклонилась на N км (с — до)»
-        km = str(a.get('km')).replace('.', ',')
-        lines.append(f'Մեքենան պլանային երթուղուց {rules.deviation_m:g} մ-ից ավելի հեռու է՝ արդեն {km} կմ։'
-                     if a.get('active') else
-                     f'Մեքենան շեղվել էր պլանային երթուղուց ({rules.deviation_m:g} մ-ից ավելի)՝ {km} կմ, '
-                     f'{_hm(a.get("from"))}–{_hm(a.get("to"))}։')
+            out.append(EXIT_TEXT[reason].capitalize() + '։')
+        return out
+    if kind == 'center':
+        return ['Մեքենան մտել է փոքր կենտրոն, որտեղ նրան թույլատրված չէ։']
+    if kind == 'deviation':   # идёт — «уже N км»; кончилось к отправке — «отклонилась на N км (с — до)»
+        km = esc(a.get('km')).replace('.', ',')
+        out = [f'Մեքենան պլանային երթուղուց {rules.deviation_m:g} մ-ից ավելի հեռու է՝ արդեն {km} կմ։'
+               if a.get('active') else
+               f'Մեքենան շեղվել էր պլանային երթուղուց ({rules.deviation_m:g} մ-ից ավելի)՝ {km} կմ, '
+               f'{hm(a.get("from"))}–{hm(a.get("to"))}։']
         if isinstance(a.get('excess_km'), (int, float)):   # перепробег участка (live.detour_legs)
-            lines.append('Ավելորդ վազք հատվածում՝ ≈ ' + f'{a["excess_km"]:g}'.replace('.', ',') + ' կմ։')
-    elif kind == 'sequence':   # пропущенные магазины (номер по плану и название) и магазин, обслуженный раньше них
+            out.append('Ավելորդ վազք հատվածում՝ ≈ ' + f'{a["excess_km"]:g}'.replace('.', ',') + ' կմ։')
+        return out
+    if kind == 'sequence':   # пропущенные магазины (номер по плану и название) и магазин, обслуженный раньше них
         def name(x: Mapping[str, Any]) -> str:
-            return ' '.join(p for p in (f'№{x["no"]}' if x.get('no') else None, x.get('name') or x.get('stop_id')) if p)
+            return ' '.join(esc(p) for p in (f'№{x["no"]}' if x.get('no') else None, x.get('name') or x.get('stop_id'))
+                            if p)
         skipped = [x for x in a.get('skipped') or () if isinstance(x, Mapping)]
-        lines.append('Բաց թողնված՝ ' + ', '.join(name(x) for x in skipped) + '։')
+        out = ['Բաց թողնված՝ ' + ', '.join(name(x) for x in skipped) + '։']
         if isinstance(a.get('jump'), Mapping):
-            lines.append('Նախքան դրանք սպասարկվել է՝ ' + name(a['jump']) + '։')
-    lat, lon, last_known = a.get('lat'), a.get('lon'), False
-    if lat is None or lon is None:   # «нет связи» и GPS: места события нет — последняя известная точка
-        pos = card.get('position') or {}
-        lat, lon, last_known = pos.get('lat'), pos.get('lon'), True
-    if lat is not None and lon is not None:
-        lines.append(('Վերջին հայտնի դիրքը՝ ' if last_known else 'Որտեղ՝ ') + MAP_URL.format(lat=lat, lon=lon))
-    lines.append('Ժամ՝ ' + _hm(a.get('to') if phase == 'end' else a.get('from')))
+            out.append('Նախքան դրանք սպասարկվել է՝ ' + name(a['jump']) + '։')
+        return out
+    return []
+
+
+def alert_body(card: Mapping[str, Any], a: Mapping[str, Any], rules: Rules, level: str) -> str:
+    """Тело сообщения тревоги: уровень и что случилось, машина, водитель, подробности, где, когда началась. У ⚪ кнопок
+    нет — ссылка на карту в тексте."""
+    kind = a['kind']
+    title = 'GPS-ի թույլտվությունը չկա' if kind == 'gps' and a.get('gps') == 'no_permission' else TITLE[kind]
+    lines = [f'{EMOJI[level]} <b>{esc(title)}</b>', *who(card), *detail(card, a, rules)]
+    url, last_known = map_url(card, a)
+    if url and level == 'info':
+        lines.append(('Վերջին հայտնի դիրքը՝ ' if last_known else 'Որտեղ՝ ') + f'<a href="{esc(url)}">քարտեզում</a>')
+    lines.append('Ժամ՝ ' + hm(a.get('from')))
+    return '\n'.join(lines)
+
+
+def end_body(card: Mapping[str, Any], a: Mapping[str, Any]) -> str:
+    """Отдельное ⚪ сообщение об окончании (правки нет): что кончилось, машина, сколько длилось, когда."""
+    kind = a['kind']
+    lines = [f'{EMOJI["info"]} <b>{esc(TITLE_END.get(kind) or TITLE[kind])}</b>', *who(card)]
+    minutes = _minutes(a)
+    if minutes is not None:
+        lines.append(f'Տևեց՝ {minutes} րոպե։')
+    lines.append('Ժամ՝ ' + hm(a.get('to')))
     return '\n'.join(lines)
 
 
 def late_line(a: Mapping[str, Any]) -> str:
     """Строка «не успеет» (№87): магазин — на сколько позже окна / плана, прогноз прибытия и предел; машина — возврат."""
     if a.get('late_kind') == 'return':
-        return (f'Չի հասցնում վերադառնալ պահեստ՝ +{a.get("over_min")} րոպե (վերադարձ ≈ {_hm(a.get("eta"))}, '
-                f'աշխատանքային օրը՝ մինչև {_hm(a.get("limit"))})։')
+        return (f'Չի հասցնում վերադառնալ պահեստ՝ +{esc(a.get("over_min"))} րոպե (վերադարձ ≈ {hm(a.get("eta"))}, '
+                f'աշխատանքային օրը՝ մինչև {hm(a.get("limit"))})։')
     what = ('պատուհանից', 'պատուհանը՝ մինչև') if a.get('late_kind') == 'window' else ('պլանից', 'պլանով՝')
-    return (f'{a.get("name") or a.get("stop_id")} — կուշանա {what[0]} {a.get("over_min")} րոպեով '
-            f'(ժամանում ≈ {_hm(a.get("eta"))}, {what[1]} {_hm(a.get("limit"))})։')
+    return (f'{esc(a.get("name") or a.get("stop_id"))} — կուշանա {what[0]} {esc(a.get("over_min"))} րոպեով '
+            f'(ժամանում ≈ {hm(a.get("eta"))}, {what[1]} {hm(a.get("limit"))})։')
 
 
-def _plan_late(car: str, card: Mapping[str, Any], rules: Rules, now: datetime, state: AlertState,
-               out: list[Message]) -> bool:
-    """«Не успеет» одной машины (правило — в описании модуля): новые строки и ухудшившиеся на шаг — одним сообщением;
-    строки, которые больше не «опаздывают», снимаются. True — состояние менялось."""
-    day = now.astimezone(ac.YEREVAN).date().isoformat()
-    prefix = f'{car}|late|{day}|'
-    step = max(rules.repeat_min, LATE_STEP_MIN)
-    changed = False
-    rows: list[tuple[str, int, Mapping[str, Any]]] = []
-    active: set[str] = set()
-    for a in card.get('alerts_log') or ():
-        if a.get('kind') != 'late' or not a.get('active') or not isinstance(a.get('over_min'), int):
-            continue
-        key = prefix + str(a.get('target'))
-        active.add(key)
-        if state.sent.get(key, {}).pop('calm_since', None) is not None:   # снова опаздывает — тот же случай
-            changed = True
-        sent = (state.sent.get(key) or {}).get('over')
-        if not isinstance(sent, int) or a['over_min'] >= sent + step:
-            rows.append((key, a['over_min'], a))
-    for k in [k for k in state.sent if k.startswith(prefix) and k not in active]:
-        rec = state.sent[k]
-        calm = _moment(rec.get('calm_since'))
-        if calm is None:   # перестала опаздывать (или нет свежего GPS) — отсчёт LATE_CLEAR_MIN
-            rec['calm_since'] = now.isoformat()
-            changed = True
-        elif now - calm >= timedelta(minutes=LATE_CLEAR_MIN):   # спокойно долго — снова «опаздывает» будет новым случаем
-            del state.sent[k]
-            changed = True
-    if not rows:
-        return changed
-    plate = [x for x in (card.get('car_code'), card.get('name')) if x]
-    lines = [TITLE['late'], 'Մեքենա՝ ' + ' · '.join(plate)]
-    driver = card.get('driver') or next(iter(card.get('drivers') or ()), None)
-    if driver:
-        lines.append('Վարորդ՝ ' + str(driver))
-    lines += [late_line(a) for _, _, a in rows]
-    pos = card.get('position') or {}
-    if pos.get('lat') is not None and pos.get('lon') is not None:
-        lines.append('Որտեղ է հիմա՝ ' + MAP_URL.format(lat=pos['lat'], lon=pos['lon']))
+def late_body(card: Mapping[str, Any], texts: Sequence[str], level: str, now: datetime) -> str:
+    more = len(texts) - LATE_LINES_SHOWN
+    lines = [f'{EMOJI[level]} <b>{esc(TITLE["late"])}</b>', *who(card), *texts[:LATE_LINES_SHOWN]]
+    if more > 0:
+        lines.append(f'… և ևս {more} խանութ')
+    url, _ = map_url(card, {})
+    if url and level == 'info':
+        lines.append(f'Որտեղ է հիմա՝ <a href="{esc(url)}">քարտեզում</a>')
     lines.append('Ժամ՝ ' + now.astimezone(ac.YEREVAN).strftime('%H:%M'))
-    out.append(Message(f'{car}|late|{day}', 'start', car, 'late', '\n'.join(lines),
-                       tuple((key, over) for key, over, _ in rows)))
-    return changed
-
-
-def _acked(acks: Sequence[Mapping[str, Any]], car: str, key: str, since: str | None, now: datetime) -> bool:
-    """Есть «Տեսա» на сервере: та же машина, вид и начало; без начала — отметка без начала не старше ACK_GRACE_MIN
-    (страница, у которой проблема отмечена, подтверждает её раньше)."""
-    for a in acks:
-        if a.get('car') == car and a.get('key') == key:
-            if since is not None:
-                return a.get('since') == since
-            at = _moment(a.get('at'))
-            return a.get('since') is None and at is not None and now - at <= timedelta(minutes=ACK_GRACE_MIN)
-    return False
-
-
-def escalation_text(card: Mapping[str, Any], a: Mapping[str, Any] | None, minutes: int, rules: Rules,
-                    now: datetime) -> str:
-    """«⚠ Չի տեսել ոչ ոք N րոպե՝ <что>», дальше — как у начала тревоги (build_text); «не успеет» (a None) — строки к окну
-    приёма и возврату на склад и где машина сейчас."""
-    if a is not None:
-        lines = build_text(card, a, 'start', rules).split('\n')
-    else:
-        lines = [TITLE['late'], 'Մեքենա՝ ' + ' · '.join(x for x in (card.get('car_code'), card.get('name')) if x)]
-        driver = card.get('driver') or next(iter(card.get('drivers') or ()), None)
-        if driver:
-            lines.append('Վարորդ՝ ' + str(driver))
-        lines += [late_line(x) for x in card.get('late') or () if isinstance(x, Mapping) and x.get('late_kind') in LATE_RED]
-        pos = card.get('position') or {}
-        if pos.get('lat') is not None and pos.get('lon') is not None:
-            lines.append('Որտեղ է հիմա՝ ' + MAP_URL.format(lat=pos['lat'], lon=pos['lon']))
-        lines.append('Ժամ՝ ' + now.astimezone(ac.YEREVAN).strftime('%H:%M'))
-    lines[0] = f'⚠ Չի տեսել ոչ ոք {minutes} րոպե՝ {lines[0]}'
     return '\n'.join(lines)
 
 
-def _plan_escalation(car: str, card: Mapping[str, Any], rules: Rules, now: datetime, state: AlertState, quiet: bool,
-                     acks: Sequence[Mapping[str, Any]], out: list[Message]) -> bool:
-    """Эскалация красных тревог машины без «Տեսա» (правило — в описании модуля); True — состояние менялось. Запись
-    «esc|день|машина|вид|начало»: first — когда поток впервые увидел случай, start — отправлено, skipped —
-    срок наступил в тихие часы."""
+def render(rec: Rec) -> str:
+    """Текст сообщения записи сейчас: ✅ (кончилась), тело, «обновлено», кто видел."""
+    lines = []
+    if rec.phase == 'ended':
+        m = rec.payload.get('minutes')
+        lines.append('✅ <b>' + END_TEXT.get(rec.payload.get('end_reason'), 'Վերջացավ') + '</b>'
+                     + (f' · տևեց {m} րոպե' if isinstance(m, int) else ''))
+    lines.append(str(rec.payload.get('body') or ''))
+    if rec.payload.get('updated'):
+        lines.append('🔄 Թարմացված՝ ' + esc(rec.payload['updated']))
+    if rec.acked_name:
+        lines.append(f'✔ Տեսավ {esc(rec.acked_name)} · {hm(rec.acked_at)}')
+    return '\n'.join(lines)
+
+
+def keyboard(rec: Rec, sign: Callable[[str], str | None]) -> dict[str, Any] | None:
+    """Кнопки 🔴/🟠: «Տեսա» (пока идёт и не подтверждена), карта (ссылка), «где машина» (callback). ⚪ — без кнопок.
+    sign — подписанные данные кнопки (None — не помещаются в 64 байта: кнопки нет)."""
+    if rec.level not in ('critical', 'warning'):
+        return None
+    row: list[dict[str, str]] = []
+    if rec.phase == 'active' and rec.acked_by is None and rec.id is not None:
+        data = sign(f'a:{rec.id}')
+        if data:
+            row.append({'text': ACK_TEXT, 'callback_data': data})
+    if rec.payload.get('map'):
+        row.append({'text': MAP_TEXT, 'url': str(rec.payload['map'])})
+    if rec.car:
+        data = sign(f'w:{rec.car}')
+        if data:
+            row.append({'text': WHERE_TEXT, 'callback_data': data})
+    return {'inline_keyboard': [row] if row else []}
+
+
+# --- решения ---
+
+@dataclass(frozen=True)
+class Skip:
+    """Тревогу не слать (why: quiet | repeat | old) — только запись."""
+    key: str
+    car: str
+    kind: str
+    why: str
+
+
+@dataclass(frozen=True)
+class Send:
+    """Новое сообщение тревоги; ended — уже кончилась к отправке (✅ сразу, без «Տեսա»), minutes — сколько длилась."""
+    key: str
+    car: str
+    kind: str
+    level: str
+    body: str
+    map: str | None
+    ended: bool = False
+    minutes: int | None = None
+    resolved_at: str | None = None
+
+
+@dataclass(frozen=True)
+class End:
+    """Тревога кончилась: правка её сообщения (✅); body — отдельное ⚪ сообщение, если правки нет. reason — закрыта не
+    концом тревоги (без отдельного сообщения): explained — объяснена диспетчером, minor — оказалась «փոքր շեղում»,
+    day — день прошёл, а запись ещё «идёт» (тревога пропала из журнала без конца: 20:00, день закрыт)."""
+    key: str
+    car: str
+    kind: str
+    minutes: int | None
+    at: str
+    body: str
+    reason: str | None = None
+
+
+@dataclass(frozen=True)
+class Late:
+    """«Не успеет» машины за день. op: send — новое сообщение; edit — правка (notify — строки для ответа со звуком,
+    пусто — беззвучно); end — ✅; state — только запись (отсчёт «не опаздывает»). lines — строки записи после решения:
+    цель → {over, sent, kind, text, calm}; seen — все цели, опаздывавшие за день (итог дня)."""
+    key: str
+    car: str
+    op: str
+    level: str | None
+    body: str | None
+    lines: dict[str, dict[str, Any]]
+    seen: tuple[str, ...]
+    notify: tuple[str, ...] = ()
+
+
+Action = Skip | Send | End | Late
+
+
+@dataclass(frozen=True)
+class Plan:
+    actions: list[Action]
+    active: frozenset[str]   # ключи записей, чья тревога идёт сейчас (эскалация)
+
+
+def _last_starts(records: Mapping[str, Rec]) -> dict[str, datetime]:
+    """«машина|вид» → момент последнего отправленного начала (окно повтора)."""
+    out: dict[str, datetime] = {}
+    for r in records.values():
+        if r.key.startswith('alert:') and r.phase in ('active', 'ended') and r.car:
+            t = _moment(r.sent_at)
+            k = f'{r.car}|{r.kind}'
+            if t is not None and (k not in out or t > out[k]):
+                out[k] = t
+    return out
+
+
+def _plan_late(car: str, card: Mapping[str, Any], rules: Rules, tg: TgRules, now: datetime, rec: Rec | None
+               ) -> Late | None:
+    """«Не успеет» одной машины (правило — в описании модуля); None — ничего не менялось."""
     day = now.astimezone(ac.YEREVAN).date().isoformat()
-    since_of = (card.get('alerts') or {}).get('since') or {}
-    last: dict[str, Mapping[str, Any]] = {}   # вид → последняя идущая тревога (как alerts.since страницы)
+    key = late_key(car, day)
+    old: dict[str, dict[str, Any]] = dict((rec.payload.get('lines') or {}) if rec else {})
+    step = max(rules.repeat_min, LATE_STEP_MIN)
+    lines: dict[str, dict[str, Any]] = {}
+    notify: list[str] = []
     for a in card.get('alerts_log') or ():
-        kind = a.get('kind')
-        if kind in RED_KINDS and kind in rules.alert_kinds and a.get('active') and a.get('from') \
-                and not a.get('minor') and not a.get('explained') and a['from'] >= last.get(kind, {}).get('from', ''):
-            last[kind] = a
-    red: dict[str, tuple[str | None, Mapping[str, Any] | None]] = {
-        k: (since_of.get(k) or a['from'], a) for k, a in last.items()}
-    if 'late' in rules.alert_kinds and any(isinstance(x, Mapping) and x.get('late_kind') in LATE_RED
-                                           for x in card.get('late') or ()):
-        red['late:window'] = (None, None)
-    changed = False
-    prefix = f'esc|{day}|{car}|'
-    current: set[str] = set()
-    for key, (since, a) in red.items():
-        sk = f'{prefix}{key}|{since or ""}'
-        current.add(sk)
-        rec = state.sent.get(sk)
-        if rec is not None and (rec.get('start') or rec.get('skipped')):
+        if a.get('kind') != 'late' or not a.get('active') or not isinstance(a.get('over_min'), int):
             continue
-        first = _moment((rec or {}).get('first'))
-        if first is None:   # случай увиден этим потоком впервые (в т.ч. отмеченный — отметку могут снять сменой since)
-            state.sent[sk] = {'at': now.isoformat(), 'start': None, 'end': None, 'first': now.isoformat()}
-            changed = True
-            first = now
-        if _acked(acks, car, key, since, now):
+        target = str(a.get('target'))
+        prev = old.get(target) or {}
+        sent = prev.get('sent') if isinstance(prev.get('sent'), int) else None
+        line = {'over': a['over_min'], 'sent': sent, 'kind': a.get('late_kind'), 'text': late_line(a), 'calm': None}
+        if sent is None or a['over_min'] >= sent + step:   # новая строка (или новый случай) либо ухудшилась на шаг
+            line['sent'] = a['over_min']
+            notify.append(line['text'])
+        lines[target] = line
+    for target, prev in old.items():
+        if target in lines:
             continue
-        # отсчёт — от позднего из начала тревоги и первого взгляда потока: при первом включении и после простоя давние
-        # красные не приходят разом (ждут ESCALATE_MIN); в тексте — сколько тревога идёт на самом деле
-        began = _moment(since) if since else None
-        if now - max(first, began or first) < timedelta(minutes=ESCALATE_MIN):
-            continue
-        if quiet:
-            state.sent[sk] = {'at': now.isoformat(), 'start': None, 'end': None, 'skipped': 'quiet'}
-            changed = True
-            continue
-        out.append(Message(sk, 'esc', car, key,
-                           escalation_text(card, a, int((now - (began or first)).total_seconds() // 60), rules, now)))
-    # случай прошёл (или сменилось начало), не дождавшись срока, — отсчёт снимается (вернётся — с начала)
-    for k in [k for k, v in state.sent.items() if k.startswith(prefix) and v.get('first') and not v.get('start')
-              and not v.get('skipped') and k not in current]:
-        del state.sent[k]
-        changed = True
-    return changed
+        calm = _moment(prev.get('calm'))
+        if calm is None:   # перестала опаздывать (или нет свежего GPS) — отсчёт LATE_CLEAR_MIN
+            lines[target] = {**prev, 'calm': now.isoformat()}
+        elif now - calm < timedelta(minutes=LATE_CLEAR_MIN):
+            lines[target] = prev
+    seen = tuple(sorted(set((rec.payload.get('seen') or []) if rec else []) | set(lines)))
+    live_lines = [x for x in lines.values() if not x.get('calm')]
+    level = top_level([level_of('late', {'late_kind': x.get('kind')}, tg) for x in live_lines]) or (rec.level if rec else None)
+    body = late_body(card, [x['text'] for x in live_lines], level, now) if live_lines and level else None
+    if rec is None:
+        return Late(key, car, 'send', level, body, lines, seen) if notify else None
+    if notify:
+        return Late(key, car, 'edit', level, body, lines, seen, tuple(notify))
+    if not lines:
+        return Late(key, car, 'end', rec.level, None, lines, seen) if rec.phase == 'active' else None
+    if lines == old:
+        return None
+    structural = set(lines) != set(old)   # строка появилась или снята; «не опаздывает пока» — как прочие (не чаще)
+    edited = _moment(rec.payload.get('edited')) or _moment(rec.sent_at)
+    due = edited is None or now - edited >= timedelta(minutes=LATE_EDIT_MIN)
+    if body is not None and body != rec.payload.get('body') and rec.phase == 'active' and (structural or due):
+        return Late(key, car, 'edit', level, body, lines, seen)
+    return Late(key, car, 'state', rec.level, None, lines, seen)
 
 
-def _plan_car(car: str, card: Mapping[str, Any], rules: Rules, now: datetime, state: AlertState, quiet: bool,
-              repeat: timedelta, out: list[Message]) -> bool:
-    """Решения по тревогам одной машины (plan_messages); True — состояние менялось."""
-    changed = False
+def _plan_car(car: str, card: Mapping[str, Any], rules: Rules, tg: TgRules, now: datetime,
+              records: Mapping[str, Rec], quiet: bool, last: dict[str, datetime], out: list[Action],
+              active: set[str]) -> None:
+    """Решения по тревогам одной машины (plan)."""
     if 'late' in rules.alert_kinds and not quiet:
-        changed = _plan_late(car, card, rules, now, state, out)
+        day = now.astimezone(ac.YEREVAN).date().isoformat()
+        rec = records.get(late_key(car, day))
+        got = _plan_late(car, card, rules, tg, now, rec)
+        if got is not None:
+            out.append(got)
+        lines = got.lines if got is not None else ((rec.payload.get('lines') or {}) if rec else {})
+        if any(not x.get('calm') for x in lines.values()):
+            active.add(late_key(car, day))
+    repeat = timedelta(minutes=rules.repeat_min)
     for a in card.get('alerts_log') or ():
         kind = a.get('kind')
-        if kind not in rules.alert_kinds or kind == 'late' or not a.get('from') or a.get('minor') or a.get('explained'):
+        if kind == 'late' or not a.get('from'):
             continue
-        key = f'{car}|{kind}|{a["from"]}'
-        rec = state.sent.get(key)
+        key = alert_key(car, kind, a['from'])
+        if a.get('minor') or a.get('explained'):   # не рассылаются; уже отправленная — закрыть (без «Տեսա» и эскалации)
+            rec = records.get(key)
+            if rec is not None and rec.phase == 'active':
+                out.append(End(key, car, kind, _minutes(a), a.get('to') or now.isoformat(), '',
+                               'explained' if a.get('explained') else 'minor'))
+            continue
+        if kind not in rules.alert_kinds:
+            continue
+        if a.get('active'):
+            active.add(key)
+        rec = records.get(key)
         if rec is None:
-            why = None
             ended = a.get('to')
+            why = None
             if not a.get('active') and (not ended or now - datetime.fromisoformat(ended) > timedelta(minutes=RECENT_MIN)):
                 why = 'old'
             elif quiet:
                 why = 'quiet'
-            else:
-                last = state.last.get(f'{car}|{kind}')
-                if last is not None and now - datetime.fromisoformat(last) < repeat:
-                    why = 'repeat'
+            elif (t := last.get(f'{car}|{kind}')) is not None and now - t < repeat:
+                why = 'repeat'
             if why is not None:
-                state.sent[key] = {'at': now.isoformat(), 'start': None, 'end': None, 'skipped': why}
-                changed = True
-            else:
-                out.append(Message(key, 'start', car, kind, build_text(card, a, 'start', rules)))
-        elif kind in END_KINDS and rec.get('start') and not rec.get('end') and not a.get('active') and a.get('to'):
-            if quiet:
-                rec['end'] = 'quiet'
-                changed = True
-            else:
-                out.append(Message(key, 'end', car, kind, build_text(card, a, 'end', rules)))
-
-    return changed
+                out.append(Skip(key, car, kind, why))
+                continue
+            level = level_of(kind, a, tg)
+            url, _ = map_url(card, a)
+            done = not a.get('active') and bool(ended)
+            out.append(Send(key, car, kind, level, alert_body(card, a, rules, level), url, done,
+                            _minutes(a) if done else None, ended if done else None))
+            last[f'{car}|{kind}'] = now   # вторая тревога того же вида той же машины в этом же проходе — в окне повтора
+        elif rec.phase == 'active' and not a.get('active') and a.get('to'):
+            out.append(End(key, car, kind, _minutes(a), a['to'], end_body(card, a)))
 
 
-def plan_messages(cards: Mapping[str, Mapping[str, Any]], rules: Rules, now: datetime,
-                  state: AlertState, acks: Sequence[Mapping[str, Any]] | None = None) -> tuple[list[Message], bool]:
-    """Что слать сейчас: (сообщения по порядку, менялось ли состояние — пропущенные тревоги отмечаются сразу).
-    Тревога без записи — начало: не «старая» (идёт или кончилась не раньше RECENT_MIN назад), не тихие часы, не в окне
-    повтора этого вида у этой машины; с записью «начало отправлено», у «нет связи»/GPS кончилась — окончание.
-    acks — отметки «Տեսա» дня (store.live_acks): с ними — и эскалация красных; None (не прочитаны) — без неё."""
-    out: list[Message] = []
-    changed = False
+def plan(cards: Mapping[str, Mapping[str, Any]], rules: Rules, tg: TgRules, now: datetime,
+         records: Mapping[str, Rec]) -> Plan:
+    """Что делать сейчас (правила — в описании модуля): действия по порядку машин и тревог и ключи идущих тревог.
+    Тревога без записи — начало (или Skip); с записью «идёт», а тревога кончилась — End. Битые данные одной машины не
+    останавливают остальные (в журнал)."""
+    out: list[Action] = []
+    active: set[str] = set()
     quiet = in_quiet(rules, now)
-    repeat = timedelta(minutes=rules.repeat_min)
+    last = _last_starts(records)
+    today = now.astimezone(ac.YEREVAN).date()
+    for r in records.values():   # «идёт» с прошлого дня (пропала из журнала без конца) — закрыть: без кнопки и эскалации
+        t = _moment(r.sent_at)
+        if (r.phase == 'active' and r.key.startswith(('alert:', 'late:')) and t is not None
+                and t.astimezone(ac.YEREVAN).date() < today):
+            out.append(End(r.key, r.car or '', r.kind, None, now.isoformat(), '', 'day'))
     for car, card in cards.items():
+        mine: list[Action] = []
         try:
-            changed |= _plan_car(car, card, rules, now, state, quiet, repeat, out)
-            if acks is not None:
-                changed |= _plan_escalation(car, card, rules, now, state, quiet, acks, out)
+            _plan_car(car, card, rules, tg, now, records, quiet, last, mine, active)
         except Exception:   # битые данные одной машины не должны остановить тревоги остальных
             logger.exception('[Routes] Тревоги в Telegram: машина %s пропущена', car)
-    return out, changed
+            continue
+        out.extend(mine)
+    return Plan(out, frozenset(active))
 
 
-class LiveAlerter:
-    """Один проход (tick) = решения plan_messages + отправка; состояние пишется после каждого сообщения. source() — (Rules,
-    момент, карточки флота) или None (флота нет); send(text) бросает исключение при сбое; acks(день) — отметки «Տեսա»
-    дня (store.live_acks; не задано — эскалации нет)."""
-
-    def __init__(self, source: Callable[[], tuple[Rules, datetime, Mapping[str, Mapping[str, Any]]] | None],
-                 send: Callable[[str], None], state_path: str,
-                 acks: Callable[[str], Sequence[Mapping[str, Any]]] | None = None):
-        self.source = source
-        self.send = send
-        self.acks = acks
-        self.state = AlertState(state_path)
-        self.failures = 0
-        self.retry_at = 0.0
-        self.client_errors = 0                       # подряд ошибок 4xx
-        self.halted: tuple[Any, ...] | None = None   # настройки тревог, при которых рассылка остановлена
-
-    def tick(self, monotonic: Callable[[], float] = time.monotonic) -> int:
-        """Отправленных сообщений за проход. Пауза после сбоя отправки — до retry_at."""
-        if monotonic() < self.retry_at:
-            return 0
-        got = self.source()
-        if got is None:
-            return 0
-        rules, now, cards = got
-        sig = (rules.alert_kinds, rules.quiet, rules.repeat_min)
-        if self.halted is not None:
-            if self.halted == sig:
-                return 0
-            self.halted, self.client_errors = None, 0   # настройки тревог сменили — пробуем снова
-        acks = None
-        if self.acks is not None:
-            try:
-                acks = self.acks(now.astimezone(ac.YEREVAN).date().isoformat())
-            except Exception:   # база недоступна — без эскалации (лучше промолчать, чем звать зря)
-                logger.exception('[Routes] Тревоги в Telegram: отметки «Տեսա» не прочитаны — эскалации нет')
-        messages, changed = plan_messages(cards, rules, now, self.state, acks)
-        sent = 0
-        for m in messages:
-            try:
-                self.send(m.text)
-            except Exception as e:   # сеть, Telegram: не падаем, повтор позже
-                self.failures += 1
-                status = getattr(e, 'status', None)
-                self.client_errors = self.client_errors + 1 if isinstance(status, int) and 400 <= status < 500 \
-                    and status != 429 else 0
-                if self.client_errors >= CLIENT_ERRORS_MAX:
-                    self.halted = sig
-                    logger.error('[Routes] Тревоги в Telegram ОСТАНОВЛЕНЫ: %d ошибок %s подряд (токен или чат неверны, бота '
-                                 'убрали из группы?). Исправьте .env и перезапустите сервер или смените настройки тревог',
-                                 self.client_errors, e)
-                    break
-                pause = min(INTERVAL_S * 2 ** self.failures, BACKOFF_MAX_S)
-                self.retry_at = monotonic() + pause
-                logger.warning('[Routes] Тревоги в Telegram: не отправлено (%s: %s), повтор через %.0f с',
-                               type(e).__name__, e, pause)
-                break
-            self.failures = self.client_errors = 0
-            for key, over in m.late:   # «не успеет»: каждая строка — отправлена с этим опозданием
-                self.state.sent[key] = {'at': now.isoformat(), 'start': now.isoformat(), 'end': None, 'over': over}
-            if not m.late:
-                rec = self.state.sent.setdefault(m.key, {'at': now.isoformat(), 'start': None, 'end': None})
-                rec['end' if m.phase == 'end' else 'start'] = now.isoformat()
-                if m.phase == 'start':
-                    self.state.last[f'{m.car}|{m.kind}'] = now.isoformat()
-            self.state.save(now)
-            changed = False
-            sent += 1
-        if changed:
-            self.state.save(now)
-        return sent
+def due_escalations(records: Mapping[str, Rec], active: frozenset[str], tg: TgRules, now: datetime,
+                    quiet: bool) -> list[Rec]:
+    """🔴 записи, которым пора эскалация: сообщение есть, «Տեսա» никто не нажал escalate_min минут, тревога идёт
+    (active), эскалации ещё не было; эскалация выключена (0 минут) или тихие часы — ничего."""
+    if tg.escalate_min <= 0 or quiet:
+        return []
+    wait = timedelta(minutes=tg.escalate_min)
+    out = []
+    for r in records.values():
+        t = _moment(r.payload.get('critical_at')) or _moment(r.sent_at)   # «не успеет» стало 🔴 позже — отсчёт оттуда
+        if (r.level == 'critical' and r.phase == 'active' and r.message_id is not None and r.acked_by is None
+                and r.escalated_at is None and r.key in active and t is not None and now - t >= wait):
+            out.append(r)
+    return sorted(out, key=lambda r: r.sent_at)

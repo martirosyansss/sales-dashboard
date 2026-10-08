@@ -544,7 +544,7 @@ def test_settings_buffer_pct_and_from_settings():
     assert st._NUMERIC['dispatch_buffer_pct'] == (50, 95, False)
     js = (ROOT / 'static' / 'js' / 'routes_settings.js').read_text(encoding='utf-8')
     assert "key: 'dispatch_buffer_pct'" in js and 'min: 50, max: 95' in js
-    assert "routes_settings.js') }}?v=39" in (ROOT / 'templates' / 'routes_settings.html').read_text(encoding='utf-8')
+    assert "routes_settings.js') }}?v=41" in (ROOT / 'templates' / 'routes_settings.html').read_text(encoding='utf-8')
 
 
 def test_store_migrates_20_to_21_keeps_rows_and_allows_new_kinds(tmp_path):
@@ -569,8 +569,8 @@ def test_store_migrates_20_to_21_keeps_rows_and_allows_new_kinds(tmp_path):
                                    lr.Outcome('truck_unload', '', False, 'нет'),
                                    lr.Outcome('truck_travel', '', False, 'нет', model_id='straight')])
     with closing(sqlite3.connect(path)) as conn:
-        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == ('27',) == \
-            (str(st.SCHEMA_VERSION),)
+        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == ('28',) == \
+            (str(st.SCHEMA_VERSION),)                                       # 20 → … → 28 («Տեսա» карты)
         rows = conn.execute('SELECT * FROM learned_norms ORDER BY id').fetchall()
         assert rows[:len(before)] == before and rows[len(before)][0] == 41
         assert conn.execute("SELECT name FROM sqlite_sequence WHERE name LIKE 'learned_norms%'").fetchall() == \

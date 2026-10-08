@@ -1,17 +1,14 @@
 # -*- coding: utf-8 -*-
-"""Тревоги карты машин, круг 2 (владелец 08.10 «fix all»): общая «Տեսա» на сервере (схема 27, store.live_acks,
-POST /api/routes/live/ack, acks в ответах карты) и эскалация в Telegram красной тревоги, которую 10 минут никто не отметил
-(live_alerts: одно сообщение на случай, не для жёлтых, тихие часы).
+"""Тревоги карты машин, круг 2 (владелец 08.10 «fix all»): общая «Տեսա» на сервере — схема 28 (live_ack после таблиц
+Telegram-бота схемы 27), Store.live_ack_put / live_acks, POST /api/routes/live/ack, acks в ответах карты.
 
-Базы — только временные копии: схема 26 — созданная кодом и откатанная, база владельца — копия через sqlite backup
-(источник открыт только для чтения). Telegram не вызывается: отправка — подделка.
+Базы — только временные копии: схемы 26 и 27 — созданные кодом и откатанные, база владельца — копия через sqlite backup
+(источник открыт только для чтения). Эскалация в Telegram — у бота (live_alerts, tg_bot; №91), не здесь.
 Запуск:  python -m pytest tests/test_route_live_ack.py -q
 """
 import sqlite3
 import sys
 from contextlib import closing
-from dataclasses import replace
-from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -19,11 +16,9 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from route_optimizer import live, live_alerts as la  # noqa: E402
 from route_optimizer import store as st  # noqa: E402
 from test_garage_public import LAN, PUBLIC, _session_as, app_v2, client  # noqa: E402,F401
 from test_route_live import live_app  # noqa: E402,F401
-from test_route_live_alerts import NOW, Sender, alert, at, card  # noqa: E402
 
 OWNER_DB = Path('F:/New Softs/Sales Dashboard/route_optimizer.db')   # база ПК владельца — только чтение, только копия
 
@@ -36,32 +31,43 @@ def _version_tables(path):
     return v, counts
 
 
-# ============================== база: схема 27 ==============================
+def _ro_copy(src, dst):
+    """Копия базы через sqlite backup; источник открыт только для чтения."""
+    with closing(sqlite3.connect(f'file:{Path(src).as_posix()}?mode=ro', uri=True)) as x,             closing(sqlite3.connect(dst)) as y:
+        x.backup(y)
 
-def test_schema_27_migrates_copy_of_schema_26_and_acks_roundtrip(tmp_path):
-    src = str(tmp_path / 'v26.db')
+
+# ============================== база: схема 28 ==============================
+
+@pytest.mark.parametrize('old', [26, 27])
+def test_schema_28_migrates_copy_of_old_schema_and_acks_roundtrip(tmp_path, old):
+    """База схемы 26 (до бота) — 26 → 27 (бот) → 28; схемы 27 (ПК после бота) — 27 → 28. Прежние строки целы."""
+    src = str(tmp_path / f'v{old}.db')
     s = st.Store(src)
     s.save_truck_driver('CAR1', '2026-10-01', 'Արամ', 'qa')
     a, b = '2026-10-03T10:00:00+04:00', '2026-10-03T10:12:00+04:00'
     s.add_live_explanation('2026-10-03', 'CAR1', 'deviation', a, b, 'road', 'խցանում', 'boss')
-    with closing(sqlite3.connect(src)) as conn:   # база схемы 26: та же, только без live_ack (шаг 26 → 27 — только добавляет)
+    with closing(sqlite3.connect(src)) as conn:   # шаги 26 → 27 и 27 → 28 только добавляют таблицы
         conn.execute('DROP TABLE live_ack')
-        conn.execute("UPDATE meta SET value = '26' WHERE key = 'schema_version'")
+        if old == 26:
+            conn.execute('DROP TABLE tg_message')
+            conn.execute('DROP TABLE tg_kv')
+        conn.execute("UPDATE meta SET value = ? WHERE key = 'schema_version'", (str(old),))
         conn.commit()
     copy = str(tmp_path / 'copy.db')
-    with closing(sqlite3.connect(f'file:{Path(src).as_posix()}?mode=ro', uri=True)) as x, \
-            closing(sqlite3.connect(copy)) as y:
-        x.backup(y)
+    _ro_copy(src, copy)
     v0, before = _version_tables(copy)
-    assert v0 == '26' and 'live_ack' not in before
+    assert v0 == str(old) and 'live_ack' not in before and ('tg_message' in before) == (old == 27)
     s2 = st.Store(copy)
     assert s2.live_acks('2026-10-03') == []
     v1, after = _version_tables(copy)
-    assert v1 == str(st.SCHEMA_VERSION) == '27' and after == {**before, 'live_ack': 0}   # прежние строки целы
-    assert st._MIGRATIONS[26] == (st._LIVE_ACK_TABLE,)
+    new = {'live_ack': 0} | ({'tg_message': 0, 'tg_kv': 0} if old == 26 else {})
+    assert v1 == str(st.SCHEMA_VERSION) == '28' and after == {**before, **new}   # прежние строки целы
+    assert st._MIGRATIONS[27] == (st._LIVE_ACK_TABLE,)
+    assert st._MIGRATIONS[26] == (st._TG_MESSAGE_TABLE, st._TG_MESSAGE_INDEX, st._TG_KV_TABLE)   # шаг бота — как в trunk
     assert s2.truck_drivers('2026-10-02')[0] == {'CAR1': 'Արամ'}
     assert s2.live_explanations('2026-10-03')['CAR1'][0]['note'] == 'խցանում'
-    assert _version_tables(src)[0] == '26'   # источник не тронут
+    assert _version_tables(src)[0] == str(old)   # источник не тронут
     # запись: строка на (день, машина, вид) — новая отметка заменяет случай, кто и когда
     s2.live_ack_put('2026-10-03', [('CAR1', 'speed', a), ('CAR1', 'late:window', None)], 'boss', a)
     s2.live_ack_put('2026-10-03', [('CAR1', 'speed', b)], 'garage1', b)
@@ -77,19 +83,18 @@ def test_schema_27_migrates_copy_of_schema_26_and_acks_roundtrip(tmp_path):
 
 
 @pytest.mark.skipif(not OWNER_DB.exists(), reason='нет базы ПК владельца')
-def test_schema_27_migrates_copy_of_owner_db(tmp_path):
-    """Копия настоящей базы владельца (sqlite backup, источник — только чтение): миграция до 27 не теряет ни строки."""
+def test_schema_28_migrates_copy_of_owner_db(tmp_path):
+    """Копия настоящей базы владельца (sqlite backup, источник — только чтение; ПК уже на 27 после бота): миграция до 28
+    не теряет ни строки."""
     copy = tmp_path / 'owner.db'
-    with closing(sqlite3.connect(f'file:{OWNER_DB.as_posix()}?mode=ro', uri=True)) as x, \
-            closing(sqlite3.connect(copy)) as y:
-        x.backup(y)
+    _ro_copy(OWNER_DB, copy)
     v0, before = _version_tables(copy)
     if int(v0) > st.SCHEMA_VERSION:
         pytest.skip(f'база владельца новее кода (схема {v0})')
     s = st.Store(str(copy))
     s.load()
     v1, after = _version_tables(copy)
-    assert v1 == str(st.SCHEMA_VERSION) and {k: after[k] for k in before} == before and after['live_ack'] >= 0
+    assert v1 == str(st.SCHEMA_VERSION) and {k: after[k] for k in before} == before and after['live_ack'] == 0
     s.live_ack_put('2026-10-08', [('333DN33', 'deviation', '2026-10-08T12:15:00+04:00')], 'qa', '2026-10-08T12:20:00+04:00')
     assert s.live_acks('2026-10-08')[-1]['user'] == 'qa'
 
@@ -156,146 +161,3 @@ def test_api_ack_view_refuses_role_without_map(live_app):
         _, code = views.api_live_ack()
         assert code == 403
     assert live_app.app.extensions['route_optimizer'].store.live_acks('2026-10-03') == []
-
-
-# ============================== Telegram: эскалация ==============================
-
-def _alerter(tmp_path, cards, acks=None, rules=live.Rules(), now=NOW, name='esc.json'):
-    sender = Sender()
-    box = {'cards': cards, 'now': now, 'rules': rules, 'acks': [] if acks is None else acks}
-    alerter = la.LiveAlerter(lambda: (box['rules'], box['now'], box['cards']), sender, str(tmp_path / name),
-                             acks=lambda day: box['acks'])
-    return alerter, sender, box
-
-
-def test_escalation_once_after_10_min_unacked_persists_over_restart(tmp_path):
-    a = alert('speed', 0, max_kmh=104, lat=40.19, lon=44.51)
-    alerter, sender, box = _alerter(tmp_path, {'CAR1': card(a)})
-    assert alerter.tick() == 1 and not sender.sent[0].startswith('⚠')        # начало тревоги — как раньше
-    box['now'] = NOW + timedelta(minutes=9, seconds=59)                       # 9 мин 59 с — ещё нет
-    assert alerter.tick() == 0
-    box['now'] = NOW + timedelta(minutes=10)
-    assert alerter.tick() == 1
-    lines = sender.sent[1].splitlines()
-    assert lines[0] == '⚠ Չի տեսել ոչ ոք 10 րոպե՝ Արագության գերազանցում' and 'Մեքենա՝ CAR1 · JAC' in lines
-    assert any(x.startswith('Որտեղ՝ https://yandex.ru/maps/') for x in lines)
-    box['now'] = NOW + timedelta(minutes=30)
-    assert alerter.tick() == 0                                                 # одно сообщение на случай
-    again, sender2, box2 = _alerter(tmp_path, {'CAR1': card(a)}, now=NOW + timedelta(minutes=31))
-    assert again.tick() == 0 and sender2.sent == []                           # перезапуск не повторяет
-    # новый случай (другое начало, 11:20; поток увидел в 11:31) — своё начало и своя эскалация через 10 мин от первого
-    # взгляда (окно повтора начала её не касается); в тексте — сколько тревога идёт
-    box2['cards'] = {'CAR1': card(alert('speed', -20, max_kmh=110, lat=40.19, lon=44.51))}
-    assert again.tick() == 1 and not sender2.sent[0].startswith('⚠')
-    box2['now'] = NOW + timedelta(minutes=41)
-    assert again.tick() == 1 and sender2.sent[1].startswith('⚠ Չի տեսել ոչ ոք 21 րոպե՝ Արագության գերազանցում')
-
-
-def test_escalation_no_flood_for_old_reds_on_first_enable(tmp_path):
-    """Поток стартовал, когда красная идёт уже 90 мин: сразу эскалации нет, через 10 мин без «Տեսա» — одна."""
-    a = alert('center', 90, lat=40.18, lon=44.51)
-    alerter, sender, box = _alerter(tmp_path, {'CAR1': card(a), 'CAR2': card(alert('gps', 120, gps='off'), car='CAR2')})
-    alerter.tick()
-    assert not any(x.startswith('⚠') for x in sender.sent)                   # давние красные — не разом
-    box['now'] = NOW + timedelta(minutes=9)
-    alerter.tick()
-    assert not any(x.startswith('⚠') for x in sender.sent)
-    box['acks'] = [{'car': 'CAR2', 'key': 'gps', 'since': at(120), 'user': 'boss', 'at': at(-9)}]   # GPS увидели
-    box['now'] = NOW + timedelta(minutes=10)
-    alerter.tick()
-    esc = [x for x in sender.sent if x.startswith('⚠')]
-    assert len(esc) == 1 and esc[0].startswith('⚠ Չի տեսել ոչ ոք 100 րոպե՝ Փոքր կենտրոնում')
-    box['now'] = NOW + timedelta(minutes=40)
-    alerter.tick()
-    assert len([x for x in sender.sent if x.startswith('⚠')]) == 1
-
-
-def test_escalation_not_when_acked_same_case(tmp_path):
-    a = alert('gps', 15, gps='off')
-    c = card(a)
-    c['alerts'] = {'since': {'gps': a['from']}}
-    ack = {'car': 'CAR1', 'key': 'gps', 'since': a['from'], 'user': 'boss', 'at': at(5)}
-    alerter, sender, box = _alerter(tmp_path, {'CAR1': c}, acks=[ack])
-    alerter.tick()
-    assert [x for x in sender.sent if x.startswith('⚠')] == []
-    box['acks'] = [{**ack, 'since': at(40)}]                                  # отметка прежнего случая — не в счёт
-    box['now'] = NOW + timedelta(minutes=9)
-    alerter.tick()
-    assert [x for x in sender.sent if x.startswith('⚠')] == []                # 10 мин — от первого взгляда потока
-    box['now'] = NOW + timedelta(minutes=10)
-    alerter.tick()
-    assert sender.sent[-1].startswith('⚠ Չի տեսել ոչ ոք 25 րոպե՝ GPS-')
-
-
-def test_escalation_never_for_amber_and_only_enabled_kinds(tmp_path):
-    cards = {'CAR1': card(alert('stop', 40, minutes=40, lat=40.1, lon=44.5), alert('deviation', 30, km=2.0, lat=40.1, lon=44.5),
-                          alert('no_contact', 30, minutes=30))}
-    alerter, sender, box = _alerter(tmp_path, cards)
-    alerter.tick()
-    box['now'] = NOW + timedelta(minutes=20)
-    alerter.tick()
-    assert sender.sent and not any(x.startswith('⚠') for x in sender.sent)
-    # красная, вид выключен в настройках тревог — ни начала, ни эскалации
-    rules = replace(live.Rules(), alert_kinds=('stop',))
-    alerter, sender, _ = _alerter(tmp_path, {'CAR1': card(alert('center', 30, lat=40.18, lon=44.51))}, rules=rules,
-                                  name='k.json')
-    assert alerter.tick() == 0
-    # объяснённая и «փոքր» — не эскалируются
-    alerter, sender, _ = _alerter(tmp_path, {'CAR1': card(alert('sequence', 30, explained={'reason': 'road'}))},
-                                  name='e.json')
-    alerter.tick()
-    assert sender.sent == []
-
-
-def test_escalation_quiet_hours_and_unreadable_acks(tmp_path):
-    rules = replace(live.Rules(), quiet=(10 * 60.0, 12 * 60.0))               # 10:00–12:00, сейчас 11:00
-    a = alert('center', 15, lat=40.18, lon=44.51)
-    alerter, sender, box = _alerter(tmp_path, {'CAR1': card(a)}, rules=rules)
-    assert alerter.tick() == 0
-    box['now'] = NOW + timedelta(minutes=10)                                  # срок — в тихие часы
-    assert alerter.tick() == 0
-    box['now'] = NOW + timedelta(hours=1, minutes=5)                          # тихие часы кончились — задним числом нет
-    assert alerter.tick() == 0 and sender.sent == []
-    # отметки не прочитаны (база недоступна) — эскалации нет, начало тревоги — как раньше
-    sender = Sender()
-
-    def broken(day):
-        raise st.StoreError('нет базы')
-    alerter = la.LiveAlerter(lambda: (live.Rules(), NOW, {'CAR2': card(alert('center', 30, lat=40.18, lon=44.51),
-                                                                       car='CAR2')}),
-                             sender, str(tmp_path / 'b.json'), acks=broken)
-    assert alerter.tick() == 1 and not sender.sent[0].startswith('⚠')
-
-
-def test_escalation_late_window_counts_from_first_seen_and_fresh_ack(tmp_path):
-    late = {'late_kind': 'window', 'over_min': 25, 'name': 'Խանութ «Արարատ»', 'stop_id': 'S:1',
-            'eta': at(-30), 'limit': at(-5)}
-    c = {**card(), 'late': [late, {**late, 'late_kind': 'plan', 'name': 'Պլանային'}]}
-    alerter, sender, box = _alerter(tmp_path, {'CAR1': c})
-    assert alerter.tick() == 0                                                 # впервые увидена — отсчёт
-    box['now'] = NOW + timedelta(minutes=9)
-    assert alerter.tick() == 0
-    # отметка без начала в силе 10 мин от подтверждения страницы
-    box['acks'] = [{'car': 'CAR1', 'key': 'late:window', 'since': None, 'user': 'boss', 'at': at(-5)}]
-    box['now'] = NOW + timedelta(minutes=12)
-    assert alerter.tick() == 0
-    box['now'] = NOW + timedelta(minutes=16)                                  # отметке 11 мин — страница её не держит
-    assert alerter.tick() == 1
-    text = sender.sent[0]
-    assert text.startswith('⚠ Չի տեսել ոչ ոք 16 րոպե՝ Չի հասցնում ժամանակին') and 'Խանութ «Արարատ»' in text \
-        and 'Պլանային' not in text
-    # только «к плану» — жёлтая: нет; ушла до срока — отсчёт снимается
-    alerter, sender, box = _alerter(tmp_path, {'CAR1': {**card(), 'late': [{**late, 'late_kind': 'plan'}]}}, name='p.json')
-    alerter.tick()
-    box['now'] = NOW + timedelta(minutes=30)
-    assert alerter.tick() == 0
-    alerter, sender, box = _alerter(tmp_path, {'CAR1': c}, name='g.json')
-    alerter.tick()
-    box['cards'] = {'CAR1': card()}
-    box['now'] = NOW + timedelta(minutes=5)
-    alerter.tick()
-    box['cards'] = {'CAR1': c}
-    box['now'] = NOW + timedelta(minutes=12)
-    assert alerter.tick() == 0                                                 # вернулась — отсчёт заново
-    box['now'] = NOW + timedelta(minutes=22)
-    assert alerter.tick() == 1

@@ -2678,8 +2678,10 @@ def _capture_prediction(dd, draft):
     # (обучение загрузки и обеда — learning.plan_trips, «время работы» — learning._plan_minutes)
     def back(tr: Mapping[str, Any]) -> str:
         return tr['buffer']['start'] if tr.get('buffer') else tr['return']
+    # kg — вес плана машины (план дня в Telegram, №91)
     draft.prediction = {'created_at': now.isoformat(), 'prospective': now < start,
-        'trucks': {t['car_code']: {**{key: t.get(key) for key in ('km', 'minutes', 'liters', 'loading_minutes', 'wear_amd')},
+        'trucks': {t['car_code']: {**{key: t.get(key) for key in ('km', 'minutes', 'liters', 'loading_minutes', 'wear_amd',
+                                                                   'kg')},
                                    'depart': t['trips'][0]['depart'] if t['trips'] else None,
                                    'return': back(t['trips'][-1]) if t['trips'] else t.get('return'),
                                    'trips': [{'loading_start': tr['loading_start'], 'depart': tr['depart'],
@@ -5006,7 +5008,7 @@ def api_live() -> Any:
     ctx, now, _, cards = _live_cards(state, day)
     return jsonify({**_live_head(ctx, day, now),
                     'trucks': [{k: v for k, v in card.items() if k not in ('alerts_log', 'stops_off')} for card in cards.values()],
-                    'acks': state.store.live_acks(day.isoformat())})   # «Տեսա» всех зрителей (схема 27)
+                    'acks': state.store.live_acks(day.isoformat())})   # «Տեսա» всех зрителей (схема 28)
 
 
 @bp.get('/api/routes/live/truck')
@@ -5117,13 +5119,14 @@ def api_live_unexplain() -> Any:
     return jsonify({'success': True})
 
 
-# «Տեսա» общая (владелец 08.10, «fix all» тревог карты; схема 27): ПК диспетчера и телефон владельца видят одни отметки.
+# «Տեսա» общая (владелец 08.10, «fix all» тревог карты; схема 28): ПК диспетчера и телефон владельца видят одни отметки.
 # Отмечает тот, кто может открыть карту, — администратор и «Гараж» (app_v2._garage_path_allowed пропускает «Гаражу» ровно
 # этот POST): отметка — только «видел», с именем вошедшего; ничего, кроме неё, не меняется. Только JSON (_json_body, как
 # «Բացատրել») и только за сегодня по Еревану. Принято (владелец 08.10): отметка без начала (у «не успеет») в силе
 # 10 мин от последней записи — её подтверждает открытая страница, у которой проблема отмечена; все страницы закрыты —
 # проблема снова новая. Отметка сама возвращается: страница со своей отметкой (lv.ack) без серверной отправляет её на
 # опросе, поэтому строку live_ack надёжно не удалить вручную, пока такая страница открыта (снять — закрыть её).
+# Запись и чтение — Store.live_ack_put(day, items, user, at) / live_acks(day): их же зовёт «Տեսա» Telegram-бота (№91).
 LIVE_ACK_ROLES = ('admin', 'garage')
 
 

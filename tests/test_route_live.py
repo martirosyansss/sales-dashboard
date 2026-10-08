@@ -864,7 +864,7 @@ def test_build_text_no_contact_reason_from_device_state():
     def text(device, state='offline', reason=None):
         card = {'car_code': 'X1', 'name': 'N', 'drivers': ['Արամ'], 'device': device, 'state': state,
                 'offline_reason': reason, 'position': {'lat': 40.1, 'lon': 44.5}}
-        return la.build_text(card, a, 'start', RULES)
+        return la.alert_body(card, a, RULES, 'info')   # бот №91: тело сообщения тревоги (HTML)
     assert 'Հավելվածը փակվել է' in text({**NEW_APK, 'exit': 'closed'}, reason='closed')
     assert 'Հեռախոսն անջատվել է' in text({**NEW_APK, 'exit': 'shutdown'})
     # другая активная тревога: state='alert', offline_reason пуст — причина всё равно в тексте
@@ -1895,11 +1895,11 @@ def test_live_deviation_setting():
 def test_build_text_deviation():
     from route_optimizer import live_alerts as la
     a = {'kind': 'deviation', 'from': T0.isoformat(), 'to': None, 'active': True, 'km': 1.2, 'lat': A[0], 'lon': A[1]}
-    text = la.build_text({'car_code': 'CAR1', 'driver': 'Արամ'}, a, 'start', RULES)
-    assert text.splitlines()[0] == 'Շեղում երթուղուց' and '300 մ' in text and '1,2 կմ' in text and 'yandex' in text
+    text = la.alert_body({'car_code': 'CAR1', 'driver': 'Արամ'}, a, RULES, 'info')   # бот №91: ⚪ — карта в тексте
+    assert text.splitlines()[0] == '⚪ <b>Շեղում երթուղուց</b>' and '300 մ' in text and '1,2 կմ' in text and 'yandex' in text
     assert 'արդեն' in text
-    ended = la.build_text({'car_code': 'CAR1'}, {**a, 'active': False, 'to': (T0 + timedelta(minutes=7)).isoformat()},
-                          'start', RULES)
+    ended = la.alert_body({'car_code': 'CAR1'}, {**a, 'active': False, 'to': (T0 + timedelta(minutes=7)).isoformat()},
+                          RULES, 'info')
     assert 'արդեն' not in ended and 'շեղվել էր' in ended and '09:00–09:07' in ended
 
 

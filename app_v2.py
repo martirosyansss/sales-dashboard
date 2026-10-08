@@ -431,7 +431,7 @@ _LIVE_PAGE = '/routes/live'
 _LIVE_API = '/api/routes/live'
 _DRIVERS_PAGE = '/routes/drivers'
 _DRIVERS_API = '/api/routes/drivers/scorecard'   # точный путь: новый API «Վարորդներ» гаражу сам не откроется
-_LIVE_ACK_API = '/api/routes/live/ack'   # «Տեսա» карты машин (схема 27) — единственный POST карты для «Гаража»
+_LIVE_ACK_API = '/api/routes/live/ack'   # «Տեսա» карты машин (схема 28) — единственный POST карты для «Гаража»
 
 
 def _garage_path_allowed(path: str, method: str) -> bool:

@@ -659,7 +659,7 @@ def main() -> int:
             cars = seed(app)
 
         def clear_acks() -> None:
-            """Отметки «Տեսա» сервера (схема 27) — снять: следующий шаг начинает «никто не видел» (только копия базы)."""
+            """Отметки «Տեսա» сервера (схема 28) — снять: следующий шаг начинает «никто не видел» (только копия базы)."""
             conn = sqlite3.connect(tmp_p / 'route_optimizer.db')
             conn.execute('DELETE FROM live_ack')
             conn.commit()
