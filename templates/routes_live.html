@@ -13,7 +13,7 @@
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=22">
 <!-- Машины на карте сейчас (№76): тема «Развоза», свои классы .lv-*; новые файлы статики — и в _PUBLIC_STATIC app_v2 -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_live.css') }}?v=9">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_live.css') }}?v=10">
 {% endblock %}
 
 {% block content %}
@@ -72,8 +72,8 @@
             <p class="lv-empty" id="lvEmpty" hidden>Այս օրը մեքենաների տվյալներ չկան։</p>
         </aside>
 
-        <!-- Карта: машины, путь выбранной за день, её плановая линия (пунктир) и отклонения от неё, магазины цветом
-             статуса с номером по плану -->
+        <!-- Карта: машины, путь выбранной за день, её плановая линия (коридор) и отклонения от неё, магазины цветом
+             статуса с номером по плану; образцы линий легенды — как на карте (routes_live.js LN) -->
         <section class="lv-mapbox" aria-label="Քարտեզ">
             <div id="lvMap" class="lv-map"></div>
             <div class="lv-mapbar">
@@ -83,6 +83,7 @@
                     <span><i class="lv-ln is-plan"></i>պլանային երթուղի</span>
                     <span><i class="lv-ln is-dev"></i>շեղում երթուղուց</span>
                     <span><i class="lv-ln is-minor"></i>փոքր շեղում</span>
+                    <span><i class="lv-ln is-explained"></i>բացատրված շեղում</span>
                     <span><i class="lv-ln is-over"></i>ավելորդ վազք</span>
                     <span><i class="lv-dot is-moving"></i>ընթացքի մեջ</span>
                     <span><i class="lv-dot is-standing"></i>կանգնած</span>
@@ -204,5 +205,5 @@
         integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
 <!-- подложка — Яндекс, как на остальных картах (решение владельца 06.10, см. live_page) -->
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=1" data-yandex-key="{{ yandex_tiles_key }}"></script>
-<script src="{{ url_for('static', filename='js/routes_live.js') }}?v=16"></script>
+<script src="{{ url_for('static', filename='js/routes_live.js') }}?v=17"></script>
 {% endblock %}
