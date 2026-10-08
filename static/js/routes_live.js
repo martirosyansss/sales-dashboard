@@ -1138,9 +1138,12 @@
         }, 3000);
     }
 
-    // карточка выбранной машины на телефоне — под картой и списком: прокрутить к ней
+    // карточка выбранной машины под картой (телефон; ПК в две колонки — слева меню «Маршрутов»): прокрутить к ней.
+    // В три колонки она закреплена справа и видна — не прокручивать
     function focusCard() {
-        if (window.matchMedia('(max-width: 899px)').matches) $('lvCard').scrollIntoView({ block: 'start', behavior: reduced() ? 'auto' : 'smooth' });
+        const card = $('lvCard');
+        if (window.matchMedia('(max-width: 899px)').matches || card.getBoundingClientRect().top > window.innerHeight - 120)
+            card.scrollIntoView({ block: 'start', behavior: reduced() ? 'auto' : 'smooth' });
     }
 
     function select(car) {

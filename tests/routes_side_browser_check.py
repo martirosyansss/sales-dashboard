@@ -14,9 +14,11 @@ B свернуть (1366×650, «Ակնարկ»): меню 64 px, подписи
   перерисовываются); переход на «Առաքում» — меню сразу свёрнуто (помнится), рабочий экран и карта по ширине окна,
   шапка рабочего экрана помещается; развернуть — снова 244 px; без хранилища (localStorage бросает) страница цела;
 C «Առաքում» 1366 и 1920: рабочий экран виден, карта не уже 600 px и не выходит за окно, до низа окна;
+E «Առաքում»: без своего выбора уже 1400 px меню свёрнуто, шире — раскрыто; свой выбор главнее и на других страницах;
 D телефон 390×860, все 11 страниц: колонки нет, кнопка «☰ <страница>» с её названием, прокрутки вбок нет;
   кнопка открывает меню (видно, фокус на текущем пункте, страница не прокручивается), Tab не уходит из меню,
-  Esc закрывает и фокус на кнопке; клик по затемнению закрывает;
+  Esc закрывает и фокус на кнопке; клик по затемнению закрывает; «Առաքում» 390×700 — меню выше нижних вкладок
+  страницы, «Կարգավորումներ» нажимается, страница под меню inert;
 Снимки — в output/routes-side/ (не в git).
 Ошибки страницы (pageerror) — провал.
 """
@@ -104,8 +106,10 @@ def main() -> int:
                 for url, _ in PAGES:
                     go(pg, url)
                     path = url.split('?')[0]
+                    # «Առաքում» уже 1400 px без своего выбора пользователя — меню сначала свёрнуто (рабочему экрану тесно)
+                    want = 64 if path == '/routes/dispatch' and w < 1400 else 244
                     check(pg.is_visible('#rtSecNav') and not pg.is_visible('#rtSecNavOpen') and current(pg) == path
-                          and side_w(pg) == 244 and no_hscroll(pg),
+                          and side_w(pg) == want and no_hscroll(pg),
                           f'A {w}×{h} {path}: меню колонкой ({side_w(pg)} px), текущий {current(pg)}, без прокрутки вбок')
                     fit = menu_fit(pg)
                     check(fit['fits'] and fit['fold'] and fit['foot'],
@@ -113,7 +117,7 @@ def main() -> int:
                     if path == '/routes/live' and w < 1600:
                         mw = round(pg.eval_on_selector('#lvMap', 'e => e.getBoundingClientRect().width'))
                         check(mw >= 600, f'A {w}×{h} /routes/live: карта {mw} px (две колонки, не 320 px)')
-                    if h == 650 and url in SHOTS:
+                    if h == 650 and url in SHOTS and want == 244:
                         pg.screenshot(path=str(OUT / f'{SHOTS[url]}-1366x650-expanded.png'))
                     if w == 1920:
                         pg.screenshot(path=str(OUT / f'all-1920-{path.strip("/").replace("/", "-")}.png'))
@@ -159,6 +163,11 @@ def main() -> int:
                   and pg.evaluate("localStorage.getItem('rtSecNavCollapsed')") == '0'
                   and pg.get_attribute('#rtSecNav a[href="/routes/cost"]', 'title') is None, 'B развёрнуто: 244 px, resize, запомнено')
             wide_map = ws_ok('1366 раскрыто')
+            pg.screenshot(path=str(OUT / 'dispatch-1366x650-expanded.png'))
+            # меню вровень с рабочим экраном (у него сверху отступ меньше — 8 px)
+            tops = pg.evaluate("[document.getElementById('rtSecNav').getBoundingClientRect().top, "
+                               "document.getElementById('rtDispatch').getBoundingClientRect().top]")
+            check(abs(tops[0] - tops[1]) <= 1, f'C меню вровень с рабочим экраном (верх меню {tops[0]}, страницы {tops[1]})')
             check(narrow_map - wide_map >= 150, f'C карта шире при свёрнутом меню ({narrow_map} > {wide_map})')
             pg.context.close()
 
@@ -173,6 +182,25 @@ def main() -> int:
             pg.wait_for_timeout(400)
             check(side_w(pg) == 64 and not [e for e in errors if 'blocked' in e], 'B без хранилища: меню сворачивается, ошибок нет')
             pg.context.close()
+
+            # E «Առաքում»: без своего выбора уже 1400 px меню свёрнуто, шире — раскрыто; свой выбор главнее
+            for w, h, want in ((1366, 650, 64), (1180, 700, 64), (1440, 900, 244)):
+                pg = new_page(w, h)
+                go(pg, '/routes/dispatch?date=2026-10-01')
+                check(side_w(pg) == want and pg.evaluate("localStorage.getItem('rtSecNavCollapsed')") is None
+                      and pg.get_attribute('#rtSecNavFold', 'aria-expanded') == str(want == 244).lower(),
+                      f'E {w}×{h} «Առաքում» без выбора пользователя: меню {side_w(pg)} px')
+                if w == 1180:
+                    ws_ok('1180 свёрнуто (по умолчанию)')
+                    pg.screenshot(path=str(OUT / 'dispatch-1180-collapsed.png'))
+                    pg.click('#rtSecNavFold')
+                    pg.wait_for_timeout(600)
+                    pg.screenshot(path=str(OUT / 'dispatch-1180-expanded.png'))
+                    go(pg, '/routes/dispatch?date=2026-10-01')
+                    check(side_w(pg) == 244, f'E 1180: раскрыл сам — после перехода раскрыто ({side_w(pg)} px)')
+                    go(pg, '/routes')
+                    check(side_w(pg) == 244, 'E свой выбор действует и на других страницах')
+                pg.context.close()
 
             # D
             pg = new_page(390, 860)
@@ -207,6 +235,27 @@ def main() -> int:
                     pg.mouse.click(370, 400)   # затемнение справа от меню
                     pg.wait_for_timeout(350)
                     check(not pg.is_visible('#rtSecNav') and pg.is_hidden('#rtSecNavScrim'), 'D клик по затемнению закрыл')
+            pg.context.close()
+
+            # D «Առաքում» 390×700: открытое меню выше нижних вкладок страницы — «Կարգավորումներ» нажимается; страница под ним inert
+            pg = new_page(390, 700)
+            go(pg, '/routes/dispatch?date=2026-10-01')
+            pg.click('#rtSecNavOpen')
+            pg.wait_for_timeout(350)
+            hit = pg.evaluate('''() => { const a = document.querySelector('.rt-secnav-foot a'), r = a.getBoundingClientRect();
+                const el = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+                return [a.contains(el), el ? el.tagName + '.' + el.className : null, document.querySelector('.rt-shell-main').inert,
+                        !!document.querySelector('#dpTabs') && getComputedStyle(document.querySelector('#dpTabs')).display !== 'none']; }''')
+            check(hit[0] and hit[2], f'D «Առաքում» 390×700: «Կարգավորումներ» под пальцем ({hit[1]}), страница inert, вкладки снизу {hit[3]}')
+            pg.click('.rt-secnav-foot a')
+            pg.wait_for_url('**/routes/settings', timeout=15000)
+            check(pg.url.endswith('/routes/settings'), 'D нажатие «Կարգավորումներ» в меню открыло страницу')
+            go(pg, '/routes/dispatch?date=2026-10-01')
+            pg.click('#rtSecNavOpen')
+            pg.wait_for_timeout(350)
+            pg.keyboard.press('Escape')
+            pg.wait_for_timeout(350)
+            check(not pg.evaluate("document.querySelector('.rt-shell-main').inert"), 'D закрыто — страница снова доступна')
             pg.context.close()
             browser.close()
     finally:

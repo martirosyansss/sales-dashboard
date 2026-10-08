@@ -119,7 +119,10 @@
    ------------------------------------------------------------------------ */
 .rt-shell {
     --rt-secnav-w: 244px;
-    --rt-secnav-top: 70px;   /* под закреплённой шапкой дашборда (+12 px); точное значение ставит routes_side.js */
+    /* под закреплённой шапкой дашборда: её высоту ставит routes_side.js, отступ — как у страницы сверху
+       (у рабочего экрана «Развоза» он меньше — routes_dispatch.css) */
+    --rt-secnav-gap: 12px;
+    --rt-secnav-top: calc(var(--rt-secnav-nav, 58px) + var(--rt-secnav-gap));
     display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 20px; align-items: start;
 }
 .rt-shell-main { min-width: 0; }
@@ -199,9 +202,10 @@
     .rt-secnav-open-k { flex: none; color: var(--rt-fg-mute); font-weight: 500; }
     .rt-secnav-open-sep { flex: none; font-size: .625rem; color: var(--rt-fg-mute); }
     .rt-secnav-open-v { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .rt-secnav-scrim { position: fixed; inset: 0; z-index: 1040; background: rgba(5, 8, 12, .62); }
+    /* выше нижних вкладок и кнопки ИИ «Развоза» (1050/1060) и его панелей (до 1065), ниже уведомлений (1080) */
+    .rt-secnav-scrim { position: fixed; inset: 0; z-index: 1068; background: rgba(5, 8, 12, .62); }
     .rt-page.rt-secnav {
-        position: fixed; top: 0; left: 0; bottom: 0; z-index: 1045; width: min(300px, 86vw); height: auto;
+        position: fixed; top: 0; left: 0; bottom: 0; z-index: 1070; width: min(300px, 86vw); height: auto;
         padding: 12px 10px calc(12px + env(safe-area-inset-bottom)); border-left: 0; border-radius: 0 var(--rt-radius) var(--rt-radius) 0;
         transform: translateX(-104%); visibility: hidden; transition: transform .22s ease, visibility 0s linear .22s;
     }

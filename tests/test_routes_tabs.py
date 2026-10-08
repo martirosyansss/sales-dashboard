@@ -27,7 +27,7 @@ PAGES = {'routes_overview.html': '/routes', 'routes_optimize.html': '/routes/opt
          'routes_settings.html': '/routes/settings', 'routes_garage.html': '/routes/garage',
          'routes_pay.html': '/routes/pay', 'routes_araqich.html': '/routes/araqich',
          'routes_cost.html': '/routes/cost', 'routes_drivers.html': '/routes/drivers', 'routes_live.html': '/routes/live'}
-ADMIN_ONLY_MENU = {'/routes/garage', '/routes/live', '/routes/drivers'}
+GARAGE_PAGES = {'/routes/garage', '/routes/live', '/routes/drivers'}
 LINK_RE = re.compile(r'<a class="rt-secnav-link" href="([^"]+)"( aria-current="page")?><i class="fas fa-[\w-]+" aria-hidden="true">'
                      r'</i><span class="rt-secnav-t">([^<]+)</span></a>')
 
@@ -52,11 +52,22 @@ def test_every_page_template_uses_the_section_layout():
         src = (ROOT / 'templates' / template).read_text(encoding='utf-8')
         assert src.startswith('{% extends "routes_base.html" %}'), template
         assert f"{{% set rt_nav = '{url}' %}}" in src, template
-        assert ('{% set rt_nav_admin_only = true %}' in src) == (url in ADMIN_ONLY_MENU), template
-        assert 'rt-tabs' not in src and 'rt-secbar' not in src, template
     for css in ('routes.css', 'routes_dispatch.css'):
         assert 'rt-tabs' not in (ROOT / 'static' / 'css' / css).read_text(encoding='utf-8')
         assert 'rt-secbar' not in (ROOT / 'static' / 'css' / css).read_text(encoding='utf-8')
+
+
+def test_guard_new_routes_pages_use_the_layout_and_no_old_tabs():
+    """Сторож: новая страница раздела (templates/routes_*.html) — тоже через routes_base.html (иначе останется без меню);
+    старой полосы вкладок (.rt-tabs / .rt-secbar) нет ни в одном шаблоне."""
+    not_section = {'routes_base.html', 'routes_warehouse.html'}   # каркас; «Склад» (№78) — своя страница роли, без меню
+    for path in sorted((ROOT / 'templates').glob('routes_*.html')):
+        if path.name in not_section:
+            continue
+        assert path.read_text(encoding='utf-8').startswith('{% extends "routes_base.html" %}'), path.name
+    for path in sorted((ROOT / 'templates').rglob('*.html')):
+        src = path.read_text(encoding='utf-8')
+        assert 'rt-tabs' not in src and 'rt-secbar' not in src, path.name
 
 
 @pytest.mark.parametrize('url', sorted(PAGES.values()))
@@ -76,14 +87,16 @@ def test_menu_on_every_page_same_links_groups_and_one_current(client, url):
     foot = re.search(r'<ul class="rt-secnav-list rt-secnav-foot">(.*?)</ul>', nav, flags=re.S)
     assert foot and [(h, t) for h, _, t in LINK_RE.findall(foot.group(1))] == [SETTINGS]
     # каркас: меню слева, страница справа; на узком экране — кнопка с названием текущей страницы
-    shell = html.index('<div class="rt-shell" id="rtShell">')
+    shell = html.index('<div class="rt-shell" id="rtShell"')
+    # «Առաքում»: уже 1400 px меню сначала свёрнуто (пока пользователь сам не выбрал) — только у неё
+    assert ('data-compact-below="1400"' in html) == (url == '/routes/dispatch')
     assert shell < html.index('id="rtSecNav"') < html.index('<div class="rt-shell-main">')
     here = dict(LINKS)[url]
     assert re.search(r'<span class="rt-secnav-open-v">' + re.escape(here) + '</span>', html)
     assert 'js/routes_side.js' in html
 
 
-@pytest.mark.parametrize('url', sorted(ADMIN_ONLY_MENU))
+@pytest.mark.parametrize('url', sorted(GARAGE_PAGES))
 def test_garage_role_sees_these_pages_without_menu(client, url):
     html = _page(client, url, 'garage1')
     assert 'rt-secnav' not in html and 'rtShell' not in html and 'routes_side.js' not in html

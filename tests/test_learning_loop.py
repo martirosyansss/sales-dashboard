@@ -605,7 +605,7 @@ def test_learning_page_renders_and_linked():
     import app_v2
     from flask import render_template
     with app_v2.app.test_request_context('/routes/learning'):
-        html = render_template('routes_learning.html')
+        html = render_template('routes_learning.html', is_admin=True)   # меню раздела — администратору
     assert 'Ուսուցում և փաստ' in html and 'js/routes_learning.js' in html and 'href="/routes/learning" aria-current="page">' in html
     # меню раздела — одно на все страницы (templates/_routes_side.html через routes_base.html)
     assert '/routes/learning' in (ROOT / 'templates' / '_routes_side.html').read_text(encoding='utf-8')

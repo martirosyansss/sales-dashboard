@@ -532,6 +532,26 @@ def main() -> int:
                 page.wait_for_timeout(16000)
                 check(len(polls) > n, f'опрос раз в 15 с ({n} → {len(polls)})')
 
+                # слева меню «Маршрутов»: 1366×650 — две колонки, карточка под картой, выбор машины прокручивает к ней;
+                # 1920 — три колонки, карточка справа на виду, страница не прокручивается
+                for w, h, cols in ((1366, 650, 2), (1920, 1080, 3)):
+                    pc = browser.new_page(viewport={'width': w, 'height': h})
+                    pc.on('pageerror', lambda e: errors.append(str(e)))
+                    pc.goto(BASE + '/routes/live')
+                    pc.wait_for_selector('.lv-item')
+                    n_cols = pc.eval_on_selector('.lv-layout', "e => getComputedStyle(e).gridTemplateColumns.split(' ').length")
+                    pc.locator(f'.lv-item[data-car="{cars[0]}"]').click()
+                    pc.wait_for_selector('#lvCard:not([hidden]) .lv-grid dt')
+                    pc.wait_for_timeout(900)
+                    top, sy = pc.evaluate("[document.getElementById('lvCard').getBoundingClientRect().top, scrollY]")
+                    check(n_cols == cols and 0 <= top < h - 120 and (sy > 0) == (cols == 2),
+                          f'{w}×{h}: {n_cols} колонки, выбранная машина — карточка на экране (верх {round(top)}, прокрутка {sy})')
+                    if w == 1366:
+                        out = ROOT / 'output' / 'routes-side'
+                        out.mkdir(parents=True, exist_ok=True)
+                        pc.screenshot(path=str(out / 'live-1366x650-car-selected.png'))
+                    pc.close()
+
                 phone = browser.new_page(viewport={'width': 390, 'height': 860}, is_mobile=True, has_touch=True)
                 phone.on('pageerror', lambda e: errors.append(str(e)))
                 phone.goto(BASE + '/routes/live')

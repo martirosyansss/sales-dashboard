@@ -13,8 +13,8 @@
 
     // меню закреплено под шапкой дашборда: её высота (на узком экране она раскрывается — пересчитать)
     const nav = document.querySelector('.app-nav');
-    const navH = () => shell.style.setProperty('--rt-secnav-top',
-        ((nav && getComputedStyle(nav).position === 'sticky' ? Math.ceil(nav.getBoundingClientRect().height) : 0) + 12) + 'px');
+    const navH = () => shell.style.setProperty('--rt-secnav-nav',
+        (nav && getComputedStyle(nav).position === 'sticky' ? Math.ceil(nav.getBoundingClientRect().height) : 0) + 'px');
     navH();
     if (nav && typeof window.ResizeObserver !== 'undefined') new ResizeObserver(navH).observe(nav); else window.addEventListener('resize', navH);
 
@@ -41,8 +41,10 @@
 
     // узкий экран: выезжающее меню
     const focusables = () => [closeBtn, ...links];
+    const main = shell.querySelector('.rt-shell-main');
     function setDrawer(open, refocus) {
         shell.classList.toggle('is-open', open);
+        main.inert = open;   // страница под затемнением — ни нажатий, ни фокуса (нижние вкладки «Развоза» и т. п.)
         openBtn.setAttribute('aria-expanded', String(open));
         scrim.hidden = !open;
         document.documentElement.classList.toggle('rt-secnav-lock', open);

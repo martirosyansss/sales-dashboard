@@ -66,6 +66,7 @@ def build(tmp):
         from flask import g
         g.user_role = 'admin'
     app.before_request_funcs.setdefault(None, []).insert(0, admin)   # приложение уже отвечало: before_request() нельзя
+    app.template_context_processors[None].append(lambda: {'is_admin': True})   # меню раздела «Маршруты» — администратору
     state = app.extensions['route_optimizer']
     state.store.save_dispatch(D1.isoformat(), plan([('CAR1', [104])], sent=[('CAR1', [101, 102]), ('CAR2', [104, 999])]), 'qa')
     state.store.save_dispatch(D2.isoformat(), plan([('CAR2', [101, 104])]), 'qa')

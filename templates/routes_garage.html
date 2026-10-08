@@ -1,7 +1,6 @@
 {% extends "routes_base.html" %}
 {#- пункт меню раздела слева (routes_base.html) -#}
 {% set rt_nav = '/routes/garage' %}
-{% set rt_nav_admin_only = true %}   {#- роль «Гараж» видит страницу без меню раздела -#}
 
 {# снаружи (роль «Гараж», araqich.orix.am) — без названия программы, как страница входа #}
 {% block title %}Ավտոտնակ{% if not is_garage %} — Sales Dashboard{% endif %}{% endblock %}

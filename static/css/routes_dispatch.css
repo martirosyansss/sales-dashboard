@@ -1046,8 +1046,9 @@ details.dp-costnote p { margin: 6px 0 0; }
 #rtDispatch.is-ws #dpApprovedBadge, #rtDispatch.is-ws #dpNoDriver { display: none !important; }
 #rtDispatch.is-ws .dp-datenote { margin-top: 2px; font-size: .8125rem; flex-wrap: nowrap; }
 #rtDispatch.is-ws .dp-datenote > span { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-/* №86: шапка ниже — меньше отступов над рабочим экраном (карта выше) */
+/* №86: шапка ниже — меньше отступов над рабочим экраном (карта выше); меню раздела слева — вровень со страницей */
 body.dp-ws-on main.py-4 { padding-top: 8px !important; }
+body.dp-ws-on .rt-shell { --rt-secnav-gap: 8px; }
 #rtDispatch.is-ws .dp-mast { margin-bottom: 8px; }
 #rtDispatch.is-ws .dp-dayboard { margin-top: 0; }
 /* печать и Excel — в шапке рабочего экрана, в подсказке не повторяются */
