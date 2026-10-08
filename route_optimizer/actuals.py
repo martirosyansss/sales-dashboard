@@ -654,6 +654,40 @@ def reorder_trip(ref: Sequence[int], r: Reorder, done: Collection[int]) -> list[
     return [c for c in rest if c in done] + ordered + [c for c in rest if c not in done]
 
 
+def reslot(ref: Sequence[int], etas: Mapping[int, datetime], r: Reorder, done: Collection[int]
+           ) -> tuple[list[int], dict[int, datetime]]:
+    """Эталон рейса после смены r (reorder_trip) и его плановые ETA: моменты необслуженных клиентов рейса («слоты» —
+    рейс по времени тот же) по порядку нового эталона — перенос сам по себе не делает магазины «позже плана»."""
+    new = reorder_trip(ref, r, done)
+    left = [c for c in new if c not in done and c in etas]
+    return new, {**etas, **dict(zip(left, sorted(etas[c] for c in left)))}
+
+
+def _served_seq(actual: DayActual, stops: Sequence[PlanStop]) -> list[tuple[datetime, int]]:
+    """(прибытие обслуживающего визита, клиент) точек плана с местом в нём — по прибытию (как visit_metrics)."""
+    by_key = {s.key: s for s in stops}
+    return [(t, by_key[k].customer_id) for k, t in sorted(actual.visited.items(), key=lambda kv: (kv[1], kv[0]))  # type: ignore[misc]
+            if k in by_key and by_key[k].rank is not None and by_key[k].customer_id is not None]
+
+
+def _done_at(seq: Sequence[tuple[datetime, int]], stops: Sequence[PlanStop], at: datetime) -> set[int]:
+    """Клиенты, обслуженные к моменту at: визит по GPS не позже него или отметка доставки не позже него."""
+    return {c for t, c in seq if t <= at} | {s.customer_id for s in stops if s.customer_id is not None
+                                             and s.delivered_at is not None and s.delivered_at <= at}
+
+
+def reslot_etas(actual: DayActual, stops: Sequence[PlanStop], trips: Sequence[Sequence[int]],
+                reorders: Sequence[Reorder], etas: Sequence[Mapping[int, datetime]]) -> list[dict[int, datetime]]:
+    """Плановые ETA рейсов машино-дня (etas — по рейсам trips) со сменами порядка водителем (№93, по времени): reslot
+    каждой смены (обслужен к ней — как в reordered_changes) — «Ժամանակին» «Վարորդներ», как карта машин."""
+    seq = _served_seq(actual, stops)
+    refs, out = [list(t) for t in trips], [dict(e) for e in etas]
+    for r in reorders:
+        if 0 <= r.trip < min(len(refs), len(out)):
+            refs[r.trip], out[r.trip] = reslot(refs[r.trip], out[r.trip], r, _done_at(seq, stops, r.at))
+    return out
+
+
 def reordered_changes(actual: DayActual, stops: Sequence[PlanStop], trips: Sequence[Sequence[int]],
                       reorders: Sequence[Reorder]) -> tuple[int, int]:
     """Порядок объезда машино-дня со сменами порядка водителем (№93): (точек не в порядке, обслуженных с местом в плане).
@@ -663,17 +697,14 @@ def reordered_changes(actual: DayActual, stops: Sequence[PlanStop], trips: Seque
     штраф обслуженным клиентам (не больше числа обслуженных): перенесённый сменой 'driver', если перед ним в прежнем эталоне
     был необслуженный клиент рейса (прыжок), и клиенты, пропущенные до смены (необслуженный, а дальше по прежнему эталону
     рейса есть обслуженный, — новый эталон их не прощает). 'until' штрафа не даёт. Без смен — как visit_metrics."""
-    by_key = {s.key: s for s in stops}
-    seq = [(t, by_key[k].customer_id) for k, t in sorted(actual.visited.items(), key=lambda kv: (kv[1], kv[0]))
-           if k in by_key and by_key[k].rank is not None and by_key[k].customer_id is not None]
+    seq = _served_seq(actual, stops)
     refs = [list(t) for t in trips]
     penalty: set[int] = set()
     for r in reorders:
         if not 0 <= r.trip < len(refs):
             continue
         ref = refs[r.trip]
-        done = {c for t, c in seq if t <= r.at} | {s.customer_id for s in stops if s.customer_id is not None
-                                                   and s.delivered_at is not None and s.delivered_at <= r.at}
+        done = _done_at(seq, stops, r.at)
         top = max((i for i, c in enumerate(ref) if c in done), default=0)   # ничего не обслужено — пропусков нет
         penalty |= {c for c in ref[:top] if c not in done}
         first_open = next((c for c in ref if c not in done), None)

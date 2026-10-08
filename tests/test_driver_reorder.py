@@ -138,6 +138,49 @@ def test_build_rebuilds_store_blocked_only_by_buffer():
     assert s['window_miss'] is False
 
 
+def _added_day():
+    """Рейс HOWO с магазинами запада; FORD без рейсов; новый магазин 105 к востоку (его ещё нет в рейсах)."""
+    from test_route_dispatch_until import EAST, WEST, LAT, LON
+    from test_route_optimizer import _dp_ctx, _dp_stops
+    spec = [(c, p, 200.0) for c, p in WEST + EAST] + [(105, (LAT + 0.01, LON + 0.04), 150.0)]
+    stops, orders = _dp_stops(spec)
+    draft = dp.Draft(trucks=sorted([HOWO.car_code, FORD.car_code]), next_id=2,
+                     trips=[dp.DraftTrip(1, HOWO.car_code, [c for c, _ in WEST])])
+    return _dp_ctx(), stops, draft, orders
+
+
+def test_place_added_falls_back_to_real_deadline():
+    """«Տանել այսօր»: 105 с запасом не успеть нигде (срок = прибытие новым рейсом FORD + 5 мин, запас 15) — второй
+    проход к настоящему сроку ставит его (жёлтое window_tight), а не оставляет «ещё не в рейсах»."""
+    ctx, stops, draft, _ = _added_day()
+    assert dp.place_added(ctx, stops, dp.Draft.from_json(draft.to_json()), [105])   # без срока — место есть
+    routable = {s.customer_id: s for s in stops}
+    first = 540 + dp._timeline(ctx, [dp.DraftTrip(9, FORD.car_code, [105])], routable, {105: 1})[9][2][0]
+    hard = replace(ctx, windows={105: (-INF, first - 10)})
+    assert dp.place_added(hard, stops, dp.Draft.from_json(draft.to_json()), [105]) == {}
+    soft = _with_deadline(ctx, 105, first + 5)
+    placed = dp.place_added(soft, stops, draft, [105])
+    assert list(placed) == [105]
+    s = _stops_of(dp.plan_view(soft, stops, draft, _info, explain=False))[105][1]
+    assert s['window_miss'] is False and s['window_tight'] is True
+
+
+def test_same_day_options_fall_back_to_real_deadline():
+    """Новые заказы дня (№72): с запасом вариантов нет — варианты к настоящему сроку (и «Ընտրել» берёт тот же ключ)."""
+    ctx, stops, draft, orders = _added_day()
+    base = [s for s in stops if s.customer_id != 105]
+    routable = {s.customer_id: s for s in stops}
+    first = 540 + dp._timeline(ctx, [dp.DraftTrip(9, FORD.car_code, [105])], routable, {105: 1})[9][2][0]
+    hard = replace(ctx, windows={105: (-INF, first - 10)})
+    assert dp.same_day_options(hard, base, stops, draft, [105], -30.0)['options'] == []
+    soft = _with_deadline(ctx, 105, first + 5)
+    options = dp.same_day_options(soft, base, stops, draft, [105], -30.0)['options']
+    assert options and all(_minutes(x['eta']) <= first + 5 for o in options for x in o['stops'])
+    isn = next(o.isn for o in orders if o.customer_id == 105)
+    taken = dp.take_same_day(soft, base, stops, draft, [105], {isn}, options[0]['key'], -30.0)
+    assert any(105 in t.stops for t in taken.trips)
+
+
 def test_dispatch_page_assets_tight_and_setting():
     js = (ROOT / 'static' / 'js' / 'routes_dispatch.js').read_text(encoding='utf-8')
     assert 'stop.window_tight' in js and 'քիչ ժամանակ կա՝ ' in js and 'u.tight' in js
@@ -159,7 +202,7 @@ def _road(fail=False):
     return live.Road(pair=pair, unload=lambda p, kg: 8.0 + 6.0 * kg / 1000.0)
 
 
-def _demo(windows=None, plan=(), road=lambda customers: _road(), departs=None):
+def _demo(windows=None, plan=(), road=lambda customers, car: _road(), departs=None):
     data, base, loaded = dy.demo_data()
     view_ = replace(base, windows=windows or {}, until_buffer_min=15.0, trips=tuple(plan), plan_exists=bool(plan),
                     road=road, departs=departs or {})
@@ -207,7 +250,7 @@ def test_day_trip_rules_without_plan_and_degrade(tmp_path):
     assert body['trips'][0]['plan_version'] is None                    # плана нет — версии нет
     assert all(s['until'] is None and s['until_from'] is None for s in body['stops'])
     # сбой дорожной модели (сборка или участок) — matrix null, /day живой
-    for road in (lambda pts: 1 / 0, lambda pts: _road(fail=True)):
+    for road in (lambda pts, car: 1 / 0, lambda pts, car: _road(fail=True)):
         got = dy.day_payload(data, replace(view_, road=road), store, loaded)
         assert got['trips'][0]['matrix'] is None and got['version'] == body['version']
     # точка вне плана — рейс 1; точек с координатой больше MATRIX_MAX_STOPS — без матрицы
@@ -236,7 +279,7 @@ def test_routes_view_carries_until_and_trip_road(tmp_path, monkeypatch):
     state.store.save_customer_window(11, rst.CustomerWindow('before', 660), 'qa')
     view_ = rl.routes_view(state, date(2026, 10, 1))
     assert view_.windows == {11: (-INF, 660.0)} and view_.until_buffer_min == 15.0 and view_.work_start_min == 540.0
-    road = view_.road({11: (40.17, 44.47)})
+    road = view_.road({11: (40.17, 44.47)}, 'CAR1')
     assert isinstance(road, live.Road) and road.unload is not None
     km, minutes, by_road = road.drive((40.15, 44.45), (40.17, 44.47), 600.0)
     assert km > 0 and minutes > 0 and by_road is False                 # карты нет — запасная модель
@@ -507,6 +550,33 @@ def test_live_page_violet_info_for_until():
 
 # ============================== «Վարորդներ»: порядок со сменами ==============================
 
+def test_scorecard_on_time_uses_reslotted_etas():
+    """«Ժամանակին»: план 10 → 11 → 12 (09:10, 09:30, 09:50); в 09:05 водитель ставит 12 первым (срок) и объезжает 12,
+    10, 11 вовремя по рейсу. Без смены 10 и 11 — «позже плана» на 22 мин; с ней — плановые моменты рейса по новому
+    порядку, все вовремя. Опоздание к окну приёма (настоящий срок) остаётся опозданием."""
+    from route_optimizer import scorecard as sc
+    from route_optimizer import views
+    at = lambda h, m: datetime(2026, 10, 5, h, m, tzinfo=ac.YEREVAN)   # noqa: E731
+    draft = {'trips': [{'truck': 'CAR1', 'stops': [10, 11, 12]}],
+             'prediction': {'trucks': {'CAR1': {'trips': [{'depart': '09:00', 'stops': [[10, '09:10'], [11, '09:30'],
+                                                                                         [12, '09:50']]}]}}}}
+    stops = [ac.PlanStop(f'S{i}', 10 + i, (40.0, 44.0), 100.0, rank=i) for i in range(3)]
+    visits = (ac.Visit(('S2',), at(9, 12), at(9, 17), 0, False), ac.Visit(('S0',), at(9, 32), at(9, 37), 0, False),
+              ac.Visit(('S1',), at(9, 52), at(9, 57), 0, False))
+    actual = ac.DayActual(0, 0.0, None, None, visits=visits, served=(('S2', 0), ('S0', 1), ('S1', 2)))
+    move = ac.Reorder(at(9, 5), 0, (12, 10, 11), 12, 'S2', 'until')
+    plain = views._stop_etas(draft, 'CAR1', LDAY, stops, actual)
+    moved = views._stop_etas(draft, 'CAR1', LDAY, stops, actual, [move])
+    assert {k: v.strftime('%H:%M') for k, v in moved.items()} == {'S2': '09:10', 'S0': '09:30', 'S1': '09:50'}
+    marks = {k: {'arrive': actual.visits[i].arrive, 'late_min': 0.0, 'early': False, 'window': False}
+             for k, i in actual.served}
+    assert [sc.timing(marks[k], plain[k])[0] for k in ('S2', 'S0', 'S1')] == [True, False, False]
+    assert [sc.timing(marks[k], moved[k])[0] for k in ('S2', 'S0', 'S1')] == [True, True, True]
+    late = {**marks['S0'], 'window': True, 'late_min': 7.0}   # мимо настоящего срока магазина — опоздание и со сменой
+    assert sc.timing(late, moved['S0']) == (False, 7.0, 'window')
+    assert ac.reslot_etas(actual, stops, [[10, 11, 12]], [], [{10: at(9, 10)}]) == [{10: at(9, 10)}]
+
+
 def test_scorecard_order_uses_reorders(sc_app):
     """CAR1: план A, B; обслужены A, B. Смена 'until' «B, A» до A: эталон B, A — A вне порядка (50 %); 'driver' — ещё
     штраф за прыжок B (0 %); источник без reorders — как раньше (100 %)."""
@@ -530,3 +600,103 @@ def test_scorecard_order_uses_reorders(sc_app):
 
 from test_garage_public import app_v2  # noqa: E402,F401
 from test_route_driver_scorecard import sc_app  # noqa: E402,F401
+
+
+# ============================== матрица рейса = ETA плана (№66 темп, №68 Ереван) ==============================
+
+from test_route_optimizer import DP_DAY, DP_DEPOT, _dispatch_setup, _dorder, _no_road_map  # noqa: E402,F401
+from test_route_optimizer import client as rclient  # noqa: E402,F401
+from test_route_big_truck import CITY, OUTSIDE  # noqa: E402
+from test_route_store_unload import _build  # noqa: E402
+
+
+def _minutes(hhmm):
+    return int(hhmm[:2]) * 60 + int(hhmm[3:5])
+
+
+def test_matrix_eta_matches_plan_eta(rclient, monkeypatch):   # noqa: F811
+    """Телефон считает прибытия по матрице рейса (выезд + участки + время у точек) — для неизменённого порядка они те же,
+    что ETA плана «Развоза» (±1 мин округления HH:MM), с темпом машины (№66) и надбавкой большой машины в Ереване (№68)."""
+    from route_optimizer import views
+    _dispatch_setup(rclient, [_dorder(1, 101, 400.0), _dorder(2, 102, 300.0), _dorder(3, 104, 900.0)])
+    assert rclient.post('/api/routes/settings', json={'settings': {
+        'yerevan_zone': rst.DEFAULT_SETTINGS['yerevan_zone']}}).status_code == 200
+    state = rclient.application.extensions['route_optimizer']
+    for cid, p in ((101, CITY[0]), (102, OUTSIDE[0]), (104, CITY[2])):
+        state.store.save_geo_override(cid, p, 'qa')
+    learned = views._with_learned   # темп CAR1 — как выученный (№66): у плана и у матрицы одно чтение норм
+
+    def paced(*a, **kw):
+        norms, tn, trucks, eff = learned(*a, **kw)
+        return norms, replace(tn, pace={'CAR1': (1.2, 1.1)}), trucks, eff
+    monkeypatch.setattr(views, '_with_learned', paced)
+    plan = _build(rclient, ('CAR1',))['plan']
+    trips = [tr for t in plan['trucks'] for tr in t['trips']]
+    assert trips and any('yerevan_min' in s for tr in trips for s in tr['stops'])
+    for trip in trips:
+        xs = [{'stop_id': f'S:{s["customer_id"]}', 'customer': {'id': s['customer_id']}, 'lat': s['lat'], 'lon': s['lon'],
+               'weight_kg': float(s['kg'])} for s in trip['stops']]
+        road = views.trip_road(state, DP_DAY, {x['customer']['id']: (x['lat'], x['lon']) for x in xs}, 'CAR1')
+        m = dy._matrix(xs, DP_DEPOT, road, float(_minutes(trip['depart'])), 540.0)
+        t, prev = float(_minutes(trip['depart'])), 0
+        for i, s in enumerate(trip['stops'], 1):
+            t += m['durations_s'][prev][i] / 60.0
+            assert abs(t - _minutes(s['eta'])) <= 1.0, (s['customer_id'], t, s['eta'])
+            t += m['service_s'][i] / 60.0
+            prev = i
+    # без машины (ETA карты машин) — без темпа и надбавки: матрица другая
+    plain = views.trip_road(state, DP_DAY, {101: CITY[0]})
+    assert plain.unload(CITY[0], 400.0) < views.trip_road(state, DP_DAY, {101: CITY[0]}, 'CAR1').unload(CITY[0], 400.0)
+
+
+# ============================== плановая линия после смены порядка ==============================
+
+from test_route_live import MID_AB, _off, _route, _route_view  # noqa: E402
+
+
+def test_stale_plan_line_after_reorder_suppresses_deviation():
+    """Линия по новому порядку ещё строится (stale_since): отклонение после смены — не тревога; до смены — как было."""
+    side = _off(MID_AB, 1500.0)
+    tr = Track().park(DEPOT, 5).drive(A).park(A, 3)
+    moved = tr.t
+    tr.drive(side)
+    assert _route_view(tr, tr.t + timedelta(seconds=20), _route(), detail=False)['deviation']['count'] == 1
+    stale = replace(_route(), stale_since=moved)
+    card = _route_view(tr, tr.t + timedelta(seconds=20), stale, detail=False)
+    assert card['deviation']['count'] == 0 and 'deviation' not in card['alerts']['active']
+    early = replace(_route(), stale_since=moved + timedelta(hours=1))      # отклонение началось раньше смены
+    assert _route_view(tr, tr.t + timedelta(seconds=20), early, detail=False)['deviation']['count'] == 1
+
+
+def test_plan_lines_follow_driver_order(tmp_path, monkeypatch):
+    """Плановая линия рейса — по порядку водителя после «Գնալ առաջինը» (номера магазинов — по плану); смена на прежней
+    версии рейса — линия по плану. Карты нет — линии по прямой (source = они же): stale_since нет."""
+    from flask import Flask
+    import route_optimizer
+    from route_optimizer import views
+
+    class FakeDb:
+        connection_string = 'DRIVER={none};'
+    monkeypatch.setenv('ROUTES_OSM_PATH', str(tmp_path / 'no-map.osm.pbf'))
+    flask_app = Flask(__name__)
+    flask_app.secret_key = 'test'
+    route_optimizer.init_app(flask_app, FakeDb(), db_path=str(tmp_path / 'routes.db'))
+    state = flask_app.extensions['route_optimizer']
+    bundle = replace(state.store.load(), depot=DEPOT)
+    draft = dp.Draft(trucks=['CAR1'], trips=[dp.DraftTrip(1, 'CAR1', [10, 11, 12, 13])])
+    stops = _seq_stops(['full', 'pending', 'pending', 'pending'])
+    stops[0]['delivered_at'] = T(10).isoformat()
+    move = {'at': T(15).isoformat(), 'trip': 1, 'order': ['S3', 'S1', 'S2'], 'moved': 'S3', 'reason': 'until'}
+    route = views._live_plan_routes(state, bundle, None, LDAY, draft, {'CAR1': {'stops': stops, 'reorders': [move]}})['CAR1']
+    assert route.geo.trips[0] == (DEPOT, A, D, B, C, DEPOT) and route.trip_stops == ((10, 13, 11, 12),)
+    assert [c for c, _ in route.stops] == [10, 11, 12, 13] and route.stale_since is None
+    old = {**move, 'plan_version': ac.plan_version([10, 12, 11, 13])}
+    route = views._live_plan_routes(state, bundle, None, LDAY, draft, {'CAR1': {'stops': stops, 'reorders': [old]}})['CAR1']
+    assert route.geo.trips[0] == (DEPOT, A, B, C, D, DEPOT)
+    # линии по дорогам ещё по старому порядку (кэш отдаёт прежние) — stale_since с момента смены
+    plan_geo = live.RouteGeometry([(DEPOT, A, B, C, D, DEPOT)], [(DEPOT, A, B, C, D, DEPOT)], (), [(DEPOT, A, B, C, D, DEPOT)])
+    monkeypatch.setattr(state, 'roads', type('R', (), {'get': lambda self: type('G', (), {'failed': False, 'version': 1})(),
+                                                       'bypass': lambda self, r, z: r})())
+    monkeypatch.setattr(state.live_lines, 'get', lambda day, wanted, build: {'CAR1': plan_geo})
+    route = views._live_plan_routes(state, bundle, None, LDAY, draft, {'CAR1': {'stops': stops, 'reorders': [move]}})['CAR1']
+    assert route.geo is plan_geo and route.stale_since == T(15)

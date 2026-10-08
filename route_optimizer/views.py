@@ -4687,7 +4687,11 @@ def _live_plan_routes(state: RoutesState, bundle: Bundle, snap: Any, day: date, 
     готовы впервые, карты нет или дороги сломаны — по прямой (road false: отклонение не считается). Км плана — прогноз
     сборки машины (prediction km), если его рейсы — те же клиенты в том же порядке; иначе длина линий, если все участки
     по дорогам; иначе неизвестно. now — линии по дорогам строятся сразу, без кэша (фон «Երթուղի» в «Վարորդներ»,
-    _ScoreRoutes: прошлые дни не держат линии в памяти)."""
+    _ScoreRoutes: прошлые дни не держат линии в памяти).
+    Смены порядка водителем (№93, факт reorders; действующие — ac.current_reorders): линия рейса — по плану со сменами
+    (_reordered_lines; номера магазинов — по отправленному плану); линии строятся тем же путём (state.live_lines — по
+    содержимому линий машины, новая смена — новая линия). Пока новой линии нет, а кэш отдаёт прежнюю, — stale_since:
+    отклонения с момента первой смены не считаются (live.car_view)."""
     known = {x['customer_id']: (x['lat'], x['lon']) for facts in fleet.values() for x in facts.get('stops') or ()
              if isinstance(x.get('customer_id'), int) and x.get('lat') is not None and x.get('lon') is not None}
 
@@ -4702,10 +4706,12 @@ def _live_plan_routes(state: RoutesState, bundle: Bundle, snap: Any, day: date, 
     stops: dict[str, list[tuple[int, Point]]] = {}
     straight: dict[str, list[tuple[Point, ...]]] = {}
     legs: dict[str, list[tuple[int, ...]]] = {}   # клиенты каждой линии рейса (подсказка участка на карте)
+    order, moved_at = _reordered_lines(draft, fleet)
     for t in draft.trips:
-        pts = [(c, p) for c in t.stops if (p := where(c)) is not None]
-        trips.setdefault(t.truck, []).append(list(t.stops))
-        stops.setdefault(t.truck, []).extend(pts)
+        stops.setdefault(t.truck, []).extend((c, p) for c in t.stops if (p := where(c)) is not None)
+        mine = order[t.truck][len(trips.get(t.truck, ()))]   # №93: порядок рейса со сменами водителя
+        pts = [(c, p) for c in mine if (p := where(c)) is not None]
+        trips.setdefault(t.truck, []).append(list(mine))
         line = (depot, *(p for _, p in pts), depot) if depot is not None else tuple(p for _, p in pts)
         if pts and len(line) > 1:   # ни одной известной точки магазина — линии рейса нет
             straight.setdefault(t.truck, []).append(line)
@@ -4735,16 +4741,43 @@ def _live_plan_routes(state: RoutesState, bundle: Bundle, snap: Any, day: date, 
         km = float(km) if km is not None else geo.km
         # прежние линии (план поменяли, новые ещё строятся) — магазины участков неизвестны: подсказка без «A → B»
         same_lines = geo.source == tuple(tuple(x) for x in lines)
-        out[car] = live.PlanRoute(geo, tuple(stops[car]), km, tuple(legs[car]) if same_lines else ())
+        out[car] = live.PlanRoute(geo, tuple(stops[car]), km, tuple(legs[car]) if same_lines else (),
+                                  moved_at.get(car) if not same_lines else None)
     return out
 
 
+def _reordered_lines(draft: dp.Draft, fleet: Mapping[str, Mapping[str, Any]]
+                     ) -> tuple[dict[str, list[list[int]]], dict[str, datetime]]:
+    """Клиенты рейсов машин по порядку для плановой линии: отправленный план со сменами порядка водителем (№93, факт
+    терминала reorders, действующие — ac.current_reorders; обслужен к смене — отметка доставки до неё, live.reordered_plan).
+    (машина → рейсы, машина → момент её первой действующей смены)."""
+    order: dict[str, list[list[int]]] = {}
+    for t in draft.trips:
+        order.setdefault(t.truck, []).append(list(t.stops))
+    moved_at: dict[str, datetime] = {}
+    for car, lists in order.items():
+        facts = fleet.get(car) or {}
+        xs = list(facts.get('stops') or ())
+        moves = ac.current_reorders(ac.reorders_of(facts.get('reorders') or (), {x['stop_id']: x.get('customer_id') for x in xs}),
+                                    lists)
+        if not moves:
+            continue
+        touches = {x['stop_id']: t for x in xs if (t := live._moment(x.get('delivered_at'))) is not None}
+        plan = live.reordered_plan([live.PlanTrip(tuple(c), {}) for c in lists], moves, xs, touches)
+        order[car] = [list(p.customers) for p in plan]
+        moved_at[car] = moves[0].at
+    return order, moved_at
+
+
 def _live_road_build(state: RoutesState, bundle: Bundle, snap: Any, calib: Any, day: date, base: live.Road,
-                     customers: Mapping[int, Point]) -> live.Road:
+                     customers: Mapping[int, Point], car: str | None = None) -> live.Road:
     """Дорожная модель «Развоза» для ETA: те же дороги (Valhalla, если готов, иначе граф OSM; в объезд малого центра),
     часовой профиль пробок и выученные поправки, что в расчёте рейсов (_dispatch_ctx), и время у магазина №50/№60
     (введённое и выученное по GPS, иначе норма). Положение машины сейчас в таблицы не кладётся: участок от неё — отдельным
-    запросом Valhalla (ValhallaRoads.route), нет Valhalla — запасная модель. Дорог нет — только время у магазина."""
+    запросом Valhalla (ValhallaRoads.route), нет Valhalla — запасная модель. Дорог нет — только время у магазина.
+    car — машина матрицы рейса терминала (№93, trip_road): минуты участков (и запасной модели) и время у магазина — с её
+    темпом (№66) и надбавкой большой машины в зоне Еревана (№68), как прибытия плана (fleet._schedule); None — как
+    раньше (ETA карты машин)."""
     s = bundle.settings
     journal = _learned_journal(state, None)
     truck_time = _truck_time_choice(journal)[0] == TRUCK_TIME_VALHALLA
@@ -4807,8 +4840,23 @@ def _live_road_build(state: RoutesState, bundle: Bundle, snap: Any, calib: Any, 
             return None
         leg = truck_leg_minutes(norms, a, b, minute)
         return leg.km, (leg.valhalla if truck_time and leg.valhalla is not None else leg.model)
-    return replace(base, legs=legs if norms.roads is not None else None,
-                   unload=lambda p, kg: tn.unload_at(kg, p), pair=pair if norms.roads is not None else None)
+    if car is None:
+        return replace(base, legs=legs if norms.roads is not None else None,
+                       unload=lambda p, kg: tn.unload_at(kg, p), pair=pair if norms.roads is not None else None)
+    mu, mt = tn.pace_of(car)
+    zone = tuple((float(lat), float(lon)) for lat, lon in s['yerevan_zone'] or ())
+    big = len(zone) >= 3 and bundle.truck_big(car, snap.car_capacity if snap is not None else None)
+    extra = float(s['big_truck_yerevan_min']) if big else 0.0
+
+    def unload(p: Point, kg: float) -> float:
+        return tn.unload_at(kg, p) * mu + (extra if extra > 0 and in_polygon(p, zone) else 0.0)
+
+    def paced(a: Point, b: Point, minute: float) -> tuple[float, float] | None:
+        got = pair(a, b, minute)
+        return (got[0], got[1] * mt) if got is not None else None
+    # запасная модель (Road.minutes: км / скорость зоны) — с темпом пути: скорости зон / множитель
+    return replace(base, city_kmh=base.city_kmh / mt, region_kmh=base.region_kmh / mt, unload=unload,
+                   pair=paced if norms.roads is not None else None)
 
 
 LIVE_WEAR_TTL_S = 300.0   # износ ֏/км машин карты (журнал гаража, заправки APK) пересчитывается не чаще
@@ -4842,17 +4890,18 @@ def _base_road(s: Mapping[str, Any], calib: Any) -> live.Road:
                      (float(s['city_center_lat']), float(s['city_center_lon'])), float(s['city_radius_km']))
 
 
-def trip_road(state: RoutesState, day: date, customers: Mapping[int, Point]) -> live.Road:
+def trip_road(state: RoutesState, day: date, customers: Mapping[int, Point], car: str | None = None) -> live.Road:
     """Дорожная модель «Развоза» дня для матрицы рейса терминала «Առաքիչ» (ответ владельца №93, courier.day): та же, что у
     ETA карты машин (_live_road_build — дороги в объезд малого центра, часовой профиль пробок, выученные поправки, время у
     магазина №50/№60), по точкам customers (клиент → точка) и складу; собирается сразу, без кэша карты (ответ /day
     кэширует сам курьерский раздел). Снимка ERP в памяти нет — без дорог (Road.pair None: участки по прямой ×
-    извилистость), время у магазина — нормы и введённое время. Ошибки — наружу (терминал получает matrix null)."""
+    извилистость), время у магазина — нормы и введённое время. car — машина: её темп (№66) и надбавка большой машины в
+    Ереване (№68), как в прибытиях плана. Ошибки — наружу (терминал получает matrix null)."""
     bundle = state.store.load()
     s = bundle.settings
     snap = state.snapshots.peek()
     calib = _calibration(state, snap, s) if snap is not None else None
-    return _live_road_build(state, bundle, snap, calib, day, _base_road(s, calib), customers)
+    return _live_road_build(state, bundle, snap, calib, day, _base_road(s, calib), customers, car)
 
 
 def _live_context(state: RoutesState, day: date,
@@ -5321,11 +5370,19 @@ def _plan_etas(draft: Mapping[str, Any] | None, car: str, day: date
 
 
 def _stop_etas(draft: Mapping[str, Any] | None, car: str, day: date, stops: Sequence[ac.PlanStop],
-               actual: ac.DayActual) -> dict[str, datetime]:
+               actual: ac.DayActual, reorders: Sequence[ac.Reorder] = ()) -> dict[str, datetime]:
     """Плановое ETA обслуженных точек машино-дня: ETA клиента в рейсе плана с номером фактического рейса визита
     (тяжёлый заказ, разбитый на рейсы, — у каждой точки своё ETA); клиента в этом рейсе плана нет (лишний заезд на
-    склад сдвинул номера) или по рейсам сравнивать нельзя — ETA его первого появления в плане."""
+    склад сдвинул номера) или по рейсам сравнивать нельзя — ETA его первого появления в плане. reorders — смены порядка
+    водителем (№93, действующие): ETA рейсов — плановые моменты по новому порядку (ac.reslot_etas, как карта машин)."""
     first, per_trip = _plan_etas(draft, car, day)
+    if reorders:
+        trips = [[c for c in t.get('stops') or () if isinstance(c, int) and not isinstance(c, bool)]
+                 for t in (draft or {}).get('trips') or () if isinstance(t, dict) and t.get('truck') == car]
+        by_trip = ac.reslot_etas(actual, stops, trips, reorders,
+                                 per_trip or [{c: first[c] for c in t if c in first} for t in trips])
+        first = {**first, **{c: e for t in reversed(by_trip) for c, e in t.items()}}   # первое появление — главнее
+        per_trip = by_trip if per_trip else per_trip
     by_key = {s.key: s for s in stops}
     out: dict[str, datetime] = {}
     for key, vi in actual.served:
@@ -5474,7 +5531,7 @@ def _scorecard_cars(state: RoutesState, bundle: Bundle, day: date, rules: live.R
             if obs and norm > 0:
                 unload = (round(math.fsum(o.minutes for o in obs), 1), round(norm, 1))
         out[car] = sc.CarDay(actual.km_gps, ac.stop_marks(actual, stops, day), first, speed, offroute, order,
-                             _stop_etas(draft, car, day, stops, actual), unload,
+                             _stop_etas(draft, car, day, stops, actual, reorders), unload,
                              _day_span(actual, prediction, day, _yerevan_now().date()))
     return out
 

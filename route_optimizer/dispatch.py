@@ -86,7 +86,7 @@
 - Запас до срока (ответ владельца №93, настройка until_buffer_min): у окна с концом сборка, перестановка под срок и
   подсказка машины целятся в конец окна минус запас (deadline_windows: DayContext.windows — с запасом, until_real —
   настоящие концы). Не вышло с запасом — по настоящему сроку: сборка пересобирает с ним магазины, ушедшие в no_window
-  только из-за запаса; fit_until — второй проход (tight). В плане: позже срока с запасом, но в срок — window_tight
+  только из-за запаса; fit_until, «Տանել այսօր» (place_added) и новые заказы дня (_same_day_plans) — второй проход (tight). В плане: позже срока с запасом, но в срок — window_tight
   («քիչ ժամանակ կա», жёлтое); позже настоящего срока — window_miss («չի հասցնում»). Запас 0 — план прежний до байта.
 """
 from __future__ import annotations
@@ -2293,6 +2293,17 @@ def apply_edit(ctx: DayContext, stops: Sequence[Stop], draft: Draft, edit: Mappi
 
 def place_added(ctx: DayContext, stops: Sequence[Stop], draft: Draft, cids: Sequence[int],
                 now_min: float | None = None) -> dict[int, int]:
+    """_place_added с запасом до срока (№93): клиенты, которым с запасом места нет, — второй проход к их настоящему сроку
+    (_relaxed; в плане — window_tight «քիչ ժամանակ կա», а не «ещё не в рейсах»). Ответ — клиент → рейс."""
+    placed = _place_added(ctx, stops, draft, cids, now_min)
+    rest = [c for c in cids if c not in placed and c in ctx.until_real]
+    if rest:
+        placed.update(_place_added(_relaxed(ctx, rest), stops, draft, rest, now_min))
+    return placed
+
+
+def _place_added(ctx: DayContext, stops: Sequence[Stop], draft: Draft, cids: Sequence[int],
+                 now_min: float | None = None) -> dict[int, int]:
     """«Տանել այսօր» у заказа прошлых дней (владелец 08.10: «не функционально» — заказ падал в «ещё не в рейсах»): клиенты
     cids, которых ещё нет в рейсах, по одному встают туда, где км плана растут меньше всего, — в рейс отмеченной машины
     или новым рейсом после её рейсов. Машина не позже конца дня (или своего прежнего конца), окна приёма у неё не
@@ -2576,6 +2587,18 @@ def same_day_blocked(ctx: DayContext, base: Sequence[Stop], stops: Sequence[Stop
 
 def _same_day_plans(ctx: DayContext, base: Sequence[Stop], stops: Sequence[Stop], draft: Draft, cids: Collection[int],
                     now_min: float, crew: Crew | None = None) -> tuple[list[_SameDayPlan], dict[int, str]]:
+    """_same_day_variants с запасом до срока (№93): ни одного варианта с запасом, а у клиентов cids он есть, — варианты к
+    их настоящему сроку (_relaxed; в плане — window_tight «քիչ ժամանակ կա»). Тот же путь у предложений и у «Ընտրել»
+    (take_same_day): ключи вариантов совпадают."""
+    plans, blocked = _same_day_variants(ctx, base, stops, draft, cids, now_min, crew)
+    tight = [c for c in cids if c in ctx.until_real]
+    if plans or not tight:
+        return plans, blocked
+    return _same_day_variants(_relaxed(ctx, tight), base, stops, draft, cids, now_min, crew)
+
+
+def _same_day_variants(ctx: DayContext, base: Sequence[Stop], stops: Sequence[Stop], draft: Draft, cids: Collection[int],
+                       now_min: float, crew: Crew | None = None) -> tuple[list[_SameDayPlan], dict[int, str]]:
     """Как взять новые заказы дня клиентов cids в развоз сегодня — все варианты, самые дешёвые первыми, и клиенты, которых
     взять нельзя: {клиент: 'no_coords' — нет точки | 'started' — он уже в рейсе, чья загрузка по плану началась}.
     base — точки дня без этих заказов, stops — с ними (у клиента, который уже в развозе, точка тяжелее); now_min — сейчас,

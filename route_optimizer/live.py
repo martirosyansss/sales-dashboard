@@ -126,7 +126,8 @@
   фиолетовое сведение). Без срока ('driver') — перенесённая точка «перепрыгивает», как раньше: открытые точки, стоявшие
   перед ней, пропущены с её касания (тревога), а остальной новый порядок — без новых тревог. Очередь ETA, следующий
   магазин и плановые ETA («не успеет» к плану) — по плану со сменами (reordered_plan: плановые моменты рейса по новому
-  порядку). Плановая линия и отклонение — по отправленному плану, как раньше;
+  порядку). Плановая линия (views._live_plan_routes) — по плану со сменами (номера магазинов — прежние); пока линия по
+  новому порядку строится, отклонения с момента смены не считаются (PlanRoute.stale_since);
 - следование плану (adherence): 100 × (1 − км отклонений без объяснённых / км км-трека в счёте дня); меньше
   ADHERENCE_MIN_KM езды или линии по дорогам нет — None. «փոքր շեղում» — тоже вне коридора и в него входит;
 - объяснения диспетчера (apply_explanations, explains; store.live_explanations, схема 26): тревога deviation или
@@ -420,11 +421,8 @@ def reordered_plan(plan: Sequence[PlanTrip], reorders: Sequence[ac.Reorder], sto
         if not 0 <= r.trip < len(out):
             continue
         old = out[r.trip]
-        done = untimed | {c for c, t in first.items() if t <= r.at}
-        new = ac.reorder_trip(old.customers, r, done)
-        left = [c for c in new if c not in done and c in old.etas]
-        out[r.trip] = replace(old, customers=tuple(new),
-                              etas={**old.etas, **dict(zip(left, sorted(old.etas[c] for c in left)))})
+        new, etas = ac.reslot(old.customers, old.etas, r, untimed | {c for c, t in first.items() if t <= r.at})
+        out[r.trip] = replace(old, customers=tuple(new), etas=etas)
     return out
 
 
@@ -812,11 +810,14 @@ class PlanRoute:
     """Плановая линия машины на день (правило — в описании модуля; собирает views._live_plan_routes): geo — линии рейсов
     (RouteGeometry: по дорогам и участки по прямой); stops — (клиент, точка) по порядку плана за день; km — км плана
     (прогноз сборки «Развоза», нет — длина линий по дорогам; None — неизвестно); trip_stops — клиенты каждой линии
-    geo.trips по порядку (подсказка участка «склад → магазин → …» на карте; пусто — неизвестно)."""
+    geo.trips по порядку (подсказка участка «склад → магазин → …» на карте; пусто — неизвестно). stale_since — линия рейса
+    после смены порядка водителем (№93) ещё строится, а geo — прежняя (по старому порядку): отклонения, начавшиеся с этого
+    момента, не считаются (ложная тревога «Շեղում երթուղուց» хуже её отсутствия); None — линия та, что нужна."""
     geo: RouteGeometry
     stops: tuple[tuple[int, Point], ...] = ()
     km: float | None = None
     trip_stops: tuple[tuple[int, ...], ...] = ()
+    stale_since: datetime | None = None
 
 
 def _seg_xy(x: float, y: float, x1: float, y1: float, x2: float, y2: float) -> float:
@@ -1800,6 +1801,8 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
     until = min((t for t in (end, home) if t is not None), default=None)
     lunch_span = (lunch.arrive, lunch.leave) if lunch is not None else None
     runs = deviation_runs(moving, index, rules.deviation_m, keep, out_at, until, lunch_span, straight)
+    if route is not None and route.stale_since is not None:   # №93: линии по новому порядку ещё нет — не тревожим
+        runs = [r for r in runs if r[0].at < route.stale_since]
     where: dict[int, Point] = {}   # клиент → точка, по порядку плана машины за день (первое появление)
     for c, p in (route.stops if route is not None else ()):
         where.setdefault(c, p)

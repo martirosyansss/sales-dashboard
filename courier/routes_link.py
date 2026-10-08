@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_WORKDAYS = (1, 2, 3, 4, 5, 6)
 Places = Callable[[Sequence[int]], Mapping[int, dp.Place]]   # клиенты → (адрес, название) из ERP (№74)
 # клиенты рейса → дорожная модель «Развоза» дня (route_optimizer.views.trip_road, live.Road): матрица рейса /day (№93)
-TripRoad = Callable[[Mapping[int, Point]], Any]
+TripRoad = Callable[[Mapping[int, Point], str], Any]   # (клиенты, машина) → модель
 _HHMM = re.compile(r'^(\d{1,2}):(\d{2})$')
 DETOUR = 1.3   # участок без дороги — по прямой × извилистость (как evaluate.road_norms без калибровки)
 
@@ -112,7 +112,7 @@ def routes_view(state: Any, day: date) -> RoutesView:
     # №93: срок магазина на день, запас и матрица рейса — для терминала (courier.day)
     timing = dict(windows={cid: w.span() for cid, w in bundle.windows_on(day).items()},
                   until_buffer_min=float(s['until_buffer_min']), work_start_min=float(h * 60 + m),
-                  road=lambda customers: _trip_road(state, day, customers))
+                  road=lambda customers, car: _trip_road(state, day, customers, car))
     base = RoutesView(depot=bundle.depot, geo_overrides=dict(bundle.geo_overrides), workdays=workdays,
                       holidays=holidays, fleet=dp.FleetRule.from_settings(bundle.settings), roads=roads, **timing)
     load = _plans(state)
@@ -140,11 +140,11 @@ def routes_view(state: Any, day: date) -> RoutesView:
                       departs=_departs(draft), **timing)
 
 
-def _trip_road(state: Any, day: date, customers: Mapping[int, Point]) -> Any:
+def _trip_road(state: Any, day: date, customers: Mapping[int, Point], car: str) -> Any:
     """Дорожная модель «Развоза» дня по точкам рейсов машины (route_optimizer.views.trip_road — раздел подключён, его
     модуль уже загружен); ошибки — наружу (courier.day: матрицы нет)."""
     from route_optimizer.views import trip_road
-    return trip_road(state, day, customers)
+    return trip_road(state, day, customers, car)
 
 
 def _departs(draft: dp.Draft) -> dict[str, tuple[float | None, ...]]:

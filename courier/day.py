@@ -185,7 +185,7 @@ def trips_json(stops: list[dict[str, Any]], view: RoutesView, car_code: str) -> 
     road = None
     if view.road is not None and view.depot is not None and points:
         try:
-            road = view.road(points)
+            road = view.road(points, car_code)
         except Exception:   # матрица — дополнение: /day без неё работает (APK не пересчитывает порядок)
             logger.warning('[Courier] Дорожная модель рейсов машины %s не собрана — матрицы нет', car_code, exc_info=True)
     departs = view.departs.get(car_code, ())
