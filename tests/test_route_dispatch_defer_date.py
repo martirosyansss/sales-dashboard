@@ -267,8 +267,8 @@ def test_deferred_order_comes_on_its_day_only(client):
 
 
 def test_take_today_on_intermediate_day_cancels_later(client):
-    """Пятница взяла заказ «Տանել այսօր» — во вторник он сам не входит (строка — обычная, решает логист); у пятницы нет
-    «կտանենք» (её решение — везти сегодня)."""
+    """Пятница взяла заказ «Տանել այսօր» — во вторник он сам не входит и сверх обычного окна не виден (его везли в
+    пятницу: иначе — строка «не решён» без накладной, «Տանել բոլորը» взял бы второй раз); у пятницы нет «կտանենք»."""
     _dispatch_setup(client, _orders())
     d = _build(client)
     _edit(client, d, action='defer_store', customer_id=101, to='2026-10-06')
@@ -276,9 +276,11 @@ def test_take_today_on_intermediate_day_cancels_later(client):
     code, fri = _edit(client, fri, day='2026-10-02', action='include', order=_isn(1))
     row = _row(fri['backlog'], 1)
     assert code == 200 and row['taken'] and 'later_to' not in row and 'later_from' not in row
-    tue = _get(client, '2026-10-06')
-    row = _row(tue['backlog'], 1)
-    assert tue['orders']['count'] == 0 and not row['taken'] and not row['carried'] and 'later_to' not in row
+    for day in ('2026-10-05', '2026-10-06', '2026-10-07', '2026-10-09'):     # 30.09 — старше их обычного окна
+        g = _get(client, day)
+        assert g['orders']['count'] == 0 and _row(g['backlog'], 1) is None, day
+    sat = _get(client, '2026-10-03')                                          # обычное окно субботы — как до «Երբ տանել»
+    assert sat['orders']['count'] == 0 and not _row(sat['backlog'], 1)['taken']
 
 
 def _trip_with(d, cid):
@@ -300,8 +302,7 @@ def test_intermediate_defer_trip_never_carries_into_two_days(client):
     sat = _get(client, '2026-10-03')
     tue = _get(client, '2026-10-06')
     assert _row(sat['backlog'], 1)['carried'] and _row(sat['backlog'], 1)['taken']
-    row = _row(tue['backlog'], 1)
-    assert not row['carried'] and not row['taken'] and tue['orders']['count'] == 0
+    assert _row(tue['backlog'], 1) is None and tue['orders']['count'] == 0
     assert _isn(1) in rl.routes_view(state, date(2026, 10, 3)).carried
     tv = rl.routes_view(state, TUE)
     assert _isn(1) not in tv.carried and tv.carried_since is None
@@ -337,6 +338,45 @@ def test_not_delivered_on_target_stays_visible_not_carried(client):
         assert row is not None and not row['taken'] and not row['carried'] and 'later_to' not in row, day
         assert g['orders']['count'] == 0 and calls[-1][0] == WED
     assert _row(_get(client, '2026-10-16')['backlog'], 1) is None             # 14 дней после 01.10 прошли
+
+
+def test_planned_on_target_day_not_shown_after_it(client):
+    """План вторника вёз магазин — со среды заказ сверх обычного окна не виден (накладной ещё нет — не «не решён»);
+    убрали его во вторник («Հանել») — виден: решит логист."""
+    _dispatch_setup(client, _orders())
+    d = _build(client)
+    _edit(client, d, action='defer_store', customer_id=101, to='2026-10-06')
+    tue = _build(client, '2026-10-06')
+    assert 101 in _in_trips(tue)
+    for day in ('2026-10-07', '2026-10-08', '2026-10-13', '2026-10-15'):
+        assert _row(_get(client, day)['backlog'], 1) is None, day
+    code, tue = _edit(client, tue, day='2026-10-06', action='exclude', order=_isn(1))
+    assert code == 200 and _isn(1) in _stored(client, '2026-10-06').dismissed
+    row = _row(_get(client, '2026-10-07')['backlog'], 1)
+    assert row is not None and not row['taken'] and not row['carried']
+
+
+def test_target_plan_without_the_store_keeps_order_visible(client):
+    """План вторника есть, но магазина в его рейсах нет (агент снят фильтром) — заказ не везли: виден и дальше."""
+    _dispatch_setup(client, _orders())
+    d = _build(client)
+    _edit(client, d, action='defer_store', customer_id=101, to='2026-10-06')
+    tue = _build(client, '2026-10-06')
+    code, tue = _edit(client, tue, day='2026-10-06', action='agents', off=[1])
+    assert code == 200 and 101 not in _in_trips(tue)
+    assert _row(_get(client, '2026-10-07')['backlog'], 1) is not None
+
+
+def test_later_shown_rule():
+    o = _dorder(1, 101, 10.0)
+    plan = dp.Draft(trips=[dp.DraftTrip(1, 'CAR1', [101])])
+    assert dp.later_shown((TUE, WED, THU), o, TUE, None) and dp.later_shown((TUE, WED, THU), o, MON, plan)
+    assert not dp.later_shown((None, WED, FRI), o, TUE, None)                 # снят решением другого дня
+    assert not dp.later_shown((MON, WED, THU), o, TUE, plan)                  # в понедельник везли
+    assert dp.later_shown((MON, WED, THU), o, TUE, None)                      # плана нет
+    assert dp.later_shown((MON, WED, THU), o, TUE, dp.Draft(trips=[dp.DraftTrip(1, 'CAR1', [102])]))
+    assert dp.later_shown((MON, WED, THU), o, TUE, replace(plan, dismissed={o.isn}))
+    assert dp.later_shown((MON, WED, THU), o, TUE, replace(plan, dropped={o.isn}))
 
 
 def test_one_read_per_plan_per_request(client):

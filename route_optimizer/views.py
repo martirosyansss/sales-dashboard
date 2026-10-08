@@ -1390,28 +1390,31 @@ def _later_due(later: Mapping[str, tuple[date | None, date, date]], day: date) -
     return {isn: od for isn, (to, od, _) in later.items() if to == day}
 
 
-def _later_read(later: Mapping[str, tuple[date | None, date, date]], day: date) -> dict[str, date]:
-    """Заказы «Երբ տանել», которые day читает из ERP и показывает, даже если они старше окна «Նախորդ օրերից»: перенесённые
-    на day (входят сами), на дни позже (строка с «կտանենք») и не довезённые в свой день или снятые (обычная строка —
-    решает логист): isn → дата заказа."""
-    return {isn: od for isn, (_, od, _) in later.items()}
-
-
 def _day_orders(state: RoutesState, bundle: Bundle, day: date, refresh: bool, rule: dp.FleetRule,
-                later: Mapping[str, date] | None = None) -> tuple[date, date, dp.DispatchData, dp.Selection]:
+                later: Mapping[str, tuple[date | None, date, date]] | None = None
+                ) -> tuple[date, date, dp.DispatchData, dp.Selection]:
     """Окно заказов дня, заказы ERP (кэш _dispatch_data) и отбор к доставке по правилу дня «чьи заказы везут машины»
     (№74, dp.fleet_rule_of) — без заказов, взятых в развоз дня их приёма (№72, _same_day_taken). ERP читается и за сам
     день: заказы, заведённые заранее на него (№79), — его заказы; прочие заказы с датой дня — новые заказы дня (№72,
-    _same_day_data), из данных дня они убраны. later — заказы «Երբ տանել», которые день видит (_later_read): ERP читается
-    и с даты самого раннего из них (не старше DEFER_MAX_AGE_DAYS до дня плана, dp.later_carried), но из более старых
-    заказов остаются только они — «Նախորդ օրերից» прежний."""
+    _same_day_data), из данных дня они убраны. later — «Երբ տանել» прошлых планов (_later_scan): ERP читается и с даты
+    самого раннего их заказа (не старше DEFER_MAX_AGE_DAYS до дня плана, dp.later_carried), но из более старых заказов
+    остаются только те, что dp.later_shown (перенесены сюда или позже, не довезены в свой день) — «Նախորդ օրերից» прежний."""
     workdays, off = bundle.settings['workdays'], dp.holidays_of(bundle.settings)
     since, until = dp.order_window(day, workdays, off)
     first = dp.backlog_since(since, workdays, holidays=off)
     later = later or {}
-    data = _dispatch_data(state, min([first, *later.values()]), until + timedelta(days=1), day, refresh)
-    data = replace(data, orders=tuple(o for o in data.orders if (o.order_date < until or o.predated)
-                                      and (o.order_date >= first or o.isn in later)))
+    data = _dispatch_data(state, min([first, *(od for _, od, _ in later.values())]), until + timedelta(days=1), day,
+                          refresh)
+
+    def target(to: date | None) -> dp.Draft | None:   # отправленный план дня доставки (прошедшего); не прочитан — нет
+        if to is None or to >= day:
+            return None
+        try:
+            return _sent_plan(state, to)
+        except StoreError:
+            return None
+    data = replace(data, orders=tuple(o for o in data.orders if (o.order_date < until or o.predated) and (
+        o.order_date >= first or (o.isn in later and dp.later_shown(later[o.isn], o, day, target(later[o.isn][0]))))))
     sel = dp.to_deliver(data.orders, day, since, rule, dp.place_of(data.customers, data.addresses))
     seen = _plan_seen(state, since)
     sel = dp.settle_predated(sel, since, seen if seen is not None else dp.PlanSeen())
@@ -1562,7 +1565,7 @@ def _load_day(state: RoutesState, bundle: Bundle, day: date, refresh: bool = Fal
     rule = dp.fleet_rule_of(draft, bundle.settings)
     later = _later_scan(state, day, bundle.settings['workdays'], dp.holidays_of(bundle.settings))
     due = _later_due(later, day)
-    since, until, data, sel = _day_orders(state, bundle, day, refresh, rule, _later_read(later, day))
+    since, until, data, sel = _day_orders(state, bundle, day, refresh, rule, later)
     deliver, backlog = sel.main, sel.backlog
     carried = _carried(state, day, bundle.settings['workdays'], backlog, dp.holidays_of(bundle.settings), due)
     # новые заказы дня (№72): сегодня — кандидаты; другой день — только если в нём есть взятые (их точки в плане). Взятых
@@ -2515,7 +2518,7 @@ def api_dispatch_status() -> Any:
     rule = dp.fleet_rule_of(draft, bundle.settings)
     later = _later_scan(state, day, bundle.settings['workdays'], dp.holidays_of(bundle.settings))
     due = _later_due(later, day)
-    _, _, data, sel = _day_orders(state, bundle, day, False, rule, _later_read(later, day))
+    _, _, data, sel = _day_orders(state, bundle, day, False, rule, later)
     carried = _carried(state, day, bundle.settings['workdays'], sel.backlog, dp.holidays_of(bundle.settings), due)
     # новые заказы дня (№72): сегодня — сколько их ещё решать (плашка без перезагрузки); ERP не ответила — без них
     today: list[dp.DispatchOrder] = []

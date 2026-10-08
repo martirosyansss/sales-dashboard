@@ -300,6 +300,22 @@ def later_carried(plans: Sequence[tuple[date, Draft]], workdays: Sequence[int],
     return out
 
 
+def later_shown(entry: tuple[date | None, date, date], o: DispatchOrder, day: date, target: Draft | None) -> bool:
+    """Заказ «Երբ տանել» o (entry — его строка later_carried) старше окна «Նախորդ օրերից» дня day всё же виден в нём:
+    перенесён на day (входит сам) или позже (строка «կտանենք»); день доставки прошёл — только если там его, похоже, не
+    везли: отправленного плана того дня (target) нет, магазина нет в его рейсах или заказ там убран (dropped, «Չտանել» —
+    dismissed) — не отгружен, решит логист. Везли или перенос снят решением другого дня («Տանել այսօր», «Վաղը») — сверх
+    обычного окна не виден (как до «Երբ տանել»): иначе строка «не решён», пока нет накладной, и «Տանել բոլորը» взял бы его
+    второй раз."""
+    to = entry[0]
+    if to is None:
+        return False
+    if to >= day:
+        return True
+    return target is None or o.isn in target.dropped or o.isn in target.dismissed \
+        or not any(o.customer_id in t.stops for t in target.trips)
+
+
 # --- Чьи заказы везут машины парка (ответ владельца №74) ---
 
 FLEET, SELF_DELIVERY, OTHER_VEHICLE, CUSTOMER_OFF = 'fleet', 'self_delivery', 'other_vehicle', 'customers_off'
