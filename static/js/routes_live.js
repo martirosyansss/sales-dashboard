@@ -226,7 +226,9 @@
         state.layer = L.layerGroup().addTo(state.map);
     }
 
-    // нет связи — серый полупрозрачный маркер в последнем известном положении и «վերջինը՝ HH:MM» под номером
+    // нет связи — серый полупрозрачный маркер в последнем известном положении и «վերջինը՝ HH:MM» (время этой точки GPS:
+    // при выключенном GPS связь свежая, а положение — давнее) под номером
+    const lastFix = (t) => (t.position ? hm(t.position.at) : hm(t.data_until));
     const stale = (t) => t.state === 'offline' || t.state === 'nodata' || noForecast(t);
 
     function markerIcon(t) {
@@ -239,7 +241,7 @@
             el.append(arrow);
         }
         el.append(h('span', { class: 'lv-marker-body' }, icon('fa-truck')), h('span', { class: 'lv-marker-plate', text: t.car_code }));
-        if (stale(t) && t.data_until) el.append(h('span', { class: 'lv-marker-last', text: 'վերջինը՝ ' + hm(t.data_until) }));
+        if (stale(t)) el.append(h('span', { class: 'lv-marker-last', text: 'վերջինը՝ ' + lastFix(t) }));
         if (t.alerts.count) el.append(h('span', { class: 'lv-marker-count', text: String(t.alerts.count) }));
         return L.divIcon({ html: el.outerHTML, className: '', iconSize: [34, 34], iconAnchor: [17, 17] });
     }
@@ -262,7 +264,7 @@
             m.setIcon(markerIcon(t));
             m.setZIndexOffset(t.car_code === state.selected ? 1000 : 0);
             m.bindTooltip(tip(t.car_code + (t.name ? ' · ' + t.name : '')
-                + (stale(t) && t.data_until ? ' · Վերջին հայտնի դիրքը՝ ' + hm(t.data_until) : '')), { direction: 'top', offset: [0, -16] });
+                + (stale(t) ? ' · Վերջին հայտնի դիրքը՝ ' + lastFix(t) : '')), { direction: 'top', offset: [0, -16] });
         }
         for (const [car, m] of state.markers) {
             if (!seen.has(car)) { m.remove(); state.markers.delete(car); }
@@ -368,8 +370,10 @@
                 h('span', { text: lateStores.length + ' խանութ ուշանում է՝ ' + (hi - lo <= 10 ? '≈ ' : 'մինչև ') + hi + ' րոպե' }),
                 btn, list));
         }
+        const refocus = !!document.activeElement && document.activeElement.classList.contains('lv-active-more');
         $('lvActive').hidden = !active.length;
         $('lvActive').replaceChildren(...rows0);
+        if (refocus) { const b = $('lvActive').querySelector('.lv-active-more'); if (b) b.focus({ preventScroll: true }); }
 
         const p = t.position;
         const off = noForecast(t), until = off ? untilText(t) : null;   // прогноза нет: данные — на момент последних данных
@@ -436,7 +440,8 @@
             const g = s.gps;
             const diff = g && s.planned_eta ? Math.round((epoch(g.arrive) - epoch(s.planned_eta)) / 60) : null;
             const cell = (text, cls) => h('td', { class: cls || null, text });
-            const status = lt ? lateText(lt) : (g && g.here && !DONE.includes(s.status) ? 'տեղում է' : lab);
+            const here = (g && g.here) || (t.next && t.next.here && t.next.stop_id === s.stop_id);
+            const status = lt ? lateText(lt) : (here && !DONE.includes(s.status) ? 'տեղում է' : lab);
             return h('tr', { class: [lt ? 'is-late' : null, s.unmarked ? 'is-unmarked' : null].filter(Boolean).join(' ') || null },
                 cell(String(num(s.seq) ?? i + 1), 'is-num'),
                 h('td', { class: 'lv-stop-name' }, h('span', { text: s.name || s.stop_id }), g ? h('small', { text: gpsText(g) }) : null),
@@ -465,7 +470,7 @@
         $('lvReplay').hidden = !canReplay(t);
         if (state.replay.on || !canReplay(t)) return;
         const r = $('lvReplayRange'), last = t.track_t[t.track_t.length - 1];
-        r.min = String(t.track_t[0]);
+        r.min = String(Math.floor(t.track_t[0] / 60) * 60);   // шаг — минута: начало на целой минуте
         r.max = String(last);
         r.value = String(last);
         $('lvReplayTime').textContent = clockOf(last);
@@ -648,6 +653,7 @@
         state.date = v && v !== today ? v : '';
         state.fitted = false;
         stopReplay();
+        state.lateOpen = false;
         state.selected = null;
         state.detail = null;
         refresh();
