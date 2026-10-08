@@ -725,6 +725,7 @@
                 const sep = query() ? '&' : '?';
                 const one = await api('/api/routes/live/truck' + query() + sep + 'car=' + encodeURIComponent(state.selected));
                 state.detail = one.truck;
+                retrack(one.truck);
             }
             renderProblems(data.trucks);
             renderSummary(data.trucks);
@@ -744,6 +745,19 @@
         }
     }
 
+    // линия трека ещё привязывается к дорогам (track_pending): карточку — ещё раз через 3 с, не больше двух раз на машину
+    // и день (прошлый день не опрашивается — без этого там осталась бы линия без привязки); воспроизведение не трогаем
+    function retrack(t) {
+        const key = state.date + '|' + (t ? t.car_code : '');
+        const r = state.retrack && state.retrack.key === key ? state.retrack : (state.retrack = { key, tries: 0, timer: 0 });
+        clearTimeout(r.timer);
+        if (!t || !t.track_pending || r.tries >= 2) return;
+        r.tries += 1;
+        r.timer = setTimeout(() => {
+            if (state.retrack === r && state.selected === t.car_code && !state.replay.on) refresh();
+        }, 3000);
+    }
+
     // карточка выбранной машины на телефоне — под картой и списком: прокрутить к ней
     function focusCard() {
         if (window.matchMedia('(max-width: 899px)').matches) $('lvCard').scrollIntoView({ block: 'start', behavior: reduced() ? 'auto' : 'smooth' });
@@ -755,6 +769,7 @@
         state.lateOpen = false;
         state.selected = state.selected === car ? null : car;
         state.detail = null;
+        state.retrack = null;   // новый выбор — снова до двух дозапросов линии
         renderCard();
         renderTruckLayer(null);
         if (state.data) { renderList(state.data.trucks); renderMarkers(state.data.trucks); }

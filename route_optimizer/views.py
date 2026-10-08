@@ -4318,7 +4318,8 @@ class _LiveContext:
     routes: dict[str, live.PlanRoute] = field(default_factory=dict)
     sent: bool = False
     # линия трека машины по дорогам (08.10, _LiveTracks): (машина, куски линии) → привязанные куски; None — без привязки
-    tracks: Callable[[str, Sequence[tl.Chunk]], Mapping[Any, Sequence[tl.TPoint]]] | None = None
+    # (машина, куски, ждать не дольше, с) → (привязанные куски, ещё не все привязаны)
+    tracks: Callable[[str, Sequence[tl.Chunk], float], tuple[Mapping[Any, Sequence[tl.TPoint]], bool]] | None = None
 
 
 LIVE_LINES_MAX = 300   # машино-дней плановых линий в памяти (кэш _LivePlanLines)
@@ -4446,6 +4447,7 @@ def _plan_geometry(roads: Any, todo: Mapping[str, Any]) -> dict[str, live.RouteG
 LIVE_TRACK_POINTS = 200_000   # вершин привязанных кусков треков в памяти (все машино-дни; ~40 МБ)
 LIVE_TRACK_QUEUE = 5_000      # кусков в очереди привязки (больше — уходят самые старые заказы)
 LIVE_TRACK_WAIT_S = 3.0       # карта «план — факт» / «Ավտոտնակ» (не опрашивает) ждёт привязку дня не дольше
+LIVE_TRUCK_WAIT_S = 2.5       # карточка машины на карте ждёт привязку своих кусков не дольше (дальше — track_pending)
 LIVE_TRACK_WARN_S = 600.0     # сбой привязки пишется в журнал не чаще раза в 10 мин (со счётчиком)
 
 
@@ -4773,8 +4775,12 @@ def _live_context(state: RoutesState, day: date,
     crew = {car: {'driver': drivers.get(car), 'helper': helpers.get(car)} for car in set(drivers) | set(helpers)}
     caps = {code: t.capacity_kg for code, t in bundle.trucks.items()}
 
-    def tracks(car: str, parts: Sequence[tl.Chunk]) -> Mapping[Any, Sequence[tl.TPoint]]:
-        return state.live_tracks.get(day, car, parts, _track_matcher(state, caps.get(car)))
+    def tracks(car: str, parts: Sequence[tl.Chunk], wait_s: float) -> tuple[Mapping[Any, Sequence[tl.TPoint]], bool]:
+        match = _track_matcher(state, caps.get(car))
+        got = state.live_tracks.get(day, car, parts, match, wait_s)
+        pending = match is not None and any(not c.stay and len(c.points) >= tl.MATCH_MIN_POINTS and c.key not in got
+                                            for c in parts)
+        return got, pending
     return _LiveContext(rules, road, bundle.depot, plans, trucks, names, crew, tuple(planned),
                         {cid: w.span() for cid, w in bundle.windows_on(day).items()}, routes,
                         stored is not None and full.released is not None, tracks)
@@ -4782,15 +4788,25 @@ def _live_context(state: RoutesState, day: date,
 
 def _live_card(ctx: _LiveContext, day: date, now: datetime, car: str, facts: Mapping[str, Any] | None,
                detail: bool, snap: bool = False) -> dict[str, Any]:
-    """Карточка машины (live.car_view). snap — линия трека по дорогам (_LiveTracks): только карточка машины на карте;
-    ход дня «Развоза» линию не показывает — привязку не заказывает."""
+    """Карточка машины (live.car_view). snap — линия трека по дорогам (_LiveTracks): только карточка машины на карте
+    (ход дня «Развоза» линию не показывает — привязку не заказывает); ждёт свои куски не дольше LIVE_TRUCK_WAIT_S (вне
+    замков), не дождалась — track_pending: страница переспросит (прошлый день она не опрашивает)."""
     crew = ctx.crew.get(car, {})
     tracks = ctx.tracks if snap and detail else None
-    return {'car_code': car, 'name': ctx.names.get(car), 'driver': crew.get('driver'), 'helper': crew.get('helper'),
+    pending: list[bool] = []
+
+    def snapped(parts: Sequence[tl.Chunk]) -> Mapping[Any, Sequence[tl.TPoint]]:
+        got, wait = tracks(car, parts, LIVE_TRUCK_WAIT_S)   # type: ignore[misc]
+        pending.append(wait)
+        return got
+    card = {'car_code': car, 'name': ctx.names.get(car), 'driver': crew.get('driver'), 'helper': crew.get('helper'),
             'planned': car in ctx.planned, 'plan_sent': ctx.sent,
             **live.car_view(day, now, facts or {}, ctx.plans.get(car, []), ctx.trucks.get(car, live.TruckSpec()),
                             ctx.depot, ctx.rules, ctx.road, detail, ctx.windows, ctx.routes.get(car),
-                            (lambda parts: tracks(car, parts)) if tracks is not None else None)}
+                            snapped if tracks is not None else None)}
+    if tracks is not None:
+        card['track_pending'] = any(pending)
+    return card
 
 
 def _live_cards(state: RoutesState, day: date) -> tuple[_LiveContext, datetime, dict[str, Any],
