@@ -106,7 +106,7 @@
         try { body = await resp.json(); } catch (e) { /* не JSON */ }
         if (!resp.ok || !body || body.success === false) {
             const text = body && typeof body.error === 'string' && /[Ա-֏]/.test(body.error) ? body.error : null;
-            if (resp.status === 403) throw new Error(body && body.error === 'csrf' ? 'Էջը հնացել է՝ թարմացրեք այն և կրկնեք։' : 'Մուտքն արգելված է։');
+            if (resp.status === 403) throw new Error('Մուտքն արգելված է։');
             throw new Error(text || 'Սերվերի սխալ (' + resp.status + ')։ Կրկնեք մի փոքր ուշ։');
         }
         return body;
@@ -347,7 +347,7 @@
         for (const x of (t.detour && t.detour.items) || []) {
             if (!x.over || !Array.isArray(x.line) || x.line.length < 2) continue;
             L.polyline(x.line, { color: '#ffb547', weight: 12, opacity: 0.35 })
-                .bindTooltip(tip('Ավելորդ վազք՝ +' + fmt(x.excess_km, 1) + ' կմ · ' + legName(x))).addTo(state.layer);
+                .bindTooltip(tip('Ավելորդ վազք՝ ' + legExcess(x) + ' կմ · ' + legName(x))).addTo(state.layer);
         }
         if (t.track && t.track.length > 1) {
             L.polyline(t.track, { color: '#38bdf8', weight: 4, opacity: 0.85 }).addTo(state.layer);
@@ -422,6 +422,8 @@
         + (a.explained.note ? ' («' + a.explained.note + '»)' : '') : '');
     const legEnd = (e) => (e.kind === 'depot' ? 'Պահեստ' : storeName(e) + (e.stops > 1 ? ' (+' + (e.stops - 1) + ')' : ''));
     const legName = (x) => legEnd(x.from) + ' → ' + legEnd(x.to) + (x.ongoing ? ' (ընթացքում)' : '');
+    // перепробег участка: идущий — прогноз (проехано + остаток до магазина), «≈»; в итог дня он не входит
+    const legExcess = (x) => (x.ongoing ? '≈ +' + fmt(x.projected_excess_km, 1) : '+' + fmt(x.excess_km, 1));
 
     function renderCard() {
         const t = state.detail || (state.data && state.data.trucks.find(x => x.car_code === state.selected));
@@ -624,12 +626,13 @@
         if (!items.length) return;
         const over = items.filter(x => x.over);
         $('lvDetourNote').textContent = items.length + ' հատված (պահեստ → խանութներ → պահեստ՝ փաստացի հերթականությամբ) · '
-            + 'ավելորդ է, եթե GPS-ով կմ-ը պլանից ավելի է առնվազն ' + fmt(d.threshold_km, 1) + ' կմ-ով';
+            + 'ավելորդ է, եթե GPS-ով կմ-ը պլանից ավելի է առնվազն ' + fmt(d.threshold_km, 1) + ' կմ-ով'
+            + (items.some(x => x.ongoing && x.over) ? ' · ընթացիկ հատվածը՝ կանխատեսում (ընդհանուր գումարում չէ)' : '');
         const cell = (text, cls) => h('td', { class: cls || null, text });
         $('lvDetour').replaceChildren(...(over.length ? over.map(x => h('tr', null,
             h('td', { class: 'lv-stop-name' }, h('span', { text: legName(x) }),
                 h('small', { text: hm(x.from.at) + '–' + (x.to.at ? hm(x.to.at) : 'հիմա') + (x.consecutive ? '' : ' · պլանում հաջորդը չէ') })),
-            cell('+' + fmt(x.excess_km, 1), 'is-num is-bad'),
+            cell(legExcess(x), 'is-num is-bad'),
             cell(fmt(x.km, 1) + ' / ' + (x.approx ? '≈ ' : '') + fmt(x.plan_km, 1), 'is-num'),   // план по прямой — «≈»
             cell(num(x.excess_min) > 0 ? '+' + fmt(x.excess_min) : fmt(x.excess_min), 'is-num'),
             cell(num(x.cost_amd) === null ? '—' : fmt(x.cost_amd), 'is-num')))
@@ -653,7 +656,7 @@
         return b;
     }
     function openExplain(car, a, text, opener) {
-        explaining = { car, kind: a.kind, from: a.from, to: a.to || null, opener };
+        explaining = { car, kind: a.kind, from: a.from, opener };
         $('lvExplainLead').textContent = text;
         $('lvExplainOpts').querySelectorAll('input[type="radio"]').forEach(r => { r.checked = false; });
         $('lvExplainNote').value = '';
@@ -675,7 +678,7 @@
         $('lvExplainSave').disabled = true;
         try {
             await api('/api/routes/live/explain', { date: state.date || state.data.date, car: x.car, kind: x.kind, from: x.from,
-                to: x.to, reason: pick.value, note: $('lvExplainNote').value.trim() });
+                reason: pick.value, note: $('lvExplainNote').value.trim() });
             $('lvExplainDlg').close();
             refresh();
         } catch (e) {

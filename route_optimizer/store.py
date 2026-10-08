@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import os
 import re
@@ -30,6 +31,7 @@ from .running_costs import LOAD_COST_FIELDS, profile_fields
 from .vehicle_access import VehicleAccess, check_access
 
 SCHEMA_VERSION = 26
+logger = logging.getLogger(__name__)
 CREW_PAY_KEY = 'crew_pay'   # строка settings с параметрами «Աշխատավարձ» (Store.crew_pay_params); не ключ DEFAULT_SETTINGS
 # строка settings: какие виды тревог карты знала программа, сохранившая live_alert_kinds (№87); не ключ
 # DEFAULT_SETTINGS — прежние версии её не читают. Нет строки — список сохранён до №87 (знали LIVE_ALERT_KINDS_V1)
@@ -213,14 +215,16 @@ _CUSTOMER_DAY_UNTIL_TABLE = (
     "updated_at TEXT NOT NULL, updated_by TEXT, PRIMARY KEY (day, customer_id))")
 
 # Схема 26 (владелец 08.10, «Մեքենաները առցանց»): диспетчер объяснил отклонение или нарушение порядка объезда машины за
-# день — причина (LIVE_EXPLAIN_REASONS) и заметка; t_from / t_to — время тревоги, к которой объяснение привязано
-# (live.apply_explanations: тот же вид и пересечение по времени). «Չեղարկել» — строка удаляется.
+# день — причина (LIVE_EXPLAIN_REASONS) и заметка; t_from / t_to — время тревоги на момент объяснения (идущая — до
+# последней известной точки), stops — JSON-список точек, пропущенных в объяснённом эпизоде порядка объезда
+# (live.apply_explanations: тот же вид, то же начало ± допуск, у порядка — те же пропущенные). «Չեղարկել» — строка удаляется.
 _LIVE_EXPLAIN_TABLE = (
     "CREATE TABLE IF NOT EXISTS live_explain(id INTEGER PRIMARY KEY AUTOINCREMENT, day TEXT NOT NULL, "
     "car_code TEXT NOT NULL CHECK (length(car_code) BETWEEN 1 AND 64), "
     "kind TEXT NOT NULL CHECK (kind IN ('deviation', 'sequence')), t_from TEXT NOT NULL, t_to TEXT NOT NULL, "
     "reason TEXT NOT NULL CHECK (reason IN ('refuel', 'repair', 'customer', 'road', 'other')), "
-    "note TEXT NOT NULL DEFAULT '' CHECK (length(note) <= 200), created_at TEXT NOT NULL, created_by TEXT)")
+    "note TEXT NOT NULL DEFAULT '' CHECK (length(note) <= 200), stops TEXT NOT NULL DEFAULT '[]', "
+    "created_at TEXT NOT NULL, created_by TEXT)")
 _LIVE_EXPLAIN_INDEX = 'CREATE INDEX IF NOT EXISTS live_explain_day ON live_explain(day, car_code)'
 
 _MEASUREMENT_TABLE = (
@@ -708,6 +712,7 @@ LIVE_ALERT_KINDS = ('speed', 'stop', 'no_contact', 'gps', 'center', 'late', 'dev
 LIVE_EXPLAIN_KINDS = ('deviation', 'sequence')
 LIVE_EXPLAIN_REASONS = ('refuel', 'repair', 'customer', 'road', 'other')
 LIVE_EXPLAIN_NOTE_MAX = 200
+LIVE_EXPLAIN_STOPS_MAX = 200   # точек в объяснении порядка объезда (точка — stop_id терминала, до 64 символов)
 GARAGE_KINDS = ('repair', 'accident', 'fixed', 'odometer')   # журнал гаража (№53), как garage.KINDS
 GARAGE_TEXT_MAX = 300
 GARAGE_AMOUNT_MAX = 100_000_000
@@ -976,6 +981,14 @@ def check_live_explanation(kind: Any, reason: Any, note: Any) -> tuple[str, dict
     elif any(unicodedata.category(c) == 'Cc' for c in text):
         errors['note'] = 'Նշումում կան անթույլատրելի նիշեր'
     return text, errors
+
+
+def _check_explain_stops(v: Any) -> list[str] | None:
+    """Точки объяснения (список stop_id) или None — не список до LIVE_EXPLAIN_STOPS_MAX непустых строк до 64 символов."""
+    if not isinstance(v, list) or len(v) > LIVE_EXPLAIN_STOPS_MAX \
+            or not all(isinstance(x, str) and 0 < len(x) <= 64 for x in v):
+        return None
+    return v
 
 
 def _years_back(d: date, years: int) -> date:
@@ -2582,24 +2595,31 @@ class Store:
     # --- объяснения тревог карты машин (схема 26, владелец 08.10) ---
 
     def live_explanations(self, day: str) -> dict[str, list[dict[str, Any]]]:
-        """Объяснения дня YYYY-MM-DD: машина → [{id, kind, from, to, reason, note, at, by}] по порядку записи. Битая строка
-        — StoreError, а не тихий пропуск: объяснение снимает тревогу, молча потерять его нельзя."""
+        """Объяснения дня YYYY-MM-DD: машина → [{id, kind, from, to, stops, reason, note, at, by}] по порядку записи.
+        Битая строка (запись мимо проверок) — пропускается с предупреждением в журнале: карта машин из-за неё не падает,
+        тревога остаётся необъяснённой (видно — можно объяснить заново)."""
         rows = self._read(lambda conn: conn.execute(
-            'SELECT id, car_code, kind, t_from, t_to, reason, note, created_at, created_by FROM live_explain '
+            'SELECT id, car_code, kind, t_from, t_to, reason, note, stops, created_at, created_by FROM live_explain '
             'WHERE day = ? ORDER BY id', (day,)).fetchall())
         out: dict[str, list[dict[str, Any]]] = {}
-        for id_, car, kind, a, b, reason, note, at, by in rows:
+        for id_, car, kind, a, b, reason, note, raw, at, by in rows:
+            try:
+                stops = json.loads(raw) if isinstance(raw, str) else None
+            except ValueError:
+                stops = None
             if kind not in LIVE_EXPLAIN_KINDS or reason not in LIVE_EXPLAIN_REASONS or _aware_moment(a) is None \
-                    or _aware_moment(b) is None or not isinstance(note, str):
-                raise StoreError(f'{self._name()}: վնասված է ահազանգի բացատրությունը #{id_}{_FIX_HINT}')
-            out.setdefault(car, []).append({'id': id_, 'kind': kind, 'from': a, 'to': b, 'reason': reason, 'note': note,
-                                            'at': at, 'by': by})
+                    or _aware_moment(b) is None or not isinstance(note, str) or _check_explain_stops(stops) is None:
+                logger.warning('[Routes] %s: объяснение тревоги #%s (%s) не читается — пропущено', self._name(), id_, day)
+                continue
+            out.setdefault(car, []).append({'id': id_, 'kind': kind, 'from': a, 'to': b, 'stops': stops,
+                                            'reason': reason, 'note': note, 'at': at, 'by': by})
         return out
 
     def add_live_explanation(self, day: str, car_code: str, kind: str, t_from: str, t_to: str, reason: str, note: str,
-                             user: str | None) -> int:
-        """Объяснение тревоги (вид, время тревоги t_from–t_to — ISO с поясом, причина, заметка — check_live_explanation)
-        → id записи. Неверные данные — ValueError (API проверяет их раньше и отвечает 400)."""
+                             user: str | None, stops: Sequence[str] = ()) -> int:
+        """Объяснение тревоги (вид, время тревоги t_from–t_to — ISO с поясом, причина, заметка — check_live_explanation;
+        stops — пропущенные точки объяснённого эпизода порядка объезда) → id записи. Неверные данные — ValueError (API
+        проверяет их раньше и отвечает 400)."""
         text, errors = check_live_explanation(kind, reason, note)
         if errors or text != note:
             raise ValueError('объяснение не прошло проверку: ' + ', '.join(errors or {'note': ''}))
@@ -2608,11 +2628,15 @@ class Store:
         a, b = _aware_moment(t_from), _aware_moment(t_to)
         if a is None or b is None or b < a:
             raise ValueError('t_from ≤ t_to: ISO-моменты с поясом')
+        listed = _check_explain_stops(list(stops) if isinstance(stops, (list, tuple)) else None)
+        if listed is None:
+            raise ValueError(f'stops: до {LIVE_EXPLAIN_STOPS_MAX} непустых строк до 64 символов')
 
         def write(conn: sqlite3.Connection) -> int:
-            cur = conn.execute('INSERT INTO live_explain(day, car_code, kind, t_from, t_to, reason, note, created_at, '
-                               'created_by) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                               (day, car_code, kind, t_from, t_to, reason, note, _now(), user))
+            cur = conn.execute('INSERT INTO live_explain(day, car_code, kind, t_from, t_to, reason, note, stops, '
+                               'created_at, created_by) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                               (day, car_code, kind, t_from, t_to, reason, note, json.dumps(listed, ensure_ascii=False),
+                                _now(), user))
             return int(cur.lastrowid)
         return self._transaction(write, 'не удалось сохранить объяснение тревоги')
 

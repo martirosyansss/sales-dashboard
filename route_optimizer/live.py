@@ -93,17 +93,24 @@
   план — A → B соседние в плане (склад → первый магазин рейса, магазин → следующий, последний → склад) — км линии плана по
   дорогам (RouteGeometry.leg_km), иначе (и у не соседних в плане) — дорожная модель «Развоза» (Road.pair: те же дороги и
   минуты, что участки ETA, таблицы дня — без запросов Valhalla), нет её — по прямой × извилистость (approx); минуты плана
-  — всегда дорожной моделью (нет — запасная). Перепробег = факт − план; ≈ ֏ — за лишние км с грузом на борту в начале
+  — всегда дорожной моделью (нет — запасная). Точки рейса плана между A и B, закрытые водителем, но без своего GPS-визита
+  (координата магазина неточна — визит не нашёлся; отметка — в пределах участка или без момента), — промежуточные: план
+  A → B идёт через них (по звеньям тем же правилом; «соседние в плане» — если все звенья соседние). Перепробег = факт −
+  план; ≈ ֏ — за лишние км с грузом на борту в начале
   участка по формуле running_costs.route_cost (топливо по загрузке × цена дизеля настроек, нет — запасная и
   fuel_price_estimated, + износ машины: журнал гаража или ручной), расхода машины нет — ֏ неизвестно. Сегодня, пока день
-  идёт, — и идущий участок: от последнего отъезда до последней точки к следующему магазину своего рейса (нет — к складу),
-  его перепробег — уже проеханное сверх всего плана участка. Итог дня — сумма участков с перепробегом не меньше
-  detour_min_km (live_detour_min_km: меньше — шум GPS и дорог, не перепробег);
-- малые отклонения (п. 5): отклонение — тревога, только если перепробег его участка (по первой точке отклонения; участка
-  нет — длина самого отклонения) не меньше detour_min_km; меньше — minor, «փոքր շեղում»: в журнале и на карте, не активно,
+  идёт, — и идущий участок: от последнего отъезда до последней точки к следующему магазину своего рейса (нет — к складу);
+  его перепробег — прогноз: проехано + от последней точки до цели по прямой × извилистость − план участка (только для
+  решения «тревога или փոքր շեղում» и подсветки; ни в итог дня, ни в ֏ не входит — там только кончившиеся участки).
+  Итог дня — сумма кончившихся участков с перепробегом не меньше detour_min_km (live_detour_min_km: меньше — шум GPS и
+  дорог, не перепробег);
+- малые отклонения (п. 5): отклонение — тревога, только если перепробег его участка (по первой точке отклонения; идущий
+  участок — прогноз; участка нет — длина самого отклонения) не меньше detour_min_km; меньше — minor, «փոքր շեղում»: в журнале и на карте, не активно,
   не в «Խնդիրներ հիմա», не Telegram, не в счётчике тревог;
 - порядок объезда (sequence_check; только при плане): внутри рейса плана. Точка обслужена — у неё есть касание (выше:
-  закрытая — визит по GPS или отметка, in_progress — долгий визит, ожидающая — засчитанный GPS-визит). Пока обслужена
+  закрытая — визит по GPS или отметка, in_progress — долгий визит, ожидающая — засчитанный GPS-визит; ожидающая с
+  кончившимся GPS-визитом не короче ac.MIN_DWELL после выезда её рейса — короткая разгрузка без отметки — тоже
+  обслужена). Пока обслужена
   точка с местом в рейсе дальше открытой (не обслуженной) точки того же рейса, открытая — «пропущена» (բաց թողնված);
   закрытая водителем без момента — обслужена, не пропущена и порядок не меняет. События — по моментам касаний: тревога
   sequence — эпизод от касания, после которого появились пропущенные, до касания, после которого их не осталось (идёт —
@@ -112,9 +119,12 @@
   визит общего места: не пара);
 - следование плану (adherence): 100 × (1 − км отклонений без объяснённых / км км-трека в счёте дня); меньше
   ADHERENCE_MIN_KM езды или линии по дорогам нет — None. «փոքր շեղում» — тоже вне коридора и в него входит;
-- объяснения диспетчера (apply_explanations; store.live_explanations, схема 26): тревога deviation или sequence того же
-  вида, пересекающаяся по времени с объяснением, — объяснена: не активна (не «сейчас», не Telegram), в журнале с
-  причиной, её км не уменьшают следование плану и «Երթուղի» «Վարորդներ»;
+- объяснения диспетчера (apply_explanations, explains; store.live_explanations, схема 26): тревога deviation или
+  sequence того же вида с тем же началом ± EXPLAIN_FROM_TOL (пересчёт сдвигает отклонение на несколько точек; случай,
+  начавшийся позже, — другой и объясняется отдельно), у sequence — ещё все пропущенные эпизода есть в объяснении (эпизод
+  разросся новыми пропусками — объяснять заново), — объяснена: не активна (не «сейчас», не Telegram), в журнале с
+  причиной, её км не уменьшают следование плану и «Երթուղի» «Վարորդներ». В базе — время тревоги на момент объяснения
+  (идущей — до последней точки GPS, не «сейчас») и пропущенные точки;
 - показатели дня (day_stats): максимальная скорость терминала (момент, место; больше ac.MAX_SPEED_KMH — сбой GPS, мимо),
   время в движении, на месте и без данных (перерыв трека дольше STATS_GAP), средняя скорость в движении; превышения
   скорости — число и минуты; км плана — у PlanRoute. Трека нет — None («տվյալ չկա»), а не нули;
@@ -179,6 +189,7 @@ M_PER_DEG_LON = 111320.0            # …и долготы на экваторе
 ADHERENCE_MIN_KM = 1.0              # следование плану — от столько км езды в счёте дня (меньше — нечего оценивать)
 LEG_LINE_POINTS = 200               # линия участка с перепробегом на карте
 DEPOT_NODE = 'depot'                # узел склада в порядке плана (магазины — клиенты)
+EXPLAIN_FROM_TOL = timedelta(minutes=3)   # объяснение — к тревоге с тем же началом ± столько (пересчёт сдвигает точки)
 
 
 
@@ -949,13 +960,19 @@ class Leg:
     plan_km: float
     plan_min: float
     approx: bool          # км плана — по прямой × извилистость (ни линии плана, ни дорожной модели)
-    consecutive: bool     # A → B — соседние в плане
+    consecutive: bool     # A → B — соседние в плане (с промежуточными закрытыми без визита — все звенья соседние)
     cost_amd: float | None
     ongoing: bool = False  # идёт сейчас: B — следующий магазин (склад), end — последняя точка
+    projected_km: float | None = None   # идущий: проехано + от последней точки до B по прямой × извилистость
 
     @property
     def excess_km(self) -> float:
         return self.km - self.plan_km
+
+    @property
+    def judged_km(self) -> float:
+        """Перепробег для решения «тревога или փոքր շեղում»: идущий — прогноз (projected_km), кончившийся — факт."""
+        return (self.projected_km if self.ongoing and self.projected_km is not None else self.km) - self.plan_km
 
     @property
     def excess_min(self) -> float:
@@ -972,29 +989,44 @@ def _overlap_min(a: datetime, b: datetime, span: tuple[datetime, datetime] | Non
 def detour_legs(moving: Sequence[Fix], anchors: Sequence[Anchor], pairs: Mapping[tuple[Any, Any], float | None],
                 road: Road, truck: TruckSpec, load: Load, rules: Rules, day: date, since: datetime | None,
                 until: datetime | None, lunch: tuple[datetime, datetime] | None = None,
-                target: Anchor | None = None) -> list[Leg]:
+                target: Anchor | None = None, pos: Point | None = None,
+                vias: Callable[[Anchor, Anchor], Sequence[tuple[Any, Point]]] | None = None) -> list[Leg]:
     """Участки дня между соседними опорными точками фактического порядка (правило — в описании модуля). moving — точки
     км-трека; anchors — по прибытию; pairs — (узел, узел) соседних в плане → км по линии плана по дорогам (None — линии
     нет); since / until — счёт дня, как у отклонения (участок начинается не раньше since и раньше until); lunch — стоянка
     обеда (её минуты — не перепробег); target — следующий магазин (склад) идущего участка: от последнего отъезда до
-    последней точки трека (target.arrive). Км — geo.track_steps (как км дня), минуты — от отъезда до прибытия."""
+    последней точки трека (target.arrive), pos — последняя точка (прогноз идущего участка); vias — (A, B) → точки плана
+    между ними (узел, точка), закрытые водителем без своего GPS-визита: план A → B идёт через них. Км — geo.track_steps
+    (как км дня), минуты — от отъезда до прибытия."""
     if since is None:
         return []
     times = [f.at for f in moving]
+
+    def plan_of(a: Anchor, b: Anchor, minute: float) -> tuple[float, float, bool, bool]:
+        """(км, минуты плана, approx, все звенья соседние в плане) A → [промежуточные] → B."""
+        chain = [(a.nodes, a.point), *((frozenset({n}), p) for n, p in (vias(a, b) if vias is not None else ())),
+                 (b.nodes, b.point)]
+        km = minutes = 0.0
+        approx, consecutive = False, True
+        for (xs, p), (ys, q) in zip(chain, chain[1:]):
+            known = [pairs[(x, y)] for x in xs for y in ys if (x, y) in pairs]
+            geo = next((k for k in known if k is not None), None)
+            leg_km, leg_min, by_road = road.drive(p, q, minute)
+            km += geo if geo is not None else leg_km
+            minutes += leg_min
+            approx = approx or (geo is None and not by_road)
+            consecutive = consecutive and bool(known)
+        return km, minutes, approx, consecutive
 
     def make(a: Anchor, b: Anchor, start: datetime, end: datetime, ongoing: bool) -> Leg:
         i, j = bisect.bisect_left(times, start), bisect.bisect_right(times, end)
         km = _path_km(moving[i:j])
         minutes = (end - start).total_seconds() / 60.0 - _overlap_min(start, end, lunch)
-        known = [pairs[(x, y)] for x in a.nodes for y in b.nodes if (x, y) in pairs]
-        geo = next((k for k in known if k is not None), None)
-        plan_km, plan_min, by_road = road.drive(a.point, b.point, ac.day_minutes(day, start) % 1440.0)
-        if geo is not None:
-            plan_km = geo
+        plan_km, plan_min, approx, consecutive = plan_of(a, b, ac.day_minutes(day, start) % 1440.0)
         excess = km - plan_km
         cost = truck.cost_amd(max(0.0, excess), load.at(start), rules.fuel_price)
-        return Leg(a, b, start, end, km, minutes, plan_km, plan_min, geo is None and not by_road, bool(known), cost,
-                   ongoing)
+        projected = km + haversine_km(pos, b.point) * road.detour if ongoing and pos is not None else None
+        return Leg(a, b, start, end, km, minutes, plan_km, plan_min, approx, consecutive, cost, ongoing, projected)
 
     mine = [x for x in anchors if x.leave is None or x.leave >= since]
     out = [make(a, b, a.leave, b.arrive, False) for a, b in zip(mine, mine[1:])
@@ -1076,21 +1108,28 @@ def _seq_alert(episode: tuple[datetime, dict[str, None], str], end: datetime | N
                   lat=first.get('lat'), lon=first.get('lon'))
 
 
-def apply_explanations(alerts: Sequence[dict[str, Any]], explained: Sequence[Mapping[str, Any]], now: datetime) -> None:
-    """Объяснения диспетчера (store.live_explanations: машина, день) → тревоги deviation и sequence: того же вида и
-    пересекающиеся по времени — [from, to; идёт — now] тревоги с [from, to] объяснения (to — конец тревоги на момент
-    объяснения, идущей — момент объяснения). Отклонение между пересчётами сдвигается на несколько точек — равенства начала
-    не требуется; новое отклонение позже объяснения не пересекается с ним. Подходит несколько — последнее записанное.
-    Объяснённая тревога: explained {id, reason, note, at, by}, active false (не «сейчас», не Telegram)."""
+def explains(e: Mapping[str, Any], a: Mapping[str, Any]) -> bool:
+    """Объяснение e относится к тревоге a (правило — в описании модуля): тот же вид и то же начало ± EXPLAIN_FROM_TOL
+    (отклонение между пересчётами сдвигается на несколько точек; новое — начинается позже, это другой случай); у порядка
+    объезда — ещё и все пропущенные эпизода (a.skipped) есть в объяснении: эпизод разросся новыми пропусками — объяснять
+    заново."""
+    if e.get('kind') != a.get('kind') or not a.get('from') or not e.get('from'):
+        return False
+    if abs(datetime.fromisoformat(e['from']) - datetime.fromisoformat(a['from'])) > EXPLAIN_FROM_TOL:
+        return False
+    return a['kind'] != 'sequence' or {x['stop_id'] for x in a.get('skipped') or ()} <= set(e.get('stops') or ())
+
+
+def apply_explanations(alerts: Sequence[dict[str, Any]], explained: Sequence[Mapping[str, Any]]) -> None:
+    """Объяснения диспетчера (store.live_explanations: машина, день) → тревоги deviation и sequence (explains). Подходит
+    несколько — последнее записанное. Объяснённая тревога: explained {id, reason, note, at, by}, active false (не
+    «сейчас», не Telegram)."""
     for a in alerts:
-        if a.get('kind') not in LIVE_EXPLAIN_KINDS or not a.get('from'):
+        if a.get('kind') not in LIVE_EXPLAIN_KINDS:
             continue
-        a_from = datetime.fromisoformat(a['from'])
-        a_to = datetime.fromisoformat(a['to']) if a.get('to') else now
         hit = None
         for e in explained:
-            if e.get('kind') == a['kind'] and datetime.fromisoformat(e['from']) <= a_to \
-                    and a_from <= datetime.fromisoformat(e['to']):
+            if explains(e, a):
                 hit = e
         if hit is not None:
             a['explained'] = {k: hit.get(k) for k in ('id', 'reason', 'note', 'at', 'by')}
@@ -1543,24 +1582,62 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
                 target = Anchor(last.at, None, (nxt['lat'], nxt['lon']), frozenset({nxt.get('customer_id')}), (nxt,))
             elif gone and depot is not None:
                 target = Anchor(last.at, None, depot, frozenset({DEPOT_NODE}))
-        legs = detour_legs(moving, anchors, pairs, road, truck, load, rules, day, out_at, until, lunch_span, target)
-    over = [x for x in legs if x.excess_km >= rules.detour_min_km]
+        anchored = {n for x in anchors for n in x.nodes}
+        by_cid: dict[Any, list[Mapping[str, Any]]] = {}
+        for x in stops:
+            by_cid.setdefault(x.get('customer_id'), []).append(x)
+
+        def vias(a: Anchor, b: Anchor) -> list[tuple[Any, Point]]:
+            """Точки рейса плана между A и B, закрытые водителем без своего GPS-визита (координата магазина неточна —
+            визит не найден; отметка — в пределах участка или без момента): машина там была, план A → B — через них."""
+            for t in plan:
+                cs = list(t.customers)
+                ia = -1 if DEPOT_NODE in a.nodes else min((cs.index(c) for c in a.nodes if c in cs), default=None)
+                ib = len(cs) if DEPOT_NODE in b.nodes else min((cs.index(c) for c in b.nodes if c in cs), default=None)
+                if ia is None or ib is None or ia >= ib or (ia == -1 and ib == len(cs)):
+                    continue
+                out_v = []
+                for c in cs[ia + 1:ib]:
+                    mark = [x for x in by_cid.get(c, ()) if x.get('status') in DONE]
+                    at = [m for x in mark if (m := _moment(x.get('delivered_at'))) is not None]
+                    inside = not at or any(a.leave is not None and a.leave <= m <= b.arrive for m in at)
+                    p = where.get(c) or next(((x['lat'], x['lon']) for x in mark
+                                              if x.get('lat') is not None and x.get('lon') is not None), None)
+                    if c not in anchored and mark and inside and p is not None:
+                        out_v.append((c, p))
+                return out_v
+            return []
+        legs = detour_legs(moving, anchors, pairs, road, truck, load, rules, day, out_at, until, lunch_span, target,
+                           last.point if last is not None else None, vias)
+    # итог дня (км, мин, ֏) — только кончившиеся участки: у идущего перепробег — прогноз (решение «тревога или нет»)
+    over = [x for x in legs if not x.ongoing and x.excess_km >= rules.detour_min_km]
 
     deviations = []
     for k, run in enumerate(runs):   # идёт сейчас — последнее отклонение, и последняя свежая точка всё ещё вне линии
         ongoing = (fresh and k == len(runs) - 1 and run[-1].at == moving[-1].at and last is not None
                    and until is None
                    and off_route(last.point, index, rules.deviation_m, keep, straight))   # type: ignore[arg-type]
-        # тревога — только при перепробеге своего участка не меньше detour_min_km (участка нет — по длине отклонения);
-        # меньше — «փոքր շեղում»: в журнале и на карте, не «сейчас» и не Telegram
+        # тревога — только при перепробеге своего участка не меньше detour_min_km (идущего — прогноз; участка нет — по
+        # длине отклонения); меньше — «փոքր շեղում»: в журнале и на карте, не «сейчас» и не Telegram
         leg = leg_at(legs, run[0].at)
         km = _path_km(run)
-        minor = (leg.excess_km if leg is not None else km) < rules.detour_min_km
+        minor = (leg.judged_km if leg is not None else km) < rules.detour_min_km
         deviations.append(_alert('deviation', run[0].at, None if ongoing else run[-1].at, ongoing and not minor,
                                  km=round(km, 1), lat=round(run[0].lat, 6), lon=round(run[0].lon, 6), minor=minor,
-                                 excess_km=round(leg.excess_km, 1) if leg is not None else None))
-    sequence, seq_summary = sequence_check(stops, trips, plan, touches, nos, live) if plan else ([], None)
-    apply_explanations(deviations + sequence, explained, now)
+                                 excess_km=round(leg.judged_km, 1) if leg is not None else None,
+                                 projected=bool(leg is not None and leg.ongoing)))
+    # порядок объезда: обслужена — касание; ожидающая, у которой был кончившийся GPS-визит не короче ac.MIN_DWELL после
+    # выезда её рейса (короткая разгрузка без отметки), — тоже «посещена», не «пропущена»
+    seq_touches = dict(touches)
+    for x in stops:
+        sid = x['stop_id']
+        if x.get('status') == 'pending' and sid not in seq_touches and trips[sid] in gone:
+            brief = [v for v in visits.get(sid, ()) if v.arrive >= gone[trips[sid]] and v.leave - v.arrive >= ac.MIN_DWELL
+                     and not (live and last is not None and v.leave >= last.at)]
+            if brief:
+                seq_touches[sid] = brief[0].arrive
+    sequence, seq_summary = sequence_check(stops, trips, plan, seq_touches, nos, live) if plan else ([], None)
+    apply_explanations(deviations + sequence, explained)
     off_km = math.fsum(_path_km(r) for r, a in zip(runs, deviations) if 'explained' not in a)
     adherence_pct, counted_km = adherence(moving, out_at, until, off_km) if index is not None else (None, 0.0)
     alerts = (speeds
@@ -1686,8 +1763,9 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
              'km': round(x.km, 1), 'plan_km': round(x.plan_km, 1), 'excess_km': round(x.excess_km, 1),
              'minutes': round(x.minutes), 'plan_min': round(x.plan_min), 'excess_min': round(x.excess_min),
              'cost_amd': round(x.cost_amd) if x.cost_amd is not None else None, 'approx': x.approx,
-             'consecutive': x.consecutive, 'ongoing': x.ongoing, 'over': x.excess_km >= rules.detour_min_km,
-             'line': leg_line(x) if x.excess_km >= rules.detour_min_km else None}
+             'consecutive': x.consecutive, 'ongoing': x.ongoing, 'over': x.judged_km >= rules.detour_min_km,
+             'projected_excess_km': round(x.judged_km, 1) if x.ongoing else None,
+             'line': leg_line(x) if x.judged_km >= rules.detour_min_km else None}
             for x in legs]
     if detail:
         # линия трека (владелец 08.10): стоянка — одна точка, езда — без дрожания, по дорогам (track_line); момент точки

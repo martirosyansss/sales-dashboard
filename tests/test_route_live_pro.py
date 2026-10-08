@@ -217,22 +217,101 @@ def test_small_deviation_is_minor_big_one_is_alert_with_leg_excess():
     assert 'items' not in brief['detour'] and brief['detour']['excess_km'] == det['excess_km']
 
 
-def test_ongoing_deviation_becomes_alert_only_when_leg_excess_reaches_threshold():
-    def going(off_m):
+def test_ongoing_deviation_judged_by_projected_leg_excess():
+    """Идущий участок: перепробег — прогноз (проехано + от последней точки до цели по прямой × извилистость − план);
+    в итог дня и ֏ он не входит."""
+    def going(off_m, detail=False):
         tr = Track().park(DEPOT, 5).drive(A)
         at_a = tr.t
         tr.park(A, 6).drive(_off(MID_AB, off_m))
         stops = [stop('S:A', 7, A, 300.0, 'full', 1.0, at_a + timedelta(minutes=2)), stop('S:B', 8, B, 200.0, seq=2)]
-        return _view(tr, stops, now=tr.t + timedelta(seconds=20), detail=False)
-    near = going(2500.0)          # к B ещё можно успеть без перепробега: отклонение есть, тревоги нет
-    assert near['deviation']['count'] == 1 and near['deviation']['active'] is False
+        return _view(tr, stops, now=tr.t + timedelta(seconds=20), detail=detail)
+    near = going(900.0)           # в стороне 900 м: прогноз — меньше порога, «փոքր շեղում»
+    assert near['deviation']['count'] == 1 and near['deviation']['active'] is False and _dev(near)[0]['minor'] is True
     assert 'deviation' not in near['alerts']['active'] and near['explainable'] == []
-    far = going(6000.0)           # уже проехал больше всего участка A → B по плану + порог
+    far = going(2500.0, detail=True)   # в 2,5 км от линии: тревога сразу, не после «плана + порога» проеханного
+    (d,) = _dev(far)
+    assert d['minor'] is False and d['projected'] is True and d['excess_km'] >= 1.0
     assert far['deviation']['active'] is True and 'deviation' in far['alerts']['active'] and far['state'] == 'alert'
-    assert far['explainable'] == [{'kind': 'deviation', 'from': _dev(far)[0]['from']}]
+    assert far['explainable'] == [{'kind': 'deviation', 'from': d['from']}]
+    (leg,) = [x for x in far['detour']['items'] if x['ongoing']]
+    assert leg['over'] is True and leg['projected_excess_km'] == d['excess_km'] and leg['excess_km'] < 1.0
+    assert far['detour']['legs_over'] == 0 and far['detour']['excess_km'] == 0.0 and far['detour']['cost_amd'] == 0
 
 
-def test_adherence_and_explained_deviation_not_counted_and_matched_by_time_overlap():
+def test_ongoing_far_off_route_on_long_leg_alerts_early():
+    """Пример ревью: дальний магазин (~21 км), машина ушла от линии на 2,2 км и едет параллельно — тревога сразу."""
+    far_store = (40.17, 44.70)
+    mid = ((DEPOT[0] + far_store[0]) / 2, (DEPOT[1] + far_store[1]) / 2)
+    off1 = (mid[0] + 0.02, mid[1])
+    off2 = (off1[0], off1[1] + 0.03)
+    route = _route(lines=((DEPOT, far_store, DEPOT),), stops=((9, far_store),))
+    tr = Track().park(DEPOT, 10).drive(mid).drive(off1).drive(off2)
+    road = replace(ROAD, detour=1.0)   # синтетический трек — по прямой: и план по прямой
+    card = live.car_view(DAY, tr.t, facts(tr.pts, [stop('S:F', 9, far_store, 500.0)], [T0, tr.t]),
+                         [live.PlanTrip((9,), {})], TRUCK, DEPOT, RULES, road, False, None, route)
+    (d,) = _dev(card)
+    assert d['active'] is True and d['minor'] is False and 'deviation' in card['alerts']['active']
+
+
+def test_done_stop_without_gps_visit_is_a_via_point_no_fake_excess():
+    """Закрытый водителем магазин B, у которого координата в 400 м от места разгрузки (визита по GPS нет): участок A → C —
+    через B по плану, перепробега и ֏ нет (без этого — +3,7 км и ֏ в идеальный день)."""
+    c_pt = (40.16, 44.47)
+    road = replace(ROAD, detour=1.0)
+    for b_term in (B, (B[0] + 0.0036, B[1])):
+        route = _route(lines=((DEPOT, A, b_term, c_pt, DEPOT),), stops=((7, A), (8, b_term), (10, c_pt)))
+        tr = Track().park(DEPOT, 10).drive(A)
+        ta = tr.t
+        tr.park(A, 8).drive(B)
+        tb = tr.t
+        tr.park(B, 8).drive(c_pt)
+        tc = tr.t
+        tr.park(c_pt, 8)
+        stops = [stop('S:A', 7, A, 300.0, 'full', 1.0, ta + timedelta(minutes=3)),
+                 stop('S:B', 8, b_term, 300.0, 'full', 1.0, tb + timedelta(minutes=3), seq=2),
+                 stop('S:C', 10, c_pt, 300.0, 'full', 1.0, tc + timedelta(minutes=3), seq=3)]
+        card = live.car_view(DAY, tr.t, facts(tr.pts, stops, [T0, tr.t]), [live.PlanTrip((7, 8, 10), {})], TRUCK, DEPOT,
+                             RULES, road, True, None, route)
+        det = card['detour']
+        assert det['legs_over'] == 0 and det['excess_km'] == 0.0 and det['cost_amd'] == 0, b_term
+        assert all(x['excess_km'] < 0.5 and x['consecutive'] for x in det['items']), det['items']
+    # отметка B вне участка A → C (позже прибытия в C) — не промежуточная: участок без неё
+    stops[1]['delivered_at'] = (tc + timedelta(minutes=30)).isoformat()
+    card = live.car_view(DAY, tr.t + timedelta(minutes=40), facts(tr.pts, stops, [T0, tr.t]),
+                         [live.PlanTrip((7, 8, 10), {})], TRUCK, DEPOT, RULES, road, True, None, route)
+    (ac_leg,) = [x for x in card['detour']['items'] if x['from']['no'] == 1]
+    assert ac_leg['consecutive'] is False and ac_leg['excess_km'] > 1.0
+
+
+def test_short_unmarked_delivery_is_visited_not_skipped():
+    """Разгрузка 4 мин (короче засчитанного GPS-визита) без отметки, потом обслужен следующий — не «пропущен»."""
+    c_pt = (40.19, 44.51)
+    tr = Track().park(DEPOT, 10).drive(A)
+    ta = tr.t
+    tr.park(A, 8).drive(B).park(B, 4).drive(c_pt)
+    tc = tr.t
+    tr.park(c_pt, 8).drive(((c_pt[0] + DEPOT[0]) / 2, (c_pt[1] + DEPOT[1]) / 2))
+    route = _route(lines=((DEPOT, A, B, c_pt, DEPOT),), stops=((7, A), (8, B), (10, c_pt)))
+    stops = [stop('S:A', 7, A, 300.0, 'full', 1.0, ta + timedelta(minutes=3)), stop('S:B', 8, B, 300.0, seq=2),
+             stop('S:C', 10, c_pt, 300.0, 'full', 1.0, tc + timedelta(minutes=3), seq=3)]
+    card = live.car_view(DAY, tr.t, facts(tr.pts, stops, [T0, tr.t]), [live.PlanTrip((7, 8, 10), {})], TRUCK, DEPOT,
+                         RULES, ROAD, False, None, route)
+    assert card['sequence'] == {'skipped': [], 'pairs': []} and 'sequence' not in card['alerts']['active']
+    # стоянка у B короче ac.MIN_DWELL (проезд) — B пропущен
+    tr = Track().park(DEPOT, 10).drive(A)
+    ta = tr.t
+    tr.park(A, 8).drive(B).park(B, 1).drive(c_pt)
+    tc = tr.t
+    tr.park(c_pt, 8).drive(((c_pt[0] + DEPOT[0]) / 2, (c_pt[1] + DEPOT[1]) / 2))
+    stops[0]['delivered_at'] = (ta + timedelta(minutes=3)).isoformat()
+    stops[2]['delivered_at'] = (tc + timedelta(minutes=3)).isoformat()
+    card = live.car_view(DAY, tr.t, facts(tr.pts, stops, [T0, tr.t]), [live.PlanTrip((7, 8, 10), {})], TRUCK, DEPOT,
+                         RULES, ROAD, False, None, route)
+    assert [x['stop_id'] for x in card['sequence']['skipped']] == ['S:B']
+
+
+def test_adherence_and_explained_deviation_not_counted_and_matched_by_start():
     tr, stops = _planned_detour(3000.0)
     card = _view(tr, stops)
     (d,) = _dev(card)
@@ -250,24 +329,42 @@ def test_adherence_and_explained_deviation_not_counted_and_matched_by_time_overl
     assert e['active'] is False and ex['deviation']['explained'] == 1 and ex['deviation']['alerts'] == 0
     assert ex['deviation']['off_km'] == 0.0 and ex['deviation']['adherence_pct'] == 100.0
     assert ex['deviation']['runs'][0]['explained']['reason'] == 'road'
-    # другой вид или другое время — не объясняет
-    later = (a_to + timedelta(minutes=30)).isoformat()
+    # другой вид, начало дальше допуска (другой случай) — не объясняет
+    later = (a_from + live.EXPLAIN_FROM_TOL + timedelta(seconds=30)).isoformat()
     for other in ({**shifted, 'kind': 'sequence'}, {**shifted, 'from': later, 'to': later}):
         assert 'explained' not in _dev(_view(tr, stops, explained=[other]))[0]
 
 
-def test_apply_explanations_ongoing_alert_and_last_written_wins():
-    now = T(60)
+def test_apply_explanations_by_start_last_written_wins_later_incident_not_covered():
     alerts = [{'kind': 'deviation', 'from': T(40).isoformat(), 'to': None, 'active': True},
               {'kind': 'speed', 'from': T(41).isoformat(), 'to': T(42).isoformat(), 'active': False},
-              {'kind': 'deviation', 'from': T(5).isoformat(), 'to': T(9).isoformat(), 'active': False}]
-    expl = [{'id': 1, 'kind': 'deviation', 'from': T(39).isoformat(), 'to': T(50).isoformat(), 'reason': 'refuel'},
-            {'id': 2, 'kind': 'deviation', 'from': T(45).isoformat(), 'to': T(55).isoformat(), 'reason': 'other'},
-            {'id': 3, 'kind': 'speed', 'from': T(0).isoformat(), 'to': T(99).isoformat(), 'reason': 'other'}]
-    live.apply_explanations(alerts, expl, now)
-    assert alerts[0]['explained']['id'] == 2 and alerts[0]['active'] is False   # идущая тревога — до сейчас
-    assert 'explained' not in alerts[1] and 'explained' not in alerts[2]          # скорость не объясняется
+              {'kind': 'deviation', 'from': T(48).isoformat(), 'to': T(55).isoformat(), 'active': False}]
+    expl = [{'id': 1, 'kind': 'deviation', 'from': T(39).isoformat(), 'to': T(44).isoformat(), 'reason': 'refuel'},
+            {'id': 2, 'kind': 'deviation', 'from': T(41).isoformat(), 'to': T(44).isoformat(), 'reason': 'other'},
+            {'id': 3, 'kind': 'speed', 'from': T(41).isoformat(), 'to': T(42).isoformat(), 'reason': 'other'}]
+    live.apply_explanations(alerts, expl)
+    assert alerts[0]['explained']['id'] == 2 and alerts[0]['active'] is False   # идущая — тот же случай, последняя запись
+    assert 'explained' not in alerts[1]                                            # скорость не объясняется
+    assert 'explained' not in alerts[2]   # новое отклонение (начало через 8 мин) — другой случай, хоть и пересекается
     assert live.adherence([], None, None, 0.0) == (None, 0.0)
+
+
+def test_sequence_explanation_does_not_cover_episode_grown_with_new_skips():
+    """Пример ревью: в 10:35 объяснён пропуск №2; к 11:30 тот же эпизод пропустил и №4 — объяснять заново."""
+    stops = _seq_stops(['full', 'pending', 'full', 'pending']) + [stop('S4', 14, (40.20, 44.53), 100.0, 'full', seq=5)]
+    plan = [live.PlanTrip((10, 11, 12, 13, 14), {})]
+    trips = live.trip_of(stops, plan)
+    nos = {**NOS, 14: 5}
+    (early,), _ = live.sequence_check(stops, trips, plan, {'S0': T(10), 'S2': T(30)}, nos, True)
+    expl = [{'id': 1, 'kind': 'sequence', 'from': early['from'], 'to': T(35).isoformat(), 'reason': 'customer',
+             'stops': [x['stop_id'] for x in early['skipped']]}]
+    assert expl[0]['stops'] == ['S1']
+    live.apply_explanations([early], expl)
+    assert early['explained']['id'] == 1
+    (grown,), _ = live.sequence_check(stops, trips, plan, {'S0': T(10), 'S2': T(30), 'S4': T(90)}, nos, True)
+    assert [x['no'] for x in grown['skipped']] == [2, 4] and grown['from'] == early['from']
+    live.apply_explanations([grown], expl)
+    assert 'explained' not in grown and grown['active'] is True
 
 
 def test_sequence_alert_in_card_and_explained():
@@ -282,13 +379,14 @@ def test_sequence_alert_in_card_and_explained():
     seq = card['sequence']
     assert seq['skipped'] == [] and [(p['first']['no'], p['then']['no']) for p in seq['pairs']] == [(2, 1)]
     ex = _view(tr, stops, now=tr.t + timedelta(days=1), explained=[
-        {'id': 9, 'kind': 'sequence', 'from': s['from'], 'to': s['from'], 'reason': 'customer', 'note': ''}])
+        {'id': 9, 'kind': 'sequence', 'from': s['from'], 'to': s['from'], 'reason': 'customer', 'note': '',
+         'stops': ['S:A']}])
     assert [a for a in ex['alerts_log'] if a['kind'] == 'sequence'][0]['explained']['reason'] == 'customer'
 
 
 # ============================== база: схема 26 ==============================
 
-def test_schema_26_migrates_from_24_and_from_25_and_explanations_roundtrip(tmp_path):
+def test_schema_26_migrates_from_24_and_from_25_and_explanations_roundtrip(tmp_path, caplog):
     path = str(tmp_path / 'r.db')
     s = st.Store(path)
     s.save_truck_driver('CAR1', '2026-10-01', 'Արամ', 'qa')
@@ -323,16 +421,24 @@ def test_schema_26_migrates_from_24_and_from_25_and_explanations_roundtrip(tmp_p
             [('2026-10-03', 501, 660, 'x', 'qa')]
     assert st._MIGRATIONS[24] == (st._CUSTOMER_DAY_UNTIL_TABLE,)
     assert st._MIGRATIONS[25] == (st._LIVE_EXPLAIN_TABLE, st._LIVE_EXPLAIN_INDEX)
+    # шаг 24 → 25 — байт в байт строка DDL ветки until-time (2eec5b5): иначе база, мигрированная одной из веток, разойдётся
+    assert st._CUSTOMER_DAY_UNTIL_TABLE == (
+        "CREATE TABLE IF NOT EXISTS customer_day_until(day TEXT NOT NULL, "
+        "customer_id INTEGER NOT NULL CHECK (customer_id > 0), t1 INTEGER NOT NULL CHECK (t1 BETWEEN 0 AND 1439), "
+        "updated_at TEXT NOT NULL, updated_by TEXT, PRIMARY KEY (day, customer_id))")
     # запись, чтение, «Չեղարկել»
     a, b = T0.isoformat(), (T0 + timedelta(minutes=12)).isoformat()
     new = s.add_live_explanation('2026-10-03', 'CAR1', 'deviation', a, b, 'refuel', 'ԱԳԼՑ', 'boss')
+    seq = s.add_live_explanation('2026-10-03', 'CAR1', 'sequence', a, b, 'customer', '', 'boss', ['S:1', 'S:2'])
     got = s.live_explanations('2026-10-03')
-    assert list(got) == ['CAR1'] and got['CAR1'][0] == {'id': new, 'kind': 'deviation', 'from': a, 'to': b,
+    assert list(got) == ['CAR1'] and got['CAR1'][0] == {'id': new, 'kind': 'deviation', 'from': a, 'to': b, 'stops': [],
                                                         'reason': 'refuel', 'note': 'ԱԳԼՑ', 'at': got['CAR1'][0]['at'],
                                                         'by': 'boss'}
+    assert got['CAR1'][1]['id'] == seq and got['CAR1'][1]['stops'] == ['S:1', 'S:2']
     for bad in (dict(kind='speed'), dict(reason='lunch'), dict(note='x' * 201), dict(note='a\x07b'), dict(note=' x'),
                 dict(t_to=(T0 - timedelta(minutes=1)).isoformat()), dict(t_from='09:00'), dict(day='03.10.2026'),
-                dict(car_code='')):
+                dict(car_code=''), dict(stops='S:1'), dict(stops=['']), dict(stops=['x' * 65]),
+                dict(stops=['s'] * 201)):
         args = {'day': '2026-10-03', 'car_code': 'CAR1', 'kind': 'deviation', 't_from': a, 't_to': b,
                 'reason': 'refuel', 'note': '', **bad}
         with pytest.raises(ValueError):
@@ -340,12 +446,15 @@ def test_schema_26_migrates_from_24_and_from_25_and_explanations_roundtrip(tmp_p
     assert st.check_live_explanation('sequence', 'other', '  ok ') == ('ok', {})
     assert set(st.check_live_explanation('x', 'y', 5)[1]) == {'kind', 'reason', 'note'}
     assert s.delete_live_explanation(new) == ('2026-10-03', 'CAR1') and s.delete_live_explanation(new) is None
-    with closing(sqlite3.connect(path)) as conn:   # битая строка — явная ошибка, а не тихий пропуск
+    with closing(sqlite3.connect(path)) as conn:   # битые строки — мимо, с предупреждением: карта от них не падает
         conn.execute("INSERT INTO live_explain(day, car_code, kind, t_from, t_to, reason, note, created_at) "
                      "VALUES('2026-10-03', 'CAR1', 'deviation', 'x', 'y', 'other', '', 'z')")
+        conn.execute("INSERT INTO live_explain(day, car_code, kind, t_from, t_to, reason, note, stops, created_at) "
+                     f"VALUES('2026-10-03', 'CAR1', 'deviation', '{a}', '{b}', 'other', '', 'nope', 'z')")
         conn.commit()
-    with pytest.raises(st.StoreError):
-        s.live_explanations('2026-10-03')
+    with caplog.at_level('WARNING'):
+        assert [e['id'] for e in s.live_explanations('2026-10-03')['CAR1']] == [seq]
+    assert sum('не читается' in r.getMessage() for r in caplog.records) == 2
 
 
 # ============================== API «Բացատրել» ==============================
@@ -373,7 +482,8 @@ def test_api_explain_admin_only_json_csrf_and_undo(client, live_app):
     assert 'sequence' in car['alerts']['active'] and car['state'] == 'alert'
     assert car['sequence']['skipped'][0]['stop_id'] == 'S:B'
     (ex,) = car['explainable']
-    body = {'date': '2026-10-03', 'car': 'CAR1', 'kind': 'sequence', 'from': ex['from'], 'to': None,
+    body = {'date': '2026-10-03', 'car': 'CAR1', 'kind': 'sequence',   # начало — сдвинуто на минуту: в допуске
+            'from': (datetime.fromisoformat(ex['from']) + timedelta(minutes=1)).isoformat(),
             'reason': 'customer', 'note': '  խնդրեց  '}
     url = '/api/routes/live/explain'
     # «Гараж»: карта только на чтение — POST закрыт гейтом, кнопки нет
@@ -389,15 +499,17 @@ def test_api_explain_admin_only_json_csrf_and_undo(client, live_app):
                        ({'date': '2026-10-04'}, 'date'), ({'car': ''}, 'car'), ({'from': 'x'}, 'from')):
         r = client.post(url, json={**body, **bad}, base_url=LAN, headers=h)
         assert r.status_code == 400 and field in r.get_json()['errors'], bad
-    gone = {**body, 'from': '2026-10-03T07:00:00+04:00', 'to': '2026-10-03T07:05:00+04:00'}
+    gone = {**body, 'from': '2026-10-03T07:00:00+04:00'}
     assert client.post(url, json=gone, base_url=LAN, headers=h).status_code == 404
     assert client.post(url, json={**body, 'car': 'NOPE'}, base_url=LAN, headers=h).status_code == 404
     r = client.post(url, json=body, base_url=LAN, headers=h)
     assert r.status_code == 200, r.get_json()
     eid = r.get_json()['id']
     (saved,) = state.store.live_explanations('2026-10-03')['CAR1']
-    assert (saved['id'], saved['kind'], saved['from'], saved['reason'], saved['note'], saved['by']) == \
-        (eid, 'sequence', ex['from'], 'customer', 'խնդրեց', 'boss')
+    assert (saved['id'], saved['kind'], saved['from'], saved['reason'], saved['note'], saved['by'], saved['stops']) == \
+        (eid, 'sequence', ex['from'], 'customer', 'խնդրեց', 'boss', ['S:B'])
+    # идущая тревога — до последней точки GPS (не «сейчас»): позднее пришедший случай этим не объясняется
+    assert saved['to'] == car['position']['at']
     # сразу: тревога объяснена — не «сейчас», без «Բացատրել»; в журнале — серой с причиной
     car = _car1(client)
     assert 'sequence' not in car['alerts']['active'] and car['explainable'] == [] and car['state'] != 'alert'

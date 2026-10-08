@@ -4878,9 +4878,11 @@ def _live_forget(state: RoutesState, day: date) -> None:
 @_admin_only
 @_api
 def api_live_explain() -> Any:
-    """{date, car, kind: deviation | sequence, from, to (null — идёт), reason, note}: тревога ищется в пересчёте
-    карточки машины — того же вида и пересекающаяся по времени с from–to (отклонение между опросами сдвигается на
-    несколько точек), ближайшая по началу; в базу — её время (идёт — до сейчас). Нет такой — 404, уже объяснена — 409."""
+    """{date, car, kind: deviation | sequence, from, reason, note}: тревога ищется в пересчёте карточки машины — того же
+    вида с началом from ± live.EXPLAIN_FROM_TOL (отклонение между опросами сдвигается на несколько точек), ближайшая по
+    началу. В базу — её время: начало и конец, у идущей — последняя точка GPS (данные до), а не «сейчас»: случай, который
+    придёт позже пачкой старого APK, этим объяснением не покрывается; у порядка объезда — ещё пропущенные точки эпизода
+    (live.explains: эпизод разросся — объяснять заново). Нет такой — 404, уже объяснена — 409."""
     payload, error = _json_body()
     if error is not None:
         return error
@@ -4894,8 +4896,7 @@ def api_live_explain() -> Any:
     if not isinstance(car, str) or not car or len(car) > LIVE_CAR_MAX:
         errors['car'] = 'Անհրաժեշտ է car'
     a_from = live._moment(payload.get('from'))
-    a_to = live._moment(payload.get('to')) if payload.get('to') is not None else None
-    if a_from is None or (payload.get('to') is not None and (a_to is None or a_to < a_from)):
+    if a_from is None:
         errors['from'] = 'Ահազանգի ժամը սխալ է'
     if errors:
         return _bad_request(errors)
@@ -4907,17 +4908,19 @@ def api_live_explain() -> Any:
         return jsonify({'success': False, 'error': LIVE_EXPLAIN_GONE}), 404
     now = _yerevan_now()
     card = _live_card(ctx, day, now, car, fleet.get(car), True)   # type: ignore[arg-type]
-    hi = a_to or now
-    near = [a for a in card['alerts_log'] if a['kind'] == payload['kind']
-            and datetime.fromisoformat(a['from']) <= hi and a_from <= (datetime.fromisoformat(a['to']) if a['to'] else now)]
-    hit = min(near, key=lambda a: abs((datetime.fromisoformat(a['from']) - a_from).total_seconds()), default=None)
+    gap = {id(a): abs(datetime.fromisoformat(a['from']) - a_from) for a in card['alerts_log']
+           if a['kind'] == payload['kind'] and a.get('from')}
+    hit = min((a for a in card['alerts_log'] if gap.get(id(a), live.EXPLAIN_FROM_TOL * 2) <= live.EXPLAIN_FROM_TOL),
+              key=lambda a: gap[id(a)], default=None)
     if hit is None:
         return jsonify({'success': False, 'error': LIVE_EXPLAIN_GONE}), 404
     if 'explained' in hit:
         return jsonify({'success': False, 'error': 'Այս ահազանգն արդեն բացատրված է'}), 409
-    to = hit['to'] or now.isoformat(timespec='seconds')
+    to = hit['to'] or (card.get('position') or {}).get('at') or card.get('data_until') or hit['from']
+    to = max(to, hit['from'], key=lambda t: datetime.fromisoformat(t))
+    skipped = [x['stop_id'] for x in hit.get('skipped') or ()]
     new_id = state.store.add_live_explanation(day.isoformat(), car, hit['kind'], hit['from'], to,   # type: ignore[union-attr]
-                                              payload['reason'], note, session.get('username'))
+                                              payload['reason'], note, session.get('username'), skipped)
     _live_forget(state, day)   # type: ignore[arg-type]
     logger.info('[Routes] Карта машин: %s объяснил %s %s %s–%s (%s)', session.get('username'), hit['kind'], car,
                 hit['from'], to, payload['reason'])
