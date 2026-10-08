@@ -1294,7 +1294,7 @@ def test_settings_page_has_telegram_block():
     assert all(f"key: '{k}'" in js for k in ('tg_levels', 'tg_sim_installed', 'tg_escalate_min', 'tg_escalate_to',
                                               'tg_report_plan', 'tg_report_summary', 'tg_summary_at', 'tg_report_week'))
     assert all(f"['{k}'," in js for k in st.TG_LEVEL_KINDS) and 'Տերմինալներում կա բջջային ինտերնետ (SIM)' in js
-    assert "routes_settings.js') }}?v=41" in (ROOT / 'templates' / 'routes_settings.html').read_text(encoding='utf-8')
+    assert "routes_settings.js') }}?v=42" in (ROOT / 'templates' / 'routes_settings.html').read_text(encoding='utf-8')
 
 
 def test_token_is_never_logged(tmp_path, caplog):
