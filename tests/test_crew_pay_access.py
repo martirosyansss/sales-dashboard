@@ -84,7 +84,7 @@ def test_admin_sees_kpi_page_and_tab(client, users, calls):
     _session_as(client, 'boss', LAN)
     html = client.get('/routes/araqich', base_url=LAN).get_data(as_text=True)
     assert '<a href="/routes/araqich" aria-current="page">Առաքիչների KPI</a>' in html
-    assert 'js/routes_araqich.js?v=3' in html and 'css/routes_araqich.css?v=3' in html
+    assert 'js/routes_araqich.js?v=4' in html and 'css/routes_araqich.css?v=3' in html
     assert '<a href="/routes/araqich">Առաքիչների KPI</a>' in client.get('/routes/pay', base_url=LAN).get_data(as_text=True)
     body = client.get('/api/routes/araqich?month=2026-09', base_url=LAN).get_json()
     assert body['success'] and [p['name'] for p in body['people']] == ['Կորյուն']

@@ -68,6 +68,9 @@
     // ---------- загрузка месяца ----------
     async function load(month) {
         const seq = ++state.seq;          // ответ на прежний выбор месяца не перетирает новый
+        // балл по плану от ERP не зависит: грузится параллельно (ERP недоступна — балл всё равно есть)
+        const key = month || $('kpMonth').value;
+        loadPlan(key, key === $('kpMonth').options[0].value);
         showError('');
         $('kpLoading').hidden = false;
         $('kpTeam').hidden = true;
@@ -78,7 +81,6 @@
             if (seq !== state.seq) return;
             state.data = data;
             render();
-            loadPlan(data.month, data.current);
             announce('Ցուցանիշները հաշվված են՝ ' + monthHy(data.month));
         } catch (e) {
             if (seq !== state.seq) return;
@@ -271,6 +273,7 @@
             renderPlan(d);
         } catch (e) {
             if (seq !== state.planSeq) return;
+            $('kpPlanRows').replaceChildren();
             $('kpPlanNote').textContent = e.message;
         } finally {
             if (seq === state.planSeq) $('kpPlanLoading').hidden = true;
@@ -306,10 +309,10 @@
         }));
         const c = d.coverage || {};
         const note = [];
-        if (rows.length) note.push('Մանրամասները՝ «Վարորդներ» էջում։');
         if (!d.gps) note.push('GPS-ը միացված չէ․ «Ժամանակին»-ը, բեռնաթափումը և օրը չեն հաշվվում։');
-        else if (c.closed) note.push('Ժամանակին-ը գնահատված է ' + fmt(c.rated) + ' խանութի համար ' + fmt(c.closed) + ' փակվածից։');
-        $('kpPlanNote').textContent = note.join(' ');
+        else if (c.closed) note.push('«Ժամանակին»-ը գնահատված է ' + fmt(c.rated) + ' խանութի համար ' + fmt(c.closed) + ' փակվածից։');
+        $('kpPlanNote').replaceChildren(note.join(' ') + (note.length ? ' ' : ''),
+            rows.length ? h('a', { href: '/routes/drivers', text: 'Բաղադրիչները և օրերը՝ «Վարորդներ» էջում' }) : '');
     }
 
     // ---------- человек: дни и полгода ----------

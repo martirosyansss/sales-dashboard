@@ -4530,18 +4530,15 @@ def _track_metrics(track: Sequence[Sequence[Any]], actual: ac.DayActual, day: da
 
 @dataclass(frozen=True)
 class _UnloadNorm:
-    """Норма разгрузки «Развоза» для балла առաքիչ (№88): мин на точку и на тонну действующей строки обучения (без неё —
-    настройки), своё время магазинов (learning.store_extras: выученное, у остальных введённое — №50) и надбавка большой
-    машины в зоне Еревана (№68). key — отпечаток для кэша дней «Վարորդներ»."""
+    """Норма разгрузки «Развоза» для балла առաքիչ (№88): мин на точку и на тонну строки обучения, действовавшей в этот
+    день (без неё — настройки), своё время магазинов (learning.store_extras: выученное, у остальных введённое — №50) и
+    надбавка большой машины в зоне Еревана (№68). Темп машины (№66) не умножается: иначе медлительность экипажа,
+    выученная в темп, стала бы его нормой."""
     per_stop: float
     per_tonne: float
     extras: Mapping[int, float]
     zone: tuple[tuple[float, float], ...]
     city_min: float
-
-    @property
-    def key(self) -> tuple[Any, ...]:
-        return self.per_stop, self.per_tonne, tuple(sorted(self.extras.items())), self.zone, self.city_min
 
     def minutes(self, o: learning.UnloadObs, big: bool, points: Mapping[int, Point]) -> float:
         city = self.city_min * sum(1 for c in o.customers if c in points and in_polygon(points[c], self.zone)) \
@@ -4550,8 +4547,11 @@ class _UnloadNorm:
                 + math.fsum(self.extras.get(c, 0.0) for c in o.customers) + city)
 
 
-def _scorecard_unload_norm(state: RoutesState, bundle: Bundle) -> _UnloadNorm:
-    unload = _unload_now(state)
+def _scorecard_unload_norm(state: RoutesState, bundle: Bundle, day: str) -> _UnloadNorm:
+    """Норма, по которой «Развоз» строил план дня day: действующая строка разгрузки из прогонов обучения до этого дня
+    (сбой журнала — настройки). Прошлый день не пересчитывается по сегодняшней норме."""
+    journal = _learned_journal(state, day)
+    unload = _active_unload(*journal) if journal is not None else None
     per_stop, per_tonne = _unload_norms(bundle, unload)
     s = bundle.settings
     return _UnloadNorm(per_stop, per_tonne, learning.store_extras(per_stop, bundle.unload_min, unload),
@@ -4559,11 +4559,14 @@ def _scorecard_unload_norm(state: RoutesState, bundle: Bundle) -> _UnloadNorm:
                        float(s.get('big_truck_yerevan_min') or 0.0))
 
 
-def _day_span(actual: ac.DayActual, prediction: Mapping[str, Any] | None, day: date) -> tuple[float, float] | None:
+def _day_span(actual: ac.DayActual, prediction: Mapping[str, Any] | None, day: date, today: date
+              ) -> tuple[float, float] | None:
     """(минут дня машины по GPS, минут по плану): первый выезд со склада → последнее возвращение, против планового
-    первого выезда → планового возвращения последнего рейса (прогноз сборки). Что-то не видно — None."""
+    первого выезда → планового возвращения последнего рейса (прогноз сборки). Что-то не видно, день ещё идёт (сегодня)
+    или рейсов по факту меньше плановых (рейс отменён, перенесён) — None: короткий недоделанный день не «быстрее плана»."""
     trips = [t for t in (prediction or {}).get('trips') or () if isinstance(t, Mapping)]
-    if not trips or not actual.trips or actual.trips[0].depart is None or actual.trips[-1].ret is None:
+    if day >= today or not trips or len(actual.trips) < len(trips) or actual.trips[0].depart is None \
+            or actual.trips[-1].ret is None:
         return None
     start, end = learning._hhmm(trips[0].get('depart')), learning._hhmm(trips[-1].get('return'))
     if start is None or end is None or end <= start:
@@ -4573,13 +4576,15 @@ def _day_span(actual: ac.DayActual, prediction: Mapping[str, Any] | None, day: d
 
 
 def _scorecard_cars(state: RoutesState, bundle: Bundle, day: date, rules: live.Rules,
-                    unload_norm: _UnloadNorm | None = None) -> dict[str, sc.CarDay]:
+                    unload_norm: _UnloadNorm | None = None, erp_capacity: Mapping[str, float] | None = None
+                    ) -> dict[str, sc.CarDay]:
     """GPS-факт машин дня: км и отметки визитов (actuals.stop_marks: прибытие, окно) — из кэша обучения
     (_learning_days); плановые ETA (_plan_etas, по точке — _stop_etas); скорость и стоянки (_track_metrics) — из
     кэша scorecard_track, пока не сменились отпечаток факта обучения, склад и пороги: трек холодного дня читается один
     раз (тем же чтением, что и факт обучения, — on_read); порядок объезда — actuals.visit_metrics. Для балла առաքիչ
-    (№88): разгрузка по GPS (learning.unload_obs — как в обучении, обед по плану — до отметки) против unload_norm и
-    длительность дня против плана (_day_span)."""
+    (№88): разгрузка по GPS (learning.unload_obs — как в обучении, обед по плану — до отметки) против unload_norm
+    (большая машина — с тоннажем карточки ERP erp_capacity, как в «Развозе») и длительность дня против плана
+    (_day_span)."""
     out: dict[str, sc.CarDay] = {}
     facts = state.fleet_facts
     if facts is None:
@@ -4614,13 +4619,14 @@ def _scorecard_cars(state: RoutesState, bundle: Bundle, day: date, rules: live.R
             obs = learning.unload_obs(day, actual, stops, learning.lunch_customers(learning.plan_trips(prediction, day)),
                                       car)
             points = {p.customer_id: p.point for p in stops if p.customer_id is not None and p.point is not None}
-            big = bundle.truck_big(car)
+            big = bundle.truck_big(car, erp_capacity)
             norm = math.fsum(unload_norm.minutes(o, big, points) for o in obs)
             if obs and norm > 0:
                 unload = (round(math.fsum(o.minutes for o in obs), 1), round(norm, 1))
         out[car] = sc.CarDay(actual.km_gps, ac.stop_marks(actual, stops, day), first, speed, offroute,
                              (vm.order_changes, vm.ordered) if vm.ordered else None,
-                             _stop_etas(draft, car, day, stops, actual), unload, _day_span(actual, prediction, day))
+                             _stop_etas(draft, car, day, stops, actual), unload,
+                             _day_span(actual, prediction, day, _yerevan_now().date()))
     return out
 
 
@@ -4632,20 +4638,27 @@ def _scorecard_days(state: RoutesState, bundle: Bundle, since: date, until: date
     versions = state.crew_facts.versions(lo, hi)
     revs = state.store.dispatch_revs(lo, hi)
     rules = live.Rules.from_settings(bundle.settings)
-    norm = _scorecard_unload_norm(state, bundle)
+    erp = _peek_car_capacity(state)   # большая машина — с тоннажем ERP, как в «Развозе» (№68)
+    # норма разгрузки дня (_scorecard_unload_norm) в ключ не входит: она по журналу до этого дня и для прошлого дня не
+    # меняется; ночной прогон обучения не сбрасывает весь кэш
     base = (bundle.depot, tuple(sorted((cid, w.span()) for cid, w in bundle.windows.items())), sc.LATE_SLACK_MIN,
             state.fleet_facts is not None,
-            (rules.speed_kmh, rules.speed_sec, rules.stop_min, rules.lunch_min, rules.lunch_window), norm.key,
-            tuple(sorted((code, bundle.truck_big(code)) for code in bundle.trucks)))
-    # առաքիչ машины дня из «Развоза» (№84: PIN в APK, логист, ERP) → id «Առաքիչ» по имени — для точек без helper_id
-    ids: dict[str, int] = {}
-    for pid, name in sorted(state.crew_facts.names().items()):
-        ids.setdefault(' '.join(str(name).split()).casefold(), pid)
+            (rules.speed_kmh, rules.speed_sec, rules.stop_min, rules.lunch_min, rules.lunch_window),
+            tuple(sorted((code, bundle.truck_big(code, erp)) for code in bundle.trucks)),
+            hash(tuple(sorted(bundle.unload_min.items()))))
+    # առաքիչ машины дня из «Развоза» (№84: PIN в APK, логист, ERP) → id «Առաքիչ» по имени — для точек без helper_id;
+    # имя у нескольких записей «Առաքիչ» (тёзки, старая выключенная запись) — не сопоставляется: чьё — неизвестно
+    by_name: dict[str, list[int]] = {}
+    for pid, name in state.crew_facts.names().items():
+        by_name.setdefault(' '.join(str(name).split()).casefold(), []).append(pid)
+    ids = {k: v[0] for k, v in by_name.items() if len(v) == 1}
+    today = _yerevan_now().date().isoformat()
     out = []
     for ds in sorted(versions):
         helpers = {car: ids[k] for car, name in state.store.truck_drivers(ds, 'helper')[0].items()
                    if (k := ' '.join(name.split()).casefold()) in ids}
-        key = (versions[ds], revs.get(ds), base, tuple(sorted(helpers.items())))
+        # день ещё идёт — «день против плана» не считается (_day_span); после полуночи пересчитать
+        key = (versions[ds], revs.get(ds), base, tuple(sorted(helpers.items())), ds >= today)
         with state.scorecard_lock:
             hit = state.scorecard_cache.get(ds)
         if hit is not None and hit[0] == key:
@@ -4653,7 +4666,8 @@ def _scorecard_days(state: RoutesState, bundle: Bundle, since: date, until: date
         else:
             day = date.fromisoformat(ds)
             summary = sc.day_summary({**state.crew_facts.day(ds), 'helpers': helpers},
-                                     _scorecard_cars(state, bundle, day, rules, norm))
+                                     _scorecard_cars(state, bundle, day, rules, _scorecard_unload_norm(state, bundle, ds),
+                                                     erp))
             with state.scorecard_lock:
                 _bounded(state.scorecard_cache, ds, (key, summary), SCORECARD_CACHE_DAYS)
         out.append((date.fromisoformat(ds), summary))

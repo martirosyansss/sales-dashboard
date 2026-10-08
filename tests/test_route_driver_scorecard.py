@@ -904,9 +904,13 @@ def test_day_span_and_unload_norm():
     trip = lambda dep, ret: ac.Trip(dep, ret, None, (), 0.0, 0.0)   # noqa: E731
     actual = ac.DayActual(0, 0.0, None, None, trips=(trip(t(9, 10), t(12)), trip(t(13), t(17, 40))))
     plan = {'trips': [{'depart': '09:00', 'return': '12:00'}, {'depart': '13:00', 'return': '17:00'}]}
-    assert views._day_span(actual, plan, date(2026, 10, 5)) == (510.0, 480.0)
-    assert views._day_span(actual, None, date(2026, 10, 5)) is None
-    assert views._day_span(ac.DayActual(0, 0.0, None, None, trips=(trip(None, t(12)),)), plan, date(2026, 10, 5)) is None
+    day, later = date(2026, 10, 5), date(2026, 10, 6)
+    assert views._day_span(actual, plan, day, later) == (510.0, 480.0)
+    assert views._day_span(actual, None, day, later) is None
+    assert views._day_span(ac.DayActual(0, 0.0, None, None, trips=(trip(None, t(12)),)), plan, day, later) is None
+    # сделан 1 рейс из 2 плановых (второй отменён) — короткий день не «быстрее плана»
+    assert views._day_span(ac.DayActual(0, 0.0, None, None, trips=(trip(t(9), t(12)),)), plan, day, later) is None
+    assert views._day_span(actual, plan, day, day) is None                         # сегодня день ещё идёт
     zone = ((40.0, 44.0), (40.0, 45.0), (41.0, 45.0), (41.0, 44.0))
     norm = views._UnloadNorm(5.0, 10.0, {11: 4.0}, zone, 10.0)
     o = learning.UnloadObs(date(2026, 10, 5), 2, 0.5, 30.0, (11, 12))
@@ -925,3 +929,28 @@ def test_api_helper_from_dispatch_crew(client, sc_app):
     h2 = next(r for r in body['drivers'] if r['key'] == 'helper:2')
     assert h2['days'] == 2 and h2['stops'] == 3
     assert body['rules']['helper_weights'] == sc.HELPER_WEIGHTS
+
+
+def test_api_helper_namesakes_are_not_matched(client, sc_app, monkeypatch):
+    """Имя առաքիչ «Развоза» у нескольких записей «Առաքիչ» (тёзки, старая выключенная) — не сопоставляется."""
+    app_v2, crew, _ = sc_app
+    state = app_v2.app.extensions['route_optimizer']
+    monkeypatch.setattr(crew, 'names', lambda: {1: 'Արամ', 2: 'Բաբկեն', 3: 'Գոռ <script>', 9: 'Բաբկեն'})
+    state.store.save_truck_crew('CAR1', D2, {'helper': ('Բաբկեն', True)}, 'qa')
+    _session_as(client, 'boss', LAN)
+    body = client.get(f'/api/routes/drivers/scorecard?from={D1}&to={D2}', base_url=LAN).get_json()
+    keys = {r['key']: r for r in body['drivers']}
+    assert keys['helper:2']['stops'] == 2 and 'helper:9' not in keys              # 2 октября — никому
+
+
+def test_api_helper_change_after_first_request_recounts(client, sc_app):
+    """Логист поставил առաքիչ после первого открытия страницы — кэш дня не держит прежний состав."""
+    app_v2, _, _ = sc_app
+    state = app_v2.app.extensions['route_optimizer']
+    _session_as(client, 'boss', LAN)
+    url = f'/api/routes/drivers/scorecard?from={D1}&to={D2}'
+    before = {r['key']: r for r in client.get(url, base_url=LAN).get_json()['drivers']}
+    assert before['helper:2']['stops'] == 2
+    state.store.save_truck_crew('CAR1', D2, {'helper': ('Բաբկեն', True)}, 'qa')
+    after = {r['key']: r for r in client.get(url, base_url=LAN).get_json()['drivers']}
+    assert after['helper:2']['stops'] == 3 and after['helper:2']['days'] == 2
