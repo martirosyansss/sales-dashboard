@@ -533,7 +533,7 @@ def _cstop(sid, car, driver):
             'customer_id': None, 'name': sid}
 
 
-def test_scorecard_route_metric_display_only_none_without_data():
+def test_scorecard_route_metric_in_score_none_without_data():
     days = []
     for i in range(3):
         crew = {'stops': [_cstop(f'S:{i}:1', 'CAR1', 1), _cstop(f'S:{i}:2', 'CAR2', 2)]}
@@ -544,13 +544,14 @@ def test_scorecard_route_metric_display_only_none_without_data():
     r1, r2 = out['driver:1'], out['driver:2']
     assert r1['route_pct'] == pytest.approx(100 * (1 - 20 / 100), abs=0.05) and r1['route_km'] == 100.0
     assert r1['route_days'] == 2 and r2['route_days'] == 0
-    # пока только показатель (вес владелец не решил): в балл и разбивку не входит, APK его не получает
-    assert 'route' not in sc.WEIGHTS and r1['parts'] == {} and r1['score'] is None
+    # в балле с весом 15 (владелец 08.10): у водителя 1 других показателей нет — балл только по маршруту (80 % → 40);
+    # у водителя 2 маршрута нет — показатель выпадает, не штраф
+    assert sc.WEIGHTS['route'] == 15 and r1['score'] == 40.0 and set(r1['parts']) == {'route'}
     assert r2['route_pct'] is None and r2['parts'] == {} and r2['score'] is None and r2['enough_data'] is False
     det = {d['date']: d['route_pct'] for d in r1['detail']}
     assert det == {'2026-10-03': None, '2026-10-02': 70.0, '2026-10-01': 95.0}
-    total, parts = sc.score({'order': 90, 'route': 80})
-    assert total == 100.0 and set(parts) == {'order'}
+    total, parts = sc.score({'order': 90, 'route': 82.5})   # route 82.5 → 50 (шкала 95…70)
+    assert total == pytest.approx((100 * 10 + 50 * 15) / 25, abs=0.05) and set(parts) == {'order', 'route'}
 
 
 def test_score_routes_cache_pending_and_failures_not_cached(monkeypatch):
