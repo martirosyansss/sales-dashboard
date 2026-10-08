@@ -13,7 +13,7 @@
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=22">
 <!-- Машины на карте сейчас (№76): тема «Развоза», свои классы .lv-*; новые файлы статики — и в _PUBLIC_STATIC app_v2 -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_live.css') }}?v=5">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_live.css') }}?v=6">
 {% endblock %}
 
 {% block content %}
@@ -165,5 +165,5 @@
         integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
 <!-- подложка — Яндекс, как на остальных картах (решение владельца 06.10, см. live_page) -->
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=1" data-yandex-key="{{ yandex_tiles_key }}"></script>
-<script src="{{ url_for('static', filename='js/routes_live.js') }}?v=10"></script>
+<script src="{{ url_for('static', filename='js/routes_live.js') }}?v=11"></script>
 {% endblock %}
