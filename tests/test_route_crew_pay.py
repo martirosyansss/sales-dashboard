@@ -68,11 +68,15 @@ def test_points_are_distinct_store_days():
 
 def test_gift_kg_is_cargo_but_gift_only_store_day_is_no_point():
     """№90: подарки ERP — груз (тонны с ними, владелец подтвердил 08.10), но клиенто-день из одних подарков (сумма 0,
-    весь вес — подарки) — не продажа: ни точки, ни дня, ни тонн."""
+    весь вес — подарки) — не продажа: не точка (210 ֏) и не рабочий день; его тонны — в строке и в его дне."""
     with_gift = cp.Invoice(KORYUN, date(2026, 9, 1), 1, LINE, 1000.0, 130.0, gift_kg=12.06)
     gift_only = cp.Invoice(KORYUN, date(2026, 9, 2), 2, LINE, 0.0, 12.06, gift_kg=12.06)
-    r = row(cp.compute(data(with_gift, gift_only), cp.Params()), KORYUN)
-    assert (r.points, r.days, round(r.tonnes, 5)) == (1, 1, 0.13)
+    same_day_gift = cp.Invoice(KORYUN, date(2026, 9, 1), 3, LINE, 0.0, 6.03, gift_kg=6.03)
+    p = cp.Params()
+    r = row(cp.compute(data(with_gift, gift_only, same_day_gift), p), KORYUN)
+    assert (r.points, r.days, round(r.tonnes, 5)) == (1, 1, round((130.0 + 12.06 + 6.03) / 1000, 5))
+    assert [(d.day.day, d.points, round(d.tonnes, 5)) for d in r.by_day] == [(1, 1, 0.13603), (2, 0, 0.01206)]
+    assert r.piece == cp.money(p.rate_point * 1 + p.rate_tonne * (130.0 + 12.06 + 6.03) / 1000)
     zero_price = cp.Invoice(KORYUN, date(2026, 9, 2), 2, LINE, 0.0, 12.06)   # проданное по цене 0 — как прежде, точка
     assert row(cp.compute(data(with_gift, zero_price), cp.Params()), KORYUN).points == 2
 

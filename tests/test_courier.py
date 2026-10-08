@@ -3736,3 +3736,40 @@ def test_gift_only_on_one_side_v124(term, client, st, order_gift, invoice_gift, 
         assert len(post(client, term['s'], di)['accepted']) == 1
     c = client.get(f'/api/courier/admin/invoice?date={DEMO}&stop={invoice["stop_id"]}').get_json()
     assert (c['stop']['status'], c['stop']['due'], 'merge_conflict' in c['stop']['flags']) == (status, 12000.0, False)
+
+
+def test_gift_rule_on_document_date(fake_erp):
+    """Ревью 2, п. 3: акция — на дату документа (заказ «Նախորդ օրերից» на дни старше дня развоза), не на день развоза."""
+    fake_erp.promos = [('1', None, '034', '2', 200, '', 10, 200, 1, date(2025, 3, 1), date(2026, 9, 30))]
+    fake_erp.groups = [(11, '034')]
+    isn = ISN[0]
+    lines = {isn: (ed.Line(isn, 1, 200, 10.0, 1200.0, 12000.0), ed.Line(isn, 0, 200, 1.0, 0.0, 0.0, gift=True))}
+    old = ed.Doc(f'O:{isn}', 'order', isn, 'Z-1', 11, 7, '1', 12000.0, doc_date=date(2026, 9, 29))
+    assert ed.day_gift_rules(None, 'cs', [old], lines, date(2026, 10, 2)) == {(isn, 0): ed.GiftRule((200,), 10.0, 1.0)}
+    today = replace(old, doc_date=None)                      # накладная дня — дата дня /day, акция уже кончилась
+    assert ed.day_gift_rules(None, 'cs', [today], lines, date(2026, 10, 2)) == {}
+    orders = ed.order_docs(None, [DispatchOrder(isn=isn, doc_num='Z-1', order_date=date(2026, 9, 29), customer_id=11,
+                                                agent_id=7, car_code='', revenue=12000.0, kg=0.0, shipped=None)])
+    assert orders[0].doc_date == date(2026, 9, 29)
+
+
+def test_gift_rules_kept_on_transient_read_failure(fake_erp, monkeypatch):
+    """Ревью 2, п. 6: разовый сбой чтения акций не убирает gift_rule (version дня не скачет): последние прочитанные."""
+    fake_erp.sales = [(ISN[0], '000318001', 11, 7, '1', 18000)]
+    fake_erp.gifts = [(ISN[0], 0, 200, 1)]
+    fake_erp.promos = [('1', None, '034', '2', 200, '', 10, 200, 1, date(2025, 3, 1), FAR)]
+    fake_erp.groups = [(11, '034')]
+
+    def load():
+        return ed.load_day('cs', '991AT61', date(2026, 10, 2), (date(2026, 10, 2), date(2026, 10, 2)), lambda o, p: [])
+    first = load().gift_rules
+    assert first == {(ISN[0], 0): ed.GiftRule((200,), 10.0, 1.0)}
+    real = ed.day_gift_rules
+
+    def boom(*a, **k):
+        raise erp.ErpError('нет')
+    monkeypatch.setattr(ed, 'day_gift_rules', boom)
+    assert load().gift_rules == first
+    monkeypatch.setattr(ed, 'day_gift_rules', real)
+    fake_erp.groups = [(11, '033')]                          # прочиталось — новое (без правила), а не запомненное
+    assert load().gift_rules == {}

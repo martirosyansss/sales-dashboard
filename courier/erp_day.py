@@ -251,6 +251,9 @@ class Doc:
     pay_type: str
     amount: float
     replaces: tuple[str, ...] = ()   # S: — точки O: заказов, из которых сделана накладная (DOCPARENTS)
+    # дата документа для акций подарков (gift_rules): у заказа — ORDERS.fDATE (заказ «Նախորդ օրերից» и введённый заранее
+    # бывает на дни старше дня развоза); None — накладная дня (SALES.fDATE в пределах дня /day)
+    doc_date: date | None = None
 
 
 @dataclass(frozen=True)
@@ -520,6 +523,26 @@ def _ref(connection_string: str, name: str, load: Callable[[], Any]) -> Any:
 def clear_ref_cache() -> None:
     with _refs_lock:
         _refs.clear()
+        _last_rules.clear()
+
+
+# Последние прочитанные правила подарков (машина, день): разовый сбой чтения акций не убирает gift_rule из /day — иначе
+# version дня менялся бы туда и обратно. Правило и так не выше подарка документа (контракт §11 п. 5).
+_last_rules: dict[tuple[str, str, date], dict[tuple[str, int], GiftRule]] = {}
+_LAST_RULES_MAX = 256
+
+
+def _remember_rules(key: tuple[str, str, date],
+                    rules: dict[tuple[str, int], GiftRule] | None) -> dict[tuple[str, int], GiftRule]:
+    """rules — прочитанные (запомнить и вернуть) или None — чтение не удалось (вернуть последние для key, иначе пусто)."""
+    with _refs_lock:
+        if rules is None:
+            return dict(_last_rules.get(key, {}))
+        _last_rules.pop(key, None)
+        while len(_last_rules) >= _LAST_RULES_MAX:
+            _last_rules.pop(next(iter(_last_rules)))
+        _last_rules[key] = dict(rules)
+        return rules
 
 
 def order_docs(conn: Any, orders: Sequence[DispatchOrder]) -> list[Doc]:
@@ -529,7 +552,7 @@ def order_docs(conn: Any, orders: Sequence[DispatchOrder]) -> list[Doc]:
         for r in _select(conn, SQL_ORDER_PAYTYPES.format(ph=_ph(len(chunk))), chunk):
             pay[_str(r[0]).upper()] = _str(r[1])
     return [Doc(f'O:{o.isn}', 'order', o.isn, o.doc_num, o.customer_id, o.agent_id, pay.get(o.isn, ''),
-                float(o.revenue)) for o in orders]
+                float(o.revenue), doc_date=o.order_date) for o in orders]
 
 
 def doc_lines(conn: Any, isns: Sequence[str]) -> dict[str, tuple[Line, ...]]:
@@ -592,8 +615,9 @@ def gift_promos(conn: Any) -> tuple[GiftPromo, ...]:
 
 def day_gift_rules(conn: Any, connection_string: str, docs: Sequence[Doc], lines: Mapping[str, Sequence[Line]],
                    day: date) -> dict[tuple[str, int], GiftRule]:
-    """Правила строк-подарков документов дня (gift_rules): акции — из кэша справочников, группы клиентов и «условные
-    товары» — только документов с подарками. Подарков нет — ни одного запроса."""
+    """Правила строк-подарков документов дня (gift_rules) на дату САМОГО документа (Doc.doc_date — ERP считал подарок
+    по акциям на день документа): акции — из кэша справочников, группы клиентов и «условные товары» — только документов
+    с подарками. Подарков нет — ни одного запроса."""
     with_gifts = [d for d in docs if any(ln.gift for ln in lines.get(d.isn, ()))]
     if not with_gifts:
         return {}
@@ -608,8 +632,8 @@ def day_gift_rules(conn: Any, connection_string: str, docs: Sequence[Doc], lines
             for r in _select(conn, SQL_PRODUCT_GIFT_CODES.format(ph=_ph(len(chunk))), chunk):
                 codes[int(r[0])] = _str(r[1])
     return {(d.isn, rownum): rule for d in with_gifts
-            for rownum, rule in gift_rules(lines.get(d.isn, ()), d.customer_id, groups.get(d.customer_id, ''), day,
-                                           promos, codes).items()}
+            for rownum, rule in gift_rules(lines.get(d.isn, ()), d.customer_id, groups.get(d.customer_id, ''),
+                                           d.doc_date or day, promos, codes).items()}
 
 
 def containers(conn: Any) -> tuple[tuple[ContainerLink, ...], dict[int, str]]:
@@ -737,12 +761,12 @@ def load_day(connection_string: str, car_code: str, day: date, orders_window: tu
         except erp.ErpError:
             logger.warning('[Courier] Долг клиентов не посчитан (%s, %s)', car_code, day, exc_info=True)
             debts = None
-        rules: dict[tuple[str, int], GiftRule]
-        try:   # правило подарка — подсказка терминалу: не прочиталось — подарки ручные, как до №90
-            rules = day_gift_rules(conn, connection_string, docs, lines, day)
+        key = (connection_string, car_code, day)
+        try:   # правило подарка — подсказка терминалу: не прочиталось — последние прочитанные, нет их — подарки ручные
+            rules = _remember_rules(key, day_gift_rules(conn, connection_string, docs, lines, day))
         except erp.ErpError:
             logger.warning('[Courier] Правила подарков не прочитаны (%s, %s)', car_code, day, exc_info=True)
-            rules = {}
+            rules = _remember_rules(key, None)
         return DayData(car_code=car_code, day=day, car_name=car.name if car else '', docs=tuple(docs), lines=lines,
                        products=prods, gtins=codes, customers=infos, agents=agents, containers=links,
                        tare_names=tare_names, gps=gps, debts=debts, gtin_units=code_units, gift_rules=rules)
