@@ -15,7 +15,7 @@
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=25">
 <!-- Машины на карте сейчас (№76): тема «Развоза», свои классы .lv-*; новые файлы статики — и в _PUBLIC_STATIC app_v2 -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_live.css') }}?v=14">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_live.css') }}?v=15">
 {% endblock %}
 
 {% block content %}
@@ -45,6 +45,8 @@
         <div class="lv-alarm-main">
             <b id="lvAlarmCount" class="lv-alarm-count"></b>
             <em class="lv-new-tag" aria-hidden="true">ՆՈՐ</em>
+            <!-- эскалация (круг 2): новая красная без ответа 5 мин — сколько она ждёт -->
+            <b id="lvAlarmWait" class="lv-alarm-wait" hidden></b>
             <ul id="lvAlarmList" class="lv-alarm-list"></ul>
         </div>
         <button id="lvAlarmAck" type="button" class="lv-alarm-ack"><i class="fas fa-check-double" aria-hidden="true"></i><span>Տեսա բոլորը</span></button>
@@ -57,11 +59,14 @@
         <span id="lvAlertText" class="rt-alert-text"></span>
     </div>
 
-    <div class="lv-layout">
+    <!-- is-nocard: машина не выбрана — на широком экране карта и на месте карточки (routes_live.js renderCard) -->
+    <div class="lv-layout is-nocard">
         <!-- «Խնդիրներ հիմա» — управление по исключениям: только то, что требует внимания сейчас (только сегодня);
              на телефоне — первым, над картой -->
         <section class="lv-probs" id="lvProbs" aria-labelledby="lvProbsTitle" hidden>
             <h2 class="lv-probs-title" id="lvProbsTitle">Խնդիրներ հիմա</h2>
+            <!-- «Տեսա» не уходит на сервер (3 сбоя подряд) — одна строка, страница работает дальше (routes_live.js postAcks) -->
+            <p class="lv-ack-err" id="lvAckErr" role="status" hidden>«Տեսա»-ն չի պահպանվում սերվերում՝ նշումները տեսանելի են միայն այս սարքում։</p>
             <ul class="lv-prob-list" id="lvProbList"></ul>
         </section>
 

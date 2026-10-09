@@ -694,9 +694,9 @@ def test_schema_27_migrates_from_26_and_keeps_data(tmp_path):
         conn.commit()
     assert st.Store(path).truck_drivers('2026-10-02')[0] == {'CAR1': 'Արամ'}
     with closing(sqlite3.connect(path)) as conn:
-        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == ('27',)
+        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == (str(st.SCHEMA_VERSION),)
         names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master")}
-    assert {'tg_message', 'tg_message_sent', 'tg_kv'} <= names and st.SCHEMA_VERSION == 27
+    assert {'tg_message', 'tg_message_sent', 'tg_kv'} <= names and st.SCHEMA_VERSION >= 27   # 28 — «Տեսա» карты (live_ack)
     assert st._MIGRATIONS[26] == (st._TG_MESSAGE_TABLE, st._TG_MESSAGE_INDEX, st._TG_KV_TABLE)
 
 

@@ -52,6 +52,16 @@
 reduce — ни одной анимации, метка «ՆՈՐ» и обводка; телефон 390 px с баннером — без горизонтальной прокрутки. Снимки:
 live_alarm_desktop.png, live_alarm_acked.png, live_alarm_phone.png.
 
+Тревоги, круг 2 (владелец 08.10 «fix all»; alarm2_checks): отклонение машины 2 идёт 3 мин — строка приглушённая, без
+мигания и «Տեսա», не в баннере; 6 мин — новая; все тревоги начались минуту назад — без эскалации, 6 мин назад — баннер
+.is-escalated и «6 րոպե առանց պատասխանի»; «Տեսա» записывается на сервер с именем (сессия проверки — qa), второй браузер
+без localStorage видит строку ровной и «Տեսավ՝ qa HH:MM»; 1366 и 1440 px с меню «Маршрутов» слева (две колонки:
+карточка под картой) и «Гараж» без меню (cookie qa_role, три колонки: без выбора карта и на месте карточки, выбор —
+карточка справа, карта уже): машина посередине карты (Leaflet пересчитал размер), выбор снят — снова до края; телефон —
+прежняя раскладка. Отметки сервера общие: перед шагами «никто не видел» они снимаются в копии базы, страницы с отметками закрыты.
+Снимки: live_alarm2_desktop.png, live_alarm2_wide_noselect.png («Гараж», 1440), live_alarm2_1366.png (меню слева),
+live_alarm2_phone.png.
+
 Проверяется: список и маркеры всех машин, состояние и счётчик тревог, карточка выбранной машины (поля №76), путь и
 магазины на карте, нет горизонтальной прокрутки на телефоне, опрос раз в 15 с, нет ошибок страницы и консоли (кроме сетевых
 ошибок внешних ресурсов: шрифты, CDN, плитки).
@@ -67,7 +77,7 @@ import sys
 import tempfile
 import threading
 import uuid
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -75,7 +85,7 @@ sys.path.insert(0, str(ROOT))
 os.environ['ROUTES_OSM_PATH'] = str(Path(tempfile.gettempdir()) / 'live-check-no-map.osm.pbf')   # карты дорог нет
 os.environ.pop('COURIER_DEMO', None)
 
-from flask import Flask, g  # noqa: E402
+from flask import Flask, g, request, session  # noqa: E402
 from playwright.sync_api import sync_playwright  # noqa: E402
 from werkzeug.serving import make_server  # noqa: E402
 
@@ -109,12 +119,17 @@ def build_app(tmp: Path) -> Flask:
     app = Flask(__name__, template_folder=str(ROOT / 'templates'), static_folder=str(ROOT / 'static'))
     app.secret_key = 'test'
     app.add_url_rule('/logout', 'logout', lambda: 'bye', methods=['GET', 'POST'])
+    # роль — администратор; cookie qa_role=garage — «Гараж» (без меню «Маршрутов» слева, routes_base.html)
+    def role() -> str:
+        return 'garage' if request.cookies.get('qa_role') == 'garage' else 'admin'
     app.context_processor(lambda: {'current_user': None, 'current_username': 'qa', 'csrf_token': lambda: 'x',
-                                   'is_admin': True, 'is_garage': False})
+                                   'is_admin': role() == 'admin', 'is_garage': role() == 'garage'})
     route_optimizer.init_app(app, FakeDb(), db_path=str(tmp / 'route_optimizer.db'))
     courier.init_app(app, FakeDb(), db_path=str(tmp / 'courier.db'))
     route_optimizer.attach_live_facts(app, courier.live_facts(app))
-    app.before_request(lambda: setattr(g, 'user_role', 'admin'))   # «Բացատրել» — администратору (гейта app_v2 нет)
+    app.before_request(lambda: setattr(g, 'user_role', role()))   # «Բացատրել» — администратору (гейта app_v2 нет)
+    # «Տեսա» на сервере — с именем вошедшего («Տեսավ՝ qa»); cookie qa_user — другой человек (подтверждение не меняет, кто)
+    app.before_request(lambda: session.update(username=request.cookies.get('qa_user') or 'qa'))
     app.extensions['route_optimizer'].roads = StraightRoads()
     from route_optimizer import views
     views.LIVE_ROAD_BACKGROUND = False   # линии плана — сразу (иначе первые 10 с кэша карточек — «по прямой»)
@@ -300,8 +315,9 @@ def line_tips(page, sel, ats, tap=False) -> list[str]:
     """Курсор (или касание) в точках линии sel → тексты подсказки точки (пусто — подсказки нет)."""
     out = []
     # карта целиком на экране: слева меню раздела «Маршруты» — при 1440 px страница в две колонки, карточка машины под
-    # картой, и работа с карточкой прокручивает страницу вниз
-    page.eval_on_selector('#lvMap', "e => e.scrollIntoView({ block: 'nearest' })")
+    # картой, и работа с карточкой прокручивает страницу вниз. Сразу (instant): у страницы scroll-behavior: smooth — иначе
+    # точки линии считаются до конца прокрутки и оказываются вне экрана
+    page.eval_on_selector('#lvMap', "e => e.scrollIntoView({ block: 'nearest', behavior: 'instant' })")
     for at in ats:
         xy = page.evaluate(POINT_JS, [sel, at])
         if xy is None:
@@ -480,6 +496,214 @@ def alarm_checks(page, cars, check) -> None:
     page.click('#lvSound')
 
 
+def alarm2_checks(browser, base, cars, check, clear_acks, errors) -> None:
+    """Тревоги, круг 2 (владелец 08.10 «fix all»): задержка жёлтых (отклонение < 5 мин — не новая, ≥ 5 — новая), общая
+    «Տեսա» на сервере (другой контекст без localStorage видит отметку и «Տեսավ՝ qa»), эскалация (новая красная без ответа
+    5 мин — «N րոպե առանց պատասխանի»), широкий экран: без выбора карта до правого края, с выбором — карточка справа.
+    Ревью 0aec70f: M1 — подтверждение чужой страницей (garage1, дребезг GPS) не меняет «Տեսավ՝ qa»; M2 — начало отклонения
+    сдвинулось вперёд — не «ожидание», на 2 мин раньше отмеченного — тот же случай, на 4 — новый; L5 — 3 сбоя отправки
+    подряд — строка lvAckErr, отправка выключена. Начала тревог подменяются в ответе API флота (часы сервера проверки
+    фиксированы — data.now)."""
+    clear_acks()
+
+    def route_fleet(p, fn) -> None:
+        """Ответ API флота за сегодня — через fn(машина, now) (синтетика начал тревог); None — настоящий."""
+        p.unroute(FLEET_RE)
+        if fn:
+            def handle(route):
+                resp = route.fetch()
+                body = resp.json()
+                for t in body['trucks']:
+                    fn(t, body['now'])
+                route.fulfill(response=resp, json=body)
+            p.route(FLEET_RE, handle)
+
+    def open_page(role='admin', fn=None, user=None, **kw):
+        p = browser.new_page(**{'viewport': {'width': 1440, 'height': 900}, **kw})   # свой контекст: localStorage пуст
+        p.on('pageerror', lambda e: errors.append(str(e)))
+        cookies = [('qa_role', 'garage' if role == 'garage' else None), ('qa_user', user)]
+        p.context.add_cookies([{'name': k, 'value': v, 'url': base} for k, v in cookies if v])
+        route_fleet(p, fn)   # до первого опроса: начало проблемы на странице — с первого ответа
+        p.goto(base + '/routes/live')
+        p.wait_for_selector('.lv-item')
+        p.wait_for_timeout(500)
+        return p
+
+    def fleet(p, fn) -> None:
+        route_fleet(p, fn)
+        p.evaluate("document.dispatchEvent(new Event('visibilitychange'))")   # опрос сразу
+        p.wait_for_timeout(1000)
+
+    def server_ack(p, car, kind):
+        acks = p.evaluate("fetch('/api/routes/live').then(r => r.json()).then(b => b.acks)")
+        return next((a for a in acks if a['car'] == car and a['key'] == kind), None)
+
+    def ago(now, minutes):
+        return (datetime.fromisoformat(now) - timedelta(minutes=minutes)).isoformat()
+
+    def prob(p, car, kind):
+        loc = p.locator(f'#lvProbList li[data-key$="|{car}|{kind}"] button.lv-prob')
+        return (loc.get_attribute('class') or '') if loc.count() == 1 else ''
+
+    def count(p) -> int:
+        m = re.search(r'(\d+) նոր խնդիր', p.inner_text('#lvAlarmCount')) if p.is_visible('#lvAlarm') else None
+        return int(m.group(1)) if m else 0
+
+    def devs(minutes):
+        return lambda t, now: t['alerts']['since'].update(deviation=ago(now, minutes)) if t['car_code'] == cars[1] else None
+
+    # задержка жёлтой: отклонение машины 2 идёт 3 мин — ровная приглушённая строка без «Տեսա», не в баннере
+    page = open_page(fn=devs(3))
+    dev = prob(page, cars[1], 'deviation')
+    n_wait = count(page)
+    row = page.locator(f'#lvProbList li[data-key$="|{cars[1]}|deviation"]')
+    check('is-pending' in dev and 'is-new' not in dev and row.locator('.lv-ack').count() == 0
+          and row.locator('button.lv-prob').evaluate('e => e.getAnimations().length') == 0,
+          f'круг 2: отклонение < 5 мин — не новое, без мигания и «Տեսա» ({dev!r})')
+    fleet(page, devs(6))
+    dev = prob(page, cars[1], 'deviation')
+    check('is-new' in dev and 'is-pending' not in dev and count(page) == n_wait + 1,
+          f'круг 2: отклонение ≥ 5 мин — новое, мигает, в баннере ({dev!r}, {n_wait} → {count(page)})')
+    # ревью M2: пересчёт сдвинул начало отклонения вперёд (6 → 3 мин назад) — назад в «ожидание» не уходит
+    fleet(page, devs(3))
+    dev = prob(page, cars[1], 'deviation')
+    check('is-new' in dev and 'is-pending' not in dev, f'ревью M2: начало сдвинулось вперёд — по-прежнему новое ({dev!r})')
+    # эскалация: все тревоги начались минуту назад — без «առանց պատասխանի»; 6 мин назад — баннер сильнее, «6 րոպե …»
+    fresh = page.evaluate("() => [...document.querySelectorAll('#lvProbList button.lv-prob.lv-sev1.is-new')].length")
+
+    def since_all(minutes):
+        return lambda t, now: t['alerts']['since'].update({k: ago(now, minutes) for k in t['alerts']['since']})
+    fleet(page, since_all(1))
+    calm = page.get_attribute('#lvAlarm', 'class') or ''
+    check(fresh and 'is-escalated' not in calm and not page.is_visible('#lvAlarmWait'),
+          f'круг 2: новая красная минуту назад — без эскалации ({calm!r})')
+    fleet(page, since_all(6))
+    loud = page.get_attribute('#lvAlarm', 'class') or ''
+    wait = page.inner_text('#lvAlarmWait') if page.is_visible('#lvAlarmWait') else ''
+    check('is-escalated' in loud and wait == '6 րոպե առանց պատասխանի',
+          f'круг 2: новая красная без ответа 6 мин — баннер сильнее, «{wait}» ({loud!r})')
+    page.screenshot(path=str(SHOTS / 'live_alarm2_desktop.png'))
+    # ревью M2: отклонение (начало 6 мин назад) отмечено; у другого браузера начало на 2 мин раньше (пересчёт) — тот же
+    # случай, ровная и «Տեսավ՝ qa»; на 4 мин раньше (больше допуска 3 мин) — другой случай, новая
+    page.locator(f'#lvProbList li[data-key$="|{cars[1]}|deviation"] .lv-ack').click()
+    page.wait_for_timeout(800)
+    for minutes, same in ((8, True), (10, False)):
+        p = open_page(fn=devs(minutes))
+        dev = prob(p, cars[1], 'deviation')
+        text = p.locator(f'#lvProbList li[data-key$="|{cars[1]}|deviation"]').inner_text()
+        check(('is-new' not in dev and 'Տեսավ՝ qa' in text) if same else ('is-new' in dev and 'Տեսավ՝' not in text),
+              f'ревью M2: начало на {minutes - 6} мин раньше отмеченного — {"тот же случай" if same else "новый"} ({dev!r})')
+        p.close()
+    # общая «Տեսա»: отметка уходит на сервер; другой браузер (без localStorage) видит её и «Տեսավ՝ qa»
+    fleet(page, None)
+    gps = page.locator(f'#lvProbList li[data-key$="|{cars[2]}|gps"]')
+    gps.locator('.lv-ack').click()
+    page.wait_for_timeout(800)
+    acks = page.evaluate("fetch('/api/routes/live').then(r => r.json()).then(b => b.acks)")
+    mine = [a for a in acks if a['car'] == cars[2] and a['key'] == 'gps']
+    check(mine and mine[0]['user'] == 'qa' and 'Տեսավ՝ qa' in gps.inner_text(),
+          f'круг 2: «Տեսա» записана на сервере с именем ({mine}, {gps.inner_text()!r})')
+    other = open_page('garage', user='garage1')
+    seen = prob(other, cars[2], 'gps')
+    text = other.locator(f'#lvProbList li[data-key$="|{cars[2]}|gps"]').inner_text()
+    check(seen and 'is-new' not in seen and 'Տեսավ՝ qa ' in text and other.evaluate("localStorage.getItem('lv.ack')") is not None,
+          f'круг 2: другой браузер без отметок видит «Տեսա» сервера — ровная, «Տեսավ՝ qa HH:MM» ({seen!r}, {text!r})')
+    # ревью M1: у «Гаража» (garage1) начало GPS сдвинулось (дребезг) — его страница подтверждает отметку на сервере с новым
+    # началом, но кто нажал — по-прежнему qa
+    before = server_ack(other, cars[2], 'gps')
+    fleet(other, lambda t, now: t['alerts']['since'].update(gps=ago(now, 11)) if t['car_code'] == cars[2] else None)
+    other.wait_for_timeout(800)
+    after = server_ack(other, cars[2], 'gps')
+    text = other.locator(f'#lvProbList li[data-key$="|{cars[2]}|gps"]').inner_text()
+    check(after and after['since'] != before['since'] and (after['user'], after['at']) == ('qa', before['at'])
+          and 'Տեսավ՝ qa ' in text, f'ревью M1: подтверждение чужой страницей не меняет «Տեսավ՝» ({before} → {after})')
+    other.close()
+
+    # ревью L5: отметки не уходят на сервер (500) — после 3 сбоев подряд отправка выключена, одна строка под «Խնդիրներ հիմա»
+    # (страница со своими отметками закрыта — иначе её опрос вернул бы их на сервер)
+    page.close()
+    clear_acks()
+    bad = open_page()
+    posts = []
+
+    def refuse(route):
+        posts.append(1)
+        route.fulfill(status=500, json={'success': False})
+    bad.route('**/api/routes/live/ack', refuse)
+    bad.click('#lvAlarmAck')
+    for _ in range(4):
+        if bad.is_visible('#lvAckErr'):
+            break
+        bad.evaluate("document.dispatchEvent(new Event('visibilitychange'))")
+        bad.wait_for_timeout(800)
+    n_posts = len(posts)
+    bad.evaluate("document.dispatchEvent(new Event('visibilitychange'))")
+    bad.wait_for_timeout(800)
+    check(bad.is_visible('#lvAckErr') and n_posts == 3 and len(posts) == n_posts and not bad.is_visible('#lvAlarm'),
+          f'ревью L5: 3 сбоя подряд — строка «{bad.inner_text("#lvAckErr") if bad.is_visible("#lvAckErr") else ""}», '
+          f'отправка на паузе ({n_posts} → {len(posts)}), отметки — свои')
+    # пауза 5 мин прошла (часы страницы +6 мин) — первый удачный опрос снимает строку, нажатия снова уходят (и снова 500)
+    bad.evaluate("() => { const real = Date.now; Date.now = () => real() + 6 * 60000; }")
+    bad.evaluate("document.dispatchEvent(new Event('visibilitychange'))")
+    bad.wait_for_timeout(800)
+    check(not bad.is_visible('#lvAckErr') and len(posts) == n_posts + 1,
+          f'ревью M2: через 5 мин — строки нет, нажатия снова отправляются ({n_posts} → {len(posts)})')
+    bad.close()
+    clear_acks()
+
+    # раскладка: страница — контейнер lvpage (три колонки — от 1241 px ширины самой страницы). Администратор — слева меню
+    # «Маршрутов»: 1366 и 1440 — две колонки, карточка под картой; «Гараж» — без меню: три колонки. Машина не выбрана — карта
+    # до правого края раскладки (в три колонки — и на месте карточки); выбрана — в три колонки карточка справа и карта уже,
+    # в две — карточка под картой, ширина карты та же; Leaflet пересчитал размер — выбранная машина посередине карты
+    def boxes(p):
+        return p.evaluate("""() => { const r = (s) => document.querySelector(s).getBoundingClientRect();
+            const l = r('.lv-layout'), m = r('.lv-mapbox'), c = r('#lvCard');
+            return { layR: l.right, mapR: m.right, mapW: m.width, mapB: m.bottom, cardL: c.left, cardT: c.top, cardW: c.width,
+                     cols: getComputedStyle(document.querySelector('.lv-layout')).gridTemplateColumns.split(' ').length }; }""")
+    for width, role in ((1366, 'admin'), (1440, 'admin'), (1366, 'garage'), (1440, 'garage')):
+        name = f'{width} px, {"меню слева" if role == "admin" else "«Гараж» без меню"}'
+        p = open_page(role, viewport={'width': width, 'height': 900})
+        menu = p.locator('#rtShell').count() == 1
+        free = boxes(p)
+        three = role == 'garage'
+        check(menu == (role == 'admin') and free['cols'] == (3 if three else 2) and not p.is_visible('#lvCard')
+              and abs(free['mapR'] - free['layR']) <= 1, f'круг 2, {name}: без выбора карта до правого края ({free})')
+        if (width, role) == (1440, 'garage'):
+            p.screenshot(path=str(SHOTS / 'live_alarm2_wide_noselect.png'))
+        if (width, role) == (1366, 'admin'):
+            p.screenshot(path=str(SHOTS / 'live_alarm2_1366.png'))
+        p.locator(f'.lv-item[data-car="{cars[0]}"]').click()
+        p.wait_for_selector('#lvCard:not([hidden]) .lv-grid dt')
+        p.wait_for_timeout(900)
+        sel = boxes(p)
+        if three:
+            ok = sel['mapR'] <= sel['cardL'] and sel['mapW'] < free['mapW'] - 300 and sel['cardW'] >= 330
+        else:
+            ok = sel['cardT'] >= sel['mapB'] and abs(sel['mapW'] - free['mapW']) <= 1 and abs(sel['mapR'] - sel['layR']) <= 1
+        check(p.is_visible('#lvCard') and ok, f'круг 2, {name}: выбрана машина — карточка '
+              f'{"справа, карта уже" if three else "под картой, карта той же ширины"} ({sel})')
+        # со старым размером (без invalidateSize) машина после panTo оказалась бы правее середины — Leaflet считал бы карту шире
+        mid = p.evaluate("""car => { const m = [...document.querySelectorAll('.lv-marker')].find(x =>
+            x.querySelector('.lv-marker-plate').textContent === car).getBoundingClientRect();
+            const b = document.querySelector('#lvMap').getBoundingClientRect();
+            return [Math.round(m.left + m.width / 2), Math.round(b.left + b.width / 2)]; }""", cars[0])
+        check(abs(mid[0] - mid[1]) <= 12, f'круг 2, {name}: размер карты пересчитан — машина посередине карты ({mid})')
+        p.locator(f'.lv-item[data-car="{cars[0]}"]').click()   # снять выбор — снова на всю ширину
+        p.wait_for_timeout(600)
+        back = boxes(p)
+        check(abs(back['mapR'] - back['layR']) <= 1 and abs(back['mapW'] - free['mapW']) <= 1,
+              f'круг 2, {name}: выбор снят — карта снова до края ({back})')
+        p.close()
+    # телефон: раскладка прежняя (карта во всю ширину, без горизонтальной прокрутки), баннер и строки круга 2
+    phone = open_page(viewport={'width': 390, 'height': 860}, is_mobile=True, has_touch=True)
+    pb = phone.evaluate("() => [document.querySelector('.lv-mapbox').getBoundingClientRect().width, "
+                        "document.querySelector('.lv-layout').getBoundingClientRect().width]")
+    check(phone.evaluate(NO_SCROLL_JS) and abs(pb[0] - pb[1]) <= 1 and phone.is_visible('#lvAlarm'),
+          f'круг 2, телефон 390 px: карта во всю ширину, баннер, нет горизонтальной прокрутки ({pb})')
+    phone.screenshot(path=str(SHOTS / 'live_alarm2_phone.png'))
+    phone.close()
+
+
 def main() -> int:
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     logging.getLogger('werkzeug').setLevel(logging.ERROR)
@@ -504,6 +728,13 @@ def main() -> int:
         app = build_app(tmp_p)
         with app.app_context():
             cars = seed(app)
+
+        def clear_acks() -> None:
+            """Отметки «Տեսա» сервера (схема 28) — снять: следующий шаг начинает «никто не видел» (только копия базы)."""
+            conn = sqlite3.connect(tmp_p / 'route_optimizer.db')
+            conn.execute('DELETE FROM live_ack')
+            conn.commit()
+            conn.close()
         server = make_server('127.0.0.1', PORT, app, threaded=True)
         base = f'http://127.0.0.1:{server.server_port}'
         threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -752,7 +983,10 @@ def main() -> int:
                         out.mkdir(parents=True, exist_ok=True)
                         pc.screenshot(path=str(out / 'live-1366x650-car-selected.png'))
                     pc.close()
-                # «меньше движения»: новые — без анимации, обводка и «ՆՈՐ» (свой контекст — отметок «Տեսա» нет)
+                # «меньше движения»: новые — без анимации, обводка и «ՆՈՐ» (свой контекст и отметки «Տեսա» сервера
+                # сняты — круг 2: они общие; страница с отметками закрыта — иначе её опрос вернул бы их на сервер)
+                page.close()
+                clear_acks()
                 calm = browser.new_page(viewport={'width': 1440, 'height': 900}, reduced_motion='reduce')
                 calm.on('pageerror', lambda e: errors.append(str(e)))
                 calm.goto(base + '/routes/live')
@@ -800,6 +1034,8 @@ def main() -> int:
                 phone.wait_for_timeout(400)
                 check(locked and 'is-locked' not in (phone.get_attribute('#lvSound', 'class') or ''),
                       'тревоги, телефон: звук после перезагрузки — касание страницы его включает')
+                phone.close()
+                alarm2_checks(browser, base, cars, check, clear_acks, errors)
                 browser.close()
         finally:
             server.shutdown()

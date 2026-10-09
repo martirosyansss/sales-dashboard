@@ -47,6 +47,8 @@
 @container lvpage (min-width: 1241px) {
     .lv-layout { grid-template-columns: minmax(280px, 330px) minmax(0, 1fr) minmax(330px, 400px); grid-template-rows: auto 1fr;
         grid-template-areas: "probs map card" "side map card"; }
+    /* машина не выбрана (карточки нет) — карта и на её месте, без пустой колонки (routes_live.js renderCard) */
+    .lv-layout.is-nocard { grid-template-areas: "probs map map" "side map map"; }
     .lv-card { max-height: calc(100vh - var(--rt-nav-h, 64px) - 40px); overflow: auto; position: sticky; top: calc(var(--rt-nav-h, 64px) + 14px); align-self: start; }
 }
 
@@ -69,6 +71,13 @@ button.lv-prob:focus-visible { outline: 2px solid var(--rt-acc); outline-offset:
 .lv-prob.lv-sev1, .lv-prob.lv-sev2 { background: var(--lv-bg); border-color: var(--lv-line); }
 .lv-prob.lv-sev3 { border-left: 4px solid var(--lv-c); }
 .lv-prob.lv-sev1 i, .lv-prob.lv-sev2 i, .lv-prob.lv-sev3 i { color: var(--lv-c); }
+/* жёлтая в задержке (круг 2, on-delay): ещё не новая — приглушённо, без заливки, пунктиром */
+.lv-prob.is-pending { background: transparent; border-style: dashed; color: var(--rt-fg-dim); }
+/* «Տեսավ՝ кто HH:MM» — отмеченная на сервере (общая «Տեսա») */
+.lv-seen-by { display: block; margin-top: 2px; font-size: .75rem; color: var(--rt-fg-mute); }
+/* «Տեսա» не сохраняется на сервере (сбои подряд) — одна спокойная строка, не тревога */
+.lv-ack-err { margin: 0 0 8px; font-size: .8125rem; color: var(--rt-warn); }
+.lv-ack-err[hidden] { display: none; }
 .lv-prob.is-none { grid-template-columns: 16px minmax(0, 1fr); color: var(--rt-ok); background: var(--rt-ok-bg); }
 /* строка проблемы с «Տեսա» и «Բացատրել» (администратор): кнопка выбора машины и кнопки рядом */
 .lv-prob-row { display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: stretch; justify-content: flex-end; }
@@ -377,6 +386,14 @@ button.lv-prob:focus-visible { outline: 2px solid var(--rt-acc); outline-offset:
 .lv-alarm-ico { font-size: 1.375rem; color: var(--lv-c); }
 .lv-alarm-main { flex: 1 1 220px; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
 .lv-alarm-count { font-size: 1.0625rem; font-weight: 700; white-space: nowrap; }
+/* эскалация (круг 2): новая красная без ответа 5 мин — рамка толще, внешнее кольцо и «N րոպե առանց պատասխանի» (без своей
+   анимации: «меньше движения» — как раньше) */
+.lv-alarm.is-escalated { border-width: 3px; box-shadow: 0 0 0 3px var(--lv-alert-hi); }
+.lv-alarm-wait {
+    padding: 1px 10px; border-radius: 999px; font-size: .875rem; font-weight: 700; white-space: nowrap;
+    color: #0e1116; background: var(--lv-alert);
+}
+.lv-alarm-wait[hidden] { display: none; }
 .lv-alarm-list { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 2px 16px; font-size: .875rem; }
 .lv-alarm-list li { display: inline-flex; align-items: baseline; gap: 6px; min-width: 0; overflow-wrap: anywhere; }
 .lv-alarm-list i { color: var(--lv-c); }

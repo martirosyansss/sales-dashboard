@@ -569,8 +569,8 @@ def test_store_migrates_20_to_21_keeps_rows_and_allows_new_kinds(tmp_path):
                                    lr.Outcome('truck_unload', '', False, 'нет'),
                                    lr.Outcome('truck_travel', '', False, 'нет', model_id='straight')])
     with closing(sqlite3.connect(path)) as conn:
-        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == ('27',) == \
-            (str(st.SCHEMA_VERSION),)                                       # 20 → … → 27 (Telegram-бот, №91)
+        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == ('28',) == \
+            (str(st.SCHEMA_VERSION),)                                       # 20 → … → 28 («Տեսա» карты)
         rows = conn.execute('SELECT * FROM learned_norms ORDER BY id').fetchall()
         assert rows[:len(before)] == before and rows[len(before)][0] == 41
         assert conn.execute("SELECT name FROM sqlite_sequence WHERE name LIKE 'learned_norms%'").fetchall() == \

@@ -30,7 +30,7 @@ from .patterns import parse_freq_key, parse_pattern_key, parse_plan_freq_key, pa
 from .running_costs import LOAD_COST_FIELDS, profile_fields
 from .vehicle_access import VehicleAccess, check_access
 
-SCHEMA_VERSION = 27
+SCHEMA_VERSION = 28
 logger = logging.getLogger(__name__)
 CREW_PAY_KEY = 'crew_pay'   # строка settings с параметрами «Աշխատավարձ» (Store.crew_pay_params); не ключ DEFAULT_SETTINGS
 # строка settings: какие виды тревог карты знала программа, сохранившая live_alert_kinds (№87); не ключ
@@ -246,6 +246,15 @@ _TG_KV_TABLE = 'CREATE TABLE IF NOT EXISTS tg_kv(key TEXT PRIMARY KEY, value TEX
 TG_MESSAGE_FIELDS = ('id', 'key', 'kind', 'car', 'level', 'chat', 'message_id', 'thread_id', 'phase', 'sent_at',
                      'acked_by', 'acked_name', 'acked_at', 'resolved_at', 'escalated_at', 'payload')
 
+# Схема 28 (владелец 08.10, «fix all» тревог карты): «Տեսա» общая для всех зрителей (ПК диспетчера и телефон владельца) —
+# строка на (день, машина, вид проблемы): since — начало идущей тревоги вида (alerts.since карты; у «не успеет» — NULL),
+# кто и когда нажал «Տեսա» (user, at), seen_at — последнее подтверждение страницей (подтверждение — refresh: меняет since и
+# seen_at, но не кто и когда). Новая отметка того же вида заменяет прежнюю (случай — по since). Чистка не нужна: строки дня
+# крошечные.
+_LIVE_ACK_TABLE = (
+    "CREATE TABLE IF NOT EXISTS live_ack(day TEXT NOT NULL, car TEXT NOT NULL, key TEXT NOT NULL, since TEXT, "
+    "user TEXT, at TEXT NOT NULL, seen_at TEXT NOT NULL, PRIMARY KEY (day, car, key))")
+
 _MEASUREMENT_TABLE = (
     'CREATE TABLE IF NOT EXISTS route_measurement(day TEXT NOT NULL, car_code TEXT NOT NULL, '
     'data TEXT NOT NULL, updated_at TEXT NOT NULL, updated_by TEXT, PRIMARY KEY(day, car_code))')
@@ -330,6 +339,7 @@ _SCHEMA = (
     _TG_MESSAGE_TABLE,
     _TG_MESSAGE_INDEX,
     _TG_KV_TABLE,
+    _LIVE_ACK_TABLE,
     _GEO_OVERRIDE_TABLE,
     _DISPATCH_TABLE,
     _TRUCKS_ONE_VAN,
@@ -485,6 +495,8 @@ _MIGRATIONS: dict[int, tuple[str, ...]] = {
     # 26 → 27 (№91): только добавляем — сообщения Telegram-бота и его ключи; прежнее не меняется. «Уже отправлено» из
     # route_live_alerts.json переносит сам бот при первом запуске (tg_bot: файл рядом с базой, не DDL)
     26: (_TG_MESSAGE_TABLE, _TG_MESSAGE_INDEX, _TG_KV_TABLE),
+    # 27 → 28 (владелец 08.10): только добавляем — общие отметки «Տեսա» карты машин.
+    27: (_LIVE_ACK_TABLE,),
 }
 
 FUEL_TYPES = ('diesel', 'petrol', 'lpg')
@@ -765,6 +777,16 @@ TG_LEVEL_KINDS = ('no_contact', 'gps', 'center', 'late_window', 'late_return', '
 TG_ESCALATE_TO_MAX = 20            # людей, кому уходит эскалация
 TG_USER_ID_MAX = 10 ** 13          # Telegram id человека — положительное целое (сейчас до 2⁵²)
 TG_FLAGS = ('tg_sim_installed', 'tg_report_plan', 'tg_report_summary', 'tg_report_week')
+# «Տեսա» карты машин на сервере (схема 28): за один запрос — не больше LIVE_ACK_MAX отметок; ключ — вид проблемы страницы
+# (routes_live.js problemsOf: speed, stop, …, late:window / late:plan), номер машины — как ?car= карты (до 20 символов)
+LIVE_ACK_MAX = 50
+LIVE_ACK_CAR_MAX = 20
+# подтверждение (refresh) меняет начало отметки, только если это тот же случай: у отклонения начало плавает между
+# пересчётами (live.EXPLAIN_FROM_TOL) — в пределах LIVE_ACK_SINCE_TOL; иначе — дребезг, пока отметку подтверждали не дольше
+# LIVE_ACK_FLAP назад (routes_live.js ACK_GRACE_MS)
+LIVE_ACK_SINCE_TOL = timedelta(minutes=3)
+LIVE_ACK_FLAP = timedelta(minutes=10)
+_LIVE_ACK_KEY_RE = re.compile(r'[a-z_]{1,20}(?::[a-z_]{1,20})?')
 GARAGE_KINDS = ('repair', 'accident', 'fixed', 'odometer')   # журнал гаража (№53), как garage.KINDS
 GARAGE_TEXT_MAX = 300
 GARAGE_AMOUNT_MAX = 100_000_000
@@ -1042,6 +1064,23 @@ def check_live_explanation(kind: Any, reason: Any, note: Any) -> tuple[str, dict
     elif any(unicodedata.category(c) == 'Cc' for c in text):
         errors['note'] = 'Նշումում կան անթույլատրելի նիշեր'
     return text, errors
+
+
+def check_live_acks(items: Any) -> tuple[list[tuple[str, str, str | None]], str | None]:
+    """([(машина, вид, since)], ошибка) отметок «Տեսա» (схема 28): список 1…LIVE_ACK_MAX объектов {car, key, since};
+    car — строка до LIVE_ACK_CAR_MAX символов, key — вид проблемы (_LIVE_ACK_KEY_RE), since — ISO-момент с поясом или null.
+    Повтор той же (машина, вид) в запросе — последняя побеждает."""
+    if not isinstance(items, list) or not 0 < len(items) <= LIVE_ACK_MAX:
+        return [], f'items՝ 1–{LIVE_ACK_MAX} տող'
+    out: dict[tuple[str, str], str | None] = {}
+    for x in items:
+        car = x.get('car') if isinstance(x, dict) else None
+        key = x.get('key') if isinstance(x, dict) else None
+        since = x.get('since') if isinstance(x, dict) else None
+        if not isinstance(car, str) or not 0 < len(car) <= LIVE_ACK_CAR_MAX or not car.isprintable()                 or not isinstance(key, str) or not _LIVE_ACK_KEY_RE.fullmatch(key)                 or (since is not None and _aware_moment(since) is None):
+            return [], 'Սխալ նշում «Տեսա»'
+        out[(car, key)] = since
+    return [(car, key, since) for (car, key), since in out.items()], None
 
 
 def _check_explain_stops(v: Any) -> list[str] | None:
@@ -2133,8 +2172,8 @@ class Store:
                                  f'(սխեմա {version}, աջակցվում է {SCHEMA_VERSION})')
             if version < SCHEMA_VERSION:
                 Store._migrate(conn)
-            else:
-                Store._live_explain_stops(conn)
+            Store._live_explain_stops(conn)   # и после миграции: база 26 первой версии ветки могла прийти без stops
+            Store._live_ack_table(conn)
             return
         if tables:
             raise StoreError('Ֆայլը երթուղիների բազա չէ (կան օտար աղյուսակներ)')
@@ -2161,6 +2200,27 @@ class Store:
         try:
             if 'stops' not in {r[1] for r in conn.execute('PRAGMA table_info(live_explain)')}:
                 conn.execute("ALTER TABLE live_explain ADD COLUMN stops TEXT NOT NULL DEFAULT '[]'")
+            conn.execute('COMMIT')
+        except BaseException:
+            conn.execute('ROLLBACK')
+            raise
+
+    @staticmethod
+    def _live_ack_table(conn: sqlite3.Connection) -> None:
+        """Таблица «Տեսա» карты (схема 28) есть и с seen_at — при каждом открытии, как _live_explain_stops: база, у которой
+        номер схемы уже 28, а таблицы нет (перенумерация 27 → 28 при слиянии с Telegram-ботом) или она первой версии ветки
+        (без seen_at), карту машин не роняет."""
+        cols = {r[1] for r in conn.execute('PRAGMA table_info(live_ack)')}
+        if 'seen_at' in cols:
+            return
+        conn.execute('BEGIN IMMEDIATE')
+        try:
+            cols = {r[1] for r in conn.execute('PRAGMA table_info(live_ack)')}
+            if not cols:
+                conn.execute(_LIVE_ACK_TABLE)
+            elif 'seen_at' not in cols:
+                conn.execute("ALTER TABLE live_ack ADD COLUMN seen_at TEXT NOT NULL DEFAULT ''")
+                conn.execute('UPDATE live_ack SET seen_at = at')
             conn.execute('COMMIT')
         except BaseException:
             conn.execute('ROLLBACK')
@@ -2874,6 +2934,49 @@ class Store:
             'INSERT INTO tg_kv(key, value, updated_at) VALUES(?, ?, ?) ON CONFLICT(key) DO UPDATE SET '
             'value = excluded.value, updated_at = excluded.updated_at',
             (key, json.dumps(value, ensure_ascii=False), _now())), 'не удалось записать ключ Telegram-бота')
+    # --- «Տեսա» карты машин (схема 28, владелец 08.10) ---
+
+    def live_acks(self, day: str) -> list[dict[str, Any]]:
+        """Отметки «Տեսա» дня YYYY-MM-DD: [{car, key, since, user, at, seen_at}] по машине и виду."""
+        rows = self._read(lambda conn: conn.execute(
+            'SELECT car, key, since, user, at, seen_at FROM live_ack WHERE day = ? ORDER BY car, key', (day,)).fetchall())
+        return [{'car': car, 'key': key, 'since': since, 'user': user, 'at': at, 'seen_at': seen or at}
+                for car, key, since, user, at, seen in rows]
+
+    def live_ack_put(self, day: str, items: Sequence[tuple[str, str, str | None]], user: str | None, at: str,
+                     refresh: bool = False) -> None:
+        """«Տեսա» (check_live_acks) одной транзакцией: строка (день, машина, вид) заменяется — случай, кто, когда.
+        refresh — подтверждение страницей уже отмеченного (дребезг сдвинул since, отметка без since держится): строки не
+        создаёт; у имеющейся (тот же день, машина, вид) меняются только since и seen_at — кто и когда нажал, остаётся — и
+        только если это тот же случай (то же начало; у отклонения — в пределах LIVE_ACK_SINCE_TOL) или отметку подтверждали
+        не дольше LIVE_ACK_FLAP назад (дребезг); иначе подтверждение пропускается. Неверные данные — ValueError (API
+        проверяет их раньше и отвечает 400)."""
+        listed, error = check_live_acks([{'car': c, 'key': k, 'since': s} for c, k, s in items])
+        moment = _aware_moment(at)
+        if error or _iso_day(day) is None or moment is None:
+            raise ValueError('отметки «Տեսա»: день YYYY-MM-DD, at — ISO с поясом, ' + (error or 'данные верны'))
+
+        def same_case(key: str, a: str | None, b: str | None) -> bool:
+            if a == b:
+                return True
+            ta, tb = _aware_moment(a), _aware_moment(b)
+            return key == 'deviation' and ta is not None and tb is not None and abs(ta - tb) <= LIVE_ACK_SINCE_TOL
+
+        def write(conn: sqlite3.Connection) -> None:
+            if not refresh:
+                conn.executemany('INSERT INTO live_ack(day, car, key, since, user, at, seen_at) VALUES(?, ?, ?, ?, ?, ?, ?) '
+                                 'ON CONFLICT(day, car, key) DO UPDATE SET since = excluded.since, user = excluded.user, '
+                                 'at = excluded.at, seen_at = excluded.seen_at',
+                                 [(day, c, k, s, user, at, at) for c, k, s in listed])
+                return
+            for c, k, s in listed:
+                row = conn.execute('SELECT since, seen_at FROM live_ack WHERE day = ? AND car = ? AND key = ?',
+                                   (day, c, k)).fetchone()
+                seen = _aware_moment(row[1]) if row is not None else None
+                if row is not None and (same_case(k, row[0], s) or (seen is not None and moment - seen <= LIVE_ACK_FLAP)):
+                    conn.execute('UPDATE live_ack SET since = ?, seen_at = ? WHERE day = ? AND car = ? AND key = ?',
+                                 (s, at, day, c, k))
+        self._transaction(write, 'не удалось сохранить «Տեսա»')
 
     def driver_names(self, since: str = '') -> list[str]:
         """Имена водителей и առաքիչ из записей (№62) с днём записи не раньше since (YYYY-MM-DD; '' — все), по алфавиту:

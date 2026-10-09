@@ -43,7 +43,7 @@ from .geo import Point, haversine_km, in_city, in_polygon, is_valid_point
 from .roads import SNAP_MAX_KM, CenterBypassRoads, RoadDistances, RoadProvider, roads_version
 from .snapshot import CAR_IDLE_DAYS, MIN_REFRESH_SECONDS, ResultCache, Snapshot, SnapshotCache
 from .store import (CREW_TABLES, DEFAULT_MANAGER_FUEL, DEFAULT_SETTINGS, KEEP, Bundle, Decision, GarageError, Store, StoreError,
-                    big_auto, center_auto, check_driver_name, check_garage_entry, check_live_explanation,
+                    big_auto, center_auto, check_driver_name, check_garage_entry, check_live_acks, check_live_explanation,
                     check_unload_min, check_window, until_floor, validate_payload)
 from .valhalla_engine import (CAR_COSTING, PROFILE_CAR, PROFILE_TRUCK, TRUCK_TIME_MODEL, TRUCK_TIME_VALHALLA, ValhallaProvider,
                               ValhallaRoads, truck_costing, truck_leg_minutes, truck_time_source, valhalla_error)
@@ -5121,7 +5121,8 @@ def api_live() -> Any:
         return _bad_request({'_': '«Առաքիչ» բաժինը միացված չէ — տվյալներ չկան'})
     ctx, now, _, cards = _live_cards(state, day)
     return jsonify({**_live_head(ctx, day, now),
-                    'trucks': [{k: v for k, v in card.items() if k not in ('alerts_log', 'stops_off')} for card in cards.values()]})
+                    'trucks': [{k: v for k, v in card.items() if k not in ('alerts_log', 'stops_off')} for card in cards.values()],
+                    'acks': _live_acks_or_none(state, day)})   # «Տեսա» всех зрителей (схема 28)
 
 
 @bp.get('/api/routes/live/truck')
@@ -5229,6 +5230,68 @@ def api_live_unexplain() -> Any:
         _live_forget(state, day)
     logger.info('[Routes] Карта машин: %s отменил объяснение #%d (%s %s)', session.get('username'), raw, gone[1], gone[0])
     return jsonify({'success': True})
+
+
+# «Տեսա» общая (владелец 08.10, «fix all» тревог карты; схема 28): ПК диспетчера и телефон владельца видят одни отметки.
+# Отмечает тот, кто может открыть карту, — администратор и «Гараж» (app_v2._garage_path_allowed пропускает «Гаражу» ровно
+# этот POST): отметка — только «видел», с именем вошедшего; ничего, кроме неё, не меняется. Только JSON (_json_body, как
+# «Բացատրել») и только за сегодня по Еревану. Принято (владелец 08.10): отметка без начала (у «не успеет») в силе
+# 10 мин от последней записи — её подтверждает открытая страница, у которой проблема отмечена; все страницы закрыты —
+# проблема снова новая. Отметка сама возвращается: страница со своей отметкой (lv.ack) без серверной отправляет её на
+# опросе, поэтому строку live_ack надёжно не удалить вручную, пока такая страница открыта (снять — закрыть её).
+# Запись и чтение — Store.live_ack_put(day, items, user, at) / live_acks(day); «Տեսա» Telegram-бота (№91) их пока не зовёт
+# (сессия бота подключит их после своего слияния).
+LIVE_ACK_ROLES = ('admin', 'garage')
+
+
+def _live_acks_or_none(state: RoutesState, day: date) -> list[dict[str, Any]]:
+    """Отметки «Տեսա» дня для ответа карты; не прочитались — пусто и строка в журнале: карта машин из-за них не падает
+    (страница держит свои отметки, lv.ack)."""
+    try:
+        return state.store.live_acks(day.isoformat())
+    except StoreError:
+        logger.exception('[Routes] Карта машин: отметки «Տեսա» не прочитаны — без них')
+        return []
+
+
+@bp.post('/api/routes/live/ack')
+@_api
+def api_live_ack() -> Any:
+    """{date?, items: [{car, key, since}], refresh?} — до store.LIVE_ACK_MAX отметок (check_live_acks), date — только
+    сегодня (нет — сегодня). refresh: true — страница подтверждает уже отмеченное (дребезг, отметка без since): строку не
+    создаёт, кто и когда нажал, не меняет (Store.live_ack_put refresh). Машины не из сегодняшнего парка карты (_live_cards) отбрасываются —
+    отметки входа «Гаража» из интернета не раздувают таблицу. → {success, acks: отметки дня [{car, key, since, user, at,
+    seen_at}]}: страница сразу показывает «Տեսավ՝ …»."""
+    if g.get('user_role') not in LIVE_ACK_ROLES:
+        logger.warning('[Routes] «Տեսա» карты машин: отказ роли %r', g.get('user_role'))
+        return jsonify({'success': False, 'error': 'Մուտքն արգելված է'}), 403
+    payload, error = _json_body()
+    if error is not None:
+        return error
+    if not isinstance(payload, dict):
+        return _bad_request({'_': 'Սերվերը չընդունեց հարցումը'})
+    now = _yerevan_now()
+    today = now.date()
+    errors: dict[str, str] = {}
+    if payload.get('date') is not None and _parse_day(payload.get('date')) != today:
+        errors['date'] = 'Միայն այսօրվա համար'
+    items, bad = check_live_acks(payload.get('items'))
+    if bad:
+        errors['items'] = bad
+    refresh = payload.get('refresh', False)
+    if not isinstance(refresh, bool):
+        errors['refresh'] = 'refresh՝ true / false'
+    if errors:
+        return _bad_request(errors)
+    state = _state()
+    fleet = _live_cards(state, today)[3] if state.live_facts is not None else {}
+    items = [x for x in items if x[0] in fleet]
+    user = session.get('username')
+    if items:
+        state.store.live_ack_put(today.isoformat(), items, user, now.isoformat(timespec='seconds'), refresh)
+        logger.info('[Routes] Карта машин: «Տեսա»%s %s — %s', ' (подтверждение)' if refresh else '', user,
+                    ', '.join(f'{c} {k}' for c, k, _ in items))
+    return jsonify({'success': True, 'acks': state.store.live_acks(today.isoformat())})
 
 
 # --- Ход дня на шкале «Развоза» (ответ владельца №82: как мониторинг Яндекса / Routific live) ---

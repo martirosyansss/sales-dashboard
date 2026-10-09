@@ -420,7 +420,8 @@ def _restricted_path_allowed(path: str, method: str) -> bool:
 
 
 # ---- Роль 'garage': только журнал гаража, карта машин и «Վարորդներ» (default-deny) -------------------
-# Страница журнала (GET) и её API (GET и POST); карта «Մեքենաները առցանց» (№76) и её API — только GET; «Վարորդներ»
+# Страница журнала (GET) и её API (GET и POST); карта «Մեքենաները առցանց» (№76) и её API — только GET (кроме POST «Տեսա»,
+# _LIVE_ACK_API: отметка «видел»); «Վարորդներ»
 # (№87) — страница и ровно один путь API, только GET (деньги гаражу не отдаёт сам API —
 # route_optimizer.views.api_drivers_scorecard); статика и выход пропускаются раньше. Всё прочее — 403 JSON или переход
 # на страницу гаража. Границы пути — по сегменту: '/api/routes/garage-x' и '/api/routes/live-x' не совпадают.
@@ -430,12 +431,15 @@ _LIVE_PAGE = '/routes/live'
 _LIVE_API = '/api/routes/live'
 _DRIVERS_PAGE = '/routes/drivers'
 _DRIVERS_API = '/api/routes/drivers/scorecard'   # точный путь: новый API «Վարորդներ» гаражу сам не откроется
+_LIVE_ACK_API = '/api/routes/live/ack'   # «Տեսա» карты машин (схема 28) — единственный POST карты для «Гаража»
 
 
 def _garage_path_allowed(path: str, method: str) -> bool:
     if method in ('GET', 'HEAD') and path in (_GARAGE_PAGE, _LIVE_PAGE, _DRIVERS_PAGE, _DRIVERS_API):
         return True
     if method in ('GET', 'HEAD') and (path == _LIVE_API or path.startswith(_LIVE_API + '/')):
+        return True
+    if method == 'POST' and path == _LIVE_ACK_API:
         return True
     return method in ('GET', 'HEAD', 'POST') and (path == _GARAGE_API or path.startswith(_GARAGE_API + '/'))
 
