@@ -401,7 +401,7 @@ def test_demo_day_matches_contract(term):
                               'matrix': None}]
     assert body['until_buffer_min'] == 0.0 and all(s['until'] is None for s in body['stops'])
     assert body['plan'] == 'approved'                    # №80: демо-день — обычный рабочий день, без плашки ожидания
-    assert {(s['agent_name'], s['agent_phone']) for s in body['stops']} == {('Թեստ մենեջեր', '+37410000009')}   # v1.9 §13
+    assert {(s['agent_name'], s['agent_phone']) for s in body['stops']} == {('Թեստ մենեջեր', '+00000000000')}   # v1.9 §13
     assert body['date'] == DEMO and isinstance(body['version'], str) and len(body['version']) == 40
     assert clock.parse_moment(body['loaded_at']) is not None
     assert body['car'] == {'code': 'TEST', 'name': 'Թեստ'}

@@ -12,7 +12,11 @@
 
 Запуск из корня проекта:  python -m pytest tests/test_agent_phone.py -q
 """
+import json
+import re
+import shutil
 import sqlite3
+import subprocess
 import sys
 from dataclasses import replace
 from datetime import date
@@ -27,7 +31,7 @@ from courier import day as dy  # noqa: E402
 from courier import routes_link as rl  # noqa: E402
 from courier.store import Store as CourierStore  # noqa: E402
 from route_optimizer import store as st  # noqa: E402
-from test_route_optimizer import _dispatch_setup, _dorder, client  # noqa: E402,F401
+from test_route_optimizer import _dispatch_setup, _dorder, _use_snapshot, client  # noqa: E402,F401
 
 DAY = '2026-10-01'
 BAD = 'հեռախոսը՝ թվերով, օրինակ +37491123456 կամ 091123456'
@@ -61,6 +65,13 @@ def test_normalizes_and_sorts_by_agent_id():
     # то же значение ещё раз — то же (сохранённое проходит проверку чтения базы)
     again, errors = _check(out['agent_phones'])
     assert errors == {} and again['agent_phones'] == out['agent_phones']
+
+
+def test_strips_invisible_chars_from_contacts():
+    # номер, скопированный из контактов / WhatsApp: метки направления письма, нулевой ширины, BOM
+    out, errors = _check({'1': '‪+374 91 123456‬', '2': '‎091​123⁦456⁩﻿',
+                          '3': '‏‮'})
+    assert errors == {} and out['agent_phones'] == {'1': '+37491123456', '2': '091123456'}
 
 
 def test_empty_value_removes_entry():
@@ -106,6 +117,27 @@ def test_api_round_trip_and_reload(client, tmp_path):
     # убрать все номера
     assert client.post('/api/routes/settings', json={'settings': {'agent_phones': {}}}).status_code == 200
     assert client.get('/api/routes/settings').get_json()['settings']['agent_phones'] == {}
+
+
+def test_dispatch_rule_save_keeps_phones(client):
+    # «Развоз» и другие страницы шлют только свои ключи — номера менеджеров остаются
+    phones = {'1': '091123456', '77': '+37491123456'}
+    assert client.post('/api/routes/settings', json={'settings': {'agent_phones': phones}}).status_code == 200
+    r = client.post('/api/routes/settings', json={'settings': {'dispatch_agents_off': [2]}})
+    assert r.status_code == 200, r.get_json()
+    s = client.get('/api/routes/settings').get_json()['settings']
+    assert s['dispatch_agents_off'] == [2] and s['agent_phones'] == phones
+
+
+def test_settings_get_lists_saved_phone_agents_outside_card(client):
+    _use_snapshot(client, active_agents=frozenset({1}))             # у агента 2 нет работы 8 недель
+    d = client.get('/api/routes/settings').get_json()
+    assert [(a['agent_id'], a['extra']) for a in d['phone_agents']] == [(1, False)]
+    phones = {'2': '091123456', '999': '+37491123456'}
+    assert client.post('/api/routes/settings', json={'settings': {'agent_phones': phones}}).status_code == 200
+    d = client.get('/api/routes/settings').get_json()
+    assert [a['agent_id'] for a in d['dispatch_agents']] == [1]    # карточка «чьи заказы везём» — как была
+    assert [(a['agent_id'], a['name'], a['extra']) for a in d['phone_agents']] ==         [(1, 'Менеджер 1', False), (2, 'Менеджер 2', True), (999, '', True)]   # неизвестный ERP — в конце
 
 
 def test_db_without_row_loads(client, tmp_path):
@@ -165,7 +197,7 @@ def test_day_payload_phone_changes_version_not_plan_version(tmp_path):
 def test_demo_day_has_manager_phone(tmp_path):
     data, view, loaded = dy.demo_data()
     body = dy.day_payload(data, view, CourierStore(str(tmp_path / 'c.db')), loaded)
-    assert {(s['agent_name'], s['agent_phone']) for s in body['stops']} == {('Թեստ մենեջեր', '+37410000009')}
+    assert {(s['agent_name'], s['agent_phone']) for s in body['stops']} == {('Թեստ մենեջեր', '+00000000000')}
     assert st.AGENT_PHONE_RE.fullmatch(body['stops'][0]['agent_phone'])
 
 
@@ -179,9 +211,35 @@ def test_settings_page_has_card():
     assert page.index('id="agents"') < page.index('id="agentphones"') < page.index('id="fleet"')
     assert "routes_settings.js') }}?v=43" in page
     assert "'agents', 'agentphones', 'fleet'" in js and 'renderAgentPhones()' in js
-    assert "'settings.agent_phones.' + " in js and 's.agent_phones = phones' in js
+    assert "'settings.agent_phones.' + " in js and 's.agent_phones = collectPhones(' in js
+    assert 'state.data.phone_agents' in js
     assert "type: 'tel'" in js and "inputmode: 'tel'" in js and 'maxlength: 24' in js
     assert r'/^\+?\d{6,15}$/' in js                                            # как store.AGENT_PHONE_RE
+
+
+def _js_collect(saved, inputs):
+    # collectPhones из routes_settings.js — в node: поля — {id: значение}
+    js = (ROOT / 'static' / 'js' / 'routes_settings.js').read_text(encoding='utf-8').replace('\r\n', '\n')
+    parts = [re.search(p, js, re.S).group(0) for p in (r'    const PHONE_SEP = [^\n]*\n', r'    const PHONE_RE = [^\n]*\n',
+                                                         r'    const PHONE_ERR = [^\n]*\n',
+                                                         r'    function collectPhones\(.*?\n    \}\n')]
+    fields = [{'dataset': {'agentPhone': k}, 'value': v} for k, v in inputs.items()]
+    script = ''.join(parts) + f'const errors = {{}};\nconst out = collectPhones({json.dumps(saved)}, ' \
+        f'{json.dumps(fields)}, errors);\nconsole.log(JSON.stringify([out, errors]));\n'
+    res = subprocess.run(['node'], input=script, capture_output=True, text=True, encoding='utf-8', check=True)
+    return json.loads(res.stdout)
+
+
+@pytest.mark.skipif(shutil.which('node') is None, reason='нет node')
+def test_js_collect_phones_keeps_hidden_and_deletes_empty():
+    saved = {'5': '091000000', '7': '091111111', '9': '091222222'}
+    out, errors = _js_collect(saved, {'7': '', '9': '\u202a+374 (91) 12-34.56\u202c', '11': '010 00 00 01'})
+    assert errors == {} and out == {'5': '091000000', '9': '+37491123456', '11': '010000001'}   # 5 — вне карточки
+    assert _check(out) == ({**_check({})[0], 'agent_phones': {'5': '091000000', '9': '+37491123456',
+                                                              '11': '010000001'}}, {})       # сервер принимает то же
+    out, errors = _js_collect(saved, {'7': '12'})
+    assert errors == {'settings.agent_phones.7': 'Հեռախոսը՝ թվերով, օրինակ +37491123456 կամ 091123456'}
+    assert out['7'] == '091111111'                                                           # не сохраняется
 
 
 if __name__ == '__main__':

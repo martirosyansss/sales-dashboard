@@ -408,6 +408,7 @@
         d.expeditors = Array.isArray(d.expeditors) ? d.expeditors : [];
         d.managers = Array.isArray(d.managers) ? d.managers : [];
         d.dispatch_agents = Array.isArray(d.dispatch_agents) ? d.dispatch_agents : [];
+        d.phone_agents = Array.isArray(d.phone_agents) ? d.phone_agents : d.dispatch_agents;
         d.customer_groups = Array.isArray(d.customer_groups) ? d.customer_groups : [];
         d.season = (d.season && typeof d.season === 'object') ? d.season : {};
         return d;
@@ -1336,18 +1337,32 @@
 
     // ---------- Телефоны менеджеров (09.10): «Առաքիչ» показывает менеджера магазина и кнопку звонка; в ERP номера нет ----------
     // В настройки — agent_id → номер (agent_phones); у менеджеров вне списка карточки номер остаётся (collect)
-    const PHONE_SEP = /[\s\-().]/g;     // как store._AGENT_PHONE_SEP
+    // разделители и невидимые знаки из контактов / WhatsApp — копия store._AGENT_PHONE_SEP, менять вместе
+    const PHONE_SEP = /[\s\-().\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g;
     const PHONE_RE = /^\+?\d{6,15}$/;   // как store.AGENT_PHONE_RE
     const PHONE_ERR = 'Հեռախոսը՝ թվերով, օրինակ +37491123456 կամ 091123456';
     const savedPhones = () => {
         const p = state.data.settings.agent_phones;
         return (p && typeof p === 'object' && !Array.isArray(p)) ? p : {};
     };
+    // Номера для сохранения: от сохранённых (карточки нет — как были), поля карточки — поверх; пустое поле — номера нет;
+    // неверный — в errors у поля менеджера
+    function collectPhones(saved, inputs, errors) {
+        const phones = Object.assign({}, saved);
+        inputs.forEach(inp => {
+            const id = inp.dataset.agentPhone, v = String(inp.value).replace(PHONE_SEP, '');
+            if (!v) delete phones[id];
+            else if (!PHONE_RE.test(v)) errors['settings.agent_phones.' + id] = PHONE_ERR;
+            else phones[id] = v;
+        });
+        return phones;
+    }
     function renderAgentPhones() {
         const box = $('rsAgentPhones');
         box.textContent = '';
         const phones = savedPhones();
-        const list = state.data.dispatch_agents;
+        // список карточки «чьи заказы везём» и в конце — менеджеры с сохранённым номером вне его (phone_agents сервера)
+        const list = state.data.phone_agents;
         if (!list.length) {
             box.append(h('p', { class: 'rt-field-hint', text: 'Մենեջերների ցուցակը դեռ բեռնված չէ ERP-ից։' }));
             return;
@@ -2055,16 +2070,7 @@
             s.dispatch_agents_off = keep.filter(cb => !cb.checked).map(cb => Number(cb.value)).sort((a, b) => a - b);
             if (!keep.some(cb => cb.checked)) errors['settings.dispatch_agents_off'] = 'Նշեք գոնե մեկ մենեջեր, որի պատվերներն ենք տանում';
         }
-        // телефоны менеджеров (09.10): от сохранённых (менеджеры вне списка карточки — как были), поля карточки — поверх;
-        // пустое поле — номера нет
-        const phones = Object.assign({}, savedPhones());
-        document.querySelectorAll('#rsForm [data-agent-phone]').forEach(inp => {
-            const id = inp.dataset.agentPhone, v = String(inp.value).replace(PHONE_SEP, '');
-            if (!v) delete phones[id];
-            else if (!PHONE_RE.test(v)) errors['settings.agent_phones.' + id] = PHONE_ERR;
-            else phones[id] = v;
-        });
-        s.agent_phones = phones;
+        s.agent_phones = collectPhones(savedPhones(), [...document.querySelectorAll('#rsForm [data-agent-phone]')], errors);
         // №74: «ինքն է տանում» менеджеров — машинами (списка нет — как было), города-исключения, клиенты «не везём»
         const fleet = [...document.querySelectorAll('#rsForm [data-fleet-agent]')];
         if (fleet.length) s.dispatch_fleet_agents = fleet.filter(cb => cb.checked).map(cb => Number(cb.value)).sort((a, b) => a - b);

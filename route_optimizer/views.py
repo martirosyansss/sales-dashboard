@@ -585,6 +585,7 @@ def api_settings_get() -> Any:
         'car_idle_days': CAR_IDLE_DAYS,
         'managers': _managers_json(snap, bundle),
         'dispatch_agents': _dispatch_agents_json(snap, bundle),
+        'phone_agents': _phone_agents_json(snap, bundle),
         'customer_groups': _groups_json(snap),
         'season': {
             'index': {str(m): round(v, 2) for m, v in sorted((snap.season_index or {}).items())},
@@ -858,6 +859,20 @@ def _dispatch_agents_json(snap: Snapshot, bundle: Bundle) -> list[dict[str, Any]
                     'area': agent.area if agent else ''})
     out.sort(key=lambda a: (not (a['name'] or a['code']), a['name'] or a['code'], a['agent_id']))
     return out
+
+
+def _phone_agents_json(snap: Snapshot, bundle: Bundle) -> list[dict[str, Any]]:
+    """Менеджеры карточки «Մենեջերների հեռախոսները» (09.10): список карточки «чьи заказы везём» и в конце (extra) — все
+    с сохранённым номером вне его (работы за 8 недель нет, закрыт в ERP): номер видно и можно убрать."""
+    listed = [{**a, 'extra': False} for a in _dispatch_agents_json(snap, bundle)]
+    have = {a['agent_id'] for a in listed}
+    extra = []
+    for agent_id in {int(k) for k in bundle.settings.get('agent_phones', {})} - have:
+        agent = snap.agents.get(agent_id)
+        extra.append({'agent_id': agent_id, 'code': agent.code if agent else '', 'name': agent.name if agent else '',
+                      'area': agent.area if agent else '', 'extra': True})
+    extra.sort(key=lambda a: (not (a['name'] or a['code']), a['name'] or a['code'], a['agent_id']))
+    return listed + extra
 
 
 def _managers_json(snap: Snapshot, bundle: Bundle) -> list[dict[str, Any]]:
