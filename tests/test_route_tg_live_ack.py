@@ -279,6 +279,57 @@ def test_review2_broken_record_is_logged_once(tmp_path, caplog, monkeypatch):
     assert caplog.text.count('не сверена') == 1
 
 
+# ============================== ревью 3 (gate) ==============================
+
+def test_review3_refresh_only_keys_written_by_the_bot(tmp_path):
+    morning = (NOW - timedelta(hours=2)).isoformat()
+    h = Harness(tmp_path, {'CAR1': card(late('c1', 40, 'plan'))}, NOW)
+    h.store.live_ack_put(DAY, [('CAR1', 'late:window', None)], 'morning', morning)   # утренняя чужая отметка
+    h.tick()
+    h.bot.handle(callback(h, h.bot.sign(f'a:{h.rec("late:").id}')))
+    assert h.rec('late:').payload['map_keys'] == ['late:plan']
+    t = NOW + timedelta(minutes=6)
+    h.set(now=t, cards={'CAR1': card(late('c1', 40, 'plan', now=t))})
+    h.tick()
+    got = rows(h)
+    assert got[('CAR1', 'late:plan')]['seen_at'] == t.isoformat()
+    assert got[('CAR1', 'late:window')]['seen_at'] == morning                # не ожила: ухудшение до окна — снова мигает
+
+
+def test_review3_refresh_at_most_every_five_minutes(tmp_path, monkeypatch):
+    h = Harness(tmp_path, {'CAR1': card(late('c1', 20, 'window'))}, NOW)
+    h.tick()
+    h.bot.handle(callback(h, h.bot.sign(f'a:{h.rec("late:").id}')))
+    calls = []
+    real = h.store.live_ack_put
+
+    def counting(day, items, user, at, refresh=False):
+        calls.append(refresh)
+        return real(day, items, user, at, refresh)
+    monkeypatch.setattr(h.store, 'live_ack_put', counting)
+    for minutes in (1, 2, 3, 4, 5, 6, 7):
+        t = NOW + timedelta(minutes=minutes)
+        h.set(now=t, cards={'CAR1': card(late('c1', 20, 'window', now=t))})
+        h.tick()
+    assert calls == [True]                                                   # один раз — на 5-й минуте
+
+
+def test_review3_map_items_failure_is_logged_and_bad_page_rows_do_not_cancel_escalation(tmp_path, caplog, monkeypatch):
+    h = Harness(tmp_path, gps_card(), NOW)
+    h.tick()
+    rec = h.rec('alert:')
+    monkeypatch.setattr(la, 'map_ack_items', lambda r: (_ for _ in ()).throw(ValueError('x')))
+    h.bot.handle(callback(h, h.bot.sign(f'a:{rec.id}')))
+    assert h.rec('alert:').acked_by == 7 and 'не передана карте' in caplog.text
+    # битая строка карты при эскалации — «нет отметки», эскалация уходит (а не пропадает в _rejected)
+    h2 = Harness(tmp_path, gps_card(), NOW, db='b.db')
+    h2.tick()
+    monkeypatch.setattr(la, 'map_ack_match', lambda *a, **kw: (_ for _ in ()).throw(TypeError('bad row')))
+    h2.set(now=NOW + timedelta(minutes=10))
+    h2.tick()
+    assert [t for t in h2.api.texts() if t.startswith('❗')] and h2.rec('alert:').escalated_at is not None
+
+
 def test_keys_match_the_page_on_real_live_output():
     """Настоящий вывод live.car_view: ключ страницы — вид, случай — alerts.since[вид]; ключ бота и отметка карты из
     него — то же (машина, вид, since)."""

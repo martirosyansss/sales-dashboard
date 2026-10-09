@@ -94,6 +94,7 @@ NO_PREVIEW = {'is_disabled': True}
 TEXT_MAX = 4096                # символов в сообщении (Telegram)
 MAP_ACKED_BY = 0               # acked_by записи, подтверждённой на карте (Telegram id людей — положительные)
 MAP_ACKED_NAME = 'քարտեզ'      # имя, если у отметки карты нет пользователя
+MAP_REFRESH = timedelta(minutes=5)   # «не успеет» из Telegram на карте подтверждается не чаще (страница ждёт ≤ 10 мин)
 SUMMARY_STALE_MIN = 60         # итог дня позже tg_summary_at больше чем на столько (бот запущен поздно) — не шлётся
 ACKED = 'Գրանցված է'
 
@@ -665,6 +666,8 @@ class TgBot:
             rec.escalated_at, rec.sent_at = None, now.isoformat()
             rec.payload.pop('minutes', None)
             rec.payload.pop('critical_at', None)
+            rec.payload.pop('map_keys', None)   # отметки карты прежнего случая бот больше не подтверждает
+            rec.payload.pop('map_refreshed', None)
         if act.level == 'critical' and old.level != 'critical':   # стало 🔴 (окно, возврат) — эскалация отсюда
             rec.payload['critical_at'] = now.isoformat()
         rec.level = act.level
@@ -1077,11 +1080,11 @@ class TgBot:
         Сбой базы — в журнал (в Telegram «Տեսա» уже записана)."""
         if rec.phase != 'active':   # кончившаяся (старая кнопка) не перетирает отметку нового случая того же вида
             return
-        got = la.map_ack_items(rec)
-        if got is None:
-            return
-        day, items = got
         try:
+            got = la.map_ack_items(rec)
+            if got is None:
+                return
+            day, items = got
             # старая кнопка (у отклонения начало плавает — прежняя запись «идёт» до конца дня) не перетирает отметку
             # более позднего случая того же вида
             current = {(r['car'], r['key']): r.get('since') for r in self.store.live_acks(day)}
@@ -1089,6 +1092,10 @@ class TgBot:
                                                                                 LIVE_ACK_SINCE_TOL)]
             if items:
                 self.store.live_ack_put(day, items, rec.acked_name, rec.acked_at or self.feeds.now().isoformat())
+                if rec.key.startswith('late:'):   # что именно записано — только это бот и подтверждает (_refresh_map_late)
+                    rec.payload['map_keys'] = [k for _, k, _ in items]
+                    rec.payload['map_refreshed'] = self.feeds.now().isoformat()
+                    self._persist(rec)
         except Exception:
             logger.exception('[Routes] Telegram-бот: «Տեսա» %s не передана карте', rec.key)
 
@@ -1100,25 +1107,34 @@ class TgBot:
             return None
         try:
             rows = self.store.live_acks(day)
+            # битые строки карты — как «нет отметки»: иначе эскалация ушла бы в _rejected и пропала
+            return la.map_ack_match(rec, rows, LIVE_ACK_SINCE_TOL, self.feeds.now(), LIVE_ACK_FLAP)
         except Exception as e:
             logger.warning('[Routes] Telegram-бот: «Տեսա» карты за %s не прочитаны (%s)', day, type(e).__name__)
             return None
-        return la.map_ack_match(rec, rows, LIVE_ACK_SINCE_TOL, self.feeds.now(), LIVE_ACK_FLAP)
 
     def _refresh_map_late(self) -> None:
         """«Не успеет», подтверждённое в Telegram и ещё идущее: отметки карты без начала страница признаёт, пока их
-        подтверждали не дольше LIVE_ACK_FLAP назад, — бот подтверждает их каждый проход (live_ack_put refresh: строк не
-        создаёт, кто и когда нажал — не меняет). Сбой базы — в журнал."""
-        now = self.feeds.now().isoformat()
+        подтверждали не дольше LIVE_ACK_FLAP назад, — бот подтверждает ровно те ключи, что сам записал (payload.map_keys:
+        утренняя чужая late:window не оживает), не чаще MAP_REFRESH (live_ack_put refresh: строк не создаёт, кто и
+        когда нажал — не меняет). Сбой базы — в журнал."""
+        now = self.feeds.now()
         with self.lock:
-            todo = [(r.key.rsplit('|', 1)[1], r.car) for r in self.records.values()
-                    if r.key.startswith('late:') and r.phase == 'active' and r.acked_by not in (None, MAP_ACKED_BY)
-                    and r.car]
-        for day, car in todo:
-            try:   # оба ключа: «к окну» могло ослабнуть до «к плану» (страница принимает и late:window); refresh строк
-                # не создаёт — подтверждается только то, что отмечено
-                self.store.live_ack_put(day, [(car, 'late:window', None), (car, 'late:plan', None)], None, now,
-                                        refresh=True)
+            todo = []
+            for r in self.records.values():
+                last = la._moment(r.payload.get('map_refreshed'))
+                if (r.key.startswith('late:') and r.phase == 'active' and r.acked_by not in (None, MAP_ACKED_BY)
+                        and r.car and r.payload.get('map_keys') and (last is None or now - last >= MAP_REFRESH)):
+                    todo.append(r)
+        for r in todo:
+            try:
+                self.store.live_ack_put(r.key.rsplit('|', 1)[1], [(r.car, k, None) for k in r.payload['map_keys']],
+                                        None, now.isoformat(), refresh=True)
+                with self.lock:
+                    cur = self.records.get(r.key)
+                    if cur is not None:
+                        cur.payload['map_refreshed'] = now.isoformat()
+                        self._persist(cur)
             except Exception as e:
                 logger.warning('[Routes] Telegram-бот: «Տեսա» «не успеет» на карте не подтверждена (%s)', type(e).__name__)
 
@@ -1136,6 +1152,9 @@ class TgBot:
             if tg_api.throttled(e):
                 new.payload['ack_edit'] = True
             logger.warning('[Routes] Telegram-бот: «Տեսա» карты %s записана, сообщение не исправлено (%s)', rec.key, e)
+            if chat_wide(e):   # ошибка всего чата — записать отметку и наверх (пауза прохода, счёт до остановки)
+                self._persist(new)
+                raise
         self._persist(new)
         return done
 
