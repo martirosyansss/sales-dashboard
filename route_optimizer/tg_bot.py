@@ -27,6 +27,13 @@ pending_acks до ответа: эскалация такой записи не 
 разметка, длина, кнопка), — в журнал и запись failed, проход идёт дальше (tg_api.per_message); к остановке рассылки
 ведут только ошибки всего чата (tg_api.chat_wide).
 
+«Տեսա» общая с картой «Մեքենաները առցանց» (live_ack, схема 28 — владелец таблицы страница, бот только её API):
+нажата в Telegram — после записи в tg_message отметка карты (Store.live_ack_put: тревога — вид и её начало, «не
+успеет» — late:window / late:plan идущих строк без начала), страница перестаёт мигать; нажата на карте — проход
+(_sync_map_acks, до эскалации; и перепроверка вплотную к отправке эскалации) находит отметку того же случая
+(la.map_ack_match: то же начало, у отклонения ±3 мин; «не успеет» — отметка не раньше начала случая), ставит «✔ Տեսավ
+<кто на карте>» и снимает кнопку — эскалации нет. Обратно на карту не пишется — петли нет.
+
 Темы: группа — форум и бот — админ с правом «Управление темами» → при старте создаются недостающие темы (TOPICS), их id —
 в tg_kv; тревоги «нет связи»/GPS — в 🔴, «не успеет» — в ⏰, прочие — в 🚚, отчёты — в 📊. Не форум или нет прав — всё в
 общий чат; тему удалили — сообщение в общий чат, темы создаются заново. Группа стала супергруппой (400
@@ -60,6 +67,7 @@ from . import tg_api
 from . import tg_reports as rp
 from .live import Rules
 from .live_alerts import Rec
+from .store import LIVE_ACK_SINCE_TOL
 from .tg_api import TelegramError, chat_wide, per_message
 
 logger = logging.getLogger(__name__)
@@ -84,6 +92,8 @@ COMMANDS = [{'command': 'where', 'description': 'Որտեղ է մեքենան (�
             {'command': 'help', 'description': 'Օգնություն'}]
 NO_PREVIEW = {'is_disabled': True}
 TEXT_MAX = 4096                # символов в сообщении (Telegram)
+MAP_ACKED_BY = 0               # acked_by записи, подтверждённой на карте (Telegram id людей — положительные)
+MAP_ACKED_NAME = 'քարտեզ'      # имя, если у отметки карты нет пользователя
 SUMMARY_STALE_MIN = 60         # итог дня позже tg_summary_at больше чем на столько (бот запущен поздно) — не шлётся
 ACKED = 'Գրանցված է'
 
@@ -112,6 +122,16 @@ def fit(text: str) -> str:
             n -= 64
         return html.escape(plain[:n], quote=False) + '…'
     return text[:cut] + '\n…'
+
+
+def _map_day(rec: Rec) -> str | None:
+    """День отметки карты для записи: тревога — дата её начала по Еревану, «не успеет» — день из ключа."""
+    if rec.key.startswith('alert:'):
+        t = la._moment(rec.key.split('|', 2)[2])
+        return t.astimezone(ac.YEREVAN).date().isoformat() if t is not None else None
+    if rec.key.startswith('late:'):
+        return rec.key.rsplit('|', 1)[1]
+    return None
 
 
 def _person(user: Mapping[str, Any]) -> str:
@@ -485,6 +505,7 @@ class TgBot:
                 self._idle()
                 with self.lock, tg_api.no_wait():
                     done += self._guard(act.key, lambda act=act: self._apply(act, cards, now, quiet), act, now)
+            done += self._sync_map_acks()   # «Տեսա» карты — до эскалации: подтверждённое на карте не поднимается
             with self.lock:
                 due = la.due_escalations(self.records, p.active, tg, now, quiet) if live is not None else []
             for rec in due:
@@ -685,6 +706,9 @@ class TgBot:
         text = f'❗ <b>{n} րոպե առանց պատասխանի</b>\n{what}' + (f'\n{mention}' if mention else '')
         if self._acked(rec):   # перепроверка вплотную к отправке: «Տեսա» могла прийти, пока собирали текст
             return 0
+        row = self._map_row(rec)   # и на карте: «Տեսա» диспетчера между синхронизацией и этой отправкой
+        if row is not None:
+            return self._from_map(rec, row)
         sent = 1
         try:
             self._send(rec.chat or self.chat, text, thread=rec.thread_id, reply_to=rec.message_id)
@@ -1042,4 +1066,81 @@ class TgBot:
             logger.warning('[Routes] Telegram-бот: «Տեսա» записано, сообщение не исправлено (%s)%s', e,
                            ' — повтор следующим проходом' if tg_api.throttled(e) else '')
         self._persist(rec)
+        self._map_ack(rec)
         return ACKED
+
+    # --- общая «Տեսա» с картой «Մեքենաները առցանց» (live_ack, схема 28) ---
+
+    def _map_ack(self, rec: Rec) -> None:
+        """«Տեսա» в Telegram → отметка карты (Store.live_ack_put): страница перестаёт мигать и пишет «Տեսավ՝ имя».
+        Сбой базы — в журнал (в Telegram «Տեսա» уже записана)."""
+        got = la.map_ack_items(rec)
+        if got is None:
+            return
+        day, items = got
+        try:
+            self.store.live_ack_put(day, items, rec.acked_name, rec.acked_at or self.feeds.now().isoformat())
+        except Exception:
+            logger.exception('[Routes] Telegram-бот: «Տեսա» %s не передана карте', rec.key)
+
+    def _map_row(self, rec: Rec) -> Mapping[str, Any] | None:
+        """Отметка карты, которой страница считает проблему записи подтверждённой (la.map_ack_match); сбой — None."""
+        day = _map_day(rec)
+        if day is None:
+            return None
+        try:
+            rows = self.store.live_acks(day)
+        except Exception:
+            logger.exception('[Routes] Telegram-бот: «Տեսա» карты за %s не прочитаны', day)
+            return None
+        return la.map_ack_match(rec, rows, LIVE_ACK_SINCE_TOL)
+
+    def _from_map(self, rec: Rec, row: Mapping[str, Any]) -> int:
+        """«Տեսա» на карте → запись Telegram: кто (acked_by 0 — с карты, имя — пользователь карты) и когда, правка
+        сообщения «✔ Տեսավ …» без кнопки (очередь, 429, сеть — ack_edit, следующим проходом). Обратно на карту не
+        пишется (отметка уже там) — петли нет."""
+        new = replace(rec, acked_by=MAP_ACKED_BY, acked_name=str(row.get('user') or MAP_ACKED_NAME)[:64],
+                      acked_at=str(row.get('at') or self.feeds.now().isoformat()),
+                      payload={**rec.payload, 'acked_via': 'map'})
+        done = 0
+        try:
+            done = int(self._edit(new))
+        except TelegramError as e:
+            if tg_api.throttled(e):
+                new.payload['ack_edit'] = True
+            logger.warning('[Routes] Telegram-бот: «Տեսա» карты %s записана, сообщение не исправлено (%s)', rec.key, e)
+        self._persist(new)
+        return done
+
+    def _sync_map_acks(self) -> int:
+        """Отметки карты → записи Telegram: идущие неподтверждённые тревоги и «не успеет», у которых на карте есть
+        «Տեսա» того же случая. Чтение базы — вне замка (по дню один раз), правка — по записи под замком."""
+        with self.lock:
+            todo = [r.key for r in self.records.values() if r.phase == 'active' and r.acked_by is None
+                    and r.key.startswith(('alert:', 'late:'))]
+        days: dict[str, list[dict[str, Any]]] = {}
+        done = 0
+        for key in todo:
+            rec = self.records.get(key)
+            if rec is None:
+                continue
+            day = _map_day(rec)
+            if day is None:
+                continue
+            if day not in days:
+                try:
+                    days[day] = self.store.live_acks(day)
+                except Exception:
+                    logger.exception('[Routes] Telegram-бот: «Տեսա» карты за %s не прочитаны', day)
+                    days[day] = []
+            if not days[day]:
+                continue
+            self._idle()
+            with self.lock, tg_api.no_wait():
+                rec = self.records.get(key)   # заново под замком: «Տեսա» в Telegram могла прийти раньше
+                if rec is None or rec.acked_by is not None or rec.phase != 'active' or self._acked(rec):
+                    continue
+                row = la.map_ack_match(rec, days[day], LIVE_ACK_SINCE_TOL)
+                if row is not None:
+                    done += self._from_map(rec, row)
+        return done

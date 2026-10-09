@@ -561,6 +561,66 @@ def plan(cards: Mapping[str, Mapping[str, Any]], rules: Rules, tg: TgRules, now:
     return Plan(out, frozenset(active))
 
 
+# --- общая «Տեսա» с картой «Մեքենաները առցանց» (live_ack, схема 28; страница — routes_live.js problemsOf / serverAck) ---
+
+def _late_page_key(lines: Mapping[str, Mapping[str, Any]]) -> str | None:
+    """Ключ проблемы «не успеет» на странице: к окну или к возврату на склад — late:window, только к плану — late:plan
+    (routes_live.js alarmSev); строк нет — None."""
+    live = [x for x in lines.values() if not x.get('calm')]
+    if not live:
+        return None
+    return 'late:window' if any(x.get('kind') in ('window', 'return') for x in live) else 'late:plan'
+
+
+def map_ack_items(rec: Rec) -> tuple[str, list[tuple[str, str, str | None]]] | None:
+    """«Տեսա» в Telegram → отметка карты: (день, [(машина, ключ, since)]) для Store.live_ack_put; None — нечего отмечать.
+    Тревога: ключ — вид, since — её начало (from), день — дата начала по Еревану. «Не успеет» (одно сообщение на машину
+    в день): ключ по идущим строкам (к окну/возврату — late:window, к плану — late:plan), since — null, день — из ключа."""
+    if not rec.car:
+        return None
+    if rec.key.startswith('alert:'):
+        start = rec.key.split('|', 2)[2]
+        t = _moment(start)
+        return (t.astimezone(ac.YEREVAN).date().isoformat(), [(rec.car, rec.kind, start)]) if t is not None else None
+    if rec.key.startswith('late:'):
+        lines = rec.payload.get('lines') or {}
+        live = [x for x in lines.values() if not x.get('calm')]
+        keys = sorted({'late:window' if x.get('kind') in ('window', 'return') else 'late:plan' for x in live})
+        return (rec.key.rsplit('|', 1)[1], [(rec.car, k, None) for k in keys]) if keys else None
+    return None
+
+
+def map_ack_match(rec: Rec, rows: Sequence[Mapping[str, Any]], tol: timedelta) -> Mapping[str, Any] | None:
+    """Отметка карты (строка live_acks дня), которой страница считает проблему записи подтверждённой: та же машина и
+    вид, тот же случай — since == начало тревоги (у отклонения — в пределах tol, как sameCase страницы). «Не успеет»:
+    ключ строки — нужный (late:window; к плану — и late:window, как serverRow страницы), отметка не раньше начала
+    случая записи (sent_at): прежний случай того же дня не в счёт. Нет — None."""
+    if not rec.car:
+        return None
+    if rec.key.startswith('alert:'):
+        start = _moment(rec.key.split('|', 2)[2])
+        for row in rows:
+            if row.get('car') != rec.car or row.get('key') != rec.kind:
+                continue
+            since = _moment(row.get('since'))
+            if since is not None and start is not None and (
+                    since == start or (rec.kind == 'deviation' and abs(since - start) <= tol)):
+                return row
+        return None
+    if rec.key.startswith('late:'):
+        need = _late_page_key(rec.payload.get('lines') or {})
+        began = _moment(rec.sent_at)
+        if need is None or began is None:
+            return None
+        accept = {need, 'late:window'}
+        for row in rows:
+            at = _moment(row.get('seen_at')) or _moment(row.get('at'))
+            if (row.get('car') == rec.car and row.get('key') in accept and at is not None
+                    and at >= began):
+                return row
+    return None
+
+
 def due_escalations(records: Mapping[str, Rec], active: frozenset[str], tg: TgRules, now: datetime,
                     quiet: bool) -> list[Rec]:
     """🔴 записи, которым пора эскалация: сообщение есть, «Տեսա» никто не нажал escalate_min минут, тревога идёт
