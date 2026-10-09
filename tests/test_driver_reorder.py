@@ -196,7 +196,7 @@ def test_dispatch_page_assets_tight_and_setting():
     assert "routes_dispatch.js') }}?v=110" in (ROOT / 'templates' / 'routes_dispatch.html').read_text(encoding='utf-8')
     settings = (ROOT / 'static' / 'js' / 'routes_settings.js').read_text(encoding='utf-8')
     assert "key: 'until_buffer_min', label: 'Ժամկետի պաշար, րոպե'" in settings
-    assert "routes_settings.js') }}?v=42" in (ROOT / 'templates' / 'routes_settings.html').read_text(encoding='utf-8')
+    assert "routes_settings.js') }}?v=43" in (ROOT / 'templates' / 'routes_settings.html').read_text(encoding='utf-8')
 
 
 # ============================== /day: срок, рейсы и матрица ==============================

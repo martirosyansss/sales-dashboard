@@ -136,9 +136,11 @@ def _hm(minutes: float) -> str | None:
 
 def build_stops(data: DayData, order: list[int], points: Mapping[int, Point | None],
                 marks: Mapping[int, MarkSetting],
-                windows: Mapping[int, tuple[float, float]] | None = None) -> list[dict[str, Any]]:
+                windows: Mapping[int, tuple[float, float]] | None = None, *,
+                agent_phones: Mapping[int, str] | None = None) -> list[dict[str, Any]]:
     """Точки в порядке объезда (клиенты order; у клиента — накладные по номеру), seq с 1. windows — окна приёма дня
-    (клиент → (не раньше, не позже), минуты): срок магазина until и начало окна until_from (№93), нет — null."""
+    (клиент → (не раньше, не позже), минуты): срок магазина until и начало окна until_from (№93), нет — null.
+    agent_phones — телефоны менеджеров из настроек (agent_id → номер, 09.10): agent_phone точки, нет — null."""
     by_customer: dict[int, list[Doc]] = {}
     for d in data.docs:
         by_customer.setdefault(d.customer_id, []).append(d)
@@ -163,6 +165,8 @@ def build_stops(data: DayData, order: list[int], points: Mapping[int, Point | No
                 'until': _hm((windows or {}).get(cid, (-math.inf, math.inf))[1]),
                 'until_from': _hm((windows or {}).get(cid, (-math.inf, math.inf))[0]),
                 'agent_name': data.agents.get(doc.agent_id, ''),
+                # телефон менеджера магазина (09.10, контракт v1.9 §13): настройка «Մենեջերների հեռախոսները», нет — null
+                'agent_phone': (agent_phones or {}).get(doc.agent_id),
                 'pay_type': doc.pay_type or None,
                 'collect': collect_for(doc.pay_type),
                 'amount_due': round(doc.amount, 2),
@@ -275,7 +279,7 @@ def day_payload(data: DayData, view: RoutesView, store: Store, loaded_at: dateti
     dist = distance_fn(view, [p for p in points.values() if p is not None] + ([view.depot] if view.depot else []))
     # №80: порядок плана — только выпущенного (до утверждения — как без плана)
     order, source = order_customers(points, view.depot, view.car_customers(data.car_code) if view.released else [], dist)
-    stops = build_stops(data, order, points, store.mark_settings(), view.windows)
+    stops = build_stops(data, order, points, store.mark_settings(), view.windows, agent_phones=view.agent_phones)
     tare_types = [{'tare_id': f'erp:{tid}', 'name': name} for tid, name in sorted(data.tare_names.items())]
     tare_types += [{'tare_id': f'custom:{t["id"]}', 'name': t['name']} for t in store.tare_custom()]
     return {
@@ -334,7 +338,9 @@ def demo_data() -> tuple[DayData, RoutesView, datetime]:
                    containers=(ContainerLink(990019, 990202, 1.0, 1.0),), tare_names={990202: 'Պոլիմերային տարա 20լ'},
                    gps={}, debts={900001: 5000.0, 900002: 0.0, 900003: 15000.0})
     # демо-день — обычный рабочий день: «план утверждён» (№80), точки — накладные демо, плана нет
-    return data, RoutesView(depot=(40.18, 44.51), released=True), datetime(2000, 1, 1, 8, 0, tzinfo=clock.YEREVAN)
+    # у тестового менеджера — телефон (09.10): демо показывает кнопку звонка менеджеру
+    return (data, RoutesView(depot=(40.18, 44.51), released=True, agent_phones={1: '+37410000009'}),
+            datetime(2000, 1, 1, 8, 0, tzinfo=clock.YEREVAN))
 
 
 # --- Сервис с кэшем ---

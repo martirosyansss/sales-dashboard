@@ -604,6 +604,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # «Развоз» (№74): клиенты (customer_id ERP), чьи заказы машины не везут никогда (внутренние счета, экспорт) —
     # отмечает владелец. Пусто — везём всех
     'dispatch_customers_off': [],
+    # Телефон менеджера у водителя (запрос владельца 09.10 «телефон менеджера у водителя»): agent_id ERP
+    # (SALESAGENTS.fID, ключ — строка JSON) → номер; «Առաքիչ» показывает менеджера магазина и кнопку звонка. В ERP
+    # телефона менеджера нет — вводит владелец. Нет ключа — пусто (кнопки нет)
+    'agent_phones': {},
     # «Развоз»: граница малого центра (№39–41) — вершины [широта, долгота]; туда въезжают только машины с правом
     # въезда. Стартовая — примерно кольцо бульваров Кентрона, владелец правит на карте. Нет ключа — она
     'center_zone': [[40.1915, 44.5070], [40.1925, 44.5170], [40.1890, 44.5245], [40.1800, 44.5265],
@@ -754,6 +758,11 @@ MAX_FLEET_AGENTS = 500  # менеджеров, чьи заказы «везёт
 MAX_OTHER_CITIES = 50   # городов-исключений этого правила (№74)
 CITY_NAME_MAX = 40      # символов в названии города
 MAX_CUSTOMERS_OFF = 2000   # клиентов «машины не везут» (№74)
+MAX_AGENT_PHONES = 500     # телефонов менеджеров (09.10) — как MAX_AGENTS_OFF
+# телефон менеджера после снятия пробелов, «-», «(», «)», «.»: необязательный «+» и 6–15 цифр (E.164 — до 15)
+AGENT_PHONE_RE = re.compile(r'\+?[0-9]{6,15}')   # fullmatch; [0-9], не \d: только ASCII-цифры
+_AGENT_PHONE_SEP = re.compile(r'[\s\-().]')
+_AGENT_ID_KEY = re.compile(r'[1-9][0-9]{0,9}')       # fullmatch
 CENTER_ZONE_VERTICES = (3, 200)      # и у зоны Еревана (№68; она ещё может быть пустой — правило выключено)
 BIG_TRUCK_AUTO_KG = 5000             # «большая машина» по умолчанию (№68): тоннаж от 5 т
 YEREVAN_KM_STEPS = (0, 1, 3, 10)     # сила приоритета малых машин в Ереване (№68) — ступени ползунка страницы
@@ -1583,6 +1592,7 @@ def validate_settings(values: Mapping[str, Any],
             errors[key] = f'{what} համարները՝ դրական ամբողջ թվեր'
         else:
             out[key] = sorted(set(ids))
+    _validate_agent_phones(values, out, errors)
     # города-исключения: названия как ввели (пробелы по краям — мимо), повтор без учёта регистра — один раз
     cities = values.get('dispatch_other_cities', DEFAULT_SETTINGS['dispatch_other_cities'])
     if not isinstance(cities, list) or len(cities) > MAX_OTHER_CITIES:
@@ -1675,6 +1685,36 @@ def validate_settings(values: Mapping[str, Any],
     else:
         out['yerevan_zone'] = [[float(p[0]), float(p[1])] for p in zone]
     return out, errors
+
+
+def _validate_agent_phones(values: Mapping[str, Any], out: dict[str, Any], errors: dict[str, str]) -> None:
+    """Телефоны менеджеров (09.10): {agent_id: номер}. Ключ — id ERP 1 … 2³¹−1 (строка цифр из JSON или int); номер —
+    строка, пробелы, «-», «(», «)», «.» убираются, остаток — «+» и 6–15 цифр; пустой остаток (или null) — записи нет.
+    Ошибка номера — по ключу agent_phones.<id> (страница показывает её у поля менеджера). Итог — строковые ключи по
+    возрастанию id: JSON базы стабилен. Нет ключа — пусто (база до этой настройки)."""
+    raw = values.get('agent_phones', {})
+    if not isinstance(raw, dict) or len(raw) > MAX_AGENT_PHONES:
+        errors['agent_phones'] = f'սպասվում էր «մենեջեր → հեռախոս» աղյուսակ (ոչ ավելի, քան {MAX_AGENT_PHONES})'
+        return
+    phones: dict[int, str] = {}
+    bad_key = False
+    for key, value in raw.items():
+        if isinstance(key, bool) or not (isinstance(key, int) and 1 <= key < 2 ** 31
+                                         or isinstance(key, str) and _AGENT_ID_KEY.fullmatch(key) and int(key) < 2 ** 31):
+            bad_key = True
+            continue
+        agent_id = int(key)
+        phone = _AGENT_PHONE_SEP.sub('', value) if isinstance(value, str) else value
+        if phone is None or phone == '':
+            continue
+        if not isinstance(phone, str) or not AGENT_PHONE_RE.fullmatch(phone):
+            errors[f'agent_phones.{agent_id}'] = 'հեռախոսը՝ թվերով, օրինակ +37491123456 կամ 091123456'
+            continue
+        phones[agent_id] = phone
+    if bad_key:
+        errors['agent_phones'] = 'մենեջերների համարները՝ դրական ամբողջ թվեր'
+    elif not any(k.startswith('agent_phones.') for k in errors):
+        out['agent_phones'] = {str(a): phones[a] for a in sorted(phones)}
 
 
 def _validate_tg(values: Mapping[str, Any], out: dict[str, Any], errors: dict[str, str]) -> None:
