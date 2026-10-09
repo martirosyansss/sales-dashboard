@@ -23,7 +23,7 @@
     // 403 CSRF дашборда («сессия формы устарела») — не запрет доступа (как routes_learning.js и routes_garage.js)
     const CSRF_HY = 'Էջը հնացել է՝ թարմացրեք այն և կրկնեք։';
     const authText = (resp, data) => (resp.status === 403 && data && data.error === 'csrf' ? CSRF_HY : AUTH_HY[resp.status]);
-    const SECTIONS = ['depot', 'trucks', 'fuel', 'days', 'managers', 'center', 'yerevan', 'agents', 'fleet', 'custoff', 'norms', 'season', 'calibration'];
+    const SECTIONS = ['depot', 'trucks', 'fuel', 'days', 'managers', 'center', 'yerevan', 'agents', 'agentphones', 'fleet', 'custoff', 'norms', 'season', 'calibration'];
     const ZONE_MAX = 200;   // точек границы малого центра и зоны Еревана — как store.CENTER_ZONE_VERTICES
     const BIG_AUTO_T = 5;   // «большая машина» по умолчанию — тоннаж от 5 т (store.BIG_TRUCK_AUTO_KG, №68)
     // Сила приоритета малых машин в Ереване (№68, big_truck_yerevan_km): ступени ползунка — замеренные варианты
@@ -408,6 +408,7 @@
         d.expeditors = Array.isArray(d.expeditors) ? d.expeditors : [];
         d.managers = Array.isArray(d.managers) ? d.managers : [];
         d.dispatch_agents = Array.isArray(d.dispatch_agents) ? d.dispatch_agents : [];
+        d.phone_agents = Array.isArray(d.phone_agents) ? d.phone_agents : d.dispatch_agents;
         d.customer_groups = Array.isArray(d.customer_groups) ? d.customer_groups : [];
         d.season = (d.season && typeof d.season === 'object') ? d.season : {};
         return d;
@@ -433,6 +434,7 @@
         renderZone('center');
         renderYerevan();
         renderDispatchAgents();
+        renderAgentPhones();
         renderFleetAgents();
         renderCustomersOff();
         renderNorms();
@@ -1333,6 +1335,53 @@
             h('div', { style: 'display:flex;flex-wrap:wrap;gap:6px 18px;margin-bottom:8px' }, all, none), group, err));
     }
 
+    // ---------- Телефоны менеджеров (09.10): «Առաքիչ» показывает менеджера магазина и кнопку звонка; в ERP номера нет ----------
+    // В настройки — agent_id → номер (agent_phones); у менеджеров вне списка карточки номер остаётся (collect)
+    // разделители и невидимые знаки из контактов / WhatsApp — копия store._AGENT_PHONE_SEP, менять вместе
+    const PHONE_SEP = /[\s\-().\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g;
+    const PHONE_RE = /^\+?\d{6,15}$/;   // как store.AGENT_PHONE_RE
+    const PHONE_ERR = 'Հեռախոսը՝ թվերով, օրինակ +37491123456 կամ 091123456';
+    const savedPhones = () => {
+        const p = state.data.settings.agent_phones;
+        return (p && typeof p === 'object' && !Array.isArray(p)) ? p : {};
+    };
+    // Номера для сохранения: от сохранённых (карточки нет — как были), поля карточки — поверх; пустое поле — номера нет;
+    // неверный — в errors у поля менеджера
+    function collectPhones(saved, inputs, errors) {
+        const phones = Object.assign({}, saved);
+        inputs.forEach(inp => {
+            const id = inp.dataset.agentPhone, v = String(inp.value).replace(PHONE_SEP, '');
+            if (!v) delete phones[id];
+            else if (!PHONE_RE.test(v)) errors['settings.agent_phones.' + id] = PHONE_ERR;
+            else phones[id] = v;
+        });
+        return phones;
+    }
+    function renderAgentPhones() {
+        const box = $('rsAgentPhones');
+        box.textContent = '';
+        const phones = savedPhones();
+        // список карточки «чьи заказы везём» и в конце — менеджеры с сохранённым номером вне его (phone_agents сервера)
+        const list = state.data.phone_agents;
+        if (!list.length) {
+            box.append(h('p', { class: 'rt-field-hint', text: 'Մենեջերների ցուցակը դեռ բեռնված չէ ERP-ից։' }));
+            return;
+        }
+        const err = errNode();
+        const grid = h('div', { class: 'rt-form-grid', role: 'group', 'aria-labelledby': 'rsHAgentPhones', id: 'rsAgentPhonesList' });
+        list.forEach(a => {
+            const id = 'rsPhone_' + a.agent_id, fErr = errNode();
+            const name = a.name || a.code || ('մենեջեր ' + a.agent_id);
+            const inp = h('input', { class: 'rt-input', type: 'tel', inputmode: 'tel', autocomplete: 'off', maxlength: 24, id,
+                placeholder: '+37491123456', value: phones[String(a.agent_id)] || '', dataset: { agentPhone: String(a.agent_id) } });
+            reg(['settings.agent_phones.' + a.agent_id], inp, fErr, 'Հեռախոս՝ ' + name);
+            grid.append(h('div', { class: 'rt-field' },
+                h('label', { for: id, title: [a.code, a.area].filter(Boolean).join(' · ') || null, text: name }), inp, fErr));
+        });
+        reg(['settings.agent_phones'], grid, err, 'Մենեջերների հեռախոսները');
+        box.append(grid, err);
+    }
+
     // ---------- «Развоз» (№74): «ինքն է տանում» менеджеров, которые всё равно везут машины, и города-исключения ----------
     const CITIES_DEFAULT = ['Գյումրի', 'Կապան', 'Գորիս', 'Վանաձոր'];
     const splitCities = (text) => String(text || '').split(/[,;\n]/).map(x => x.trim().replace(/\s+/g, ' ')).filter(Boolean);
@@ -1691,6 +1740,12 @@
         set('rsStAgents', !keep.length || kept ? 'ok' : 'todo', !keep.length ? 'տանում ենք բոլորի պատվերները'
             : kept === keep.length ? 'բոլորը՝ ' + kept : !kept ? 'նշեք գոնե մեկ մենեջեր' : 'տանում ենք՝ ' + kept + ' / ' + keep.length);
 
+        // телефоны менеджеров (09.10) — необязательно: сколько заполнено (списка нет — сколько сохранено)
+        const phoneInps = [...document.querySelectorAll('#rsForm [data-agent-phone]')];
+        const nPhones = phoneInps.length ? phoneInps.filter(i => String(i.value).trim()).length : Object.keys(savedPhones()).length;
+        set('rsStAgentPhones', 'ok', !nPhones ? 'հեռախոսներ չկան'
+            : 'հեռախոս՝ ' + nPhones + (phoneInps.length ? ' / ' + phoneInps.length : ''));
+
         // №74: «ինքն է տանում» машинами и клиенты «не везём»
         const fleetOn = [...document.querySelectorAll('#rsForm [data-fleet-agent]')].filter(cb => cb.checked).length;
         const nCities = $('rsCities') ? splitCities($('rsCities').value).length : 0;
@@ -2015,6 +2070,7 @@
             s.dispatch_agents_off = keep.filter(cb => !cb.checked).map(cb => Number(cb.value)).sort((a, b) => a - b);
             if (!keep.some(cb => cb.checked)) errors['settings.dispatch_agents_off'] = 'Նշեք գոնե մեկ մենեջեր, որի պատվերներն ենք տանում';
         }
+        s.agent_phones = collectPhones(savedPhones(), [...document.querySelectorAll('#rsForm [data-agent-phone]')], errors);
         // №74: «ինքն է տանում» менеджеров — машинами (списка нет — как было), города-исключения, клиенты «не везём»
         const fleet = [...document.querySelectorAll('#rsForm [data-fleet-agent]')];
         if (fleet.length) s.dispatch_fleet_agents = fleet.filter(cb => cb.checked).map(cb => Number(cb.value)).sort((a, b) => a - b);

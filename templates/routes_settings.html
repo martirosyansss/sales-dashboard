@@ -248,6 +248,16 @@
                     <div id="rsAgents"></div>
                 </section>
 
+                <!-- Телефон менеджера у водителя (09.10): «Առաքիչ» показывает менеджера магазина и кнопку звонка; в ERP номера нет -->
+                <section class="rt-card" id="agentphones" aria-labelledby="rsHAgentPhones">
+                    <div class="rt-card-head">
+                        <h3 class="rt-card-title" id="rsHAgentPhones"><i class="fas fa-phone" aria-hidden="true"></i>Մենեջերների հեռախոսները</h3>
+                        <span class="rt-card-state" id="rsStAgentPhones"></span>
+                    </div>
+                    <p class="rt-card-lead">Առաքիչը տեսնում է խանութի մենեջերի անունը և կարող է զանգել նրան։ Համարը ERP-ում չկա՝ լրացրեք այստեղ։ Դատարկ թողեք, եթե զանգել պետք չէ։ Պահպանելու համար սեղմեք «Պահպանել» կոճակը էջի ներքևում։</p>
+                    <div id="rsAgentPhones"></div>
+                </section>
+
                 <!-- «Развоз» (№74): чьи «ինքն է տանում» заказы всё равно везут наши машины, кроме городов-исключений -->
                 <section class="rt-card" id="fleet" aria-labelledby="rsHFleet">
                     <div class="rt-card-head">
@@ -345,7 +355,7 @@
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=2" data-yandex-key="{{ yandex_tiles_key }}"></script>
-<script src="{{ url_for('static', filename='js/routes_settings.js') }}?v=42"></script>
+<script src="{{ url_for('static', filename='js/routes_settings.js') }}?v=43"></script>
 <script src="{{ url_for('static', filename='js/routes_customer_settings.js') }}?v=13"></script>
 <script src="{{ url_for('static', filename='js/routes_measurements.js') }}?v=4"></script>
 {% endblock %}

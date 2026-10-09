@@ -69,6 +69,8 @@ class RoutesView:
     work_start_min: float = 540.0                         # начало дня машины — выезд рейса без прогноза
     departs: Mapping[str, tuple[float | None, ...]] = field(default_factory=dict)   # машина → плановый выезд рейсов
     road: TripRoad | None = None                           # дорожная модель для матрицы рейса; нет — матрицы нет
+    # телефоны менеджеров (09.10): agent_id → номер из настройки agent_phones — кнопка звонка менеджеру магазина в /day
+    agent_phones: Mapping[int, str] = field(default_factory=dict)
 
     def car_customers(self, car_code: str) -> list[int]:
         """Клиенты машины по плану: порядок рейсов черновика, внутри — порядок объезда; повтор (тяжёлый
@@ -113,8 +115,10 @@ def routes_view(state: Any, day: date) -> RoutesView:
     timing = dict(windows={cid: w.span() for cid, w in bundle.windows_on(day).items()},
                   until_buffer_min=int(round(float(s['until_buffer_min']))), work_start_min=float(h * 60 + m),
                   road=lambda customers, car: _trip_road(state, day, customers, car))
+    phones = {int(a): p for a, p in (s.get('agent_phones') or {}).items()}   # ключи JSON — строки
     base = RoutesView(depot=bundle.depot, geo_overrides=dict(bundle.geo_overrides), workdays=workdays,
-                      holidays=holidays, fleet=dp.FleetRule.from_settings(bundle.settings), roads=roads, **timing)
+                      holidays=holidays, fleet=dp.FleetRule.from_settings(bundle.settings), roads=roads,
+                      agent_phones=phones, **timing)
     load = _plans(state)
     later = _later(load, day, workdays, holidays)
     carried = _carried(state, day, workdays, holidays, load) | set(later)
@@ -126,7 +130,7 @@ def routes_view(state: Any, day: date) -> RoutesView:
         return RoutesView(depot=base.depot, geo_overrides=base.geo_overrides, workdays=workdays, holidays=holidays,
                           carried=frozenset(carried), carried_since=carried_since,
                           agents_off=frozenset(dp.agents_off_of(None, bundle.settings)),
-                          taken=frozenset(taken), fleet=base.fleet, roads=roads, seen=seen, **timing)
+                          taken=frozenset(taken), fleet=base.fleet, roads=roads, seen=seen, agent_phones=phones, **timing)
     # водителям — отправленный план (№81, Draft.for_drivers), не черновик с неотправленными правками; правило №74 — то, с
     # которым день собран: заказы рейсов не пропадут
     draft = dp.Draft.from_json(stored[0]).for_drivers()
@@ -137,7 +141,7 @@ def routes_view(state: Any, day: date) -> RoutesView:
                       carried=frozenset(carried), carried_since=carried_since, dropped=frozenset(draft.dropped),
                       agents_off=frozenset(dp.agents_off_of(draft, bundle.settings)), same_day=frozenset(draft.same_day),
                       taken=frozenset(taken), fleet=dp.fleet_rule_of(draft, bundle.settings), roads=roads, seen=seen,
-                      departs=_departs(draft), **timing)
+                      departs=_departs(draft), agent_phones=phones, **timing)
 
 
 def _trip_road(state: Any, day: date, customers: Mapping[int, Point], car: str) -> Any:
