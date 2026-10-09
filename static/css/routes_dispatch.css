@@ -1430,6 +1430,7 @@ body.dp-ws-on .rt-shell { --rt-secnav-gap: 8px; }
 .dp-cmp thead th { vertical-align: bottom; }
 .dp-cmp thead th b { display: block; font-size: .875rem; white-space: normal; min-width: 110px; max-width: 210px; margin-left: auto; }
 .dp-cmp thead th small { display: block; max-width: 220px; margin-left: auto; white-space: normal; color: var(--rt-fg-mute); font-weight: 400; font-size: .75rem; }
+.dp-cmp thead th small.is-warn { color: var(--rt-warn); }
 .dp-cmp tbody th { text-align: left; font-weight: 500; color: var(--rt-fg-dim); }
 .dp-cmp td { font-family: var(--rt-mono); }
 .dp-cmp :is(td, th):nth-child(2) { background: var(--rt-inset); }

@@ -1413,7 +1413,7 @@ def _gain(new: tuple[int, float, float], cur: tuple[int, float, float]) -> bool:
 
 
 def build_crewed(ctx: DayContext, stops: Sequence[Stop], old: Draft | None, trucks: Sequence[str], now: str,
-                 crew: Crew, timing: dict[str, Any] | None = None) -> Draft:
+                 crew: Crew, timing: dict[str, Any] | None = None, iterations: int = vrp.ITERATIONS) -> Draft:
     """«Собрать рейсы» с водителями дня (ответ владельца №77: «Система сама», «Своя машина + подмена»): машин в рейсах не
     больше, чем вышло водителей. trucks — отмеченные машины (исправны и могут выйти, №70–71), crew — водители дня.
     - отмеченная машина, чей водитель вышел, едет с ним (seating); машина без водителя в «Վարորդ» — едет, как до №77;
@@ -1429,6 +1429,8 @@ def build_crewed(ctx: DayContext, stops: Sequence[Stop], old: Draft | None, truc
     - итог — сборка (build) выбранными машинами с полным решателем. Draft.seats — пересаженные, Draft.unmanned — отмеченные
       машины без водителя, Draft.absent — кто не вышел. Машин без водителя нет — сборка ровно отмеченными, как build, до
       байта. timing — сюда {'trials': проб, 'seconds': время до итоговой сборки} (замер).
+    iterations — итераций решателя итоговых сборок (пробы — свои, короткие): меньше vrp.ITERATIONS — вариант для сравнения
+    («Համեմատել տարբերակները», №83) с той же рассадкой, что даст «Վերակազմել».
     Детерминированно: кандидаты, ничьи и рассадка — по коду и имени."""
     started = perf_counter()
     old = old or Draft()
@@ -1503,9 +1505,9 @@ def build_crewed(ctx: DayContext, stops: Sequence[Stop], old: Draft | None, truc
     if timing is not None:
         timing.update(trials=len(tried), seconds=perf_counter() - started)
     codes = fleet if orphans else trucks
-    draft = build(ctx, stops, old, codes, now)
+    draft = build(ctx, stops, old, codes, now, iterations)
     t0 = perf_counter()
-    draft, n = _spare_solo_truck(ctx, stops, old, draft, now)
+    draft, n = _spare_solo_truck(ctx, stops, old, draft, now, iterations)
     if timing is not None:
         timing.update(solo_trials=n, solo_seconds=perf_counter() - t0)
     # машина, снятая ради второго рейса машины отдельного рейса, — без посадки сборки (водитель в ней не нужен)
@@ -1525,7 +1527,8 @@ def _solo_only(ctx: DayContext, draft: Draft) -> set[str]:
 SOLO_SPARE_TRIALS_MAX = 4   # проб без одной машины (№78, ответ 18): на данных CT115 — ≈ 3 с проба, итог ≤ ≈ 30 с сверх сборки
 
 
-def _spare_solo_truck(ctx: DayContext, stops: Sequence[Stop], old: Draft, draft: Draft, now: str) -> tuple[Draft, int]:
+def _spare_solo_truck(ctx: DayContext, stops: Sequence[Stop], old: Draft, draft: Draft, now: str,
+                      iterations: int = vrp.ITERATIONS) -> tuple[Draft, int]:
     """Ответы владельца №78, 18 и 20: машина отдельного рейса («Ռամադա» на 333NO33) после него возвращается, грузится и
     везёт обычные магазины — лишнюю машину не брать, если ֏ дня (дизель + износ, как operating_cost_amd) без неё растёт не
     больше чем на ctx.solo_spare_max_pct %; иначе лишняя машина остаётся, машина отдельного рейса везёт только свой магазин.
@@ -1537,7 +1540,8 @@ def _spare_solo_truck(ctx: DayContext, stops: Sequence[Stop], old: Draft, draft:
     этим набором (машина отдельного рейса в пробе не простаивает — её рейсы из пробы закреплены на время сборки остальных,
     потом открепляются); не годится она — план пробы. Время сверх сборки (замер 06.10, копия CT115): ≈ 4 пробы × ≈ 5 с +
     одна полная сборка ≈ 10 с ≤ ≈ 30 с; nginx CT115 ждёт ответ 180 с. Машины без рейсов остаются отмеченными
-    (Draft.trucks — прежний). Draft.solo_spare — что решено и рост ֏ (пояснение дня). (план, проб)."""
+    (Draft.trucks — прежний). Draft.solo_spare — что решено и рост ֏ (пояснение дня). (план, проб).
+    iterations — у итоговой сборки, как у build_crewed."""
     lone = _solo_only(ctx, draft) if ctx.solo else set()
     if not lone:
         return draft, 0
@@ -1574,13 +1578,13 @@ def _spare_solo_truck(ctx: DayContext, stops: Sequence[Stop], old: Draft, draft:
         return (len({t.truck for t in d.trips}) < len(used) and short[0] <= base[0] and short[1] <= base[1] + _EPS
                 and short[2] <= limit + _EPS)
     if _solo_only(ctx, found):
-        final = build(ctx, stops, old, codes, now)
+        final = build(ctx, stops, old, codes, now, iterations)
     else:
         # машина отдельного рейса в пробе уже везёт и обычные магазины: её рейсы — как в пробе (закреплены на время
         # сборки: полный решатель, дешевле на литры, снова оставил бы её простаивать), остальное — полным решателем
         mine = {t.truck for t in found.trips if any(c in ctx.solo for c in t.stops)}
         keep = [replace(t, stops=list(t.stops), pinned=True) for t in found.trips if t.pinned or t.truck in mine]
-        final = build(ctx, stops, replace(old, trips=keep, next_id=found.next_id), codes, now)
+        final = build(ctx, stops, replace(old, trips=keep, next_id=found.next_id), codes, now, iterations)
         was = {t.id for t in old.trips if t.pinned}
         for t in final.trips:
             if t.truck in mine and t.id not in was and t.loaded is None:

@@ -45,9 +45,10 @@ W устаревший чат (views._seen_stale): план на сервере 
 M (№83) «Համեմատել» (тот же день 10-02, план не утверждён): окно «Համեմատել տարբերակները» — столбцы вариантов считаются
   POST /dispatch/compare, план в базе не меняется (rev тот же); строка «Ճանապարհ» в км, «Կիրառել» у каждого варианта,
   кроме нынешнего; «Իմ տարբերակը» без машин — ошибка без запроса, с одной машиной — ещё столбец; на телефоне 390 окно
-  по ширине экрана; Esc закрывает, фокус — на кнопку; «Կիրառել» у «Վերակազմել նույն մեքենաներով» → окно закрыто,
-  POST build теми же машинами. На рабочем экране (Y) кнопки в шапке нет — пункт «⋯ → Համեմատել տարբերակները»;
-  у утверждённого плана «Կիրառել» недоступно.
+  по ширине экрана; Esc закрывает, фокус — на кнопку; в запросах — rev плана, ▲▼ нет у нынешнего плана и у «նույն
+  մեքենաներով» (база сравнения); сервер занят (429) — армянская ошибка в столбце и «Կրկնել», повтор считает только его;
+  «Կիրառել» у «Վերակազմել նույն մեքենաներով» → окно закрыто, POST build отмеченными машинами плана.
+  На рабочем экране (Y) кнопки в шапке нет — пункт «⋯ → Համեմատել տարբերակները»; у утверждённого плана «Կիրառել» недоступно.
 
 Ошибки страницы (pageerror) и ошибки консоли — провал, кроме сетевых «Failed to load resource» для внешних
 ресурсов (CDN, шрифты, плитки Яндекса/OSM) и /api/routes/road-lines (без карты дорог страница рисует прямые).
@@ -672,7 +673,7 @@ def main() -> int:
             compares = []
             page.on('request', lambda r: compares.append(r.post_data_json) if r.method == 'POST' and r.url.endswith('/dispatch/compare') else None)
             day_c = page.request.get(f'{BASE}/api/routes/dispatch?date={DAY2}').json()
-            used_c = sorted(t['car_code'] for t in day_c['plan']['trucks'] if t['trips'])
+            used_c = sorted(t['car_code'] for t in day_c['trucks'] if t['selected'])   # «նույն մեքենաներով» — отмеченные плана
             cmp_done = "() => document.getElementById('dpCmpLive').textContent !== ''"
             page.locator('#dpCompare').scroll_into_view_if_needed()
             page.click('#dpCompare')
@@ -689,6 +690,9 @@ def main() -> int:
             check(len(compares) == cols - 1 and sorted(compares[0]['trucks']) == used_c
                   and page.request.get(f'{BASE}/api/routes/dispatch?date={DAY2}').json()['rev'] == day_c['rev'],
                   f'M one POST compare per variant ({len(compares)}), same trucks first {used_c}, plan rev unchanged')
+            check(all(c.get('rev') == day_c['rev'] for c in compares)
+                  and page.locator('#dpCmpTable tbody td:nth-child(2) em, #dpCmpTable tbody td:nth-child(3) em').count() == 0,
+                  'M requests carry the plan rev; no ▲▼ on the current plan or on the «same trucks» baseline')
             page.click('#dpCmpOwn > summary')
             page.locator('#dpCmpTrucks input[type="checkbox"]').evaluate_all('cs => cs.forEach(c => { c.checked = false; })')
             n_cmp = len(compares)
@@ -713,8 +717,33 @@ def main() -> int:
             page.keyboard.press('Escape')
             check(not page.locator('#dpCmpDlg').evaluate('d => d.open') and page.evaluate('document.activeElement.id') == 'dpCompare',
                   'M Esc closes the dialog, focus back on «Համեմատել»')
+            # сервер занят (429) — ошибка в столбце и «Կրկնել», повтор считает только его
+            busy_once = []
+
+            def busy(route):
+                if busy_once:
+                    route.continue_()
+                else:
+                    busy_once.append(1)
+                    route.fulfill(status=429, content_type='application/json',
+                                  body=json.dumps({'success': False, 'error': views.COMPARE_BUSY}))
+            page.route('**/api/routes/dispatch/compare', busy)
             page.click('#dpCompare')
             page.wait_for_function(cmp_done, timeout=60000)
+            err_td = page.locator('#dpCmpTable td.is-err').first
+            retry = page.locator('#dpCmpTable tfoot button', has_text='Կրկնել')
+            check(err_td.count() == 1 and 'Հաշվարկը զբաղված է' in err_td.inner_text() and retry.count() == 1,
+                  f'M server busy (429): Armenian error in the column and «Կրկնել» ({err_td.count() and err_td.inner_text()!r})')
+            n_cmp = len(compares)
+            page.evaluate("document.getElementById('dpCmpLive').textContent = ''")
+            retry.click()
+            page.wait_for_function(cmp_done, timeout=60000)
+            check(page.locator('#dpCmpTable td.is-err').count() == 0 and len(compares) == n_cmp + 1
+                  and page.locator('#dpCmpTable tfoot button', has_text='Կիրառել').count() == cols - 1,
+                  'M «Կրկնել» recomputes only that column')
+            page.unroute('**/api/routes/dispatch/compare')
+            for e in [e for e in errors if '429' in e][:1]:   # браузер пишет 429 в консоль — это ожидаемый ответ
+                errors.remove(e)
             n_build = len(builds)
             page.locator('#dpCmpTable tfoot button').first.click()
             page.wait_for_function("() => !document.getElementById('dpCmpDlg').open"

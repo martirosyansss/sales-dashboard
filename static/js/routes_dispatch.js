@@ -158,6 +158,8 @@
         'Этой точки нет в рейсе — обновите страницу': 'Այս կետը երթում չէ — թարմացրեք էջը',
         'Список менеджеров не принят — обновите страницу': 'Մենեջերների ցուցակը չընդունվեց — թարմացրեք էջը',
         'ожидался список менеджеров': 'Մենեջերների ցուցակը չընդունվեց — թարմացրեք էջը',
+        // «Համեմատել տարբերակները» (№83): расчётов сразу не больше двух (views._COMPARE_SLOTS)
+        'Сервер занят расчётом вариантов — повторите через минуту': 'Հաշվարկը զբաղված է — կրկնեք մեկ րոպեից',
         // «Հարցրու AI-ին» — POST /api/routes/dispatch/ask (ai_chat.py)
         'вопрос — непустой текст до 1000 символов': 'Հարցը պետք է լինի ոչ դատարկ՝ մինչև 1000 նիշ',
         'история диалога: ожидался список реплик': BAD_REQUEST,
@@ -4713,19 +4715,20 @@
         $('rtDispatch').setAttribute('aria-busy', String(on));
     }
 
+    // false — сборка не начата (занято, проверки, подтверждение отклонено): «Կիրառել» сравнения возвращает галочки шага 1
     async function build() {
-        if (state.busy) return;
-        if (state.data.approved) { showActionError(new Error(APPROVED_HY)); return; }   // №73: сначала снять утверждение
+        if (state.busy) return false;
+        if (state.data.approved) { showActionError(new Error(APPROVED_HY)); return false; }   // №73: сначала снять утверждение
         const trucks = selectedTrucks();
-        if (!trucks.length) { showActionError(new Error('Նշեք գոնե մեկ մեքենա 1-ին քայլում։')); return; }
-        if (agentsNoneLeft()) { showActionError(new Error('Նշեք գոնե մեկ մենեջեր «Որ մենեջերների պատվերներն ենք տանում» ցուցակում։')); return; }
+        if (!trucks.length) { showActionError(new Error('Նշեք գոնե մեկ մեքենա 1-ին քայլում։')); return false; }
+        if (agentsNoneLeft()) { showActionError(new Error('Նշեք գոնե մեկ մենեջեր «Որ մենեջերների պատվերներն ենք տանում» ցուցակում։')); return false; }
         // сегодня после начала дня машин (№72): пересборка раскладывает заново и рейсы, которые уже грузятся или в пути
         const clock = new Date();
         const sdNow = sdData() && sdData().today ? sdData().now
             : state.data.day === state.data.today ? String(clock.getHours()).padStart(2, '0') + ':' + String(clock.getMinutes()).padStart(2, '0') : null;
         if (state.data.plan && sdNow && sdNow >= state.data.work_start
             && !window.confirm('Ժամը ' + sdNow + ' է։ Վերակազմելիս ծրագիրը նորից կբաշխի նաև այն երթերը, որոնք արդեն բեռնվում են կամ ճանապարհին են '
-                + '(ամրացված երթերը կմնան)։ Շարունակե՞լ։')) return;
+                + '(ամրացված երթերը կմնան)։ Շարունակե՞լ։')) return false;
         hideActionError();
         setBusy(true);
         $('dpBuildText').textContent = 'Կազմում եմ երթերը…';
@@ -4827,11 +4830,14 @@
     }
 
     // ---------- «Համեմատել տարբերակները» (ответ владельца №83, как what-if у MaxOptra / WorkWave) ----------
-    // Варианты столбцами: нынешний план, пересборка теми же машинами, на одну машину меньше (самая лёгкая по плану, не с
-    // загруженным рейсом), на одну больше (свободная готовая, не «առանց վարորդի», — самая грузоподъёмная), свой набор
-    // галочками. Каждый — POST /api/routes/dispatch/compare (в памяти, короткий решатель), по одному: результаты появляются
-    // по мере расчёта; окно закрыли или открыли заново (state.cmp — другой) — ответы прежнего не применяются.
-    // «Կիրառել» — отметить эти машины в шаге 1 и «Վերակազմել» (build: там же водители дня №77 и подтверждение после начала дня)
+    // Варианты столбцами: нынешний план (для справки), «Վերակազմել» теми же отмеченными машинами, на одну машину меньше
+    // (самая лёгкая по плану, не с загруженным рейсом), на одну больше (готовая неотмеченная, у которой будет водитель, —
+    // самая грузоподъёмная, как dispatch.spare_trucks), свой набор галочками. Каждый — POST /api/routes/dispatch/compare
+    // (сборка как «Վերակազմել», с водителями дня №77, но короткий решатель и только в памяти), по одному: результаты
+    // появляются по мере расчёта; окно закрыли или открыли заново (state.cmp — другой) — ответы прежнего не применяются.
+    // Цвет и стрелка — против «Վերակազմել նույն մեքենաներով» (тот же короткий решатель): нынешний план считан полным
+    // решателем и с правками логиста — с ним разница была бы шумом решателя. «Կիրառել» — эти машины в шаге 1 и
+    // «Վերակազմել» (build); сборка не началась (отказ в подтверждении) — галочки шага 1 возвращаются.
     const CMP_ROWS = [   // [ключ, подпись, что лучше (-1 — меньше, 1 — больше, 0 — не сравнивать), формат]
         ['trucks', 'Օգտագործված մեքենաներ', 0, v => fmt(v.length)], ['trips', 'Երթեր', 0, v => fmt(v)],
         ['stops', 'Խանութներ երթերում', 1, v => fmt(v)], ['unassigned', 'Չտեղավորված խանութներ', -1, v => fmt(v)],
@@ -4845,20 +4851,29 @@
         return { trucks: used.map(t => t.car_code), trips: plan.summary.trips, stops: plan.summary.stops,
             unassigned: plan.unassigned.length, km: plan.summary.km, liters: plan.summary.liters, cost_amd: plan.summary.operating_cost_amd,
             last_return: last, over_time: used.reduce((a, t) => a + t.trips.filter(tr => tr.over_time).length, 0),
-            window_miss: plan.summary.window_miss };
+            window_miss: plan.summary.window_miss, no_driver: state.data.trucks.filter(t => t.selected && t.unmanned).map(t => t.car_code) };
+    }
+    // готовая машина не из плана, которой «Վերակազմել» даст водителя (№77, как dispatch.spare_trucks): не отмечена без
+    // водителя, её водитель (если указан) вышел и не ведёт машину плана
+    function spareTrucks(picked) {
+        const crew = crewOf(), driving = new Set(Object.values(crew.trucks).map(v => isObj(v) ? v.name : null).filter(Boolean));
+        return state.data.trucks.filter(t => {
+            if (!t.ready || t.unmanned || picked.includes(t.car_code)) return false;
+            const d = crew.drivers.find(x => Array.isArray(x.trucks) && x.trucks.includes(t.car_code));
+            return !d || (!d.absent && !driving.has(d.name));
+        });
     }
     function cmpVariants() {
         const plan = state.data.plan, used = plan.trucks.filter(t => t.trips.length);
-        const codes = used.map(t => t.car_code);
-        const out = [{ key: 'now', title: 'Ընթացիկ պլանը', trucks: codes, summary: planSummary(plan) }];
-        if (!codes.length) return out;
-        out.push({ key: 'same', title: 'Վերակազմել նույն մեքենաներով', trucks: codes });
+        const picked = state.data.trucks.filter(t => t.selected).map(t => t.car_code);   // отмеченные при сборке плана
+        const out = [{ key: 'now', title: 'Ընթացիկ պլանը', trucks: used.map(t => t.car_code), summary: planSummary(plan) }];
+        if (!picked.length) return out;
+        out.push({ key: 'same', title: 'Վերակազմել նույն մեքենաներով', trucks: picked });
         // №78: машину загруженного рейса пересборка не снимает
         const light = used.filter(t => !t.trips.some(tr => tr.loaded)).sort((a, b) => a.kg - b.kg || a.car_code.localeCompare(b.car_code))[0];
-        if (used.length > 1 && light) out.push({ key: 'minus', title: '−1 մեքենա՝ առանց ' + truckLabel(light), trucks: codes.filter(c => c !== light.car_code) });
-        const free = state.data.trucks.filter(t => t.ready && !t.unmanned && !codes.includes(t.car_code))
-            .sort((a, b) => (num(b.capacity_kg) || 0) - (num(a.capacity_kg) || 0) || a.car_code.localeCompare(b.car_code))[0];
-        if (free) out.push({ key: 'plus', title: '+1 մեքենա՝ ' + truckLabel(free), trucks: [...codes, free.car_code] });
+        if (used.length > 1 && light) out.push({ key: 'minus', title: '−1 մեքենա՝ առանց ' + truckLabel(light), trucks: picked.filter(c => c !== light.car_code) });
+        const free = spareTrucks(picked).sort((a, b) => (num(b.capacity_kg) || 0) - (num(a.capacity_kg) || 0) || a.car_code.localeCompare(b.car_code))[0];
+        if (free) out.push({ key: 'plus', title: '+1 մեքենա՝ ' + truckLabel(free), trucks: [...picked, free.car_code] });
         return out;
     }
     function openCompare() {
@@ -4884,7 +4899,7 @@
         if (!$('dpCmpDlg').open) $('dpCmpDlg').showModal();
         runCompare();
     }
-    // варианты без итога — по одному (сервер считает решателем); новый «свой» вариант во время расчёта — следующим
+    // варианты без итога — по одному (сервер считает решателем); новый «свой» вариант или «Կրկնել» во время расчёта — следом
     async function runCompare() {
         const c = state.cmp;
         if (!c || c.running) return;
@@ -4893,8 +4908,11 @@
         while (state.cmp === c && (v = c.variants.find(x => !x.summary && !x.error))) {
             v.busy = true;
             renderCompare();
+            // фильтр «Մենեջերներ», ещё не применённый к плану, — как пошлёт «Կիրառել» (build)
+            const body = { date: state.day, rev: state.data.rev, trucks: v.trucks };
+            if (agentsDirty()) body.agents_off = [...agentsOff()];
             try {
-                v.summary = (await api('POST', '/api/routes/dispatch/compare', { date: state.day, trucks: v.trucks })).summary;
+                v.summary = (await api('POST', '/api/routes/dispatch/compare', body)).summary;
             } catch (e) { v.error = e.message || 'Սխալ'; }
             v.busy = false;
         }
@@ -4908,10 +4926,10 @@
         if (!c) return;
         tbl.textContent = '';
         tbl.setAttribute('aria-busy', String(c.variants.some(v => v.busy)));
-        const base = c.variants[0].summary;
+        const ref = c.variants.find(v => v.key === 'same');
+        const base = ref && ref.summary;   // с чем сравниваются остальные варианты
         const head = tbl.createTHead().insertRow();
-        const corner = document.createElement('td');
-        head.appendChild(corner);
+        head.appendChild(document.createElement('td'));
         c.variants.forEach(v => {
             const th = document.createElement('th');
             th.scope = 'col';
@@ -4919,7 +4937,12 @@
             b.textContent = v.title;
             const sm = document.createElement('small');
             // список машин — у «своего» варианта; у остальных разница с планом уже в названии
-            sm.textContent = v.key === 'own' ? v.trucks.map(code => truckLabel(truckBy(code))).join(', ') : v.key === 'now' ? pl(v.trucks.length, 'մեքենա') : '';
+            const notes = [v.key === 'own' ? v.trucks.map(code => truckLabel(truckBy(code))).join(', ') : v.key === 'now' ? pl(v.trucks.length, 'մեքենա')
+                : v.key === 'same' ? 'գույնը՝ սրա համեմատ' : ''];
+            const nd = v.summary && Array.isArray(v.summary.no_driver) ? v.summary.no_driver.length : 0;
+            if (nd) notes.push(pl(nd, 'մեքենա') + ' առանց վարորդի');
+            sm.textContent = notes.filter(Boolean).join(' · ');
+            if (nd) sm.classList.add('is-warn');
             th.append(b, sm);
             head.appendChild(th);
         });
@@ -4930,14 +4953,14 @@
             th.scope = 'row';
             th.textContent = label;
             tr.appendChild(th);
-            c.variants.forEach((v, i) => {
+            c.variants.forEach(v => {
                 const td = tr.insertCell();
                 if (v.busy) { td.className = 'is-wait'; td.textContent = '…'; return; }
                 if (v.error) { td.className = 'is-err'; td.textContent = row === 0 ? v.error : '—'; return; }
                 if (!v.summary) { td.className = 'is-wait'; td.textContent = '—'; return; }
                 const val = v.summary[key];
                 td.textContent = show(val);
-                if (i === 0 || !base || !better) return;
+                if (v.key === 'now' || v === ref || !base || !better) return;
                 const a = key === 'last_return' ? toMin(base[key]) : num(base[key]);
                 const b = key === 'last_return' ? toMin(val) : num(val);
                 if (a === null || b === null || Math.abs(b - a) < 0.5) return;
@@ -4959,16 +4982,23 @@
             if (i === 0) return;
             const b = document.createElement('button');
             b.type = 'button';
-            b.className = 'rt-btn rt-btn-sm ' + (v.summary ? 'rt-btn-primary' : 'rt-btn-ghost');
-            b.textContent = 'Կիրառել';
-            b.disabled = !v.summary || !!state.data.approved || state.busy;
-            b.title = state.data.approved ? APPROVED_HY : 'Վերակազմել երթերը այս մեքենաներով';
-            b.setAttribute('aria-label', 'Կիրառել՝ ' + v.title);
-            b.addEventListener('click', () => applyCompare(v));
+            if (v.error) {   // ошибка столбца (сервер занят, связь) — посчитать заново только его
+                b.className = 'rt-btn rt-btn-sm rt-btn-ghost';
+                b.textContent = 'Կրկնել';
+                b.setAttribute('aria-label', 'Կրկնել՝ ' + v.title);
+                b.addEventListener('click', () => { v.error = null; renderCompare(); runCompare(); });
+            } else {
+                b.className = 'rt-btn rt-btn-sm ' + (v.summary ? 'rt-btn-primary' : 'rt-btn-ghost');
+                b.textContent = 'Կիրառել';
+                b.disabled = !v.summary || !!state.data.approved || state.busy;
+                b.title = state.data.approved ? APPROVED_HY : 'Վերակազմել երթերը այս մեքենաներով';
+                b.setAttribute('aria-label', 'Կիրառել՝ ' + v.title);
+                b.addEventListener('click', () => applyCompare(v));
+            }
             td.appendChild(b);
         });
     }
-    function applyCompare(v) {
+    async function applyCompare(v) {
         if (state.busy || state.data.approved) return;
         const boxes = [...$('dpTrucks').querySelectorAll('input[type="checkbox"]')];
         const off = v.trucks.filter(code => !boxes.some(cb => cb.value === code && !cb.disabled));
@@ -4976,12 +5006,15 @@
             $('dpCmpErr').textContent = 'Մեքենան՝ ' + off.map(code => truckLabel(truckBy(code))).join(', ') + ', 1-ին քայլում նշել հնարավոր չէ — թարմացրեք էջը։';
             return;
         }
-        const want = new Set(v.trucks);
-        boxes.forEach(cb => { if (!cb.disabled) cb.checked = want.has(cb.value); });
-        renderTruckCount();
-        renderFresh();
+        const was = selectedTrucks(), want = new Set(v.trucks);
+        const tick = (on) => {
+            boxes.forEach(cb => { if (!cb.disabled) cb.checked = on.has(cb.value); });
+            renderTruckCount();
+            renderFresh();
+        };
+        tick(want);
         $('dpCmpDlg').close();
-        build();
+        if (await build() === false) tick(new Set(was));   // сборка не началась (подтверждение отклонено) — галочки как были
     }
     function initCompare() {
         $('dpCompare').addEventListener('click', openCompare);
@@ -4997,6 +5030,7 @@
             $('dpCmpErr').textContent = '';
             $('dpCmpLive').textContent = '';
             c.variants = [...c.variants.filter(v => v.key !== 'own'), { key: 'own', title: 'Իմ տարբերակը', trucks: pick }];
+            renderCompare();   // столбец виден сразу, даже пока считается другой вариант
             runCompare();
         });
     }

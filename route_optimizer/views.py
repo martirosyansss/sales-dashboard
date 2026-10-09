@@ -2774,28 +2774,34 @@ def api_dispatch_build() -> Any:
 
 # --- «Համեմատել տարբերակները» (ответ владельца №83, как what-if у MaxOptra / WorkWave) ---
 COMPARE_ITERATIONS = 5000   # решатель короче обычной сборки (vrp.ITERATIONS): вариант — для сравнения, точный — «Կիրառել»
+# Сравнений одновременно не больше: решатель — CPU, а процесс тот же, что у API терминалов «Առաքիչ» и Telegram-бота
+# (waitress, 16 потоков). Страница считает варианты по одному — два места: два логиста сразу; занято — 429 сразу, без очереди.
+_COMPARE_SLOTS = threading.BoundedSemaphore(2)
+COMPARE_BUSY = 'Сервер занят расчётом вариантов — повторите через минуту'
 
 
-def _compare_summary(view: Mapping[str, Any]) -> dict[str, Any]:
+def _compare_summary(view: Mapping[str, Any], draft: dp.Draft) -> dict[str, Any]:
     """Итог варианта для сравнения (те же цифры страница считает у нынешнего плана — planSummary в routes_dispatch.js):
-    машины с рейсами, рейсы, магазины в рейсах и вне их, вес, км, литры, ֏, позднее возвращение (как у рейса: «17:32»,
-    «00:40 (+1)»), рейсы позже конца дня и точки вне окон приёма."""
+    машины с рейсами, рейсы, магазины в рейсах и вне их, км, литры, ֏, позднее возвращение (как у рейса: «17:32»,
+    «00:40 (+1)»), рейсы позже конца дня, точки вне окон приёма и no_driver — отмеченные машины, которым сегодня не хватило
+    водителя (№77, Draft.unmanned: в рейсах их нет)."""
     sm = view['summary']
     returns = [t['return'] for t in view['trucks'] if t['trips'] and t.get('return')]
     return {'trucks': [t['car_code'] for t in view['trucks'] if t['trips']], 'trips': sm['trips'], 'stops': sm['stops'],
-            'unassigned': len(view['unassigned']), 'unassigned_kg': round(sum(s.get('kg') or 0 for s in view['unassigned'])),
-            'kg': sm['kg'], 'km': sm['km'], 'liters': sm['liters'], 'cost_amd': sm['operating_cost_amd'],
+            'unassigned': len(view['unassigned']), 'km': sm['km'], 'liters': sm['liters'], 'cost_amd': sm['operating_cost_amd'],
             'last_return': max(returns, key=_return_min) if returns else None,
             'over_time': sum(1 for t in view['trucks'] for tr in t['trips'] if tr.get('over_time')),
-            'window_miss': sm['window_miss']}
+            'window_miss': sm['window_miss'], 'no_driver': sorted(draft.unmanned)}
 
 
 @bp.post('/api/routes/dispatch/compare')
 @_api
 def api_dispatch_compare() -> Any:
-    """Вариант плана дня для сравнения: {"date", "trucks": [коды машин]} — рейсы ровно этим набором машин, как «Վերակազմել
-    երթերը» (закрепления логиста держатся, утверждение — нет: сравнение — «если пересобрать»), с коротким решателем;
-    только в памяти — ничего не сохраняется. Водители дня (№77) не подбираются — набор сравнивается как есть.
+    """Вариант плана дня для сравнения: {"date", "rev", "trucks": [коды отмеченных машин], "agents_off"?: [agent_id]} — как
+    «Վերակազմել երթերը» (build_crewed: водители дня №77, закрепления логиста), но с коротким решателем и только в памяти —
+    ничего не сохраняется; утверждение снимается в копии (сравнение — «если пересобрать»). agents_off — фильтр
+    «Մենեջերներ», ещё не применённый на странице (его же пошлёт «Կիրառել»); без него — фильтр плана. rev — номер плана на
+    странице: план изменён в другой вкладке — 409. Расчётов сразу не больше _COMPARE_SLOTS — иначе 429.
     Ответ: {"trucks": набор без повторов по коду, "summary": _compare_summary}."""
     payload, day, error = _dispatch_request()
     if error is not None:
@@ -2805,27 +2811,41 @@ def api_dispatch_compare() -> Any:
         return _bad_request({'trucks': 'ожидался список машин'})
     if not codes:
         return _bad_request({'trucks': 'отметьте хотя бы одну машину'})
+    off = dp.parse_agents(payload['agents_off']) if 'agents_off' in payload else None
+    if 'agents_off' in payload and off is None:
+        return _bad_request({'agents_off': 'ожидался список менеджеров'})
     codes = sorted(set(codes))
     state = _state()
     bundle = _bundle(state)
     dd = _load_day(state, bundle, day)
+    if payload.get('rev') != dd.rev:
+        return _conflict('План изменили в другой вкладке — обновите страницу')
     if dd.ctx is None:
         return _bad_request({'_': 'Сначала укажите склад и тоннаж с расходом машин в настройках'})
     unknown = sorted(set(codes) - set(dd.ready))
     if unknown:
         return _bad_request({'trucks': 'машина не готова к расчёту: ' + ', '.join(unknown)})
-    # копия: снятие утверждения — только для этого варианта, черновик дня не трогается
+    # копия: снятие утверждения и фильтр менеджеров — только для этого варианта, черновик дня не трогается
     base = copy.deepcopy(dd.draft) if dd.draft is not None else dp.Draft(
         agents_off=dp.agents_off_of(None, bundle.settings), fleet=dp.FleetRule.from_settings(bundle.settings).to_json())
     if base.approved is not None:
         dp.unapprove(base)
-    started = time.perf_counter()
-    # без машины загруженного рейса (№78) — DispatchError, 400 через _api, как у сборки
-    draft = dp.build(dd.ctx, dd.stops, base, codes, _now(), iterations=COMPARE_ITERATIONS)
-    view = dp.plan_view(dd.ctx, dd.stops, draft, _stop_info(dd), explain=False)
+    if off is not None and off != base.agents_off:   # точки дня — по фильтру страницы, как у сборки
+        base.agents_off = off
+        dd = _load_day(state, bundle, day, draft=base, rev=dd.rev)
+    if not _COMPARE_SLOTS.acquire(blocking=False):
+        return jsonify({'success': False, 'error': COMPARE_BUSY}), 429
+    try:
+        started = time.perf_counter()
+        # без машины загруженного рейса (№78) — DispatchError, 400 через _api, как у сборки
+        draft = dp.build_crewed(dd.ctx, dd.stops, base, codes, _now(), _crew(state, day, bundle.trucks)[0],
+                                iterations=COMPARE_ITERATIONS)
+        view = dp.plan_view(dd.ctx, dd.stops, draft, _stop_info(dd), explain=False)
+    finally:
+        _COMPARE_SLOTS.release()
     logger.info('[Routes] Сравнение вариантов на %s (%s): %d машин за %.1f с', day, session.get('username'), len(codes),
                 time.perf_counter() - started)
-    return jsonify({'success': True, 'trucks': codes, 'summary': _compare_summary(view)})
+    return jsonify({'success': True, 'trucks': codes, 'summary': _compare_summary(view, draft)})
 
 
 @bp.post('/api/routes/dispatch/edit')
