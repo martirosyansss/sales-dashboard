@@ -590,11 +590,22 @@ def map_ack_items(rec: Rec) -> tuple[str, list[tuple[str, str, str | None]]] | N
     return None
 
 
-def map_ack_match(rec: Rec, rows: Sequence[Mapping[str, Any]], tol: timedelta) -> Mapping[str, Any] | None:
+def map_newer_case(key: str, existing: str | None, since: str | None, tol: timedelta) -> bool:
+    """На карте у (машины, вида) уже отмечен более поздний случай: since строки позже нашего и не тот же случай (у
+    отклонения — дальше tol). Тогда отметка из Telegram о прежнем случае её не перетирает."""
+    a, b = _moment(existing), _moment(since)
+    if a is None or b is None or a <= b:
+        return False
+    return not (key == 'deviation' and a - b <= tol)
+
+
+def map_ack_match(rec: Rec, rows: Sequence[Mapping[str, Any]], tol: timedelta, now: datetime | None = None,
+                  fresh: timedelta | None = None) -> Mapping[str, Any] | None:
     """Отметка карты (строка live_acks дня), которой страница считает проблему записи подтверждённой: та же машина и
     вид, тот же случай — since == начало тревоги (у отклонения — в пределах tol, как sameCase страницы). «Не успеет»:
     ключ строки — нужный (late:window; к плану — и late:window, как serverRow страницы), отметка не раньше начала
-    случая записи (sent_at): прежний случай того же дня не в счёт. Нет — None."""
+    случая записи (sent_at): прежний случай того же дня не в счёт; и, как у страницы (serverAck без since), подтверждена
+    не дольше fresh назад от now (store.LIVE_ACK_FLAP). Нет — None."""
     if not rec.car:
         return None
     if rec.key.startswith('alert:'):
@@ -616,7 +627,7 @@ def map_ack_match(rec: Rec, rows: Sequence[Mapping[str, Any]], tol: timedelta) -
         for row in rows:
             at = _moment(row.get('seen_at')) or _moment(row.get('at'))
             if (row.get('car') == rec.car and row.get('key') in accept and at is not None
-                    and at >= began):
+                    and at >= began and (now is None or fresh is None or now - at <= fresh)):
                 return row
     return None
 

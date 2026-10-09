@@ -67,7 +67,7 @@ from . import tg_api
 from . import tg_reports as rp
 from .live import Rules
 from .live_alerts import Rec
-from .store import LIVE_ACK_SINCE_TOL
+from .store import LIVE_ACK_FLAP, LIVE_ACK_SINCE_TOL
 from .tg_api import TelegramError, chat_wide, per_message
 
 logger = logging.getLogger(__name__)
@@ -155,6 +155,7 @@ class TgBot:
         # «Տեսա» нажата, ответ дан, а запись ещё ждёт замка: эскалация этих записей не идёт (свой маленький замок)
         self.pending_acks: set[int] = set()
         self.pending_lock = threading.Lock()
+        self.map_bad: set[str] = set()   # записи, сверка которых с картой падала (журнал — один раз)
         self.me: dict[str, Any] | None = None
         self.ready = False
         self.setup_at: float | None = None
@@ -1074,26 +1075,52 @@ class TgBot:
     def _map_ack(self, rec: Rec) -> None:
         """«Տեսա» в Telegram → отметка карты (Store.live_ack_put): страница перестаёт мигать и пишет «Տեսավ՝ имя».
         Сбой базы — в журнал (в Telegram «Տեսա» уже записана)."""
+        if rec.phase != 'active':   # кончившаяся (старая кнопка) не перетирает отметку нового случая того же вида
+            return
         got = la.map_ack_items(rec)
         if got is None:
             return
         day, items = got
         try:
-            self.store.live_ack_put(day, items, rec.acked_name, rec.acked_at or self.feeds.now().isoformat())
+            # старая кнопка (у отклонения начало плавает — прежняя запись «идёт» до конца дня) не перетирает отметку
+            # более позднего случая того же вида
+            current = {(r['car'], r['key']): r.get('since') for r in self.store.live_acks(day)}
+            items = [(c, k, s) for c, k, s in items if not la.map_newer_case(k, current.get((c, k)), s,
+                                                                                LIVE_ACK_SINCE_TOL)]
+            if items:
+                self.store.live_ack_put(day, items, rec.acked_name, rec.acked_at or self.feeds.now().isoformat())
         except Exception:
             logger.exception('[Routes] Telegram-бот: «Տեսա» %s не передана карте', rec.key)
 
     def _map_row(self, rec: Rec) -> Mapping[str, Any] | None:
-        """Отметка карты, которой страница считает проблему записи подтверждённой (la.map_ack_match); сбой — None."""
+        """Отметка карты, которой страница считает проблему записи подтверждённой (la.map_ack_match); сбой — None
+        (одна строка в журнале, без трассы: зовётся под замком и каждый проход)."""
         day = _map_day(rec)
         if day is None:
             return None
         try:
             rows = self.store.live_acks(day)
-        except Exception:
-            logger.exception('[Routes] Telegram-бот: «Տեսա» карты за %s не прочитаны', day)
+        except Exception as e:
+            logger.warning('[Routes] Telegram-бот: «Տեսա» карты за %s не прочитаны (%s)', day, type(e).__name__)
             return None
-        return la.map_ack_match(rec, rows, LIVE_ACK_SINCE_TOL)
+        return la.map_ack_match(rec, rows, LIVE_ACK_SINCE_TOL, self.feeds.now(), LIVE_ACK_FLAP)
+
+    def _refresh_map_late(self) -> None:
+        """«Не успеет», подтверждённое в Telegram и ещё идущее: отметки карты без начала страница признаёт, пока их
+        подтверждали не дольше LIVE_ACK_FLAP назад, — бот подтверждает их каждый проход (live_ack_put refresh: строк не
+        создаёт, кто и когда нажал — не меняет). Сбой базы — в журнал."""
+        now = self.feeds.now().isoformat()
+        with self.lock:
+            todo = [(r.key.rsplit('|', 1)[1], r.car) for r in self.records.values()
+                    if r.key.startswith('late:') and r.phase == 'active' and r.acked_by not in (None, MAP_ACKED_BY)
+                    and r.car]
+        for day, car in todo:
+            try:   # оба ключа: «к окну» могло ослабнуть до «к плану» (страница принимает и late:window); refresh строк
+                # не создаёт — подтверждается только то, что отмечено
+                self.store.live_ack_put(day, [(car, 'late:window', None), (car, 'late:plan', None)], None, now,
+                                        refresh=True)
+            except Exception as e:
+                logger.warning('[Routes] Telegram-бот: «Տեսա» «не успеет» на карте не подтверждена (%s)', type(e).__name__)
 
     def _from_map(self, rec: Rec, row: Mapping[str, Any]) -> int:
         """«Տեսա» на карте → запись Telegram: кто (acked_by 0 — с карты, имя — пользователь карты) и когда, правка
@@ -1113,34 +1140,44 @@ class TgBot:
         return done
 
     def _sync_map_acks(self) -> int:
-        """Отметки карты → записи Telegram: идущие неподтверждённые тревоги и «не успеет», у которых на карте есть
-        «Տեսա» того же случая. Чтение базы — вне замка (по дню один раз), правка — по записи под замком."""
+        """Отметки карты → записи Telegram: идущие неподтверждённые 🔴/🟠 тревоги и «не успеет» (у ⚪ кнопки нет — нечего
+        снимать), у которых на карте есть «Տեսա» того же случая. Чтение базы и сверка — по снимку вне замка (по дню
+        один раз), очередь и замок — только при совпадении, под замком — сверка заново. Битая запись — в журнал, проход
+        идёт дальше."""
+        self._refresh_map_late()
+        now = self.feeds.now()
         with self.lock:
-            todo = [r.key for r in self.records.values() if r.phase == 'active' and r.acked_by is None
-                    and r.key.startswith(('alert:', 'late:'))]
+            todo = [r for r in self.records.values() if r.phase == 'active' and r.acked_by is None
+                    and r.level in ('critical', 'warning') and r.key.startswith(('alert:', 'late:'))]
         days: dict[str, list[dict[str, Any]]] = {}
         done = 0
-        for key in todo:
-            rec = self.records.get(key)
-            if rec is None:
-                continue
-            day = _map_day(rec)
-            if day is None:
-                continue
-            if day not in days:
-                try:
-                    days[day] = self.store.live_acks(day)
-                except Exception:
-                    logger.exception('[Routes] Telegram-бот: «Տեսա» карты за %s не прочитаны', day)
-                    days[day] = []
-            if not days[day]:
-                continue
-            self._idle()
-            with self.lock, tg_api.no_wait():
-                rec = self.records.get(key)   # заново под замком: «Տեսա» в Telegram могла прийти раньше
-                if rec is None or rec.acked_by is not None or rec.phase != 'active' or self._acked(rec):
+        for snap in todo:
+            try:
+                day = _map_day(snap)
+                if day is None:
                     continue
-                row = la.map_ack_match(rec, days[day], LIVE_ACK_SINCE_TOL)
-                if row is not None:
-                    done += self._from_map(rec, row)
+                if day not in days:
+                    try:
+                        days[day] = self.store.live_acks(day)
+                    except Exception as e:
+                        logger.warning('[Routes] Telegram-бот: «Տեսա» карты за %s не прочитаны (%s)', day,
+                                       type(e).__name__)
+                        days[day] = []
+                if la.map_ack_match(snap, days[day], LIVE_ACK_SINCE_TOL, now, LIVE_ACK_FLAP) is None:
+                    continue
+                self._idle()
+                with self.lock, tg_api.no_wait():
+                    rec = self.records.get(snap.key)   # заново под замком: «Տեսա» в Telegram могла прийти раньше
+                    if rec is None or rec.acked_by is not None or rec.phase != 'active' or self._acked(rec):
+                        continue
+                    # «сейчас» — после ожидания очереди: свежесть отметки «не успеет» не размягчается
+                    row = la.map_ack_match(rec, days[day], LIVE_ACK_SINCE_TOL, self.feeds.now(), LIVE_ACK_FLAP)
+                    if row is not None:
+                        done += self._from_map(rec, row)
+            except TelegramError:
+                raise
+            except Exception:   # битые данные одной записи не срывают эскалацию, отложенное и отчёты прохода
+                if snap.key not in self.map_bad:   # трасса — один раз на запись, не каждый проход
+                    self.map_bad.add(snap.key)
+                    logger.exception('[Routes] Telegram-бот: «Տեսա» карты для %s не сверена', snap.key)
         return done

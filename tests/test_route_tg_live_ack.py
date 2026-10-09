@@ -166,6 +166,119 @@ def test_no_loop_between_telegram_and_map(tmp_path):
     assert h.rec('alert:').acked_name == 'Գոռ'
 
 
+# ============================== по ревью ==============================
+
+def test_ack_of_ended_record_does_not_overwrite_map(tmp_path):
+    g = alert('gps', 5, 2, gps='off')                                       # кончилась до отправки — запись ended
+    h = Harness(tmp_path, {'CAR1': card(g)}, NOW)
+    h.tick()
+    rec = h.rec('alert:')
+    rec.phase = 'ended'
+    h.store.live_ack_put(DAY, [('CAR1', 'gps', at(1))], 'page', NOW.isoformat())   # новый случай отмечен на карте
+    h.bot.handle(callback(h, h.bot.sign(f'a:{rec.id}')))
+    assert rows(h)[('CAR1', 'gps')]['user'] == 'page' and rows(h)[('CAR1', 'gps')]['since'] == at(1)
+
+
+def test_tg_ack_on_late_is_kept_fresh_on_the_map_and_stale_map_rows_do_not_count(tmp_path):
+    h = Harness(tmp_path, {'CAR1': card(late('c1', 20, 'window'))}, NOW)
+    h.tick()
+    h.bot.handle(callback(h, h.bot.sign(f'a:{h.rec("late:").id}')))
+    first = rows(h)[('CAR1', 'late:window')]
+    h.set(now=NOW + timedelta(minutes=20))
+    h.tick()
+    row = rows(h)[('CAR1', 'late:window')]
+    assert row['seen_at'] == (NOW + timedelta(minutes=20)).isoformat() and (row['user'], row['at']) == \
+        (first['user'], first['at'])                                          # подтверждено ботом, кто/когда — те же
+    # отметка карты без начала, подтверждённая 20 мин назад, — страница её уже не признаёт, и бот тоже
+    h2 = Harness(tmp_path, {'CAR2': card(late('c2', 20, 'window'), car='CAR2')}, NOW, db='b.db')
+    h2.tick()
+    h2.store.live_ack_put(DAY, [('CAR2', 'late:window', None)], 'd', (NOW + timedelta(seconds=10)).isoformat())
+    h2.set(now=NOW + timedelta(minutes=21), cards={'CAR2': card(late('c2', 20, 'window', now=NOW + timedelta(minutes=21)),
+                                                                car='CAR2')})
+    h2.tick()
+    assert h2.rec('late:').acked_by is None
+
+
+def test_info_records_are_not_synced_and_pending_tg_ack_wins(tmp_path):
+    nc = alert('no_contact', 7, minutes=7)                                  # без SIM — ⚪, кнопки нет
+    h = Harness(tmp_path, {'CAR1': card(nc)}, NOW)
+    h.tick()
+    h.store.live_ack_put(DAY, [('CAR1', 'no_contact', nc['from'])], 'd', NOW.isoformat())
+    edits = len(h.api.of('editMessageText'))
+    h.tick()
+    assert h.rec('alert:').acked_by is None and len(h.api.of('editMessageText')) == edits
+    g = alert('gps', 3, gps='off')
+    h2 = Harness(tmp_path, {'CAR1': card(g)}, NOW, db='b.db')
+    h2.tick()
+    rec = h2.rec('alert:')
+    h2.bot.pending_acks.add(rec.id)                                        # «Տեսա» в Telegram ждёт записи
+    h2.store.live_ack_put(DAY, [('CAR1', 'gps', g['from'])], 'd', NOW.isoformat())
+    h2.tick()
+    assert h2.rec('alert:').acked_by is None
+
+
+def test_broken_record_and_db_failure_do_not_break_the_pass(tmp_path, caplog, monkeypatch):
+    g = alert('gps', 3, gps='off')
+    h = Harness(tmp_path, {'CAR1': card(g), 'CAR2': card(alert('center', 3, lat=1.0, lon=1.0), car='CAR2')}, NOW)
+    h.tick()
+    h.store.live_ack_put(DAY, [('CAR2', 'center', at(3))], 'd', NOW.isoformat())
+    real = la.map_ack_match
+
+    def broken(rec, *a, **kw):
+        if rec.car == 'CAR1':
+            raise KeyError('x')
+        return real(rec, *a, **kw)
+    monkeypatch.setattr(la, 'map_ack_match', broken)
+    h.set(plan=None)
+    h.tick()
+    assert 'не сверена' in caplog.text and h.rec('alert:CAR2').acked_name == 'd'
+    monkeypatch.setattr(la, 'map_ack_match', real)
+
+    def down(day):
+        raise st.StoreError('database is locked')
+    monkeypatch.setattr(h.store, 'live_acks', down)
+    h.set(now=NOW + timedelta(minutes=10))
+    h.tick()                                                               # эскалация CAR1 идёт, хоть карта не читается
+    assert [t for t in h.api.texts() if t.startswith('❗')] and 'не прочитаны' in caplog.text
+
+
+def test_review2_weakened_late_keeps_window_row_fresh(tmp_path):
+    h = Harness(tmp_path, {'CAR1': card(late('c1', 20, 'window'))}, NOW)
+    h.tick()
+    h.bot.handle(callback(h, h.bot.sign(f'a:{h.rec("late:").id}')))
+    assert set(rows(h)) == {('CAR1', 'late:window')}
+    t = NOW + timedelta(minutes=15)                                        # теперь опаздывает только к плану
+    h.set(now=t, cards={'CAR1': card(late('c2', 40, 'plan', now=t))})
+    h.tick()
+    assert rows(h)[('CAR1', 'late:window')]['seen_at'] == t.isoformat() and set(rows(h)) == {('CAR1', 'late:window')}
+
+
+def test_review2_old_deviation_button_does_not_overwrite_newer_case_on_the_map(tmp_path):
+    dev = alert('deviation', 60, km=2.0, lat=1.0, lon=1.0)
+    kinds = {'live_alert_kinds': list(st.LIVE_ALERT_KINDS),
+             'tg_levels': {**st.DEFAULT_SETTINGS['tg_levels'], 'deviation': 'warning'}}
+    h = Harness(tmp_path, {'CAR1': card(dev)}, NOW, settings=kinds)
+    h.tick()
+    old = h.rec('alert:')
+    newer = at(10)                                                         # страница отметила более поздний случай
+    h.store.live_ack_put(DAY, [('CAR1', 'deviation', newer)], 'page', NOW.isoformat())
+    h.bot.handle(callback(h, h.bot.sign(f'a:{old.id}')))
+    assert rows(h)[('CAR1', 'deviation')]['since'] == newer and rows(h)[('CAR1', 'deviation')]['user'] == 'page'
+    assert la.map_newer_case('deviation', at(58), dev['from'], st.LIVE_ACK_SINCE_TOL) is False   # тот же случай ±3
+    assert la.map_newer_case('gps', at(30), at(40), st.LIVE_ACK_SINCE_TOL) is True
+    assert la.map_newer_case('gps', None, at(40), st.LIVE_ACK_SINCE_TOL) is False
+
+
+def test_review2_broken_record_is_logged_once(tmp_path, caplog, monkeypatch):
+    h = Harness(tmp_path, gps_card(), NOW)
+    h.tick()
+    h.store.live_ack_put(DAY, [('CAR1', 'gps', at(1))], 'd', NOW.isoformat())
+    monkeypatch.setattr(la, 'map_ack_match', lambda *a, **kw: (_ for _ in ()).throw(KeyError('x')))
+    h.tick()
+    h.tick()
+    assert caplog.text.count('не сверена') == 1
+
+
 def test_keys_match_the_page_on_real_live_output():
     """Настоящий вывод live.car_view: ключ страницы — вид, случай — alerts.since[вид]; ключ бота и отметка карты из
     него — то же (машина, вид, since)."""
