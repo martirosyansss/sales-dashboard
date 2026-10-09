@@ -197,10 +197,9 @@ def main() -> int:
                   f'B cola row packs: {cola!r}')
             check(first['invoiced'] >= 0 and 'Քանակները՝' in text, 'B source note present')
             # владелец 09.10: лист не делится по магазинам — только итог рейса по товару (каждый товар одной строкой)
-            stores = [x['name'] or x['code'] for x in first['loading'] if x['name'] or x['code']]
-            check('Բեռնման հերթականություն' not in text and not any(n in text for n in stores)
+            check('Բեռնման հերթականություն' not in text and sheet.locator('tr.ld-h').count() == 0
                   and sheet.locator('.sheet').first.locator('tr', has_text='Կոլա 1.5լ').count() == 1,
-                  f'B no per-store block, one row per product (stores {stores})')
+                  f'B no per-store block, one row per product ')
             sheet.close()
 
             # C
