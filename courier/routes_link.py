@@ -312,7 +312,9 @@ def orders_window(day: date, view: RoutesView) -> tuple[date, date]:
     «Երբ տանել» на день — carried_since) и сам день: заказы, заведённые заранее на него (№79), и заказы дня, взятые
     логистом в его развоз (№72). Лишние старые заказы pick_orders не берёт: заказ прошлых дней — только в развозе дня."""
     since, until = dp.order_window(day, view.workdays, view.holidays)
-    first = dp.backlog_since(since, view.workdays, holidays=view.holidays)
+    # заказы прошлых дней терминал берёт только из развоза дня (pick_orders) — читаем до предела окна «Նախորդ օրերից»: заказ,
+    # который план держит, не пропадает, если окно настройки dispatch_backlog_days потом сузили
+    first = dp.backlog_since(since, view.workdays, dp.BACKLOG_MAX_WORKDAYS, holidays=view.holidays)
     return min(first, view.carried_since) if view.carried_since is not None else first, until + timedelta(days=1)
 
 

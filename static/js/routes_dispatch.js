@@ -111,6 +111,8 @@
         editing: new Set(),                 // рейсы, открытые кнопкой «Փոփոխել»
         tab: 'day',                         // №81: вкладка на телефоне — day | trips | map
         dragStop: null,                     // №81: магазин, который тянут мышью на другой рейс: {stop, from}
+        blFolded: new Set(),                // «Նախորդ օրերից»: свёрнутые группы менеджеров (agent_id)
+        blDaysWant: null, blDaysTimer: 0, blDaysSaving: false,   // «Նախորդ օրերից»: выбранное, ещё не сохранённое окно в днях
         boardFolded: false,                 // №81: шкала дня свёрнута (как «скрыть таймлайн» у Routific)
         fetchedAt: 0,                       // когда последний раз спрашивали сервер о заказах дня
         geoMap: null, geoMarker: null, geoStop: null, geoMissing: false,   // «Փոխել տեղը»: карта диалога и магазин; geoMissing — точки ещё не было
@@ -2175,16 +2177,21 @@
             toast(pl(placed.length, 'պատվեր') + ' դրվեց երթերում' + (miss ? ', ' + pl(miss, 'պատվերի') + ' համար տեղ չգտնվեց («Դեռ երթերում չեն»)' : '') + km + '։');
         }
     }
-    function backlogRow(o, hasPlan) {
+    // возраст заказа: 5 дней и старше — красным (владелец 09.10: окно можно расширить до двух недель)
+    const BL_OLD_DAYS = 5;
+    function backlogRow(o, hasPlan, grouped) {
         const li = document.createElement('li');
         li.className = 'dp-bl-row' + (o.taken ? ' is-taken' : '');
         const cell = (cls, ...kids) => { const el = document.createElement('div'); el.className = cls; el.append(...kids); return el; };
         const span = (text, cls) => { const s = document.createElement('span'); s.textContent = text; if (cls) s.className = cls; return s; };
         const n = daysAgo(o.order_date);
-        const age = cell('dp-bl-age', span(n > 0 ? n + NB + 'օր առաջ' : 'այսօր', 'dp-bl-ago'), span(dateRu(o.order_date).slice(0, 5)));
+        const age = cell('dp-bl-age', span(dateRu(o.order_date).slice(0, 5), 'dp-bl-date'),
+            span(n > 0 ? n + NB + 'օր' : 'այսօր', 'dp-bl-ago' + (n >= BL_OLD_DAYS ? ' is-old' : '')));
+        if (n > 0) age.title = 'Ընդունվել է ' + n + ' օր առաջ';
         const name = document.createElement('b');
         name.textContent = o.name || o.code || ('հաճախորդ ' + o.customer_id);
-        const sub = [o.code, o.agent_name, o.doc_num ? '№' + NB + o.doc_num : ''].filter(Boolean).join(' · ');
+        // в группе менеджер — в её шапке; вне групп («Չենք տանում այսօր») — в строке
+        const sub = [o.code, grouped ? '' : o.agent_name, o.doc_num ? '№' + NB + o.doc_num : ''].filter(Boolean).join(' · ');
         const main = cell('dp-bl-main', name, span(sub));
         const kg = cell('dp-bl-num dp-bl-kg', span(o.kg > 0 ? kgText(o.kg) : '—'));
         if (!(o.kg > 0)) kg.title = 'ERP-ում ապրանքների քաշը նշված չէ';
@@ -2218,9 +2225,12 @@
         // «Երբ տանել»: этого дня — магазин сегодня не принимает; другого дня (later_from) — по тому плану
         else if (o.later_to) [tone, icon, text] = ['', 'fa-calendar-day', (o.later_from ? 'Ըստ ' + dayHuman(o.later_from, false) + ' պլանի՝ կտանենք '
             : 'Խանութն այսօր չի ընդունում՝ կտանենք ') + dayHuman(o.later_to, true)];
-        else if (o.agent_off) [tone, icon, text] = ['', 'fa-user-slash', 'Մենեջերը հանված է «Մենեջերներ» ֆիլտրից։ «Տանել այսօր»-ով կտանենք միայն այս պատվերը'];
+        // снятый фильтром менеджер — в шапке группы; вне групп — у строки
+        else if (o.agent_off && !grouped) [tone, icon, text] = ['', 'fa-user-slash', 'Մենեջերը հանված է «Մենեջերներ» ֆիլտրից։ «Տանել այսօր»-ով կտանենք միայն այս պատվերը'];
         else if (tt) [tone, icon, text] = ['', 'fa-route', 'Խանութն այսօր արդեն երթում է այլ պատվերով՝ ' + tt];
         if (o.taken && o.carried) text += ' · տեղափոխված է ' + (o.carried_from ? dayHuman(o.carried_from, false) + ' պլանից' : 'նախորդ օրից');
+        // старше выбранного окна: строку держит решение плана (dp.backlog_held), а не окно
+        if (text && state.data.backlog_since && o.order_date < state.data.backlog_since) text += ' · ընտրված օրերից ավելի հին է';
         if (text) {
             const st = cell('dp-bl-st' + (tone ? ' ' + tone : ''));
             st.innerHTML = '<i class="fas ' + icon + '" aria-hidden="true"></i>';
@@ -2229,30 +2239,191 @@
         }
         return li;
     }
+    // Группы по менеджерам (владелец 09.10): шапка — менеджер, линия, итоги, «Տանել բոլորը» менеджера; по имени, как
+    // фильтр «Մենեջերներ»; свёрнутые группы помнятся до перезагрузки страницы
+    function backlogGroups(rows) {
+        const by = new Map();
+        rows.forEach(o => {
+            const k = o.agent_id || 0;
+            if (!by.has(k)) by.set(k, []);
+            by.get(k).push(o);
+        });
+        const name = (g) => g.list[0].agent_name || g.list[0].agent_code || '~';
+        return [...by.entries()].map(([id, list]) => ({ id, list }))
+            .sort((a, b) => name(a).localeCompare(name(b), 'hy') || a.id - b.id);
+    }
+    function backlogGroup(g, hasPlan) {
+        const first = g.list[0];
+        const open = blUndecided(g.list), taken = g.list.filter(o => o.taken);
+        const folded = state.blFolded.has(g.id);
+        const sec = document.createElement('section');
+        sec.className = 'dp-bl-grp' + (first.agent_off ? ' is-off' : '');
+        const hd = document.createElement('div');
+        hd.className = 'dp-bl-ghd';
+        const tog = document.createElement('button');
+        tog.type = 'button';
+        tog.className = 'dp-bl-gtog';
+        tog.setAttribute('aria-expanded', String(!folded));
+        const nm = first.agent_name || first.agent_code || 'Մենեջերը նշված չէ';
+        tog.innerHTML = '<i class="fas fa-chevron-right" aria-hidden="true"></i><span class="dp-bl-gname"><b></b><small></small></span>';
+        tog.querySelector('b').textContent = nm;
+        tog.querySelector('small').textContent = [first.agent_code, first.agent_area ? 'գիծ՝ ' + first.agent_area : ''].filter(Boolean).join(' · ');
+        const tags = document.createElement('span');
+        tags.className = 'dp-bl-gtags';
+        const tag = (text, cls, title) => {
+            const b = document.createElement('span');
+            b.className = 'rt-badge' + (cls ? ' ' + cls : '');
+            b.textContent = text;
+            if (title) b.title = title;
+            tags.append(b);
+        };
+        tag(pl(g.list.length, 'պատվեր'));
+        // снятый фильтром менеджер: его заказы не напоминаем (как «Տանել բոլորը» и счётчики) — только метка ниже
+        if (open.length && !first.agent_off) tag(open.length + ' չորոշված', 'b-warn');
+        if (taken.length) tag(taken.length + ' տանում ենք', 'b-ok');
+        if (first.agent_off) tag('հանված է ֆիլտրից', 'b-none', 'Մենեջերը հանված է «Մենեջերներ» ֆիլտրից։ «Տանել այսօր»-ով կտանենք միայն ընտրված պատվերները');
+        const kg = g.list.reduce((a, o) => a + (o.kg || 0), 0), rev = g.list.reduce((a, o) => a + (o.revenue || 0), 0);
+        const numCell = (text, cls) => { const el = document.createElement('div'); el.className = 'dp-bl-num ' + cls; el.textContent = text; return el; };
+        const act = document.createElement('div');
+        act.className = 'dp-bl-act';
+        // снятый фильтром менеджер — только по одному, явно (как глобальная «Տանել բոլորը», blTodo)
+        if (hasPlan && open.length > 1 && !first.agent_off) {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'rt-btn rt-btn-sm rt-btn-ghost';
+            b.textContent = 'Տանել բոլորը (' + open.length + ')';
+            b.setAttribute('aria-label', 'Տանել այսօր ' + nm + '-ի բոլոր չորոշված պատվերները (' + open.length + ')');
+            b.addEventListener('click', () => takeBacklog(blUndecided(g.list).map(o => o.isn)));
+            act.append(b);
+        }
+        const lead = document.createElement('div');
+        lead.className = 'dp-bl-glead';
+        lead.append(tog, tags);
+        hd.append(lead, numCell(kg > 0 ? kgText(kg) : '—', 'dp-bl-kg'), numCell(money(rev), 'dp-bl-sum'), act);
+        const ul = document.createElement('ul');
+        ul.className = 'dp-bl';
+        ul.hidden = folded;
+        ul.setAttribute('aria-label', nm);
+        ul.id = 'dpBlGrp' + g.id;
+        tog.setAttribute('aria-controls', ul.id);
+        sec.setAttribute('aria-label', nm);
+        // нерешённые — сверху, старые — первыми; затем решённые
+        const rank = (o) => (blUndecided([o]).length ? 0 : 1);
+        [...g.list].sort((a, b) => rank(a) - rank(b) || a.order_date.localeCompare(b.order_date))
+            .forEach(o => ul.appendChild(backlogRow(o, hasPlan, true)));
+        tog.addEventListener('click', () => {
+            const now = !state.blFolded.has(g.id);
+            if (now) state.blFolded.add(g.id); else state.blFolded.delete(g.id);
+            tog.setAttribute('aria-expanded', String(!now));
+            ul.hidden = now;
+        });
+        sec.append(hd, ul);
+        return sec;
+    }
+    // Окно «Նախորդ օրերից» в рабочих днях (настройка dispatch_backlog_days — одна для всех дней, как на странице настроек)
+    function renderBacklogDays() {
+        const d = state.data, sel = $('dpBacklogDays');
+        const n = d.backlog_days || 2, max = d.backlog_days_max || 10;
+        if (sel.options.length !== max) {
+            sel.textContent = '';
+            for (let i = 1; i <= max; i++) sel.add(new Option('վերջին ' + i + NB + 'աշխ. օրը', String(i)));
+        }
+        // выбранное, но ещё не сохранённое значение не сбрасываем перерисовкой
+        sel.value = String(state.blDaysWant || n);
+        // даты окна: от backlog_since до дня перед окном заказов дня
+        const until = new Date(Date.parse(d.order_dates.since) - 864e5).toISOString().slice(0, 10);
+        const from = d.backlog_since;
+        $('dpBacklogRange').textContent = from && from <= until
+            ? dateRu(from).slice(0, 5) + (from < until ? '–' + dateRu(until).slice(0, 5) : '') : '';
+    }
+    // Смена окна: стрелки на закрытом списке шлют change на каждый шаг — сохраняем последнее значение после паузы
+    function queueBacklogDays(n) {
+        if (!(n >= 1)) return;
+        state.blDaysWant = n;
+        clearTimeout(state.blDaysTimer);
+        state.blDaysTimer = setTimeout(setBacklogDays, 700);
+    }
+    // без setBusy: он отключил бы и сам список (фокус ушёл бы со списка); правки дня в это время ждут сами (rev)
+    async function setBacklogDays() {
+        const n = state.blDaysWant;
+        if (!n) return;
+        if (state.busy || state.blDaysSaving) { state.blDaysTimer = setTimeout(setBacklogDays, 500); return; }
+        if (n === state.data.backlog_days) { state.blDaysWant = null; renderBacklogDays(); return; }
+        hideActionError();
+        state.blDaysSaving = true;
+        try {
+            await api('POST', '/api/routes/dispatch/backlog-days', { days: n });
+        } catch (e) {
+            state.blDaysSaving = false;
+            if (state.blDaysWant === n) state.blDaysWant = null;
+            renderBacklogDays();
+            showActionError(e);
+            return;
+        }
+        const msg = '«Նախորդ օրերից»՝ վերջին ' + n + NB + 'աշխատանքային օրը (բոլոր օրերի համար)։ Արդեն տանվող պատվերները մնում են։';
+        try {
+            await reloadQuiet();
+            toast(msg);
+        } catch (e) {
+            // сохранено — не удалось только перечитать день
+            toast(msg + ' Թարմացրեք էջը՝ ցուցակը տեսնելու համար։');
+        } finally {
+            state.blDaysSaving = false;
+        }
+        if (state.blDaysWant === n) state.blDaysWant = null;
+        renderBacklogDays();
+    }
     function renderBacklog() {
         const bl = state.data.backlog || [];
         const hasPlan = !!state.data.plan;
-        $('dpBacklog').hidden = !bl.length;
+        // окно можно сменить и когда заказов нет (иначе его не расширить отсюда) — блок виден всегда
+        $('dpBacklog').hidden = false;
+        renderBacklogDays();
         const open = blUndecided(bl), todo = blTodo(bl), taken = bl.filter(o => o.taken || ((o.deferred || o.later_to) && !o.dismissed)),
             off = bl.filter(o => !o.taken && o.dismissed);
-        $('dpBacklogNote').textContent = !bl.length ? ''
-            : [pl(bl.length, 'պատվեր'), bl.some(o => o.taken) ? bl.filter(o => o.taken).length + '-ը տանում ենք' : '', todo.length ? todo.length + '-ը չորոշված' : ''].filter(Boolean).join(' · ');
-        $('dpBacklogLead').textContent = !hasPlan
-            ? 'Այս պատվերներն ընդունվել են ավելի վաղ, բայց դեռ չեն առաքվել։ Նախ կազմեք երթերը, հետո այստեղ ընտրեք՝ որոնք տանել այսօր։'
-            : open.length ? 'Այս պատվերներն ընդունվել են ավելի վաղ, բայց դեռ չեն առաքվել։ Յուրաքանչյուրի համար ընտրեք՝ «Տանել այսօր» (պատվերը միանգամից կդրվի ամենահարմար երթում) կամ «Չտանել»։'
-                : 'Բոլոր պատվերների համար որոշել եք։';
+        const nTaken = bl.filter(o => o.taken).length;
+        $('dpBacklogNote').textContent = !bl.length ? 'չառաքված պատվեր չկա'
+            : [pl(bl.length, 'պատվեր'), nTaken ? nTaken + '-ը տանում ենք' : '', todo.length ? todo.length + '-ը չորոշված' : ''].filter(Boolean).join(' · ');
+        $('dpBacklogLead').textContent = !bl.length ? ''
+            : !hasPlan ? 'Ընդունվել են ավելի վաղ, բայց դեռ չեն առաքվել։ Նախ կազմեք երթերը, հետո ընտրեք՝ որոնք տանել այսօր։'
+                : open.length ? 'Ընդունվել են ավելի վաղ, բայց դեռ չեն առաքվել։ «Տանել այսօր»՝ պատվերը միանգամից կդրվի ամենահարմար երթում, «Չտանել»՝ այսօր չենք տանում։'
+                    : 'Բոլոր պատվերների համար որոշել եք։';
         const all = $('dpBacklogAll');
         all.hidden = !hasPlan || todo.length < 2;
         all.textContent = 'Տանել բոլորը (' + todo.length + ')';
         all.onclick = () => takeBacklog(blTodo(state.data.backlog || []).map(o => o.isn));
-        const ul = $('dpBacklogList');
-        ul.textContent = '';
-        [...open, ...taken].forEach(o => ul.appendChild(backlogRow(o, hasPlan)));
+        // итоги окна
+        const stats = $('dpBacklogStats');
+        stats.textContent = '';
+        stats.hidden = !bl.length;
+        const stat = (label, value, cls) => {
+            const el = document.createElement('div');
+            el.className = 'dp-bl-stat' + (cls ? ' ' + cls : '');
+            const l = document.createElement('span'), v = document.createElement('b');
+            l.textContent = label;
+            v.textContent = value;
+            el.append(l, v);
+            stats.append(el);
+        };
+        stat('Պատվեր', fmt(bl.length));
+        stat('Քաշ', kgText(bl.reduce((a, o) => a + (o.kg || 0), 0)));
+        stat('Գումար', money(bl.reduce((a, o) => a + (o.revenue || 0), 0)));
+        stat('Չորոշված', fmt(todo.length), todo.length ? 'is-warn' : '');
+        stat('Տանում ենք', fmt(nTaken), nTaken ? 'is-ok' : '');
+        const shown = [...open, ...taken];
+        const box = $('dpBacklogList');
+        box.textContent = '';
+        backlogGroups(shown).forEach(g => box.appendChild(backlogGroup(g, hasPlan)));
+        $('dpBacklogHd').hidden = !shown.length;
+        const empty = $('dpBacklogEmpty');
+        empty.hidden = !!shown.length;
+        empty.textContent = !bl.length ? 'Ընտրված օրերին չառաքված պատվեր չկա։ Ավելի հին պատվերները տեսնելու համար մեծացրեք օրերի թիվը։'
+            : 'Բոլոր պատվերներն այսօր չենք տանում՝ տես ստորև։';
         $('dpBacklogOff').hidden = !off.length;
         $('dpBacklogOffN').textContent = '(' + off.length + ')';
         const ul0 = $('dpBacklogOffList');
         ul0.textContent = '';
-        off.forEach(o => ul0.appendChild(backlogRow(o, hasPlan)));
+        off.forEach(o => ul0.appendChild(backlogRow(o, hasPlan, false)));
     }
     function renderOrderLists() {
         renderBacklog();
@@ -5018,6 +5189,8 @@
         if (await build() === false) tick(new Set(was));   // сборка не началась или сервер отказал — галочки как были
     }
     function initCompare() {
+        // «Նախորդ օրերից»: окно в рабочих днях (владелец 09.10)
+        $('dpBacklogDays').addEventListener('change', (e) => queueBacklogDays(parseInt(e.target.value, 10)));
         $('dpCompare').addEventListener('click', openCompare);
         $('dpMenuCompare').addEventListener('click', () => { openMenu(false, true); openCompare(); });
         $('dpCmpClose').addEventListener('click', () => $('dpCmpDlg').close());

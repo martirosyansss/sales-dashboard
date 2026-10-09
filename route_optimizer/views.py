@@ -1432,19 +1432,22 @@ def _later_due(later: Mapping[str, tuple[date | None, date, date]], day: date) -
 
 
 def _day_orders(state: RoutesState, bundle: Bundle, day: date, refresh: bool, rule: dp.FleetRule,
-                later: Mapping[str, tuple[date | None, date, date]] | None = None
+                later: Mapping[str, tuple[date | None, date, date]] | None = None, held: Collection[str] = ()
                 ) -> tuple[date, date, dp.DispatchData, dp.Selection]:
     """Окно заказов дня, заказы ERP (кэш _dispatch_data) и отбор к доставке по правилу дня «чьи заказы везут машины»
     (№74, dp.fleet_rule_of) — без заказов, взятых в развоз дня их приёма (№72, _same_day_taken). ERP читается и за сам
     день: заказы, заведённые заранее на него (№79), — его заказы; прочие заказы с датой дня — новые заказы дня (№72,
     _same_day_data), из данных дня они убраны. later — «Երբ տանել» прошлых планов (_later_scan): ERP читается и с даты
     самого раннего их заказа (не старше DEFER_MAX_AGE_DAYS до дня плана, dp.later_carried), но из более старых заказов
-    остаются только те, что dp.later_shown (перенесены сюда или позже, не довезены в свой день) — «Նախորդ օրերից» прежний."""
+    остаются только те, что dp.later_shown (перенесены сюда или позже, не довезены в свой день) — «Նախորդ օրերից» прежний.
+    «Նախորդ օրերից» — заказы dispatch_backlog_days рабочих дней раньше окна (владелец 09.10); ERP читается на
+    BACKLOG_MAX_WORKDAYS: старше выбранного окна остаются только заказы, которые день держит (held, dp.backlog_held)."""
     workdays, off = bundle.settings['workdays'], dp.holidays_of(bundle.settings)
     since, until = dp.order_window(day, workdays, off)
-    first = dp.backlog_since(since, workdays, holidays=off)
+    first = dp.backlog_since(since, workdays, dp.backlog_days_of(bundle.settings), holidays=off)
+    read = dp.backlog_since(since, workdays, dp.BACKLOG_MAX_WORKDAYS, holidays=off)
     later = later or {}
-    data = _dispatch_data(state, min([first, *(od for _, od, _ in later.values())]), until + timedelta(days=1), day,
+    data = _dispatch_data(state, min([read, *(od for _, od, _ in later.values())]), until + timedelta(days=1), day,
                           refresh)
 
     def target(to: date | None) -> dp.Draft | None:   # отправленный план дня доставки (прошедшего); не прочитан — нет
@@ -1455,7 +1458,8 @@ def _day_orders(state: RoutesState, bundle: Bundle, day: date, refresh: bool, ru
         except StoreError:
             return None
     data = replace(data, orders=tuple(o for o in data.orders if (o.order_date < until or o.predated) and (
-        o.order_date >= first or (o.isn in later and dp.later_shown(later[o.isn], o, day, target(later[o.isn][0]))))))
+        o.order_date >= first or (o.isn in held and o.order_date >= read)
+        or (o.isn in later and dp.later_shown(later[o.isn], o, day, target(later[o.isn][0]))))))
     sel = dp.to_deliver(data.orders, day, since, rule, dp.place_of(data.customers, data.addresses))
     seen = _plan_seen(state, since)
     sel = dp.settle_predated(sel, since, seen if seen is not None else dp.PlanSeen())
@@ -1503,6 +1507,19 @@ def _carried(state: RoutesState, day: date, workdays: Sequence[int], backlog: li
     """Заказы, которые логист перенёс на этот день («Везти завтра», №25) в планах с прошлого рабочего дня
     по вчера (и из нерабочего дня между ними), и «Երբ տանել» на этот день (later, _later_due), которые ещё не отгружены.
     Битый черновик — без переносов."""
+    return (_deferred_here(state, day, workdays, holidays) | set(later)) & {o.isn for o in backlog}
+
+
+def _held(state: RoutesState, day: date, settings: Mapping[str, Any], draft: dp.Draft | None,
+          later: Collection[str] = ()) -> set[str]:
+    """Заказы прошлых дней, которые день держит (dp.backlog_held), — до чтения ERP: перенесённые сюда (_carried, ещё без
+    сверки с заказами) и решения черновика дня."""
+    workdays, holidays = settings['workdays'], dp.holidays_of(settings)
+    return dp.backlog_held(draft, _deferred_here(state, day, workdays, holidays) | set(later))
+
+
+def _deferred_here(state: RoutesState, day: date, workdays: Sequence[int], holidays: Collection[date] = ()) -> set[str]:
+    """«Везти завтра» (№25) на этот день в отправленных планах с прошлого рабочего дня по вчера."""
     out: set[str] = set()
     d = dp.previous_workday(day, workdays, holidays)
     while d < day:
@@ -1513,7 +1530,7 @@ def _carried(state: RoutesState, day: date, workdays: Sequence[int], backlog: li
         if plan is not None:
             out |= plan.deferred   # №81: «везти завтра», отправленное водителям
         d += timedelta(days=1)
-    return (out | set(later)) & {o.isn for o in backlog}
+    return out
 
 
 def _plan_seen(state: RoutesState, day: date) -> dp.PlanSeen | None:
@@ -1553,7 +1570,8 @@ def _defer_target(day: date, workdays: Sequence[int], holidays: Collection[date]
     """(день доставки, куда «Везти завтра», самая ранняя дата заказа, которую он ещё видит)."""
     target = dp.next_workday(day, workdays, holidays)
     since, _ = dp.order_window(target, workdays, holidays)
-    return target, dp.backlog_since(since, workdays, holidays=holidays)
+    # перенесённый туда заказ тот день держит (dp.backlog_held) — виден до предела чтения ERP, не до окна настройки
+    return target, dp.backlog_since(since, workdays, dp.BACKLOG_MAX_WORKDAYS, holidays=holidays)
 
 
 
@@ -1606,7 +1624,8 @@ def _load_day(state: RoutesState, bundle: Bundle, day: date, refresh: bool = Fal
     rule = dp.fleet_rule_of(draft, bundle.settings)
     later = _later_scan(state, day, bundle.settings['workdays'], dp.holidays_of(bundle.settings))
     due = _later_due(later, day)
-    since, until, data, sel = _day_orders(state, bundle, day, refresh, rule, later)
+    since, until, data, sel = _day_orders(state, bundle, day, refresh, rule, later,
+                                          _held(state, day, bundle.settings, draft, due))
     deliver, backlog = sel.main, sel.backlog
     carried = _carried(state, day, bundle.settings['workdays'], backlog, dp.holidays_of(bundle.settings), due)
     # новые заказы дня (№72): сегодня — кандидаты; другой день — только если в нём есть взятые (их точки в плане). Взятых
@@ -1784,7 +1803,10 @@ def _dispatch_body(dd: _DispatchDay) -> dict[str, Any]:
         менеджеров), «Չտանել» (dismissed) и рейс, где стоит его магазин."""
         agent = dd.snap.agents.get(o.agent_id)
         trip = trip_of.get(o.customer_id)
-        return order_json(o) | {'agent_name': agent.name if agent else '',
+        # группировка по менеджерам (владелец 09.10): id, код и линия менеджера
+        return order_json(o) | {'agent_id': o.agent_id, 'agent_code': agent.code if agent else '',
+                                'agent_area': agent.area if agent else '',
+                                'agent_name': agent.name if agent else '',
                                 'taken': dp.backlog_delivered(o, added, picked, off),
                                 'dismissed': draft is not None and o.isn in draft.dismissed,
                                 'trip': {'id': trip.id, 'truck': trip.truck} if trip is not None else None}
@@ -1829,7 +1851,9 @@ def _dispatch_body(dd: _DispatchDay) -> dict[str, Any]:
         **({'agents_from_settings': True} if draft is None and off else {}),
         # не отгружены с прошлых дней: в план — только добавленные логистом (added)
         'backlog': [backlog_json(o) for o in dd.backlog],
-        'backlog_since': dp.backlog_since(dd.since, s['workdays'], holidays=holidays).isoformat(),
+        'backlog_since': dp.backlog_since(dd.since, s['workdays'], dp.backlog_days_of(s), holidays=holidays).isoformat(),
+        # окно «Նախորդ օրերից» в рабочих днях (настройка dispatch_backlog_days, владелец 09.10) и его предел
+        'backlog_days': dp.backlog_days_of(s), 'backlog_days_max': dp.BACKLOG_MAX_WORKDAYS,
         'plan': None,
         'overtime': draft.overtime if draft is not None else False,
         'overtime_ok': draft.overtime_ok if draft is not None else False,
@@ -2642,7 +2666,7 @@ def api_dispatch_status() -> Any:
     rule = dp.fleet_rule_of(draft, bundle.settings)
     later = _later_scan(state, day, bundle.settings['workdays'], dp.holidays_of(bundle.settings))
     due = _later_due(later, day)
-    _, _, data, sel = _day_orders(state, bundle, day, False, rule, later)
+    _, _, data, sel = _day_orders(state, bundle, day, False, rule, later, _held(state, day, bundle.settings, draft, due))
     carried = _carried(state, day, bundle.settings['workdays'], sel.backlog, dp.holidays_of(bundle.settings), due)
     # новые заказы дня (№72): сегодня — сколько их ещё решать (плашка без перезагрузки); ERP не ответила — без них
     today: list[dp.DispatchOrder] = []
@@ -3017,6 +3041,30 @@ def _resize_preview(dd: _DispatchDay, payload: Mapping[str, Any], info: Callable
     return jsonify({'success': True, 'preview': {
         'delta_km': round(view['summary']['km'] - view_before['summary']['km'], 1),
         'stops': stops_of(view) - stops_of(view_before), 'return': back}})
+
+
+@bp.post('/api/routes/dispatch/backlog-days')
+@_api
+def api_dispatch_backlog_days() -> Any:
+    """Окно «Նախորդ օրերից» прямо с «Развоза» (владелец 09.10 «сколько дней — дай изменить»): {"days": N} — настройка
+    dispatch_backlog_days (рабочих дней раньше окна заказов дня, 1 … BACKLOG_MAX_WORKDAYS), та же, что на странице
+    настроек; одна для всех дней. Заказы, которые план уже держит (взяты, перенесены), остаются видны и старше окна."""
+    payload, error = _json_body()
+    if error is not None:
+        return error
+    days = payload.get('days') if isinstance(payload, dict) else None
+    if not isinstance(days, int) or isinstance(days, bool):
+        return _bad_request({'days': 'ամբողջ թիվ՝ աշխատանքային օրեր'})
+    state = _state()
+    bundle = state.store.load()
+    snap, _ = state.snapshots.get(allow_stale=True)   # как «×» «никогда» (настройки проверяются целиком, со справочниками)
+    changes, errors = validate_payload({'settings': {'dispatch_backlog_days': days}}, bundle, snap.ref_data())
+    if errors:
+        return _bad_request({'days': next(iter(errors.values()))})
+    user = session.get('username')
+    state.store.save(changes, user)
+    logger.info('[Routes] Окно «Նախորդ օրերից» = %s раб. дн. (пользователь %s)', days, user)
+    return jsonify({'success': True, 'days': days})
 
 
 @bp.post('/api/routes/dispatch/overtime')

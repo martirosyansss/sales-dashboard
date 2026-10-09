@@ -596,6 +596,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # начинает с него, у дня с планом — свой выбор (Draft.agents_off). Список снятых, а не выбранных: новый менеджер
     # ERP по умолчанию в развозе — заказы молча не теряются. Нет ключа — пусто (везём всех)
     'dispatch_agents_off': [],
+    # «Развоз», «Նախորդ օրերից» (владелец 09.10 «сколько дней — дай изменить»): заказы скольких рабочих дней раньше окна
+    # заказов дня показывать (1 … dispatch.BACKLOG_MAX_WORKDAYS). Нет ключа — 2, как было
+    'dispatch_backlog_days': 2,
     # «Развоз» (№74): менеджеры (agent_id), чьи заказы машины парка везут, хотя в ERP «везёт сам» (экспедитор = менеджер,
     # Rocarm A000), — кроме клиентов в городах dispatch_other_cities (адрес по умолчанию или название клиента): их везут
     # другие машины. Пусто — правила нет: «везёт сам» не для машин, как раньше. Города — стартовые ответа владельца
@@ -743,6 +746,7 @@ _NUMERIC: dict[str, tuple[float, float, bool]] = {
     'live_repeat_min': (1, 1440, False),
     'late_nowin_min': (5, 240, False),     # и целое (validate_settings)
     'tg_escalate_min': (0, 240, False),    # и целое; 0 — без эскалации
+    'dispatch_backlog_days': (1, 10, False),   # и целое; верх — dispatch.BACKLOG_MAX_WORKDAYS (окно чтения ERP)
 }
 
 TRUCK_CAPACITY_KG = (100, 30000)
@@ -1357,7 +1361,8 @@ class Bundle:
     def fingerprint(self) -> str:
         """Отпечаток для кэша оценки: меняется при любом сохранении."""
         data = {
-            'settings': self.settings,
+            # окно «Նախորդ օրերից» (владелец 09.10) — только вид «Развоза»: его смена с «Развоза» не сбрасывает оценку
+            'settings': {k: v for k, v in self.settings.items() if k not in FINGERPRINT_SKIP},
             'depot': self.depot,
             'trucks': [asdict(t) for _, t in sorted(self.trucks.items())],
             'managers': [asdict(m) for _, m in sorted(self.managers.items())],
@@ -1371,6 +1376,10 @@ class Bundle:
             data['garage_prior'] = sorted(self.garage_prior.items())
         raw = json.dumps(data, sort_keys=True, ensure_ascii=False, default=str)
         return hashlib.sha256(raw.encode('utf-8')).hexdigest()[:16]
+
+
+# настройки, от которых оценка (обзор, нормы визитов) не зависит: их смена отпечаток Bundle не меняет
+FINGERPRINT_SKIP = frozenset({'dispatch_backlog_days'})
 
 
 @dataclass(frozen=True)
@@ -1624,6 +1633,12 @@ def validate_settings(values: Mapping[str, Any],
         if key in out and not float(out[key]).is_integer():
             errors[key] = 'ամբողջ թիվ րոպեներով'
             del out[key]
+    if 'dispatch_backlog_days' in out:
+        if not float(out['dispatch_backlog_days']).is_integer():
+            errors['dispatch_backlog_days'] = 'ամբողջ թիվ՝ աշխատանքային օրեր'
+            del out['dispatch_backlog_days']
+        else:
+            out['dispatch_backlog_days'] = int(out['dispatch_backlog_days'])
     if 'size_small_max_kg' in out and 'size_medium_max_kg' in out \
             and out['size_small_max_kg'] >= out['size_medium_max_kg']:
         errors['size_medium_max_kg'] = 'միջին խանութների շեմը պետք է մեծ լինի փոքր խանութների շեմից'

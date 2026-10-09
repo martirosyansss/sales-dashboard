@@ -10,9 +10,10 @@
   следующий рабочий день, как обычный, если план его даты его не видел (завели после сборки — не теряется); видел —
   решён там (отвезли без накладной, исключили, перенесли): «не отгружены с прошлых дней» (settle_predated, PlanSeen).
   В «новые заказы дня» он не входит.
-- «Не отгружены с прошлых дней» — заказы ещё BACKLOG_WORKDAYS рабочих дней раньше, без реализации
-  до D: по данным сентября около половины их везут в D, остальные не везут вовсе — поэтому в план
-  они не входят, пока логист не добавит их сам (Draft.added).
+- «Не отгружены с прошлых дней» — заказы ещё N рабочих дней раньше (настройка dispatch_backlog_days, по умолчанию
+  BACKLOG_WORKDAYS; владелец 09.10), без реализации до D: по данным сентября около половины их везут в D, остальные не
+  везут вовсе — поэтому в план они не входят, пока логист не добавит их сам (Draft.added). ERP читается на
+  BACKLOG_MAX_WORKDAYS: заказ, который план уже держит (взят, перенесён), не пропадает, если окно потом сузили.
 - Остановка — клиент: все его заказы дня одной точкой. Координата — ручная точка логиста → адрес
   клиента в ERP → медиана GPS визитов (evaluate.visit_coord).
 - Рейсы — fleet.route_day (Кларк–Райт, 2-opt, тоннаж, рабочий день машины, разгрузка); тяжёлый
@@ -115,7 +116,10 @@ _EPS = 1e-6
 MAX_TRIPS = 500           # защита от битого черновика
 MAX_BUILT_ORDERS = 20000  # заказов в отметке сборки — тоже защита от битого черновика
 MAX_AGENTS = 500          # менеджеров в «чьи заказы не везём» — защита от битого черновика и запроса
-BACKLOG_WORKDAYS = 2      # «не отгружены с прошлых дней» — заказы ещё двух рабочих дней раньше окна
+BACKLOG_WORKDAYS = 2      # «не отгружены с прошлых дней» — заказы ещё двух рабочих дней раньше окна (по умолчанию)
+# предел настройки dispatch_backlog_days и окно чтения ERP: заказы, которые план держит (backlog_held), видны и
+# старше выбранного окна — до этого предела
+BACKLOG_MAX_WORKDAYS = 10
 LATER_MAX_DAYS = 7        # «Երբ տանել» (владелец 08.10): перенос не дальше недели от дня плана (календарных дней)
 # заказ старше этого (дней до дня плана) «Երբ տանել» не переносится: окно ERP дня, куда он придёт, ограничено (later_carried)
 DEFER_MAX_AGE_DAYS = 14
@@ -269,6 +273,29 @@ def backlog_since(since: date, workdays: Sequence[int], n: int = BACKLOG_WORKDAY
     for _ in range(n):
         since = previous_workday(since, workdays, holidays)
     return since
+
+
+def backlog_days_of(settings: Mapping[str, Any]) -> int:
+    """Сколько рабочих дней раньше окна заказов дня показывать «Նախորդ օրերից» (настройка dispatch_backlog_days,
+    владелец 09.10; нет ключа — BACKLOG_WORKDAYS)."""
+    try:
+        n = int(settings.get('dispatch_backlog_days', BACKLOG_WORKDAYS))
+    except (TypeError, ValueError):   # битое значение базы — окно по умолчанию, а не ошибка страницы
+        return BACKLOG_WORKDAYS
+    return max(1, min(BACKLOG_MAX_WORKDAYS, n))
+
+
+def backlog_held(draft: Draft | None, carried: Collection[str]) -> set[str]:
+    """Заказы прошлых дней, которые день держит, — видны в «Նախորդ օրերից» и старше окна dispatch_backlog_days (до
+    BACKLOG_MAX_WORKDAYS): взятые «Տանել այսօր» (added), перенесённые сюда (carried: «Վաղը» прошлого плана, «Երբ տանել»
+    на этот день) и решения этого дня о них («Վաղը» — deferred, «Երբ տանել» — later, «Չտանել» — dismissed). Иначе
+    сужение окна молча убрало бы заказ из рейса и с терминала водителя."""
+    held = set(carried)
+    if draft is not None:
+        held |= draft.added | draft.deferred | draft.dismissed | set(draft.later)
+        if draft.sent is not None:   # и взятые в отправленном плане: водитель их ещё везёт, пока правку не отправили
+            held |= draft.for_drivers().added
+    return held
 
 
 def defer_days(day: date, workdays: Sequence[int], holidays: Collection[date] = ()) -> list[date]:
@@ -2150,8 +2177,9 @@ def apply_edit(ctx: DayContext, stops: Sequence[Stop], draft: Draft, edit: Mappi
           (остальные — везём); точки, где заказов не осталось, уходят из рейсов, вернувшиеся — «ещё не в рейсах»;
       {"action": "defer_trip", "trip": id} — «везти завтра» (№25: рейс дешевле min_trip_revenue): заказы
           рейса — не сегодня (excluded / из added) и в deferred — следующий день доставки возьмёт их сам;
-          заказ старше defer_since (вне окна «не отгружены с прошлых дней» следующего дня) — ошибка:
-          завтра его не будет видно, решать надо сегодня.
+          заказ старше defer_since (вне окна чтения ERP следующего дня, BACKLOG_MAX_WORKDAYS; старше окна настройки
+          dispatch_backlog_days — можно: следующий день его держит, backlog_held) — ошибка: завтра его не будет видно,
+          решать надо сегодня.
     Ошибка — DispatchError с текстом для логиста."""
     routable = {s.customer_id: s for s in stops if s.point is not None}
     _clean(draft, routable)

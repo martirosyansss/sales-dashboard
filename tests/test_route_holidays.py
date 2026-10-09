@@ -102,8 +102,10 @@ def test_courier_orders_window_skips_holidays():
     view = rl.RoutesView(workdays=(1, 2, 3, 4, 5), holidays=frozenset({fri}), plan_exists=True, released=True,
                          trips=(('C1', (101, 102)),))
     since, until = rl.orders_window(mon, view)
-    assert since == dp.backlog_since(thu, (1, 2, 3, 4, 5), holidays={fri}) and until == date(2026, 10, 6)   # и сам пн (№79)
-    assert rl.orders_window(mon, rl.RoutesView(workdays=(1, 2, 3, 4, 5)))[0] == dp.backlog_since(fri, (1, 2, 3, 4, 5))
+    # заказы прошлых дней — до предела окна «Նախորդ օրերից» (dp.BACKLOG_MAX_WORKDAYS, владелец 09.10), мимо праздника
+    n = dp.BACKLOG_MAX_WORKDAYS
+    assert since == dp.backlog_since(thu, (1, 2, 3, 4, 5), n, holidays={fri}) and until == date(2026, 10, 6)   # и сам пн (№79)
+    assert rl.orders_window(mon, rl.RoutesView(workdays=(1, 2, 3, 4, 5)))[0] == dp.backlog_since(fri, (1, 2, 3, 4, 5), n)
     picked = rl.pick_orders([_dorder(1, 101, 10.0, day=thu, car='C1'), _dorder(2, 102, 10.0, day=fri, car='C1')],
                             mon, view, 'C1')
     assert {o.isn for o in picked} == {_dorder(1, 101, 10.0).isn, _dorder(2, 102, 10.0).isn}   # чт и пт-праздник

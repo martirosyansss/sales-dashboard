@@ -27,6 +27,12 @@ WED = date(2026, 9, 30)
 OLD = date(2026, 9, 28)                             # заказ прошлых дней для развоза 01.10
 
 
+def _read_from(day):
+    """Начало чтения ERP для дня: BACKLOG_MAX_WORKDAYS рабочих дней (пн–сб) раньше окна заказов дня (владелец 09.10)."""
+    day = date.fromisoformat(day) if isinstance(day, str) else day
+    return dp.backlog_since(dp.order_window(day, (1, 2, 3, 4, 5, 6))[0], (1, 2, 3, 4, 5, 6), dp.BACKLOG_MAX_WORKDAYS)
+
+
 @pytest.fixture(autouse=True)
 def _before_day(monkeypatch):
     """Сейчас — вечер 30.09: развоз 01.10 и следующие дни — не прошедшие."""
@@ -200,7 +206,7 @@ def test_defer_store_day_and_backlog_orders_in_one_edit(client):
     st = _stored(client)
     assert code == 200 and st.later == {} and st.dismissed == {_isn(6)} and st.excluded == {_isn(3)}
     assert 'later' not in st.to_json()
-    assert calls[0][0] == OLD                                                 # окно ERP дня — прежнее
+    assert calls[0][0] == _read_from('2026-10-01')                            # окно ERP дня — прежнее
 
 
 def test_defer_store_bad_targets_are_refused(client):
@@ -243,7 +249,7 @@ def test_deferred_order_comes_on_its_day_only(client):
     code, d = _edit(client, d, action='defer_store', customer_id=101, to='2026-10-06')
     assert code == 200
     tue = _get(client, '2026-10-06')
-    assert calls[-1][0] == WED                                                # окно ERP — с даты заказа (обычное — с 02.10)
+    assert calls[-1][0] == min(WED, _read_from('2026-10-06'))                 # окно ERP — и с даты заказа
     assert [o['isn'] for o in tue['backlog']] == [_isn(1)]                    # заказы 28.09–30.09 не просочились
     row = tue['backlog'][0]
     assert row['taken'] and row['carried'] and row['carried_from'] == DAY and 'later_to' not in row
@@ -336,7 +342,7 @@ def test_not_delivered_on_target_stays_visible_not_carried(client):
         g = _get(client, day)
         row = _row(g['backlog'], 1)
         assert row is not None and not row['taken'] and not row['carried'] and 'later_to' not in row, day
-        assert g['orders']['count'] == 0 and calls[-1][0] == WED
+        assert g['orders']['count'] == 0 and calls[-1][0] == min(WED, _read_from(day))
     assert _row(_get(client, '2026-10-16')['backlog'], 1) is None             # 14 дней после 01.10 прошли
 
 
@@ -439,8 +445,8 @@ def test_driver_gets_deferred_order_on_target_day(client):
     tue = rl.routes_view(state, TUE)
     assert _isn(1) in tue.carried and tue.carried_since == WED and not tue.released
     lo, hi = rl.orders_window(TUE, tue)
-    assert (lo, hi) == (WED, date(2026, 10, 7))                               # ERP — и с даты перенесённого заказа
-    assert rl.orders_window(TUE, replace(tue, carried_since=None))[0] == FRI  # без переноса — обычное окно
+    assert (lo, hi) == (min(WED, _read_from(TUE)), date(2026, 10, 7))       # ERP — и с даты перенесённого заказа
+    assert rl.orders_window(TUE, replace(tue, carried_since=None))[0] == _read_from(TUE)   # без переноса — обычное окно
     every = _orders()
     assert rl.pick_orders(every, TUE, tue, 'CAR1') == [] == rl.pick_orders(every, TUE, tue, 'CAR2')   # №80: не выпущен
     d = _build(client, '2026-10-06')

@@ -5354,7 +5354,8 @@ def test_api_dispatch_flow(client):
     r = client.get('/api/routes/dispatch?date=2026-10-01')
     assert r.status_code == 200 and r.headers['Cache-Control'].startswith('no-cache')
     d = r.get_json()
-    assert calls == [(date(2026, 9, 28), date(2026, 10, 2), DP_DAY)]     # с запасом на прошлые дни и сам день (№79)
+    # с запасом на прошлые дни (до предела окна «Նախորդ օրերից», 10 рабочих дней) и сам день (№79)
+    assert calls == [(date(2026, 9, 18), date(2026, 10, 2), DP_DAY)]
     assert (d['day'], d['weekday'], d['order_dates'], d['plan'], d['rev']) == \
         ('2026-10-01', 4, {'since': '2026-09-30', 'until': '2026-09-30'}, None, 0)
     assert d['orders'] == {'count': 4, 'kg': 1950, 'revenue': 40000, 'customers': 4, 'shipped_before': 0,
@@ -5472,7 +5473,10 @@ def test_api_dispatch_defer_when_next_day_already_built_and_undo(client, monkeyp
     from route_optimizer import views
     monkeypatch.setattr(views, '_clock', lambda: datetime(2026, 10, 1, 10, 0))   # 01.10 — сегодня, 02.10 — завтра
     _dispatch_setup(client, [_dorder(1, 101, 400.0), _dorder(2, 102, 300.0, agent=2),
-                             _dorder(6, 104, 70.0, agent=2, day=date(2026, 9, 28))])
+                             _dorder(6, 104, 70.0, agent=2, day=date(2026, 9, 28)),
+                             _dorder(9, 104, 30.0, agent=2, day=date(2026, 9, 18))])
+    # окно «Նախորդ օրերից» — до предела (владелец 09.10): 18.09 видно 01.10, но не 02.10 (предел чтения ERP — с 19.09)
+    assert client.post('/api/routes/dispatch/backlog-days', json={'days': 10}).status_code == 200
     assert client.post('/api/routes/settings', json={'settings': {'min_trip_revenue': 150000}}).status_code == 200
     nxt = client.post('/api/routes/dispatch/build', json={'date': '2026-10-02', 'trucks': ['CAR1', 'CAR2']}).get_json()
     assert nxt['plan'] is not None
@@ -5498,9 +5502,10 @@ def test_api_dispatch_defer_when_next_day_already_built_and_undo(client, monkeyp
                                                            'order': isn}).get_json()
     n3 = client.get('/api/routes/dispatch?date=2026-10-02').get_json()
     assert not isns & {o['isn'] for o in n3['backlog'] if o['added']}
-    # заказ 28.09 (прошлые дни, добавлен на 01.10): 02.10 его уже не увидит — переносить нельзя
+    # заказ 18.09 (прошлые дни, добавлен на 01.10): 02.10 его уже не увидит (старше предела чтения ERP) — переносить
+    # нельзя (заказ 28.09 перенести можно: 02.10 держит его и старше окна настройки, dp.backlog_held)
     d = client.post('/api/routes/dispatch/edit', json={'date': '2026-10-01', 'rev': d['rev'], 'action': 'include',
-                                                       'order': _isn(6)}).get_json()
+                                                       'order': _isn(9)}).get_json()
     d = client.post('/api/routes/dispatch/build', json={'date': '2026-10-01', 'trucks': ['CAR1', 'CAR2']}).get_json()
     old = next(t for tr in d['plan']['trucks'] for t in tr['trips'] if any(x['customer_id'] == 104 for x in t['stops']))
     r = client.post('/api/routes/dispatch/edit', json={'date': '2026-10-01', 'rev': d['rev'], 'action': 'defer_trip',

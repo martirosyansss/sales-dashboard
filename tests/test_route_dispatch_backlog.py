@@ -166,3 +166,103 @@ def test_past_day_include_does_not_place(client, monkeypatch):
     code, d = _edit(client, d, action='include', order=_isn(6))
     row = _row(d, 6)
     assert code == 200 and row['taken'] and row['trip'] is None and 104 not in _in_trips(d)
+
+
+# --- Окно «Նախորդ օրերից» в рабочих днях (владелец 09.10 «сколько дней — дай изменить, группируй по менеджерам») ---
+
+OLDER = date(2026, 9, 24)        # 5-й рабочий день (пн–сб) раньше окна заказов 01.10 (30.09): виден при окне ≥ 5
+
+
+def _days(client, n):
+    r = client.post('/api/routes/dispatch/backlog-days', json={'days': n})
+    return r.status_code, r.get_json()
+
+
+def test_backlog_window_is_a_setting(client):
+    calls = _dispatch_setup(client, [*_orders(), _dorder(7, 102, 60.0, agent=2, day=OLDER)])
+    d = client.get('/api/routes/dispatch?date=' + DAY).get_json()
+    assert (d['backlog_days'], d['backlog_days_max'], d['backlog_since']) == (2, 10, '2026-09-28')   # по умолчанию — как было
+    assert [o['isn'] for o in d['backlog']] == [_isn(6)]
+    assert calls[-1][0] == date(2026, 9, 18)                               # ERP — до предела окна (10 рабочих дней)
+    assert _days(client, 5) == (200, {'success': True, 'days': 5})
+    state = client.application.extensions['route_optimizer']
+    assert state.store.load().settings['dispatch_backlog_days'] == 5      # та же настройка, что на странице настроек
+    d = client.get('/api/routes/dispatch?date=' + DAY).get_json()
+    assert (d['backlog_days'], d['backlog_since']) == (5, OLDER.isoformat())
+    row = _row(d, 7)
+    assert (row['agent_id'], row['agent_name'] is not None, row['taken']) == (2, True, False)   # для групп по менеджерам
+    assert 'agent_code' in row and 'agent_area' in row
+
+
+def test_backlog_window_bad_values_are_refused(client):
+    _dispatch_setup(client, _orders())
+    for bad in (0, 11, -1, 2.5, '3', True, None):
+        code, body = _days(client, bad)
+        assert code == 400 and body['success'] is False, bad
+    code, body = client.post('/api/routes/dispatch/backlog-days', json=[3]).status_code, None
+    assert code == 400
+    state = client.application.extensions['route_optimizer']
+    assert state.store.load().settings['dispatch_backlog_days'] == 2      # ничего не сохранено
+    r = client.post('/api/routes/settings', json={'settings': {'dispatch_backlog_days': 3.5}})
+    assert r.status_code == 400 and 'settings.dispatch_backlog_days' in r.get_json()['errors']
+    r = client.post('/api/routes/settings', json={'settings': {'dispatch_backlog_days': 4.0}})
+    assert r.status_code == 200 and state.store.load().settings['dispatch_backlog_days'] == 4
+    assert isinstance(state.store.load().settings['dispatch_backlog_days'], int)
+
+
+def test_narrowing_window_keeps_orders_the_plan_holds(client):
+    """Взятый «Տանել այսօր» заказ старше нового окна не пропадает ни со страницы, ни из рейса; невзятый — пропадает."""
+    _dispatch_setup(client, [*_orders(), _dorder(7, 102, 60.0, agent=2, day=OLDER),
+                             _dorder(8, 101, 30.0, day=OLDER)])
+    assert _days(client, 5)[0] == 200
+    d = _build(client)
+    code, d = _edit(client, d, action='include', order=_isn(7))
+    assert code == 200 and _row(d, 7)['taken']
+    code, d = _edit(client, d, action='exclude', order=_isn(8))           # «Չտանել» — решение дня, тоже держим
+    assert code == 200 and _row(d, 8)['dismissed']
+    assert _days(client, 2)[0] == 200
+    d = client.get('/api/routes/dispatch?date=' + DAY).get_json()
+    assert {o['isn'] for o in d['backlog']} == {_isn(6), _isn(7), _isn(8)}
+    row = _row(d, 7)
+    assert row['taken'] and row['trip'] is not None and 102 in _in_trips(d)
+    _edit(client, d, action='include', order=_isn(8))                      # передумали — берём и его
+    code, d = _edit(client, client.get('/api/routes/dispatch?date=' + DAY).get_json(), action='exclude', order=_isn(7))
+    assert code == 200
+    d = client.get('/api/routes/dispatch?date=' + DAY).get_json()
+    # «Հանել» убрал его из added — но «Չտանել» дня (dismissed) его держит: строка остаётся среди «Չենք տանում»
+    assert _row(d, 7)['dismissed'] and not _row(d, 7)['taken']
+
+
+def test_backlog_held_rule():
+    draft = dp.Draft(added={'A'}, deferred={'B'}, dismissed={'C'}, later={'D': (date(2026, 10, 3), OLDER)})
+    assert dp.backlog_held(draft, {'E'}) == {'A', 'B', 'C', 'D', 'E'}
+    assert dp.backlog_held(None, {'E'}) == {'E'}
+    assert dp.backlog_days_of({}) == dp.BACKLOG_WORKDAYS == 2
+    assert dp.backlog_days_of({'dispatch_backlog_days': 7}) == 7
+
+
+def test_courier_reads_backlog_to_the_window_limit():
+    """Терминал читает заказы прошлых дней до предела окна: заказ, взятый в развоз при широком окне, не пропадает у
+    водителя, когда окно сузили (сами заказы прошлых дней он берёт только из развоза дня, pick_orders)."""
+    from courier.routes_link import RoutesView, orders_window
+    view = RoutesView(workdays=(1, 2, 3, 4, 5, 6))
+    assert orders_window(date(2026, 10, 1), view) == (date(2026, 9, 18), date(2026, 10, 2))
+
+
+def test_backlog_days_broken_value_and_sent_plan():
+    assert dp.backlog_days_of({'dispatch_backlog_days': 'x'}) == 2           # битое значение базы — не ошибка страницы
+    assert dp.backlog_days_of({'dispatch_backlog_days': 99}) == dp.BACKLOG_MAX_WORKDAYS
+    assert dp.backlog_days_of({'dispatch_backlog_days': 0}) == 1
+    # взятый в отправленном плане (водитель везёт) держим и после неотправленного «Հանել»
+    sent = dp.Draft(added={_isn(6)})
+    draft = dp.Draft(sent={'at': '2026-09-30T18:00:00', 'by': 'x', 'plan': sent.to_json()})
+    assert dp.backlog_held(draft, ()) == {_isn(6)}
+
+
+def test_window_change_keeps_evaluation_cache(client):
+    """Смена окна с «Развоза» не сбрасывает кэш оценки (обзор, нормы визитов): отпечаток Bundle без неё."""
+    _dispatch_setup(client, _orders())
+    state = client.application.extensions['route_optimizer']
+    before = state.store.load().fingerprint()
+    assert _days(client, 6)[0] == 200
+    assert state.store.load().fingerprint() == before

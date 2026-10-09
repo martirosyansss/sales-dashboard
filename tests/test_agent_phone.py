@@ -209,7 +209,7 @@ def test_settings_page_has_card():
     assert 'id="agentphones"' in page and 'id="rsStAgentPhones"' in page and 'id="rsAgentPhones"' in page
     assert 'Մենեջերների հեռախոսները' in page and 'fa-phone' in page
     assert page.index('id="agents"') < page.index('id="agentphones"') < page.index('id="fleet"')
-    assert "routes_settings.js') }}?v=43" in page
+    assert "routes_settings.js') }}?v=44" in page
     assert "'agents', 'agentphones', 'fleet'" in js and 'renderAgentPhones()' in js
     assert "'settings.agent_phones.' + " in js and 's.agent_phones = collectPhones(' in js
     assert 'state.data.phone_agents' in js
