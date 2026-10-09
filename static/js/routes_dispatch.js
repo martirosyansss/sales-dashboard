@@ -4754,6 +4754,7 @@
             setBusy(false);
             render();
             showActionError(e);
+            return false;
         }
     }
 
@@ -5007,14 +5008,14 @@
             return;
         }
         const was = selectedTrucks(), want = new Set(v.trucks);
-        const tick = (on) => {
-            boxes.forEach(cb => { if (!cb.disabled) cb.checked = on.has(cb.value); });
+        const tick = (on) => {   // галочки — заново из DOM: после ошибки сборки render() пересоздаёт их
+            $('dpTrucks').querySelectorAll('input[type="checkbox"]').forEach(cb => { if (!cb.disabled) cb.checked = on.has(cb.value); });
             renderTruckCount();
             renderFresh();
         };
         tick(want);
         $('dpCmpDlg').close();
-        if (await build() === false) tick(new Set(was));   // сборка не началась (подтверждение отклонено) — галочки как были
+        if (await build() === false) tick(new Set(was));   // сборка не началась или сервер отказал — галочки как были
     }
     function initCompare() {
         $('dpCompare').addEventListener('click', openCompare);
