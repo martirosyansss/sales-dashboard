@@ -386,7 +386,8 @@ def test_day_payload_from_erp(fake_erp, tmp_path, now):
 # ============================== /day демо: форма контракта ==============================
 
 STOP_KEYS = {'stop_id', 'seq', 'source', 'doc_number', 'customer', 'lat', 'lon', 'agent_name', 'pay_type', 'collect',
-             'amount_due', 'debt', 'weight_kg', 'lines', 'tare_expected', 'until', 'until_from'}   # срок — v1.8 §12
+             'amount_due', 'debt', 'weight_kg', 'lines', 'tare_expected', 'until', 'until_from',   # срок — v1.8 §12
+             'agent_phone'}   # телефон менеджера — v1.9 §13
 LINE_KEYS = {'line_id', 'product_id', 'code', 'name', 'qty', 'unit', 'price', 'sum', 'marked', 'pack_qty', 'gtins', 'gtin_units',
              'weight_kg'}
 
@@ -400,6 +401,7 @@ def test_demo_day_matches_contract(term):
                               'matrix': None}]
     assert body['until_buffer_min'] == 0.0 and all(s['until'] is None for s in body['stops'])
     assert body['plan'] == 'approved'                    # №80: демо-день — обычный рабочий день, без плашки ожидания
+    assert {(s['agent_name'], s['agent_phone']) for s in body['stops']} == {('Թեստ մենեջեր', '+00000000000')}   # v1.9 §13
     assert body['date'] == DEMO and isinstance(body['version'], str) and len(body['version']) == 40
     assert clock.parse_moment(body['loaded_at']) is not None
     assert body['car'] == {'code': 'TEST', 'name': 'Թեստ'}
