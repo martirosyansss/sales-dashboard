@@ -83,6 +83,11 @@
   вместо его окна) или постоянное. После сохранения рейсы с магазином переставляются под окна (fit_until, _fit_windows),
   кроме закреплённых логистом, загруженных и уже грузящихся — у них только пометка window_miss; не успеть и так —
   window_miss и подсказка машины, которая успела бы (_until_hint).
+- Запас до срока (ответ владельца №93, настройка until_buffer_min): у окна с концом сборка, перестановка под срок и
+  подсказка машины целятся в конец окна минус запас (deadline_windows: DayContext.windows — с запасом, until_real —
+  настоящие концы). Не вышло с запасом — по настоящему сроку: сборка пересобирает с ним магазины, ушедшие в no_window
+  только из-за запаса; fit_until, «Տանել այսօր» (place_added) и новые заказы дня (_same_day_plans) — второй проход (tight). В плане: позже срока с запасом, но в срок — window_tight
+  («քիչ ժամանակ կա», жёлтое); позже настоящего срока — window_miss («չի հասցնում»). Запас 0 — план прежний до байта.
 """
 from __future__ import annotations
 
@@ -970,6 +975,51 @@ class DayContext:
     # машина отдельного рейса везёт и обычные магазины, если ֏ дня без лишней машины растёт не больше чем на столько % (№78,
     # ответ 20, настройка solo_spare_max_pct)
     solo_spare_max_pct: float = 5.0
+    # запас до срока (№93, deadline_windows): клиент → настоящий конец окна приёма, если в windows конец раньше на запас;
+    # нет клиента — его конец в windows и есть настоящий
+    until_real: Mapping[int, float] = field(default_factory=dict)
+
+
+def deadline_windows(spans: Mapping[int, tuple[float, float]], buffer_min: float
+                     ) -> tuple[dict[int, tuple[float, float]], dict[int, float]]:
+    """Окна приёма для сборки с запасом до срока (ответ владельца №93, настройка until_buffer_min): у окна с концом конец
+    раньше на buffer_min, но не раньше начала окна. (окна сборки — DayContext.windows, настоящие концы сдвинутых окон —
+    DayContext.until_real). Запас 0 — окна как есть."""
+    if buffer_min <= 0:
+        return dict(spans), {}
+    windows: dict[int, tuple[float, float]] = {}
+    real: dict[int, float] = {}
+    for cid, (lo, hi) in spans.items():
+        target = max(lo, hi - buffer_min) if math.isfinite(hi) else hi
+        windows[cid] = (lo, target)
+        if target < hi:
+            real[cid] = hi
+    return windows, real
+
+
+def _real_end(ctx: DayContext, cid: int) -> float:
+    """Настоящий конец окна приёма клиента (без запаса до срока, №93), минуты от начала дня машины; без окна — +∞."""
+    hi = ctx.until_real.get(cid)
+    return hi - ctx.work_start_min if hi is not None else _span(ctx, cid)[1]
+
+
+def _reachable(ctx: DayContext, routable: Mapping[int, Stop], cid: int, codes: Sequence[str]) -> bool:
+    """Хоть одна машина codes, выехав со склада в начале дня только к магазину cid, успевает к его настоящему сроку
+    (_real_end) — иначе пересборка с настоящим сроком ничего не даст (№93)."""
+    for code in codes:
+        trip = DraftTrip(0, code, [cid])
+        if _timeline(ctx, [trip], routable, {cid: 1})[0][2][0] <= _real_end(ctx, cid) + _EPS:
+            return True
+    return False
+
+
+def _relaxed(ctx: DayContext, cids: Collection[int]) -> DayContext:
+    """Контекст, где у клиентов cids окно — до настоящего срока (запас до срока не выходит, №93)."""
+    hit = [c for c in cids if c in ctx.until_real]
+    if not hit:
+        return ctx
+    return replace(ctx, windows={**ctx.windows, **{c: (ctx.windows[c][0], ctx.until_real[c]) for c in hit}},
+                   until_real={c: v for c, v in ctx.until_real.items() if c not in hit})
 
 
 def morning_loading(day: date, settings: Mapping[str, Any]) -> bool:
@@ -1284,6 +1334,10 @@ def build(ctx: DayContext, stops: Sequence[Stop], old: Draft | None, trucks: Seq
             if s.customer_id not in placed:
                 {'window': draft.no_window, 'center': draft.no_center, 'vehicle': draft.no_vehicle}.get(
                     reasons.get(i), draft.no_room).add(s.customer_id)
+    # №93: с запасом до срока магазин не поместился, а к настоящему сроку машина успела бы — сборка заново с ним
+    tight = {c for c in draft.no_window & set(ctx.until_real) if _reachable(ctx, routable, c, sorted(codes))}
+    if tight:
+        return build(_relaxed(ctx, tight), stops, old, trucks, now, iterations)
     return draft
 
 
@@ -2250,6 +2304,17 @@ def apply_edit(ctx: DayContext, stops: Sequence[Stop], draft: Draft, edit: Mappi
 
 def place_added(ctx: DayContext, stops: Sequence[Stop], draft: Draft, cids: Sequence[int],
                 now_min: float | None = None) -> dict[int, int]:
+    """_place_added с запасом до срока (№93): клиенты, которым с запасом места нет, — второй проход к их настоящему сроку
+    (_relaxed; в плане — window_tight «քիչ ժամանակ կա», а не «ещё не в рейсах»). Ответ — клиент → рейс."""
+    placed = _place_added(ctx, stops, draft, cids, now_min)
+    rest = [c for c in cids if c not in placed and c in ctx.until_real]
+    if rest:
+        placed.update(_place_added(_relaxed(ctx, rest), stops, draft, rest, now_min))
+    return placed
+
+
+def _place_added(ctx: DayContext, stops: Sequence[Stop], draft: Draft, cids: Sequence[int],
+                 now_min: float | None = None) -> dict[int, int]:
     """«Տանել այսօր» у заказа прошлых дней (владелец 08.10: «не функционально» — заказ падал в «ещё не в рейсах»): клиенты
     cids, которых ещё нет в рейсах, по одному встают туда, где км плана растут меньше всего, — в рейс отмеченной машины
     или новым рейсом после её рейсов. Машина не позже конца дня (или своего прежнего конца), окна приёма у неё не
@@ -2396,9 +2461,28 @@ def _until_hint(ctx: DayContext, routable: Mapping[int, Stop], draft: Draft, cid
 
 def fit_until(ctx: DayContext, stops: Sequence[Stop], draft: Draft, cid: int, now_min: float | None = None,
               frozen: Collection[int] | None = None) -> dict[str, Any]:
+    """Перестановка под «Մինչև ժամը» магазина cid (_fit_until) с запасом до срока (№93): сначала — к сроку с запасом
+    (ctx.windows); магазин так и опаздывает, а запас у него есть — второй проход к настоящему сроку (_relaxed). Ответ —
+    как у _fit_until (второго прохода, если он был; 'reordered' — рейсы обоих) и, если запас у магазина есть, 'tight': с
+    запасом не вышло, а в срок успевает («քիչ ժամանակ կա»). frozen не дано — начатые рейсы по ctx и now_min."""
+    if frozen is None:
+        routable = [s for s in stops if s.point is not None]
+        frozen = started_trips(ctx, routable, draft, now_min) if now_min is not None else set()
+    got = _fit_until(ctx, stops, draft, cid, now_min, frozen)
+    if cid not in ctx.until_real:   # запаса у магазина нет (окно без конца, запас 0) — ответ прежний
+        return got
+    if not got['late']:
+        return {**got, 'tight': False}
+    real = _fit_until(_relaxed(ctx, [cid]), stops, draft, cid, now_min, frozen)
+    return {**real, 'reordered': got['reordered'] + [t for t in real['reordered'] if t not in got['reordered']],
+            'tight': not real['late']}
+
+
+def _fit_until(ctx: DayContext, stops: Sequence[Stop], draft: Draft, cid: int, now_min: float | None,
+               frozen: Collection[int]) -> dict[str, Any]:
     """После «Մինչև ժամը» магазина cid (владелец 08.10; его окно этого дня — уже в ctx): рейс, где магазин опаздывает, если
     его можно менять (_movable: не закреплён логистом, не загружен, сегодня ещё не грузится — frozen: начатые по плану до
-    правки; не дано — по ctx и now_min), переставляется под окна (_fit_windows) — только если так магазин успевает; рейс,
+    правки — fit_until), переставляется под окна (_fit_windows) — только если так магазин успевает; рейс,
     где он и так успевает, не трогается (порядок логиста остаётся); закреплённый — как есть, опоздание видно в плане
     (window_miss). Ответ: {'late' — магазин опаздывает хоть в одном рейсе, 'reordered' — рейсы с новым порядком, 'kept' —
     рейсы, где он опаздывает, но их не меняли (закреплены, загружены, уже грузятся), 'split' — опаздывает, а его заказ
@@ -2406,8 +2490,6 @@ def fit_until(ctx: DayContext, stops: Sequence[Stop], draft: Draft, cid: int, no
     раньше now_min): только если опаздывает рейс, который можно было переставить, и заказ не делится; иначе None}."""
     routable = {s.customer_id: s for s in stops if s.point is not None}
     _clean(draft, routable)
-    if frozen is None:
-        frozen = started_trips(ctx, list(routable.values()), draft, now_min) if now_min is not None else set()
     shares = _shares(draft.trips)
     reordered, kept = [], []
     for t in draft.trips:
@@ -2516,6 +2598,18 @@ def same_day_blocked(ctx: DayContext, base: Sequence[Stop], stops: Sequence[Stop
 
 def _same_day_plans(ctx: DayContext, base: Sequence[Stop], stops: Sequence[Stop], draft: Draft, cids: Collection[int],
                     now_min: float, crew: Crew | None = None) -> tuple[list[_SameDayPlan], dict[int, str]]:
+    """_same_day_variants с запасом до срока (№93): ни одного варианта с запасом, а у клиентов cids он есть, — варианты к
+    их настоящему сроку (_relaxed; в плане — window_tight «քիչ ժամանակ կա»). Тот же путь у предложений и у «Ընտրել»
+    (take_same_day): ключи вариантов совпадают."""
+    plans, blocked = _same_day_variants(ctx, base, stops, draft, cids, now_min, crew)
+    tight = [c for c in cids if c in ctx.until_real]
+    if plans or not tight:
+        return plans, blocked
+    return _same_day_variants(_relaxed(ctx, tight), base, stops, draft, cids, now_min, crew)
+
+
+def _same_day_variants(ctx: DayContext, base: Sequence[Stop], stops: Sequence[Stop], draft: Draft, cids: Collection[int],
+                       now_min: float, crew: Crew | None = None) -> tuple[list[_SameDayPlan], dict[int, str]]:
     """Как взять новые заказы дня клиентов cids в развоз сегодня — все варианты, самые дешёвые первыми, и клиенты, которых
     взять нельзя: {клиент: 'no_coords' — нет точки | 'started' — он уже в рейсе, чья загрузка по плану началась}.
     base — точки дня без этих заказов, stops — с ними (у клиента, который уже в развозе, точка тяжелее); now_min — сейчас,
@@ -3097,9 +3191,12 @@ def plan_view(ctx: DayContext, stops: Sequence[Stop], draft: Draft,
         # ожидание окна) и запас до конца окна
         for c, at, (drive, wait, unload) in zip(cids, arrivals, parts[t.id]['legs']):
             central = _central(ctx, routable[c])
-            late = _span(ctx, c)[1]
+            late = _real_end(ctx, c)   # №93: «չի հասցնում» — мимо настоящего срока, не срока с запасом
             city = ctx.tn.yerevan_of(t.truck) if _yerevan(ctx, routable[c]) else 0.0   # №68: уже в unload_min
+            # №93: позже срока с запасом, но в срок — «քիչ ժամանակ կա» (ключ — только у таких: без запаса план прежний)
+            tight = _span(ctx, c)[1] + _EPS < at <= late + _EPS
             marks.append({'eta': _hhmm(ctx.work_start_min + at), 'window_miss': at > late + _EPS,
+                          **({'window_tight': True} if tight else {}),
                           'center': central, 'center_miss': central and not (truck is not None and truck.center_ok),
                           'vehicle_miss': not _vehicle_ok(ctx, c, t.truck),
                           'arrive': _hhmm(ctx.work_start_min + at - wait),   # приехал; eta — начало разгрузки
@@ -3136,6 +3233,7 @@ def plan_view(ctx: DayContext, stops: Sequence[Stop], draft: Draft,
             'stops': [{**info(routable[c]), 'kg': round(routable[c].kg / shares[c]),
                        'share': shares[c], **mark} for c, mark in zip(cids, marks)],
             'window_miss': sum(1 for x in marks if x['window_miss']),
+            **({'window_tight': n} if (n := sum(1 for x in marks if x.get('window_tight'))) else {}),
             'center_miss': sum(1 for x in marks if x['center_miss']),
             'vehicle_miss': sum(1 for x in marks if x['vehicle_miss']),
         }

@@ -17,7 +17,8 @@
    Тревоги (08.10, «диспетчер сразу видит проблемы»; Samsara/Geotab/Wialon, ISA-101/ISA-18.2): важность — на клиенте
    (alarmSev): 1 красная «կրիտիկական» (треугольник) — speed, center, gps, sequence, late к окну приёма или возврату на склад;
    2 жёлтая «զգուշացում» (круг) — stop, deviation, no_contact (терминалы без мобильного интернета — частая, красной была бы
-   «усталость от тревог»), late только к плану; 3 сведения (фиолетовая, не мигает) — stores.unmarked; неизвестный вид — 1.
+   «усталость от тревог»), late только к плану; 3 сведения (фиолетовая, не мигает) — stores.unmarked и смены порядка
+   водителем из-за срока (№93, t.reorders reason until); неизвестный вид — 1.
    Активная и не отмеченная «Տեսա» — новая: мигает (1 Гц, только CSS), баннер, «(N) ⚠» во вкладке, звук (по желанию).
    «Տեսա» — по случаю: t.alerts.since (начало идущей тревоги вида, сервер); дребезг до 10 мин — тот же случай.
    Тревоги, круг 2 (владелец 08.10 «fix all»: 11 миганий за 8 ч у одной машины, EEMUA ≤ 6/ч): жёлтые отклонение и «нет
@@ -53,6 +54,7 @@
     const REASON = { refuel: 'Լիցքավորում', repair: 'Վերանորոգում', customer: 'Հաճախորդի խնդրանքով',
         road: 'Փակ ճանապարհ / խցանում', other: 'Այլ' };
     const EXPLAINS = ['deviation', 'sequence'];
+    const REORDER_TITLE = 'Վարորդը փոխեց հերթը՝ ժամկետի պատճառով';   // №93: t.reorders с reason until — сведение
     const canExplain = () => !!(state.data && state.data.can_explain);
     // магазин в тексте: «№11 Название» (номер — место в плане машины за день)
     const storeName = (x) => [x.no ? '№' + x.no : null, x.name || x.stop_id].filter(Boolean).join(' ');
@@ -205,6 +207,11 @@
         }
         if (t.stores.unmarked) {
             out.push(one('unmarked', 3, 'GPS-ով այցելած, չնշված', t.stores.unmarked + ' խանութ GPS-ով այցելած է, բայց չնշված'));
+        }
+        // №93: водитель сам поставил магазин со сроком под риском первым («Գնալ առաջինը», reason until) — сведение, не тревога
+        const moved = (t.reorders || []).filter(r => r.reason === 'until' && r.moved);
+        if (moved.length) {
+            out.push(one('reorder', 3, REORDER_TITLE, REORDER_TITLE + '՝ ' + moved.map(r => storeName(r.moved) + ' (' + hm(r.at) + ')').join(', ')));
         }
         return out;
     }

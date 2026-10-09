@@ -44,11 +44,12 @@
 from __future__ import annotations
 
 import bisect
+import hashlib
 import math
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta, timezone
 from statistics import median
-from typing import Iterable, Sequence
+from typing import Any, Collection, Iterable, Mapping, Sequence
 
 from .geo import Fix, Point, haversine_km, is_valid_point, track_km
 
@@ -581,6 +582,165 @@ def order_changes(ranks: Sequence[int]) -> int:
         else:
             tails[i] = r
     return len(ranks) - len(tails)
+
+
+REORDER_REASONS = ('until', 'driver')   # смена порядка водителем (№93): срок под риском / без срока
+# новый план доходит до телефона не позже: APK опрашивает /day раз в 15 мин при связи (контракт §2) + кэш /day 60 с
+RESYNC = timedelta(minutes=16)
+
+
+@dataclass(frozen=True)
+class Reorder:
+    """Смена порядка рейса водителем (ответ владельца №93, событие APK reorder): с момента at эталон рейса trip (номер рейса
+    машины в плане, с 0) — оставшиеся клиенты customers в этом порядке (первый — moved, нажатый «Գնալ առաջինը»; moved_stop
+    — его точка /day). reason: 'until' — у moved срок под риском (не нарушение порядка), 'driver' — без срока (перенос —
+    нарушение порядка, как раньше; остальные — по новому порядку без штрафа); 'plan' — логист снова отправил рейс
+    (history_reorders: эталон — план, без штрафа)."""
+    at: datetime
+    trip: int
+    customers: tuple[int, ...]
+    moved: int
+    moved_stop: str
+    reason: str
+    plan_version: str | None = None   # версия рейса плана, на которой сделана смена (plan_version); None — не знаем
+
+
+def reorders_of(raw: Iterable[Mapping[str, Any]], customer_of: Mapping[str, Any]) -> list[Reorder]:
+    """Смены порядка машины за день из факта «Առաքիչ» (courier: reorders — {at ISO, trip — номер рейса с 1, order — точки,
+    moved, reason}) → по возрастанию момента (равные — в порядке факта). Точки → клиенты (customer_of: точка /day → клиент);
+    повтор клиента — первое появление, точка без клиента пропускается. Запись без момента с зоной, с неверным рейсом или
+    причиной, без клиента у moved или с moved не первым — пропускается."""
+    out: list[Reorder] = []
+    for r in raw:
+        try:
+            at = datetime.fromisoformat(r['at']) if isinstance(r.get('at'), str) else None
+        except ValueError:
+            at = None
+        trip, moved = r.get('trip'), customer_of.get(r.get('moved'))   # type: ignore[arg-type]
+        if at is None or at.utcoffset() is None or not isinstance(trip, int) or isinstance(trip, bool) or trip < 1 \
+                or r.get('reason') not in REORDER_REASONS or not isinstance(moved, int):
+            continue
+        cs: list[int] = []
+        for sid in r.get('order') or ():
+            c = customer_of.get(sid) if isinstance(sid, str) else None
+            if isinstance(c, int) and c not in cs:
+                cs.append(c)
+        if cs and cs[0] == moved:
+            version = r.get('plan_version')
+            out.append(Reorder(at, trip - 1, tuple(cs), moved, str(r['moved']), str(r['reason']),
+                               version if isinstance(version, str) else None))
+    return sorted(out, key=lambda x: x.at)
+
+
+def plan_version(customers: Sequence[int]) -> str:
+    """Версия рейса плана (№93, /day trips[].plan_version): sha1 клиентов рейса по порядку, 12 знаков. Логист переставил
+    или пересобрал рейс и отправил водителям — версия другая: порядок водителя на прежней версии больше не эталон."""
+    return hashlib.sha1(','.join(str(c) for c in customers).encode('ascii')).hexdigest()[:12]
+
+
+def current_reorders(reorders: Sequence[Reorder], trips: Sequence[Sequence[int]]) -> list[Reorder]:
+    """Смены порядка, которые ещё эталон (№93): на текущей версии рейса плана trips (клиенты рейсов машины) или без версии
+    (старый APK); смена на прежней версии (логист после неё пересобрал и отправил рейс) — не действует."""
+    return [r for r in reorders if r.plan_version is None
+            or (r.trip < len(trips) and plan_version(trips[r.trip]) == r.plan_version)]
+
+
+def history_reorders(reorders: Sequence[Reorder], trips: Sequence[Sequence[int]], sent_at: datetime | None
+                     ) -> list[Reorder]:
+    """Смены порядка для оценки уже сделанного (тревога и балл «порядок», №93): все смены — и на прежней версии рейса
+    (логист после неё пересобрал рейс): до новой отправки плана (sent_at — Draft.sent['at']) смена водителя была эталоном,
+    её «until» не становится задним числом нарушением. Телефон узнаёт о новом плане только при следующем /day, поэтому
+    эталон рейса со сменами на прежней версии становится снова планом (смена 'plan': без штрафа и без «прыжка») не в
+    момент отправки, а в самый ранний из: первая смена водителя уже на новой версии рейса (телефон её получил) или
+    sent_at + RESYNC (опрос /day приложения + кэш /day сервера). Вперёд (очередь ETA, линия, следующий магазин) —
+    current_reorders."""
+    if sent_at is None:
+        return sorted(reorders, key=lambda x: x.at)
+    live = current_reorders(reorders, trips)
+    resets = []
+    for k in sorted({r.trip for r in reorders if r not in live and r.trip < len(trips) and trips[r.trip]}):
+        at = min([r.at for r in live if r.trip == k and r.at >= sent_at] + [sent_at + RESYNC])
+        if any(r.trip == k and r not in live and r.at < at for r in reorders):
+            resets.append(Reorder(at, k, tuple(trips[k]), trips[k][0], '', 'plan'))
+    return sorted([*reorders, *resets], key=lambda x: (x.at, x.reason != 'plan'))   # в один момент — сначала план
+
+
+def reorder_trip(ref: Sequence[int], r: Reorder, done: Collection[int]) -> list[int]:
+    """Эталон рейса (клиенты по порядку) после смены порядка r: клиенты рейса, обслуженные к смене (done: отметка или
+    визит по GPS, даже если терминал их ещё считает открытыми и прислал в новом порядке), — впереди, в прежнем порядке;
+    затем новый порядок без них (только клиенты этого рейса); затем остальные необслуженные (терминал их не переставлял —
+    точка без координаты) в прежнем порядке. В новом порядке нет ни одного клиента рейса — эталон прежний."""
+    if not any(c in ref for c in r.customers):
+        return list(ref)
+    ordered = [c for c in r.customers if c in ref and c not in done]
+    return ([c for c in ref if c in done] + ordered
+            + [c for c in ref if c not in done and c not in set(ordered)])
+
+
+def reslot(ref: Sequence[int], etas: Mapping[int, datetime], r: Reorder, done: Collection[int]
+           ) -> tuple[list[int], dict[int, datetime]]:
+    """Эталон рейса после смены r (reorder_trip) и его плановые ETA: моменты необслуженных клиентов рейса («слоты» —
+    рейс по времени тот же) по порядку нового эталона — перенос сам по себе не делает магазины «позже плана»."""
+    new = reorder_trip(ref, r, done)
+    left = [c for c in new if c not in done and c in etas]
+    return new, {**etas, **dict(zip(left, sorted(etas[c] for c in left)))}
+
+
+def _served_seq(actual: DayActual, stops: Sequence[PlanStop]) -> list[tuple[datetime, int]]:
+    """(прибытие обслуживающего визита, клиент) точек плана с местом в нём — по прибытию (как visit_metrics)."""
+    by_key = {s.key: s for s in stops}
+    return [(t, by_key[k].customer_id) for k, t in sorted(actual.visited.items(), key=lambda kv: (kv[1], kv[0]))  # type: ignore[misc]
+            if k in by_key and by_key[k].rank is not None and by_key[k].customer_id is not None]
+
+
+def _done_at(seq: Sequence[tuple[datetime, int]], stops: Sequence[PlanStop], at: datetime) -> set[int]:
+    """Клиенты, обслуженные к моменту at: визит по GPS не позже него или отметка доставки не позже него."""
+    return {c for t, c in seq if t <= at} | {s.customer_id for s in stops if s.customer_id is not None
+                                             and s.delivered_at is not None and s.delivered_at <= at}
+
+
+def reslot_etas(actual: DayActual, stops: Sequence[PlanStop], trips: Sequence[Sequence[int]],
+                reorders: Sequence[Reorder], etas: Sequence[Mapping[int, datetime]]) -> list[dict[int, datetime]]:
+    """Плановые ETA рейсов машино-дня (etas — по рейсам trips) со сменами порядка водителем (№93, по времени): reslot
+    каждой смены (обслужен к ней — как в reordered_changes) — «Ժամանակին» «Վարորդներ», как карта машин."""
+    seq = _served_seq(actual, stops)
+    refs, out = [list(t) for t in trips], [dict(e) for e in etas]
+    for r in reorders:
+        if 0 <= r.trip < min(len(refs), len(out)):
+            refs[r.trip], out[r.trip] = reslot(refs[r.trip], out[r.trip], r, _done_at(seq, stops, r.at))
+    return out
+
+
+def reordered_changes(actual: DayActual, stops: Sequence[PlanStop], trips: Sequence[Sequence[int]],
+                      reorders: Sequence[Reorder]) -> tuple[int, int]:
+    """Порядок объезда машино-дня со сменами порядка водителем (№93): (точек не в порядке, обслуженных с местом в плане).
+    trips — клиенты рейсов машины по плану, reorders — по времени. Обслуженные — как в visit_metrics (обслуживающий визит,
+    по прибытию). Эталон рейса меняется сменами по времени (reorder_trip; обслужен к смене — визит не позже её момента или
+    отметка доставки); места — по эталону после всех смен (первое появление клиента за день), n − LIS по ним. Сверх того —
+    штраф обслуженным клиентам (не больше числа обслуженных): перенесённый сменой 'driver', если перед ним в прежнем эталоне
+    был необслуженный клиент рейса (прыжок), и клиенты, пропущенные до смены (необслуженный, а дальше по прежнему эталону
+    рейса есть обслуженный, — новый эталон их не прощает). 'until' штрафа не даёт. Без смен — как visit_metrics."""
+    seq = _served_seq(actual, stops)
+    refs = [list(t) for t in trips]
+    penalty: set[int] = set()
+    for r in reorders:
+        if not 0 <= r.trip < len(refs):
+            continue
+        ref = refs[r.trip]
+        done = _done_at(seq, stops, r.at)
+        top = max((i for i, c in enumerate(ref) if c in done), default=0)   # ничего не обслужено — пропусков нет
+        penalty |= {c for c in ref[:top] if c not in done}
+        first_open = next((c for c in ref if c not in done), None)
+        if r.reason == 'driver' and first_open is not None and first_open != r.moved and r.moved in ref:
+            penalty.add(r.moved)
+        refs[r.trip] = reorder_trip(ref, r, done)
+    ranks: dict[int, int] = {}
+    for t in refs:
+        for c in t:
+            ranks.setdefault(c, len(ranks))
+    order = [ranks[c] for _, c in seq if c in ranks]
+    n = order_changes(order) + len(penalty & {c for _, c in seq})
+    return min(n, len(order)), len(order)
 
 
 @dataclass(frozen=True)

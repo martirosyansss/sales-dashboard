@@ -13,10 +13,15 @@ RoadProvider.get); запись — только экипаж машины из 
 машины по плану, ни порядка объезда плана (RoutesView.released); накладные ERP с машиной (SALES.fDELIVERYCAR) — всегда.
 После выпуска терминал видит отправленный снимок плана (№81, Draft.sent): правки логиста — после «Ուղարկել վարորդներին».
 Офис (courier.views.plan_mismatches) видит план и до выпуска.
+
+Срок магазина у водителя (ответ владельца №93, контракт v1.8 §12): вид несёт окна приёма дня (Bundle.windows_on), запас
+до срока (настройка until_buffer_min), плановый выезд рейсов машин (прогноз сборки) и дорожную модель «Развоза» для матрицы
+рейса (route_optimizer.views.trip_road — вызывается только при сборке /day).
 """
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any, Callable, Collection, Mapping, Sequence
@@ -32,6 +37,9 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_WORKDAYS = (1, 2, 3, 4, 5, 6)
 Places = Callable[[Sequence[int]], Mapping[int, dp.Place]]   # клиенты → (адрес, название) из ERP (№74)
+# клиенты рейса → дорожная модель «Развоза» дня (route_optimizer.views.trip_road, live.Road): матрица рейса /day (№93)
+TripRoad = Callable[[Mapping[int, Point], str], Any]   # (клиенты, машина) → модель
+_HHMM = re.compile(r'^(\d{1,2}):(\d{2})$')
 DETOUR = 1.3   # участок без дороги — по прямой × извилистость (как evaluate.road_norms без калибровки)
 
 
@@ -55,6 +63,12 @@ class RoutesView:
     seen: dp.PlanSeen = dp.PlanSeen()                      # что видел план прошлого рабочего дня (№79)
     fleet: dp.FleetRule = dp.NO_RULE                       # чьи заказы везут машины — правило настроек «Развоза» (№74)
     roads: Any = None                                      # RoadDistances | None
+    # срок магазина (№93): окна приёма дня — клиент → (не раньше, не позже), минуты от полуночи (Bundle.windows_on)
+    windows: Mapping[int, tuple[float, float]] = field(default_factory=dict)
+    until_buffer_min: int = 0                             # запас до срока, мин — настройка «Развоза» (№93), целое
+    work_start_min: float = 540.0                         # начало дня машины — выезд рейса без прогноза
+    departs: Mapping[str, tuple[float | None, ...]] = field(default_factory=dict)   # машина → плановый выезд рейсов
+    road: TripRoad | None = None                           # дорожная модель для матрицы рейса; нет — матрицы нет
 
     def car_customers(self, car_code: str) -> list[int]:
         """Клиенты машины по плану: порядок рейсов черновика, внутри — порядок объезда; повтор (тяжёлый
@@ -92,9 +106,15 @@ def routes_view(state: Any, day: date) -> RoutesView:
         roads = state.roads.get() if getattr(state, 'roads', None) is not None else None
     except Exception:   # карта дорог — необязательна: сбой → по прямой
         logger.warning('[Courier] Карта дорог недоступна — порядок по прямой', exc_info=True)
-    base = RoutesView(depot=bundle.depot, geo_overrides=dict(bundle.geo_overrides), workdays=workdays,
-                      holidays=holidays, fleet=dp.FleetRule.from_settings(bundle.settings), roads=roads)
     stored = state.store.load_dispatch(day.isoformat())   # RoutesStoreError — наружу (№80): не «плана нет»
+    s = bundle.settings
+    h, m = map(int, s['truck_work_start'].split(':'))
+    # №93: срок магазина на день, запас и матрица рейса — для терминала (courier.day)
+    timing = dict(windows={cid: w.span() for cid, w in bundle.windows_on(day).items()},
+                  until_buffer_min=int(round(float(s['until_buffer_min']))), work_start_min=float(h * 60 + m),
+                  road=lambda customers, car: _trip_road(state, day, customers, car))
+    base = RoutesView(depot=bundle.depot, geo_overrides=dict(bundle.geo_overrides), workdays=workdays,
+                      holidays=holidays, fleet=dp.FleetRule.from_settings(bundle.settings), roads=roads, **timing)
     load = _plans(state)
     later = _later(load, day, workdays, holidays)
     carried = _carried(state, day, workdays, holidays, load) | set(later)
@@ -106,7 +126,7 @@ def routes_view(state: Any, day: date) -> RoutesView:
         return RoutesView(depot=base.depot, geo_overrides=base.geo_overrides, workdays=workdays, holidays=holidays,
                           carried=frozenset(carried), carried_since=carried_since,
                           agents_off=frozenset(dp.agents_off_of(None, bundle.settings)),
-                          taken=frozenset(taken), fleet=base.fleet, roads=roads, seen=seen)
+                          taken=frozenset(taken), fleet=base.fleet, roads=roads, seen=seen, **timing)
     # водителям — отправленный план (№81, Draft.for_drivers), не черновик с неотправленными правками; правило №74 — то, с
     # которым день собран: заказы рейсов не пропадут
     draft = dp.Draft.from_json(stored[0]).for_drivers()
@@ -116,7 +136,29 @@ def routes_view(state: Any, day: date) -> RoutesView:
                       excluded=frozenset(draft.excluded), added=frozenset(draft.added),
                       carried=frozenset(carried), carried_since=carried_since, dropped=frozenset(draft.dropped),
                       agents_off=frozenset(dp.agents_off_of(draft, bundle.settings)), same_day=frozenset(draft.same_day),
-                      taken=frozenset(taken), fleet=dp.fleet_rule_of(draft, bundle.settings), roads=roads, seen=seen)
+                      taken=frozenset(taken), fleet=dp.fleet_rule_of(draft, bundle.settings), roads=roads, seen=seen,
+                      departs=_departs(draft), **timing)
+
+
+def _trip_road(state: Any, day: date, customers: Mapping[int, Point], car: str) -> Any:
+    """Дорожная модель «Развоза» дня по точкам рейсов машины (route_optimizer.views.trip_road — раздел подключён, его
+    модуль уже загружен); ошибки — наружу (courier.day: матрицы нет)."""
+    from route_optimizer.views import trip_road
+    return trip_road(state, day, customers, car)
+
+
+def _departs(draft: dp.Draft) -> dict[str, tuple[float | None, ...]]:
+    """Плановый выезд рейсов машин (минуты от полуночи) из прогноза сборки отправленного плана: машина → по рейсам плана;
+    в прогнозе другое число рейсов машины (логист менял рейсы после сборки) или выезда нет — None."""
+    pred = (draft.prediction or {}).get('trucks') or {}
+    out: dict[str, tuple[float | None, ...]] = {}
+    for car in {t.truck for t in draft.trips}:
+        n = sum(1 for t in draft.trips if t.truck == car)
+        mine = pred.get(car) if isinstance(pred.get(car), Mapping) else {}
+        trips = [t for t in mine.get('trips') or () if isinstance(t, Mapping)]
+        hm = [_HHMM.match(t.get('depart')) if isinstance(t.get('depart'), str) else None for t in trips]
+        out[car] = tuple(int(x[1]) * 60 + int(x[2]) if x else None for x in hm) if len(trips) == n else (None,) * n
+    return out
 
 
 def routes_depot(state: Any) -> Point | None:

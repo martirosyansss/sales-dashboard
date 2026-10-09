@@ -120,6 +120,14 @@
   активна сегодня), со списком пропущенных за эпизод (open — пропущен и сейчас) и тем, кто «перепрыгнул» (jump). Пары —
   соседние в фактическом порядке обслуженные точки рейса, где следующая в плане раньше предыдущей (одно касание — один
   визит общего места: не пара);
+- смены порядка водителем (ответ владельца №93, «Գնալ առաջինը» в APK, факт reorders; ac.Reorder): с момента смены эталон
+  рейса — новый порядок оставшихся (ac.reorder_trip; обслуженные к смене — впереди). Срок под риском ('until') — не
+  нарушение: тревоги sequence нет, пропущенные по прежнему эталону новый не держит; в карточке — reorders (страница —
+  фиолетовое сведение). Без срока ('driver') — перенесённая точка «перепрыгивает», как раньше: открытые точки, стоявшие
+  перед ней, пропущены с её касания (тревога), а остальной новый порядок — без новых тревог. Очередь ETA, следующий
+  магазин и плановые ETA («не успеет» к плану) — по плану со сменами (reordered_plan: плановые моменты рейса по новому
+  порядку). Плановая линия (views._live_plan_routes) — по плану со сменами (номера магазинов — прежние); пока линия по
+  новому порядку строится, отклонения с момента смены не считаются (PlanRoute.stale_since);
 - следование плану (adherence): 100 × (1 − км отклонений без объяснённых / км км-трека в счёте дня); меньше
   ADHERENCE_MIN_KM езды или линии по дорогам нет — None. «փոքր շեղում» — тоже вне коридора и в него входит;
 - объяснения диспетчера (apply_explanations, explains; store.live_explanations, схема 26): тревога deviation или
@@ -153,7 +161,7 @@ from __future__ import annotations
 import bisect
 import math
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from typing import Any, Callable, Collection, Mapping, Protocol, Sequence
 
@@ -388,6 +396,34 @@ def plan_trips(draft_trips: Sequence[Sequence[int]], prediction: Mapping[str, An
     return [PlanTrip(tuple(stops), {c: etas[c] for c in stops if c in etas}, at(pred[j].get('depart')) if same else None,
                      preloaded and j == 0)
             for j, stops in enumerate(draft_trips)]
+
+
+def reordered_plan(plan: Sequence[PlanTrip], reorders: Sequence[ac.Reorder], stops: Sequence[Mapping[str, Any]],
+                   touches: Mapping[str, datetime]) -> list[PlanTrip]:
+    """План машины со сменами порядка водителем (№93, по времени) — эталон очереди ETA, следующего магазина и плановых ETA
+    («не успеет» к плану): рейс — ac.reorder_trip (клиент обслужен к смене — касание его точки не позже её момента или
+    точка закрыта водителем без момента); плановые ETA оставшихся клиентов рейса — те же моменты рейса, разложенные по
+    новому порядку (рейс по времени тот же, меняется только очередь). Без смен — план как есть."""
+    if not reorders:
+        return list(plan)
+    first: dict[int, datetime] = {}   # клиент → первое касание его точек
+    untimed: set[int] = set()
+    for s in stops:
+        c, t = s.get('customer_id'), touches.get(s['stop_id'])
+        if not isinstance(c, int):
+            continue
+        if t is not None:
+            first[c] = min(first.get(c, t), t)
+        elif s.get('status') in DONE:
+            untimed.add(c)
+    out = list(plan)
+    for r in reorders:
+        if not 0 <= r.trip < len(out):
+            continue
+        old = out[r.trip]
+        new, etas = ac.reslot(old.customers, old.etas, r, untimed | {c for c, t in first.items() if t <= r.at})
+        out[r.trip] = replace(old, customers=tuple(new), etas=etas)
+    return out
 
 
 def _iso(t: datetime | None) -> str | None:
@@ -774,11 +810,14 @@ class PlanRoute:
     """Плановая линия машины на день (правило — в описании модуля; собирает views._live_plan_routes): geo — линии рейсов
     (RouteGeometry: по дорогам и участки по прямой); stops — (клиент, точка) по порядку плана за день; km — км плана
     (прогноз сборки «Развоза», нет — длина линий по дорогам; None — неизвестно); trip_stops — клиенты каждой линии
-    geo.trips по порядку (подсказка участка «склад → магазин → …» на карте; пусто — неизвестно)."""
+    geo.trips по порядку (подсказка участка «склад → магазин → …» на карте; пусто — неизвестно). stale_since — линия рейса
+    после смены порядка водителем (№93) ещё строится, а geo — прежняя (по старому порядку): отклонения, начавшиеся с этого
+    момента, не считаются (ложная тревога «Շեղում երթուղուց» хуже её отсутствия); None — линия та, что нужна."""
     geo: RouteGeometry
     stops: tuple[tuple[int, Point], ...] = ()
     km: float | None = None
     trip_stops: tuple[tuple[int, ...], ...] = ()
+    stale_since: datetime | None = None
 
 
 def _seg_xy(x: float, y: float, x1: float, y1: float, x2: float, y2: float) -> float:
@@ -1124,18 +1163,27 @@ def leg_at(legs: Sequence[Leg], t: datetime) -> Leg | None:
 
 
 def sequence_check(stops: Sequence[Mapping[str, Any]], trips: Mapping[str, int], plan: Sequence[PlanTrip],
-                   touches: Mapping[str, datetime], nos: Mapping[int, int], live: bool
-                   ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+                   touches: Mapping[str, datetime], nos: Mapping[int, int], live: bool,
+                   reorders: Sequence[ac.Reorder] = ()) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Порядок объезда внутри рейса (правило — в описании модуля): (тревоги sequence — по эпизоду, сводка {'skipped':
     точки, пропущенные сейчас, 'pairs': пары «обслужен раньше, хотя в плане позже»}). touches — касания точек (момент
     обслуживания: прибытие визита по GPS, нет — отметка доставки; ожидающая — засчитанный GPS-визит), nos — клиент →
-    номер в плане машины за день (подпись)."""
-    pos: dict[str, tuple[int, int]] = {}
+    номер в плане машины за день (подпись). reorders — смены порядка водителем (№93, по времени): с момента смены эталон
+    рейса — ac.reorder_trip (обслужена к смене — касание до неё или закрыта без момента); пропущенные по прежнему эталону
+    новый не держит — эпизод кончается в момент смены. 'driver': открытые точки рейса, стоявшие в прежнем эталоне перед
+    перенесённой, — её «долг»: с её касания они пропущены (тревога, «перепрыгнул» — она), пока их не обслужат, и пара
+    «она → точка долга»; 'until' — ни тревоги, ни пары. Без смен — как прежде."""
     by_id = {s['stop_id']: s for s in stops}
-    for s in stops:
-        k = trips[s['stop_id']]
-        if k < len(plan) and s.get('customer_id') in plan[k].customers:
-            pos[s['stop_id']] = (k, plan[k].customers.index(s['customer_id']))
+    refs = [list(t.customers) for t in plan]   # эталон рейса — клиенты по порядку (план, затем смены водителя)
+    planned = [s['stop_id'] for s in stops if trips[s['stop_id']] < len(refs)
+               and s.get('customer_id') in refs[trips[s['stop_id']]]]
+    pos: dict[str, tuple[int, int]] = {}
+
+    def place(k: int | None = None) -> None:
+        for sid in planned:
+            if k is None or trips[sid] == k:
+                pos[sid] = (trips[sid], refs[trips[sid]].index(by_id[sid]['customer_id']))
+    place()
     # закрытая водителем без момента обслуживания — обслужена (когда — неизвестно): не «пропущена» и порядок не меняет
     untimed = {sid for sid in pos if sid not in touches and by_id[sid].get('status') in DONE}
 
@@ -1143,27 +1191,72 @@ def sequence_check(stops: Sequence[Mapping[str, Any]], trips: Mapping[str, int],
         s = by_id[sid]
         return {'stop_id': sid, 'name': s.get('name'), 'no': nos.get(s.get('customer_id'))}   # type: ignore[arg-type]
 
-    def skipped_by(served: Collection[str]) -> list[str]:
+    served: set[str] = set()
+    debts: dict[str, None] = {}          # долг переносов 'driver', чьи перенесённые точки уже обслужены
+    pending: dict[str, list[str]] = {}   # перенесённая 'driver' (ещё не обслужена) → её долг
+    owed: dict[str, set[str]] = {}       # обслуженная перенесённая → её долг (пары)
+
+    def skipped_now() -> list[str]:
         top: dict[int, int] = {}
         for sid in served:
             k, i = pos[sid]
             top[k] = max(top.get(k, -1), i)
         return sorted((sid for sid in pos if sid not in served and sid not in untimed
-                       and pos[sid][1] < top.get(pos[sid][0], -1)), key=lambda sid: pos[sid])
+                       and (pos[sid][1] < top.get(pos[sid][0], -1) or sid in debts)), key=lambda sid: pos[sid])
     events = sorted((touches[sid], sid) for sid in pos if sid in touches)
-    served: set[str] = set()
-    alerts: list[dict[str, Any]] = []
-    episode: tuple[datetime, dict[str, None], str] | None = None   # (начало, пропущенные за эпизод, кто «перепрыгнул»)
-    skipped: list[str] = []
+    steps: list[tuple[datetime, int, Any]] = []   # касания (группа одного момента) и смены; в один момент — касания раньше
     i = 0
     while i < len(events):
         t = events[i][0]
         group = [sid for at, sid in events[i:] if at == t]
         i += len(group)
+        steps.append((t, 0, group))
+    steps += [(r.at, 1, r) for r in reorders]
+    steps.sort(key=lambda x: (x[0], x[1]))
+    alerts: list[dict[str, Any]] = []
+    episode: tuple[datetime, dict[str, None], str] | None = None   # (начало, пропущенные за эпизод, кто «перепрыгнул»)
+    skipped: list[str] = []
+    last: dict[int, str] = {}   # последняя обслуженная точка рейса (пары)
+    pairs: list[tuple[tuple[int, datetime, str], dict[str, Any]]] = []
+    for t, kind, item in steps:
+        if kind == 1:   # смена порядка водителем (№93)
+            r: ac.Reorder = item
+            if not 0 <= r.trip < len(refs):
+                continue
+            ref = refs[r.trip]
+            done = {by_id[sid]['customer_id'] for sid in served | untimed if pos[sid][0] == r.trip}
+            if r.reason == 'driver' and r.moved in ref and r.moved_stop in pos and r.moved_stop not in served:
+                owe = [sid for sid in pos if pos[sid][0] == r.trip and pos[sid][1] < ref.index(r.moved)
+                       and sid not in served and sid not in untimed]
+                if owe:
+                    pending[r.moved_stop] = owe
+            new = ac.reorder_trip(ref, r, done)
+            if new == ref:
+                continue
+            refs[r.trip] = new
+            place(r.trip)
+            skipped = skipped_now()
+            if episode is not None and not skipped:
+                alerts.append(_seq_alert(episode, t, False, by_id, label, set()))
+                episode = None
+            continue
+        group = item
         served.update(group)
-        skipped = skipped_by(served)
+        jump = None
+        for sid in group:
+            if sid in pending:
+                owed[sid] = set(pending[sid])
+                debts.update(dict.fromkeys(pending.pop(sid)))
+                jump = sid
+        for sid in group:   # один визит (общее место) — не пара
+            k = pos[sid][0]
+            a = last.get(k)
+            if a is not None and touches[sid] > touches[a] and (pos[sid][1] < pos[a][1] or sid in owed.get(a, ())):
+                pairs.append(((k, touches[sid], sid), {'trip': k + 1, 'first': label(a), 'then': label(sid)}))
+            last[k] = sid
+        skipped = skipped_now()
         if skipped and episode is None:
-            episode = (t, dict.fromkeys(skipped), max(group, key=lambda sid: pos[sid][1]))
+            episode = (t, dict.fromkeys(skipped), jump or max(group, key=lambda sid: pos[sid][1]))
         elif episode is not None:
             episode[1].update(dict.fromkeys(skipped))
             if not skipped:
@@ -1171,12 +1264,7 @@ def sequence_check(stops: Sequence[Mapping[str, Any]], trips: Mapping[str, int],
                 episode = None
     if episode is not None:
         alerts.append(_seq_alert(episode, None, live, by_id, label, set(skipped)))
-    pairs = []
-    for k in sorted({p[0] for p in pos.values()}):
-        order = [sid for _, sid in events if pos[sid][0] == k]
-        pairs += [{'trip': k + 1, 'first': label(a), 'then': label(b)}   # один визит (общее место) — не пара
-                  for a, b in zip(order, order[1:]) if pos[b][1] < pos[a][1] and touches[b] > touches[a]]
-    return alerts, {'skipped': [label(sid) for sid in skipped], 'pairs': pairs}
+    return alerts, {'skipped': [label(sid) for sid in skipped], 'pairs': [p for _, p in sorted(pairs, key=lambda x: x[0])]}
 
 
 def _seq_alert(episode: tuple[datetime, dict[str, None], str], end: datetime | None, active: bool,
@@ -1521,13 +1609,14 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
              windows: Mapping[int, tuple[float, float]] | None = None,
              route: PlanRoute | None = None,
              track_snap: Callable[[Sequence[tl.Chunk]], Mapping[Any, Sequence[tl.TPoint]]] | None = None,
-             explained: Sequence[Mapping[str, Any]] = ()) -> dict[str, Any]:
+             explained: Sequence[Mapping[str, Any]] = (), sent_at: datetime | None = None) -> dict[str, Any]:
     """Карточка машины (detail — ещё линия трека, точки дня, журнал тревог, плановая линия и линии отклонений). now —
     сейчас (Ереван); день не сегодня — без ETA и тревог «сейчас». windows — окна приёма клиентов (late_forecast), route —
     плановая линия машины (None — машине план не отправлен). track_snap — куски линии трека → уже привязанные к дорогам
     (ключ Chunk.key → линия; views._LiveTracks: чего нет — привязывается в фоне); None — линия без привязки. Линия трека
     (track_line) — только отображение: ни один показатель карточки от неё не зависит. explained — объяснения диспетчера
-    этой машины за день (store.live_explanations; apply_explanations)."""
+    этой машины за день (store.live_explanations; apply_explanations). sent_at — когда план последний раз отправлен
+    водителям (Draft.sent['at']): смены порядка на прежней версии рейса — эталон порядка до него (ac.history_reorders)."""
     live = now.astimezone(YEREVAN).date() == day
     stops = list(facts.get('stops') or ())
     raw = list(facts.get('track') or ())
@@ -1597,6 +1686,10 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
             if sid not in ongoing and not inside:
                 unmarked.add(sid)   # машина была и уехала, водитель не отметил — точка посещена
     gone = departed_trips(trips, touches, deps, start, open_ids - unmarked)   # посещённые по GPS не держат следующий рейс
+    # смены порядка водителем (№93): эталон очереди ETA, следующего магазина и плановых ETA — план с ними (reordered_plan)
+    moves = ac.reorders_of(facts.get('reorders') or (), {s['stop_id']: s.get('customer_id') for s in stops})
+    reorders = ac.current_reorders(moves, [t.customers for t in plan])   # вперёд — смена до пересборки рейса не эталон
+    order_plan = reordered_plan(plan, reorders, stops, touches)
     # «на месте» — одно правило для карточки (next.here) и таблицы: прогноз есть, последняя точка в STOP_RADIUS_M точки и её
     # последний заезд идёт или кончился не раньше JITTER_BREAK до неё (стоянку оборвало дрожание скорости — машина там же)
     served = dict(actual.served)
@@ -1645,28 +1738,28 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
 
     # следующий магазин, ETA, опоздание, возвращение
     current = max(gone) if gone else 0
-    nxt = _next_stop(stops, trips, plan, current, unmarked) if live and stops else None
+    nxt = _next_stop(stops, trips, order_plan, current, unmarked) if live and stops else None
     next_out = None
     return_eta = None
     return_source = None
     etas: dict[str, tuple[datetime, bool]] = {}
     late: list[dict[str, Any]] = []
-    own = {s['stop_id']: e for s in stops if trips[s['stop_id']] < len(plan)
-           and (e := plan[trips[s['stop_id']]].etas.get(s.get('customer_id'))) is not None}   # плановое ETA её рейса
+    own = {s['stop_id']: e for s in stops if trips[s['stop_id']] < len(order_plan)
+           and (e := order_plan[trips[s['stop_id']]].etas.get(s.get('customer_id'))) is not None}   # плановое ETA её рейса
     if nxt is not None and not (forecast and last is not None) and not finished:   # прогноза нет: магазин и план — да
         k = trips[nxt['stop_id']]
-        planned = plan[k].etas.get(nxt.get('customer_id')) if k < len(plan) else None   # type: ignore[arg-type]
+        planned = order_plan[k].etas.get(nxt.get('customer_id')) if k < len(order_plan) else None   # type: ignore[arg-type]
         next_out = {'stop_id': nxt['stop_id'], 'name': nxt.get('name'), 'here': False, 'eta': None, 'eta_source': None,
                     'planned_eta': _iso(planned), 'delay_min': None, 'eta_unknown': True}
     if (forecast and last is not None and not finished
             and (nxt is not None or (gone and not at_depot and depot is not None))):
-        queue = _queue(stops, trips, plan, current, nxt, bool(gone), unmarked)
+        queue = _queue(stops, trips, order_plan, current, nxt, bool(gone), unmarked)
         here = None
         if nxt is not None and _near(last.point, (nxt['lat'], nxt['lon']), ac.STOP_RADIUS_M):
             cur = at_stop(nxt)   # стоит у него — разгрузка идёт с прибытия этого заезда (только подъехал — с нуля)
             here = (nxt, max(0.0, (now - cur.arrive).total_seconds() / 60.0) if cur is not None else 0.0)
             queue = [(k, [x for x in xs if x['stop_id'] != nxt['stop_id']]) for k, xs in queue]
-        eta = eta_plan(day, now, last.point, queue, gone, current if gone else None, plan, depot, road, rules,
+        eta = eta_plan(day, now, last.point, queue, gone, current if gone else None, order_plan, depot, road, rules,
                        not lunch_taken(actual, day, rules), at_depot, here, windows)
         etas = dict(eta.arrive)
         if now - last.at <= LATE_FIX_MAX:   # давнее положение — прогноз «не успеет» не строится (нет GPS — нет тревоги)
@@ -1677,7 +1770,7 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
         if nxt is not None:
             k = trips[nxt['stop_id']]
             arrival, by_road = etas[nxt['stop_id']]
-            planned = plan[k].etas.get(nxt.get('customer_id')) if k < len(plan) else None   # type: ignore[arg-type]
+            planned = order_plan[k].etas.get(nxt.get('customer_id')) if k < len(order_plan) else None   # type: ignore[arg-type]
             next_out = {'stop_id': nxt['stop_id'], 'name': nxt.get('name'), 'here': here is not None,
                         'eta': _iso(arrival), 'eta_source': None if here is not None else ('road' if by_road else 'model'),
                         'planned_eta': _iso(planned),
@@ -1709,6 +1802,8 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
     until = min((t for t in (end, home) if t is not None), default=None)
     lunch_span = (lunch.arrive, lunch.leave) if lunch is not None else None
     runs = deviation_runs(moving, index, rules.deviation_m, keep, out_at, until, lunch_span, straight)
+    if route is not None and route.stale_since is not None:   # №93: линии по новому порядку ещё нет — не тревожим
+        runs = [r for r in runs if r[0].at < route.stale_since]
     where: dict[int, Point] = {}   # клиент → точка, по порядку плана машины за день (первое появление)
     for c, p in (route.stops if route is not None else ()):
         where.setdefault(c, p)
@@ -1797,7 +1892,10 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
                      and not (live and last is not None and v.leave >= last.at)]
             if brief:
                 seq_touches[sid] = brief[0].arrive
-    sequence, seq_summary = sequence_check(stops, trips, plan, seq_touches, nos, live) if plan else ([], None)
+    # уже сделанное — со сменами и на прежней версии рейса до новой отправки плана: «until» задним числом не нарушение
+    history = ac.history_reorders(moves, [t.customers for t in plan], sent_at)
+    sequence, seq_summary = sequence_check(stops, trips, plan, seq_touches, nos, live, history) if plan else ([], None)
+    names = {s['stop_id']: s.get('name') for s in stops}
     apply_explanations(deviations + sequence, explained)
     off_km = math.fsum(_path_km(r) for r, a in zip(runs, deviations) if 'explained' not in a)
     adherence_pct, counted_km = adherence(moving, out_at, until, off_km) if index is not None else (None, 0.0)
@@ -1905,6 +2003,11 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
                     'approx': any(x.approx for x in over), 'fuel_price_estimated': rules.fuel_price_estimated}
                    if plan else None),
         'sequence': seq_summary,   # порядок объезда (None — плана нет): пропущенные сейчас и пары не по порядку
+        # смены порядка водителем «Գնալ առաջինը» (№93) по времени: не тревоги (в alerts их нет) — у 'until' страница
+        # показывает сведение «Վարորդը փոխեց հերթը՝ ժամկետի պատճառով»; 'driver' — тревога sequence, если был прыжок
+        'reorders': [{'trip': r.trip + 1, 'at': _iso(r.at), 'reason': r.reason,
+                      'moved': {'stop_id': r.moved_stop, 'name': names.get(r.moved_stop), 'no': nos.get(r.moved)}}
+                     for r in moves],
         'stats': {**day_stats(pts),
                   'adherence_pct': round(adherence_pct, 1) if adherence_pct is not None else None,
                   'overspeed': {'count': len(speeds), 'minutes': round(math.fsum(

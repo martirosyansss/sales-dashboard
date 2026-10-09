@@ -564,6 +564,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # Запас в конце дня (ответ владельца №78): сборка «Развоза» возвращает машины не позже truck_work_end минус столько
     # минут; рейс в запасе не опаздывает. 0 — без запаса (как до №78). Нет ключа — значение по умолчанию
     'truck_end_reserve_min': 30,
+    # Запас до срока магазина (ответ владельца №93): «Развоз» планирует прибытие к магазину с концом окна приёма не позже
+    # конца окна минус столько минут; с запасом не выходит, а в срок успевает — «քիչ ժամանակ կա» (не «չի հասցնում»). Его
+    # же получает терминал «Առաքիչ» (/day until_buffer_min). 0 — без запаса (как до №93). Нет ключа — значение по умолчанию
+    'until_buffer_min': 15,
     # Машина отдельного рейса (ответы владельца №78, 18 и 20): лишнюю машину снимаем, чтобы она везла и обычные магазины,
     # только если дизель + износ дня растут не больше чем на столько %; иначе лишняя машина остаётся
     'solo_spare_max_pct': 5,
@@ -719,6 +723,7 @@ _NUMERIC: dict[str, tuple[float, float, bool]] = {
     'unload_min_per_tonne': (0, 120, False),
     'truck_lunch_min': (0, 120, False),
     'truck_end_reserve_min': (0, 120, False),
+    'until_buffer_min': (0, 120, False),     # и целое (validate_settings; /day отдаёт целым)
     'solo_spare_max_pct': (0, 100, False),
     'dispatch_buffer_pct': (50, 95, False),
     'big_truck_yerevan_min': (0, 120, False),
@@ -1603,7 +1608,7 @@ def validate_settings(values: Mapping[str, Any],
         else:
             out[key] = v
     # порог «не успеет» без окна (№87) и эскалация бота (№91) — целые минуты, как у полей страницы
-    for key in ('late_nowin_min', 'tg_escalate_min'):
+    for key in ('late_nowin_min', 'tg_escalate_min', 'until_buffer_min'):
         if key in out and not float(out[key]).is_integer():
             errors[key] = 'ամբողջ թիվ րոպեներով'
             del out[key]
