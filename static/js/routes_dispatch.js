@@ -5158,7 +5158,7 @@
                     + '<table><thead><tr><th>№</th><th>Խանութ և հասցե</th><th>Ժամանում</th><th>Բեռ</th><th>Բեռն. №</th><th>Նշում</th></tr></thead><tbody>';
                 tr.stops.forEach((s, si) => {
                     const win = windowText(s.window);
-                    // №87 п. 4: номер погрузки — обратный объезду (последняя точка грузится первой), как «Բեռնագիր»
+                    // №87 п. 4: номер погрузки — обратный объезду (последняя точка грузится первой)
                     html += '<tr><td class="n">' + (si + 1) + '</td><td><div class="nm">' + esc(s.name || s.code) + ' <small>(' + esc(s.code) + ')</small></div>'
                         + '<div class="addr">' + esc(s.address || 'ERP-ում հասցե չկա') + '</div></td>'
                         + '<td class="t">' + esc(s.eta ? '≈ ' + s.eta : '') + (win ? '<div class="win">ընդունում է՝ ' + esc(win) + '</div>' : '')
@@ -5565,16 +5565,6 @@
                 r.pack && r.packs !== null ? r.packs : '', r.pack && r.packs !== null ? r.loose : '', r.pack || '', r.kg]));
             rows.push(['', '', 'Ընդամենը', '', '', '', '', '', tr.kg], []);
             wbNotes(tr).forEach(x => rows.push([x]));
-            // №87 п. 4: «Բեռնման հերթականություն» — ниже итогов, те же столбцы; строка магазина, под ней его товары
-            if (Array.isArray(tr.loading) && tr.loading.length) {
-                rows.push([], ['Բեռնման հերթականություն'], [window.RtWaybill.loadHint],
-                    ['Բեռն. №', 'Կոդ', 'Ապրանք', 'Միավոր', 'Քանակ', 'Փաթեթ', 'Առանձին', 'Փաթեթում', 'Քաշ, կգ']);
-                tr.loading.forEach(x => {
-                    rows.push([window.RtWaybill.loadNo(x), '', window.RtWaybill.loadStore(x), '', '', '', '', '', x.kg]);
-                    x.rows.forEach(r => rows.push(['', r.code, wbName(r), r.unit, r.qty,
-                        r.pack && r.packs !== null ? r.packs : '', r.pack && r.packs !== null ? r.loose : '', r.pack || '', r.kg]));
-                });
-            }
             const ws = XLSX.utils.aoa_to_sheet(rows);
             ws['!cols'] = [{ wch: 5 }, { wch: 8 }, { wch: 42 }, { wch: 8 }, { wch: 9 }, { wch: 8 }, { wch: 9 }, { wch: 10 }, { wch: 9 }];
             XLSX.utils.book_append_sheet(book, ws, 'Երթ ' + tr.no);
