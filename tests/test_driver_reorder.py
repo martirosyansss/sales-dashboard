@@ -193,7 +193,7 @@ def test_same_day_options_fall_back_to_real_deadline():
 def test_dispatch_page_assets_tight_and_setting():
     js = (ROOT / 'static' / 'js' / 'routes_dispatch.js').read_text(encoding='utf-8')
     assert 'stop.window_tight' in js and 'քիչ ժամանակ կա՝ ' in js and 'u.tight' in js
-    assert "routes_dispatch.js') }}?v=111" in (ROOT / 'templates' / 'routes_dispatch.html').read_text(encoding='utf-8')
+    assert "routes_dispatch.js') }}?v=113" in (ROOT / 'templates' / 'routes_dispatch.html').read_text(encoding='utf-8')
     settings = (ROOT / 'static' / 'js' / 'routes_settings.js').read_text(encoding='utf-8')
     assert "key: 'until_buffer_min', label: 'Ժամկետի պաշար, րոպե'" in settings
     assert "routes_settings.js') }}?v=42" in (ROOT / 'templates' / 'routes_settings.html').read_text(encoding='utf-8')
