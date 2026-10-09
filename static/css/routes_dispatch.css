@@ -1419,3 +1419,33 @@ body.dp-ws-on .rt-shell { --rt-secnav-gap: 8px; }
     .dp-nc-row > .dp-nc-num { align-self: start; }
     .dp-nc-row > .dp-bl-act { justify-content: flex-start; }
 }
+/* №83: «Համեմատել տարբերակները» — варианты столбцами, лучше / хуже нынешнего плана — цветом и стрелкой; на рабочем экране
+   кнопка — пунктом меню «⋯» (шапка и так тесная) */
+#rtDispatch.is-ws #dpCompare { display: none; }
+.dp-cmp-dlg { width: min(1180px, calc(100vw - 32px)); }
+.dp-cmp-wrap { overflow-x: auto; margin: 12px 0; border-radius: 10px; }
+.dp-cmp-wrap:focus-visible { outline: 2px solid var(--rt-acc); outline-offset: 2px; }
+.dp-cmp { width: 100%; border-collapse: collapse; font-size: .9375rem; }
+.dp-cmp th, .dp-cmp td { padding: 8px 12px; border-bottom: 1px solid var(--rt-line-soft); text-align: right; white-space: nowrap; }
+.dp-cmp thead th { vertical-align: bottom; }
+.dp-cmp thead th b { display: block; font-size: .875rem; white-space: normal; min-width: 110px; max-width: 210px; margin-left: auto; }
+.dp-cmp thead th small { display: block; max-width: 220px; margin-left: auto; white-space: normal; color: var(--rt-fg-mute); font-weight: 400; font-size: .75rem; }
+.dp-cmp tbody th { text-align: left; font-weight: 500; color: var(--rt-fg-dim); }
+.dp-cmp td { font-family: var(--rt-mono); }
+.dp-cmp :is(td, th):nth-child(2) { background: var(--rt-inset); }
+.dp-cmp td.is-better { color: var(--rt-ok); }
+.dp-cmp td.is-worse { color: var(--rt-danger); }
+.dp-cmp td em { font-style: normal; font-size: .75em; }
+.dp-cmp td.is-wait { color: var(--rt-fg-mute); }
+.dp-cmp td.is-err { color: var(--rt-danger); font-family: var(--rt-font); white-space: normal; min-width: 160px; text-align: left; }
+.dp-cmp tfoot td { border-bottom: 0; padding-top: 12px; }
+.dp-cmp-own > summary { cursor: pointer; color: var(--rt-fg-dim); font-weight: 600; }
+.dp-cmp-trucks { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 10px 0; }
+.dp-cmp-truck { display: inline-flex; align-items: center; gap: 6px; font-size: .875rem; }
+@media (max-width: 767px) {
+    .dp-cmp-dlg { padding: 16px; }
+    .dp-cmp th, .dp-cmp td { padding: 6px 8px; }
+    /* подписи строк не уезжают при прокрутке столбцов вбок */
+    .dp-cmp tbody th, .dp-cmp :is(thead, tfoot) td:first-child { position: sticky; left: 0; z-index: 1; background: var(--rt-panel); }
+    .dp-cmp tbody th { white-space: normal; min-width: 120px; }
+}

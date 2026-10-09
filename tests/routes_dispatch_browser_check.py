@@ -42,6 +42,12 @@ W устаревший чат (views._seen_stale): план на сервере 
   даёт 409 stale, клиент модели не вызван, в пузыре ошибки «Թարմացնել» и заметка о новом разговоре, вопрос вернулся
   в #dpAiInput; «Թարմացնել» перечитывает день и очищает разговор (снова подсказки); следующий вопрос доходит до
   клиента модели с новым rev.
+M (№83) «Համեմատել» (тот же день 10-02, план не утверждён): окно «Համեմատել տարբերակները» — столбцы вариантов считаются
+  POST /dispatch/compare, план в базе не меняется (rev тот же); строка «Ճանապարհ» в км, «Կիրառել» у каждого варианта,
+  кроме нынешнего; «Իմ տարբերակը» без машин — ошибка без запроса, с одной машиной — ещё столбец; на телефоне 390 окно
+  по ширине экрана; Esc закрывает, фокус — на кнопку; «Կիրառել» у «Վերակազմել նույն մեքենաներով» → окно закрыто,
+  POST build теми же машинами. На рабочем экране (Y) кнопки в шапке нет — пункт «⋯ → Համեմատել տարբերակները»;
+  у утверждённого плана «Կիրառել» недоступно.
 
 Ошибки страницы (pageerror) и ошибки консоли — провал, кроме сетевых «Failed to load resource» для внешних
 ресурсов (CDN, шрифты, плитки Яндекса/OSM) и /api/routes/road-lines (без карты дорог страница рисует прямые).
@@ -662,6 +668,61 @@ def main() -> int:
                   f'day_data shows the pinned trip, calls {len(fake.calls)}')
             page.keyboard.press('Escape')
 
+            # M (№83): «Համեմատել տարբերակները» — варианты в памяти, «Կիրառել» — пересборка этим набором
+            compares = []
+            page.on('request', lambda r: compares.append(r.post_data_json) if r.method == 'POST' and r.url.endswith('/dispatch/compare') else None)
+            day_c = page.request.get(f'{BASE}/api/routes/dispatch?date={DAY2}').json()
+            used_c = sorted(t['car_code'] for t in day_c['plan']['trucks'] if t['trips'])
+            cmp_done = "() => document.getElementById('dpCmpLive').textContent !== ''"
+            page.locator('#dpCompare').scroll_into_view_if_needed()
+            page.click('#dpCompare')
+            page.wait_for_selector('#dpCmpDlg[open]', timeout=5000)
+            page.wait_for_function(cmp_done, timeout=60000)
+            heads = page.locator('#dpCmpTable thead th').all_inner_texts()
+            cols = len(heads)
+            km_row = page.locator('#dpCmpTable tbody tr').nth(4).inner_text()
+            applies = page.locator('#dpCmpTable tfoot button')
+            check(cols >= 2 and 'Ընթացիկ պլանը' in heads[0] and 'Վերակազմել նույն մեքենաներով' in heads[1] and 'կմ' in km_row
+                  and page.locator('#dpCmpTable td.is-wait, #dpCmpTable td.is-err').count() == 0
+                  and applies.count() == cols - 1 and all(applies.nth(i).is_enabled() for i in range(cols - 1)),
+                  f'M compare: {cols} variants {[h.splitlines()[0] for h in heads]}, km row {km_row!r}, «Կիրառել» enabled')
+            check(len(compares) == cols - 1 and sorted(compares[0]['trucks']) == used_c
+                  and page.request.get(f'{BASE}/api/routes/dispatch?date={DAY2}').json()['rev'] == day_c['rev'],
+                  f'M one POST compare per variant ({len(compares)}), same trucks first {used_c}, plan rev unchanged')
+            page.click('#dpCmpOwn > summary')
+            page.locator('#dpCmpTrucks input[type="checkbox"]').evaluate_all('cs => cs.forEach(c => { c.checked = false; })')
+            n_cmp = len(compares)
+            page.click('#dpCmpRun')
+            check('Նշեք գոնե մեկ մեքենա' in page.inner_text('#dpCmpErr') and len(compares) == n_cmp,
+                  'M own variant without trucks: error, no request')
+            page.locator('#dpCmpTrucks input[type="checkbox"]').first.check()
+            page.click('#dpCmpRun')
+            page.wait_for_function(cmp_done, timeout=60000)
+            heads = page.locator('#dpCmpTable thead th').all_inner_texts()
+            check(len(heads) == cols + 1 and 'Իմ տարբերակը' in heads[-1] and len(compares) == n_cmp + 1
+                  and len(compares[-1]['trucks']) == 1 and page.inner_text('#dpCmpErr') == '',
+                  f'M own variant with one truck: one more column {heads[-1]!r}')
+            page.screenshot(path=str(Path(tempfile.gettempdir()) / 'dispatch-compare.png'))
+            page.set_viewport_size({'width': 390, 'height': 860})
+            page.wait_for_timeout(300)
+            dbox = page.locator('#dpCmpDlg').bounding_box()
+            check(dbox and dbox['x'] >= 0 and dbox['x'] + dbox['width'] <= 390, f'M phone 390: dialog fits the screen {dbox}')
+            page.screenshot(path=str(Path(tempfile.gettempdir()) / 'dispatch-compare-phone.png'))
+            page.set_viewport_size({'width': 1440, 'height': 950})
+            page.wait_for_timeout(300)
+            page.keyboard.press('Escape')
+            check(not page.locator('#dpCmpDlg').evaluate('d => d.open') and page.evaluate('document.activeElement.id') == 'dpCompare',
+                  'M Esc closes the dialog, focus back on «Համեմատել»')
+            page.click('#dpCompare')
+            page.wait_for_function(cmp_done, timeout=60000)
+            n_build = len(builds)
+            page.locator('#dpCmpTable tfoot button').first.click()
+            page.wait_for_function("() => !document.getElementById('dpCmpDlg').open"
+                                   " && document.getElementById('rtDispatch').getAttribute('aria-busy') === 'false'", timeout=60000)
+            page.wait_for_timeout(300)
+            check(len(builds) == n_build + 1 and sorted(builds[-1]['trucks']) == used_c,
+                  f'M «Կիրառել» on «same trucks» → dialog closed, POST build {builds[-1]["trucks"] if len(builds) > n_build else None}')
+
             # X (№81): план у водителей — только отправленный: черновик → «Հաստատել և ուղարկել» → правка копится → «Ուղարկել»
             # день V (02.10) с его планом — будущий: «сейчас» — 01.10 08:00 (заказы синтетики — только этих дат)
             fixed = datetime(2026, 10, 1, 8, 0)
@@ -794,6 +855,18 @@ def main() -> int:
                   'Y «⋯» opens the menu, focus on the first item')
             ws.keyboard.press('Escape')
             check(ws.locator('#dpWsMenu').is_hidden() and ws.evaluate('document.activeElement.id') == 'dpWsMore', 'Y Esc closes the menu, focus back on «⋯»')
+            # M (№83) на рабочем экране: «Համեմատել» — в меню «⋯»; план утверждён — «Կիրառել» недоступно
+            approved_y = bool(ws.request.get(f'{BASE}/api/routes/dispatch?date={DAY2}').json().get('approved'))
+            check(ws.locator('#dpCompare').is_hidden(), 'Y «Համեմատել» button is not in the header (menu item instead)')
+            ws.click('#dpWsMore')
+            ws.click('#dpMenuCompare')
+            ws.wait_for_selector('#dpCmpDlg[open]', timeout=5000)
+            ws.wait_for_function("() => document.getElementById('dpCmpLive').textContent !== ''", timeout=60000)
+            btns = ws.locator('#dpCmpTable tfoot button')
+            check(btns.count() >= 1 and all(btns.nth(i).is_disabled() == approved_y for i in range(btns.count())),
+                  f'Y «⋯ → Համեմատել տարբերակները»: {btns.count()} variants, «Կիրառել» disabled = plan approved ({approved_y})')
+            ws.click('#dpCmpClose')
+            check(not ws.locator('#dpCmpDlg').evaluate('d => d.open'), 'Y compare dialog closed by «Փակել»')
             # правка после отправки → «⋯ → Չեղարկել չուղարկված փոփոխությունները» (подтверждение) → правка discard
             ws.locator('#dpBoard .dp-blabel').first.click()
             ws.wait_for_selector('#dpWsSide:not([hidden]) .dp-tcard.is-focus', timeout=5000)

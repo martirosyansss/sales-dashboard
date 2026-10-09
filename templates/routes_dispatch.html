@@ -14,7 +14,7 @@
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=25">
 <!-- Страница на армянском (ответ владельца №31). Редизайн: тёмная спокойная тема (ответ владельца №51), свои стили поверх routes.css -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=69">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=70">
 {% endblock %}
 
 {% block content %}
@@ -60,6 +60,7 @@
                     <button type="button" id="dpWsMore" class="rt-btn rt-btn-ghost dp-icobtn" aria-haspopup="menu" aria-expanded="false" aria-controls="dpWsMenu"
                         title="Այլ գործողություններ" aria-label="Այլ գործողություններ"><i class="fas fa-ellipsis" aria-hidden="true"></i></button>
                     <div class="dp-menu" id="dpWsMenu" role="menu" aria-label="Այլ գործողություններ" hidden>
+                        <button type="button" role="menuitem" id="dpMenuCompare"><i class="fas fa-code-compare" aria-hidden="true"></i><span>Համեմատել տարբերակները</span></button>
                         <button type="button" role="menuitem" id="dpMenuUnapprove" hidden><i class="fas fa-lock-open" aria-hidden="true"></i><span>Չեղարկել հաստատումը</span></button>
                         <button type="button" role="menuitem" id="dpMenuDiscard" hidden><i class="fas fa-rotate-left" aria-hidden="true"></i><span>Չեղարկել չուղարկված փոփոխությունները</span></button>
                         <button type="button" role="menuitem" id="dpViewList"><i class="fas fa-list" aria-hidden="true"></i><span>Ցուցակով (նախկին տեսք)</span></button>
@@ -306,6 +307,8 @@
                     <div class="dp-summary-cta">
                         <button type="button" id="dpPrint" class="rt-btn rt-btn-primary" aria-label="Տպել վարորդների համար" title="Տպել վարորդների համար"><i class="fas fa-print" aria-hidden="true"></i><span>Տպել վարորդների համար</span></button>
                         <button type="button" id="dpExcel" class="rt-btn rt-btn-ghost" title="Ներբեռնել Excel"><i class="fas fa-file-excel" aria-hidden="true"></i><span>Excel</span></button>
+                        <!-- №83: варианты плана другим набором машин; на рабочем экране — пункт меню «⋯» (dpMenuCompare) -->
+                        <button type="button" id="dpCompare" class="rt-btn rt-btn-ghost" aria-haspopup="dialog" title="Համեմատել պլանի տարբերակները՝ ավելի քիչ կամ ավելի շատ մեքենայով"><i class="fas fa-code-compare" aria-hidden="true"></i><span>Համեմատել</span></button>
                         <button type="button" id="dpViewWs" class="rt-btn rt-btn-ghost dp-view-ws" title="Աշխատանքային էկրան՝ քարտեզ և ժամացույց"><i class="fas fa-table-columns" aria-hidden="true"></i><span>Աշխատանքային էկրան</span></button>
                     </div>
                 </div>
@@ -544,6 +547,20 @@
             <button type="button" id="dpSfCancel" class="rt-btn rt-btn-ghost">Չեղարկել</button>
         </div>
     </dialog>
+    <!-- №83: «Համեմատել տարբերակները» — варианты плана столбцами (только в памяти), «Կիրառել» — пересборка этим набором -->
+    <dialog id="dpCmpDlg" class="dp-dlg dp-cmp-dlg" aria-labelledby="dpCmpTitle" aria-describedby="dpCmpLead">
+        <h2 class="dp-dlg-t" id="dpCmpTitle">Համեմատել տարբերակները</h2>
+        <p class="dp-dlg-lead" id="dpCmpLead">Նույն պատվերները՝ այլ մեքենաներով։ Թվերը մոտավոր են (արագ հաշվարկ)։ Ոչինչ չի փոխվում, մինչև չսեղմեք «Կիրառել»․ այդ դեպքում ծրագիրը կվերակազմի երթերը տվյալ մեքենաներով։</p>
+        <div class="dp-cmp-wrap" role="region" aria-label="Տարբերակների համեմատություն" tabindex="0"><table class="dp-cmp" id="dpCmpTable" aria-busy="false"></table></div>
+        <p class="rt-sr-only" id="dpCmpLive" role="status"></p>
+        <details class="dp-cmp-own" id="dpCmpOwn">
+            <summary>Իմ տարբերակը՝ ընտրել մեքենաները</summary>
+            <div class="dp-cmp-trucks" id="dpCmpTrucks" role="group" aria-label="Մեքենաներ"></div>
+            <button type="button" id="dpCmpRun" class="rt-btn rt-btn-ghost rt-btn-sm"><i class="fas fa-calculator" aria-hidden="true"></i><span>Հաշվել</span></button>
+        </details>
+        <div class="rt-ferr" id="dpCmpErr" role="alert"></div>
+        <div class="dp-dlg-btns"><button type="button" id="dpCmpClose" class="rt-btn rt-btn-ghost">Փակել</button></div>
+    </dialog>
     <!-- водитель не вышел (ответ владельца №77): только этот день (по умолчанию) или до даты — отпуск, болезнь -->
     <dialog id="dpAbsentDlg" class="dp-dlg dp-unload-dlg" aria-labelledby="dpAbsentTitle" aria-describedby="dpAbsentLead dpAbsentHint">
         <h2 class="dp-dlg-t" id="dpAbsentTitle">Վարորդը չի եկել</h2>
@@ -598,5 +615,5 @@
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=2" data-yandex-key="{{ yandex_tiles_key }}"></script>
 <!-- панель «Հարցրու AI-ին» — до страницы: init подключает её (RoutesDispatchAI.attach) -->
 <script src="{{ url_for('static', filename='js/routes_dispatch_ai.js') }}?v=3"></script>
-<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=110"></script>
+<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=111"></script>
 {% endblock %}
