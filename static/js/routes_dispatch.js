@@ -112,6 +112,7 @@
         tab: 'day',                         // №81: вкладка на телефоне — day | trips | map
         dragStop: null,                     // №81: магазин, который тянут мышью на другой рейс: {stop, from}
         blFolded: new Set(),                // «Նախորդ օրերից»: свёрнутые группы менеджеров (agent_id)
+        blFocus: null,                      // «Նախորդ օրերից»: строка (isn), куда вернуть фокус после перерисовки
         blDaysWant: null, blDaysTimer: 0, blDaysSaving: false,   // «Նախորդ օրերից»: выбранное, ещё не сохранённое окно в днях
         boardFolded: false,                 // №81: шкала дня свёрнута (как «скрыть таймлайн» у Routific)
         fetchedAt: 0,                       // когда последний раз спрашивали сервер о заказах дня
@@ -229,7 +230,8 @@
     }
 
     function announce(msg) {
-        const el = $('dpStatus');
+        // открыт модальный список «Նախորդ օրերից» — страница за ним инертна: объявляем в его строке состояния
+        const el = $('dpBlDlg') && $('dpBlDlg').open ? $('dpBlLive') : $('dpStatus');
         el.textContent = '';
         setTimeout(() => { el.textContent = msg; }, 40);
     }
@@ -242,8 +244,10 @@
             el.id = 'dpToast';
             el.className = 'dp-toast';
             el.setAttribute('role', 'status');
-            $('rtDispatch').appendChild(el);
         }
+        // открыто модальное окно «Նախորդ օրերից» — сообщение в нём (иначе оно под затемнением)
+        const host = $('dpBlDlg') && $('dpBlDlg').open ? $('dpBlDlg') : $('rtDispatch');
+        if (el.parentNode !== host) host.appendChild(el);
         el.textContent = msg;
         el.classList.toggle('has-act', !!act);
         if (act) {
@@ -261,12 +265,16 @@
     }
     function showActionError(err) {
         $('dpActionErrorText').textContent = err.message || String(err);
+        // ошибка видна и в окне списка; план изменился (409) — окно закрываем: «Թարմացնել էջը» на странице
+        if ($('dpBlDlg').open) {
+            if (err.status === 409) $('dpBlDlg').close(); else $('dpBlErr').textContent = err.message || String(err);
+        }
         if (state.data && /1-ին քայլում/.test(err.message || '')) unfoldStep('dpStep1');   // «…1-ին քայլում» — раскрыть шаг 1, чтобы было где отметить
         $('dpActionReload').classList.toggle('d-none', !(err.status === 409));
         $('dpActionError').classList.remove('d-none');
         $('dpActionError').focus();
     }
-    const hideActionError = () => $('dpActionError').classList.add('d-none');
+    const hideActionError = () => { $('dpActionError').classList.add('d-none'); $('dpBlErr').textContent = ''; };
 
     // ---------- Загрузка ----------
     // true — день загружен и показан; ошибка (видна в dpLoadError) или ответ на прежний запрос — false
@@ -721,6 +729,7 @@
         goTo(find());
     }
     function openFold(id) {
+        if (id === 'dpBacklog') { openBacklog(); return; }   // список прошлых дней — в большом окне
         if (state.tab !== 'day' && tabsOn()) setTab('day');
         if ($('rtDispatch').classList.contains('is-ws') && $('dpDrawer').hidden) openDrawer(true);   // №82: шаг 2 — в панели
         unfoldStep('dpStep2');
@@ -1311,6 +1320,7 @@
             b.className = 'rt-btn rt-btn-ghost rt-btn-sm';
             b.textContent = btnText;
             b.addEventListener('click', () => {
+                if (targetId === 'dpBacklog') { openBacklog(); return; }   // список прошлых дней — в большом окне
                 const el = $(targetId);
                 el.open = true;
                 el.scrollIntoView({ block: 'start', behavior: 'smooth' });
@@ -2204,9 +2214,11 @@
             b.textContent = text;
             b.disabled = !hasPlan;
             if (!hasPlan) b.title = 'Նախ կազմեք երթերը';
-            b.addEventListener('click', onClick);
+            // строка перерисуется — фокус вернётся на неё (renderBacklog)
+            b.addEventListener('click', () => { state.blFocus = o.isn; onClick(); });
             act.append(b);
         };
+        li.dataset.isn = o.isn;
         const label = o.name || o.code || '';
         if (o.taken) {
             btn('Հանել', 'rt-btn-ghost', () => { if (needPlan()) edit({ action: 'exclude', order: o.isn }, 'Պատվերը հանվեց այսօրվա առաքումից'); });
@@ -2307,9 +2319,8 @@
         ul.id = 'dpBlGrp' + g.id;
         tog.setAttribute('aria-controls', ul.id);
         sec.setAttribute('aria-label', nm);
-        // нерешённые — сверху, старые — первыми; затем решённые
-        const rank = (o) => (blUndecided([o]).length ? 0 : 1);
-        [...g.list].sort((a, b) => rank(a) - rank(b) || a.order_date.localeCompare(b.order_date))
+        // старые — первыми; порядок не меняется от решений (строка не прыгает после «Տանել այսօր»)
+        [...g.list].sort((a, b) => a.order_date.localeCompare(b.order_date) || (a.name || '').localeCompare(b.name || '', 'hy'))
             .forEach(o => ul.appendChild(backlogRow(o, hasPlan, true)));
         tog.addEventListener('click', () => {
             const now = !state.blFolded.has(g.id);
@@ -2382,34 +2393,37 @@
         const open = blUndecided(bl), todo = blTodo(bl), taken = bl.filter(o => o.taken || ((o.deferred || o.later_to) && !o.dismissed)),
             off = bl.filter(o => !o.taken && o.dismissed);
         const nTaken = bl.filter(o => o.taken).length;
-        $('dpBacklogNote').textContent = !bl.length ? 'չառաքված պատվեր չկա'
+        const note = !bl.length ? 'չառաքված պատվեր չկա'
             : [pl(bl.length, 'պատվեր'), nTaken ? nTaken + '-ը տանում ենք' : '', todo.length ? todo.length + '-ը չորոշված' : ''].filter(Boolean).join(' · ');
-        $('dpBacklogLead').textContent = !bl.length ? ''
-            : !hasPlan ? 'Ընդունվել են ավելի վաղ, բայց դեռ չեն առաքվել։ Նախ կազմեք երթերը, հետո ընտրեք՝ որոնք տանել այսօր։'
-                : open.length ? 'Ընդունվել են ավելի վաղ, բայց դեռ չեն առաքվել։ «Տանել այսօր»՝ պատվերը միանգամից կդրվի ամենահարմար երթում, «Չտանել»՝ այսօր չենք տանում։'
+        $('dpBacklogNote').textContent = note;
+        $('dpBlNote').textContent = note + (state.data.backlog_since ? ' · ' + dayHuman(state.data.day, true) : '');
+        $('dpBacklogLead').textContent = !bl.length ? 'Ընտրված օրերին չառաքված պատվեր չկա։ Օրերի թիվը կարելի է մեծացնել ցուցակում։'
+            : !hasPlan ? 'Ընդունվել են ավելի վաղ, բայց դեռ չեն առաքվել։ Նախ կազմեք երթերը, հետո ցուցակում ընտրեք՝ որոնք տանել այսօր։'
+                : open.length ? 'Ընդունվել են ավելի վաղ, բայց դեռ չեն առաքվել։ Բացեք ցուցակը և ընտրեք՝ «Տանել այսօր» կամ «Չտանել»։'
                     : 'Բոլոր պատվերների համար որոշել եք։';
+        $('dpBacklogOpenT').textContent = 'Բացել ցուցակը' + (bl.length ? ' (' + bl.length + ')' : '');
         const all = $('dpBacklogAll');
         all.hidden = !hasPlan || todo.length < 2;
         all.textContent = 'Տանել բոլորը (' + todo.length + ')';
         all.onclick = () => takeBacklog(blTodo(state.data.backlog || []).map(o => o.isn));
-        // итоги окна
-        const stats = $('dpBacklogStats');
-        stats.textContent = '';
-        stats.hidden = !bl.length;
-        const stat = (label, value, cls) => {
-            const el = document.createElement('div');
-            el.className = 'dp-bl-stat' + (cls ? ' ' + cls : '');
-            const l = document.createElement('span'), v = document.createElement('b');
-            l.textContent = label;
-            v.textContent = value;
-            el.append(l, v);
-            stats.append(el);
-        };
-        stat('Պատվեր', fmt(bl.length));
-        stat('Քաշ', kgText(bl.reduce((a, o) => a + (o.kg || 0), 0)));
-        stat('Գումար', money(bl.reduce((a, o) => a + (o.revenue || 0), 0)));
-        stat('Չորոշված', fmt(todo.length), todo.length ? 'is-warn' : '');
-        stat('Տանում ենք', fmt(nTaken), nTaken ? 'is-ok' : '');
+        // итоги окна — и в сводке боковой панели, и в большом окне
+        const tiles = [['Պատվեր', fmt(bl.length), ''], ['Քաշ', kgText(bl.reduce((a, o) => a + (o.kg || 0), 0)), ''],
+            ['Գումար', money(bl.reduce((a, o) => a + (o.revenue || 0), 0)), ''],
+            ['Չորոշված', fmt(todo.length), todo.length ? 'is-warn' : ''], ['Տանում ենք', fmt(nTaken), nTaken ? 'is-ok' : '']];
+        ['dpBacklogStats', 'dpBlStats'].forEach(id => {
+            const stats = $(id);
+            stats.textContent = '';
+            stats.hidden = !bl.length;
+            tiles.forEach(([label, value, cls]) => {
+                const el = document.createElement('div');
+                el.className = 'dp-bl-stat' + (cls ? ' ' + cls : '');
+                const l = document.createElement('span'), v = document.createElement('b');
+                l.textContent = label;
+                v.textContent = value;
+                el.append(l, v);
+                stats.append(el);
+            });
+        });
         const shown = [...open, ...taken];
         const box = $('dpBacklogList');
         box.textContent = '';
@@ -2424,6 +2438,30 @@
         const ul0 = $('dpBacklogOffList');
         ul0.textContent = '';
         off.forEach(o => ul0.appendChild(backlogRow(o, hasPlan, false)));
+        // клавиатура: после «Տանել այսօր» / «Չտանել» фокус — на той же строке, а не в начале окна
+        if (state.blFocus && $('dpBlDlg').open && !state.busy) {
+            const row = $('dpBlDlg').querySelector('li[data-isn="' + state.blFocus + '"]');
+            const b = row && row.querySelector('button:not(:disabled)');
+            if (b) b.focus();
+            state.blFocus = null;
+        }
+    }
+    // Список — в большом окне (владелец 10.10 «тесно в боковой панели»): из сводки, плашки «Նախորդ օրերից» и напоминания
+    function openBacklog() {
+        $('dpBlErr').textContent = '';
+        renderBacklog();
+        const dlg = $('dpBlDlg');
+        if (!dlg.open) dlg.showModal();
+        if ($('dpToast')) dlg.appendChild($('dpToast'));   // живой регион — в окне заранее (первое сообщение озвучится)
+    }
+    // окно закрыто: сообщение — снова на странице; фокус — на «Բացել ցուցակը», если открывавшую плашку перерисовали
+    function closedBacklog() {
+        if ($('dpToast')) $('rtDispatch').appendChild($('dpToast'));
+        state.blFocus = null;
+        if (document.activeElement === document.body || !document.activeElement) {
+            const b = $('dpBacklogOpen');
+            if (b && b.offsetParent) b.focus();
+        }
     }
     function renderOrderLists() {
         renderBacklog();
@@ -4880,10 +4918,12 @@
     // ---------- Действия ----------
     function setBusy(on) {
         state.busy = on;
-        document.querySelectorAll('#dpBody button, #dpBody select, #dpAgentsList input, #dpSendState button, #dpWsActs button').forEach(x => {
+        // в окне «Նախորդ օրերից» — кнопки строк и «Տանել բոլորը» (список дней — нет: фокус ушёл бы с него)
+        document.querySelectorAll('#dpBody button, #dpBody select, #dpAgentsList input, #dpSendState button, #dpWsActs button, #dpBlDlg .dp-bl-act button, #dpBacklogAll').forEach(x => {
             if (on) { x.dataset.wasDisabled = x.disabled ? '1' : ''; x.disabled = true; } else if (x.dataset.wasDisabled !== undefined) { x.disabled = x.dataset.wasDisabled === '1'; delete x.dataset.wasDisabled; }
         });
         $('rtDispatch').setAttribute('aria-busy', String(on));
+        $('dpBlDlg').setAttribute('aria-busy', String(on));
     }
 
     // false — сборка не начата (занято, проверки, подтверждение отклонено): «Կիրառել» сравнения возвращает галочки шага 1
@@ -5191,6 +5231,9 @@
     function initCompare() {
         // «Նախորդ օրերից»: окно в рабочих днях (владелец 09.10)
         $('dpBacklogDays').addEventListener('change', (e) => queueBacklogDays(parseInt(e.target.value, 10)));
+        $('dpBacklogOpen').addEventListener('click', openBacklog);
+        $('dpBlClose').addEventListener('click', () => $('dpBlDlg').close());
+        $('dpBlDlg').addEventListener('close', closedBacklog);
         $('dpCompare').addEventListener('click', openCompare);
         $('dpMenuCompare').addEventListener('click', () => { openMenu(false, true); openCompare(); });
         $('dpCmpClose').addEventListener('click', () => $('dpCmpDlg').close());
