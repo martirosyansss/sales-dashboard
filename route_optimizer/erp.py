@@ -357,14 +357,11 @@ GROUP BY LTRIM(RTRIM(s.fDELIVERYCAR)), CAST(s.fDATE AS date)
 #   у заказа бывают и другие дочерние документы — берём только SALES;
 # - fVANAGENTID = fSALESAGENTID — менеджер развозит сам (A000, A008/6 «19 литров»): не для машин парка;
 # - день ввода заказа — DOCUMENTS.fCREATIONDATE того же fISN (SQL_ORDER_CREATED): заведён раньше своей даты — заказ на
-#   эту дату (ответ владельца №79, dispatch.DispatchOrder.predated); документа нет — NULL, заказ как обычный;
-# - кто и на чём везёт накладную (ответ владельца №96, dispatch.fact_truck): экспедитор и машина первой проведённой
-#   накладной по заказу (та же связь DOCPARENTS, что у sh; раньше по дате, затем по fISN) — с 06.10.2026 офис машину в
-#   накладной не ставит, машина — по экспедитору (водитель экипажа дня); её fISN — у кого её точка S: на терминале.
+#   эту дату (ответ владельца №79, dispatch.DispatchOrder.predated); документа нет — NULL, заказ как обычный.
 SQL_DISPATCH_ORDERS = f"""
 SELECT CAST(o.fISN AS nvarchar(36)), RTRIM(o.fDOCNUM), CAST(o.fDATE AS date), o.fCUSTOMERID,
        o.fSALESAGENTID, LTRIM(RTRIM(ISNULL(o.fDELIVERYCAR, ''))), o.fTOTALSUM, ISNULL(k.kg, 0), sh.shipped,
-       o.fVANAGENTID, cr.entered, si.van, si.car, si.isn
+       o.fVANAGENTID, cr.entered
 FROM ORDERS o WITH (NOLOCK)
 OUTER APPLY (SELECT MIN(CAST(d.fCREATIONDATE AS date)) AS entered
              FROM DOCUMENTS d WITH (NOLOCK)
@@ -374,12 +371,6 @@ OUTER APPLY (SELECT MIN(CAST(s.fDATE AS date)) AS shipped
              FROM DOCPARENTS p WITH (NOLOCK)
              JOIN SALES s WITH (NOLOCK) ON s.fISN = p.fISN
              WHERE p.fPARENTISN = o.fISN AND p.fPARENTDOCTYPE = 1 AND s.fSTATE = 2) sh
-OUTER APPLY (SELECT TOP 1 s.fVANAGENTID AS van, LTRIM(RTRIM(ISNULL(s.fDELIVERYCAR, ''))) AS car,
-                    CAST(s.fISN AS nvarchar(36)) AS isn
-             FROM DOCPARENTS p WITH (NOLOCK)
-             JOIN SALES s WITH (NOLOCK) ON s.fISN = p.fISN
-             WHERE p.fPARENTISN = o.fISN AND p.fPARENTDOCTYPE = 1 AND s.fSTATE = 2
-             ORDER BY s.fDATE, s.fISN) si
 WHERE o.fSTATE = 2 AND o.fDATE >= ? AND o.fDATE < ?
 """
 
@@ -641,15 +632,12 @@ def car_days(conn: Any, since: date, until: date) -> list[CarDay]:
 # --- План развоза ---
 
 def dispatch_orders(conn: Any, since: date, until: date) -> list[DispatchOrder]:
-    """Проведённые заказы с датой в [since, until): кг, сумма, машина в заказе, дата отгрузки, день ввода и экспедитор с
-    машиной первой накладной (№96)."""
+    """Проведённые заказы с датой в [since, until): кг, сумма, машина в заказе, дата отгрузки и день ввода."""
     return [DispatchOrder(isn=_str(r[0]).upper(), doc_num=_str(r[1]), order_date=_day(r[2]),
                           customer_id=int(r[3]), agent_id=int(r[4] or 0), car_code=_str(r[5]),
                           revenue=float(r[6] or 0), kg=float(r[7] or 0),
                           shipped=_day(r[8]) if r[8] is not None else None, van_agent_id=int(r[9] or 0),
-                          entered=_day(r[10]) if r[10] is not None else None,
-                          shipped_van=int(r[11]) if r[11] is not None else None, shipped_car=_str(r[12]),
-                          shipped_isn=_str(r[13]).upper())
+                          entered=_day(r[10]) if r[10] is not None else None)
             for r in _select(conn, SQL_DISPATCH_ORDERS, (since, until))]
 
 

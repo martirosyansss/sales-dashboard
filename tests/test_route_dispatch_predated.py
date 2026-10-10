@@ -92,13 +92,12 @@ def test_same_day_candidates_skip_predated():
 def test_erp_reads_entry_day(monkeypatch):
     erp.check_sql(erp.SQL_DISPATCH_ORDERS)
     assert 'fCREATIONDATE' in erp.SQL_DISPATCH_ORDERS and 'DOCUMENTS' in erp.SQL_DISPATCH_ORDERS
-    rows = [(_isn(1), 'Z1', datetime(2026, 10, 5), 101, 7, ' C1 ', 1000, 10, None, 0, datetime(2026, 10, 2, 15, 4), None, None, None),
-            (_isn(2), 'Z2', date(2026, 10, 5), 102, 7, '', 500, 5, date(2026, 10, 5), 7, None, 7, '', ' 0000000a-0000-0000-0000-000000000000 ')]
+    rows = [(_isn(1), 'Z1', datetime(2026, 10, 5), 101, 7, ' C1 ', 1000, 10, None, 0, datetime(2026, 10, 2, 15, 4)),
+            (_isn(2), 'Z2', date(2026, 10, 5), 102, 7, '', 500, 5, date(2026, 10, 5), 7, None)]
     monkeypatch.setattr(erp, '_select', lambda conn, sql, params=(): rows)
     a, b = erp.dispatch_orders(None, date(2026, 10, 1), date(2026, 10, 6))
     assert (a.order_date, a.entered, a.predated) == (MON, date(2026, 10, 2), True)
     assert (b.entered, b.predated, b.self_delivery) == (None, False, True)
-    assert (a.shipped_isn, b.shipped_isn) == ('', '0000000A-0000-0000-0000-000000000000')   # fISN накладной — заглавными
 
 
 def test_driver_app_gets_predated_order_on_its_date():

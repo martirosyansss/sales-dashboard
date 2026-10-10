@@ -30,7 +30,6 @@ from typing import Any, Callable, Iterable, Mapping
 from flask import Blueprint, Response, jsonify, render_template, request, send_file, session
 from werkzeug.exceptions import HTTPException
 
-from route_optimizer import dispatch as dp
 from route_optimizer.erp import ErpError
 from route_optimizer.store import StoreError as RoutesStoreError
 
@@ -632,10 +631,9 @@ def day_overview(day: date, load: bool = True) -> dict[str, Any]:
 def plan_mismatches(day: date) -> dict[str, Any]:
     """Сверка с планом «Развоза» (только чтение). Прошлые даты (Ереван) не сравниваются: ERP и route_optimizer за
     прошлое не читаются (`past`).
-    - items — накладные ERP, чья машина не та, что в плане (точка уйдёт машине накладной): машина накладной — в ней или,
-      без неё, по экспедитору (№96, dispatch.fact_truck: человек экипажа дня, ручная машина экспедитора); и накладные без
-      известной машины у клиента в рейсах нескольких машин (ничьи — routes_link.invoice_owner; erp_car None);
-    - no_car — накладных без известной машины у клиентов одной машины плана (машину берёт план, erp_day.SQL_PLAN_SALES);
+    - items — накладные ERP с машиной, которая не та, что в плане (точка уйдёт машине накладной), и накладные без
+      машины у клиента в рейсах нескольких машин (ничьи — routes_link.invoice_owner; erp_car None);
+    - no_car — накладных без машины у клиентов одной машины плана (машину берёт план, erp_day.SQL_PLAN_SALES);
     - coverage — по машине плана с выдачей /day на дату: клиентов в плане и сколько из них дошло до терминала
       (последний снимок /day, пустой — 0); машины без снимка (терминала нет / не запрашивал) не показываются;
     - released — план выпущен на терминалы (утверждён хотя бы раз, №80); до этого терминалы точек плана не получают —
@@ -648,21 +646,18 @@ def plan_mismatches(day: date) -> dict[str, Any]:
         return {'plan_exists': view.plan_exists, 'items': []}
     invoices, names = st.invoice_loader(day)
     plan = view.plan_trucks()
-    owners = st.store.stop_cars(day.isoformat())   # №96: накладная с событиями терминала — машины этих событий
     items = []
     no_car = 0
     for inv in sorted(invoices, key=lambda x: (x.customer_id, x.doc_number)):
         trucks = plan.get(inv.customer_id)
         if not trucks:
             continue
-        car = owners.get(f'S:{inv.isn}') or dp.fact_truck(inv.car_code, inv.van_agent_id, inv.agent_id,
-                                                   {inv.van_agent_id: inv.van_name}, view.crew, view.van_trucks)
-        if not car and len(trucks) == 1:
+        if not inv.car_code and len(trucks) == 1:
             no_car += 1
-        elif car not in trucks:
+        elif inv.car_code not in trucks:
             code, name = names.get(inv.customer_id, (str(inv.customer_id), ''))
             items.append({'doc_number': inv.doc_number, 'customer_code': code, 'customer_name': name,
-                          'erp_car': car or None, 'plan_cars': sorted(trucks)})
+                          'erp_car': inv.car_code or None, 'plan_cars': sorted(trucks)})
     return {'plan_exists': True, 'released': view.released, 'items': items, 'no_car': no_car,
             'coverage': _plan_coverage(day, view) if view.released else []}
 

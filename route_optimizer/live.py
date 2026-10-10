@@ -218,11 +218,6 @@ class LiveFacts(Protocol):
         """Машина → stops, track, drivers, last_contact, contacts, device, devices, closed_at (см. LiveSource.fleet)."""
         ...
 
-    def stop_cars(self, day: str) -> dict[str, str]:
-        """Точки накладных (S:fISN) и заказов (O:fISN) с событиями терминала за день → машина этих событий (№96,
-        LiveSource.stop_cars)."""
-        ...
-
 
 @dataclass(frozen=True)
 class Rules:
