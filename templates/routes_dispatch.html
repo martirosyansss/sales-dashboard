@@ -252,25 +252,12 @@
                         <summary><span class="rt-fold-t"><i class="fas fa-clock-rotate-left" aria-hidden="true"></i>Նախորդ օրերից չառաքված պատվերներ</span>
                             <span class="rt-fold-note" id="dpBacklogNote"></span></summary>
                         <div class="rt-fold-body">
-                            <!-- владелец 08.10 «не понятно и не функционально»: таблица, «Տանել այսօր» — сразу в рейс, «Չտանել» — свернуть;
-                                 09.10 «сколько дней — дай изменить, группируй по менеджерам»: окно в рабочих днях, группы -->
-                            <div class="dp-bl-top">
-                                <p class="rt-fold-lead" id="dpBacklogLead"></p>
-                                <div class="dp-bl-tools">
-                                    <label class="dp-bl-win" for="dpBacklogDays"><span>Ցույց տալ</span>
-                                        <select id="dpBacklogDays" class="rt-select" aria-describedby="dpBacklogRange"></select></label>
-                                    <span class="dp-bl-range" id="dpBacklogRange"></span>
-                                    <button type="button" class="rt-btn rt-btn-primary rt-btn-sm" id="dpBacklogAll" hidden>Տանել բոլորը</button>
-                                </div>
-                            </div>
+                            <!-- владелец 08.10 «не понятно и не функционально»: таблица; 09.10 «сколько дней — дай изменить, группируй по
+                                 менеджерам»: окно в рабочих днях, группы; 10.10 «неудобно — тесно в боковой панели»: здесь — сводка,
+                                 сам список — в большом окне dpBlDlg -->
+                            <p class="rt-fold-lead" id="dpBacklogLead"></p>
                             <div class="dp-bl-stats" id="dpBacklogStats"></div>
-                            <div class="dp-bl-hd" id="dpBacklogHd" aria-hidden="true"><span>Ամսաթիվ</span><span>Խանութ</span><span>Քաշ</span><span>Գումար</span><span></span></div>
-                            <div class="dp-bl-groups" id="dpBacklogList"></div>
-                            <p class="dp-bl-empty" id="dpBacklogEmpty" hidden></p>
-                            <details class="dp-bl-off" id="dpBacklogOff" hidden>
-                                <summary>Չենք տանում այսօր <span id="dpBacklogOffN"></span></summary>
-                                <ul class="dp-bl" id="dpBacklogOffList"></ul>
-                            </details>
+                            <button type="button" class="rt-btn rt-btn-primary" id="dpBacklogOpen"><i class="fas fa-up-right-and-down-left-from-center" aria-hidden="true"></i><span id="dpBacklogOpenT">Բացել ցուցակը</span></button>
                         </div>
                     </details>
 
@@ -555,6 +542,32 @@
         <div class="dp-dlg-btns">
             <button type="button" id="dpSfSend" class="rt-btn rt-btn-primary"><i class="fas fa-paper-plane" aria-hidden="true"></i><span>Ուղարկել և շարունակել</span></button>
             <button type="button" id="dpSfCancel" class="rt-btn rt-btn-ghost">Չեղարկել</button>
+        </div>
+    </dialog>
+    <!-- «Նախորդ օրերից» в большом окне (владелец 10.10 «тесно в боковой панели»): заказ — одна строка, группы по менеджерам -->
+    <dialog id="dpBlDlg" class="dp-dlg dp-bl-dlg" aria-labelledby="dpBlTitle">
+        <div class="dp-bl-dhd">
+            <div class="dp-bl-dtitle"><h2 class="dp-dlg-t" id="dpBlTitle">Նախորդ օրերից չառաքված պատվերներ</h2>
+                <span class="rt-fold-note" id="dpBlNote"></span></div>
+            <div class="dp-bl-tools">
+                <label class="dp-bl-win" for="dpBacklogDays"><span>Ցույց տալ</span>
+                    <select id="dpBacklogDays" class="rt-select" aria-describedby="dpBacklogRange"></select></label>
+                <span class="dp-bl-range" id="dpBacklogRange"></span>
+                <button type="button" class="rt-btn rt-btn-primary rt-btn-sm" id="dpBacklogAll" hidden>Տանել բոլորը</button>
+            </div>
+            <button type="button" class="dp-bl-x" id="dpBlClose" aria-label="Փակել"><i class="fas fa-xmark" aria-hidden="true"></i></button>
+        </div>
+        <div class="dp-bl-stats" id="dpBlStats"></div>
+        <div class="rt-ferr dp-bl-err" id="dpBlErr" role="alert"></div>
+        <p class="rt-sr-only" id="dpBlLive" role="status" aria-live="polite"></p>
+        <div class="dp-bl-body">
+            <div class="dp-bl-hd" id="dpBacklogHd" aria-hidden="true"><span>Ամսաթիվ</span><span>Խանութ</span><span class="dp-bl-hd-st">Վիճակ</span><span>Քաշ</span><span>Գումար</span><span></span></div>
+            <div class="dp-bl-groups" id="dpBacklogList"></div>
+            <p class="dp-bl-empty" id="dpBacklogEmpty" hidden></p>
+            <details class="dp-bl-off" id="dpBacklogOff" hidden>
+                <summary>Չենք տանում այսօր <span id="dpBacklogOffN"></span></summary>
+                <ul class="dp-bl" id="dpBacklogOffList"></ul>
+            </details>
         </div>
     </dialog>
     <!-- №83: «Համեմատել տարբերակները» — варианты плана столбцами (только в памяти), «Կիրառել» — пересборка этим набором -->
