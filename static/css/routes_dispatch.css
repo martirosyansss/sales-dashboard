@@ -1574,3 +1574,10 @@ body.dp-ws-on .rt-shell { --rt-secnav-gap: 8px; }
 @media (max-width: 767px) {
     .dp-erp-table { display: block; overflow-x: auto; }
 }
+.dp-erpline.is-unknown { color: var(--rt-danger); font-weight: 600; }
+.dp-erp-pick { width: 18px; height: 18px; accent-color: var(--rt-acc); }
+.dp-erp-body-diff { margin-top: 4px; }
+.dp-erp-body-diff summary { cursor: pointer; color: var(--rt-acc); font-size: .75rem; }
+.dp-erp-body-t { margin-top: 6px; color: var(--rt-fg-mute); font-size: .75rem; font-weight: 600; }
+.dp-erp-body-diff pre { margin: 2px 0 0; padding: 6px 8px; max-height: 220px; overflow: auto; white-space: pre-wrap;
+    overflow-wrap: anywhere; border-radius: 8px; background: var(--rt-inset); color: var(--rt-fg); font: .75rem/1.4 var(--rt-mono); }

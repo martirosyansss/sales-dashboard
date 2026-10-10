@@ -467,12 +467,14 @@ GROUP BY CAST(s.fDATE AS date), s.fCUSTOMERID, ISNULL(s.fSALESAGENTID, 0), ISNUL
 """
 
 # «Գրել ERP-ում» (№97, erp_write): текущее состояние заказов плана для предпросмотра записи — состояние (любое, не только
-# проведённые), առաքիչ, машина и сколько у заказа дочерних документов (DOCPARENTS: накладные, տրամադրում — любые). Запись
-# всё перепроверяет в своей транзакции (erp_write.apply); здесь — только чтение, как везде.
+# проведённые), առաքիչ, машина, сколько у заказа дочерних документов (DOCPARENTS: накладные, տրամադրում — любые) и текст
+# документа fBODY (предпросмотр показывает его правку; запись пишет, только если он тот же). Запись всё перепроверяет в
+# своей транзакции (erp_write.apply); здесь — только чтение, как везде.
 SQL_ORDER_STATES = """
 SELECT CAST(o.fISN AS nvarchar(36)), RTRIM(o.fDOCNUM), o.fCUSTOMERID, o.fSTATE, o.fVANAGENTID,
-       LTRIM(RTRIM(ISNULL(o.fDELIVERYCAR, ''))), ch.n
+       LTRIM(RTRIM(ISNULL(o.fDELIVERYCAR, ''))), ch.n, d.fBODY
 FROM ORDERS o WITH (NOLOCK)
+LEFT JOIN DOCUMENTS d WITH (NOLOCK) ON d.fISN = o.fISN AND d.fDOCTYPE = 1
 OUTER APPLY (SELECT COUNT(*) AS n FROM DOCPARENTS p WITH (NOLOCK) WHERE p.fPARENTISN = o.fISN) ch
 WHERE o.fISN IN ({ph})
 """
@@ -845,7 +847,7 @@ def load_crew_pay(connection_string: str, since: date, until: date) -> CrewData:
 @dataclass(frozen=True)
 class OrderState:
     """Заказ ERP сейчас (№97, предпросмотр «Գրել ERP-ում»): состояние fSTATE, առաքիչ fVANAGENTID (0 — нет), машина
-    (без краевых пробелов, '' — нет), есть ли дочерние документы."""
+    (без краевых пробелов, '' — нет), есть ли дочерние документы, текст документа DOCUMENTS.fBODY (None — документа нет)."""
     isn: str
     doc_num: str
     customer_id: int
@@ -853,6 +855,7 @@ class OrderState:
     van_id: int
     car: str
     children: bool
+    body: str | None = None
 
 
 def order_states(conn: Any, isns: Sequence[str]) -> dict[str, OrderState]:
@@ -862,7 +865,7 @@ def order_states(conn: Any, isns: Sequence[str]) -> dict[str, OrderState]:
         for r in _select(conn, SQL_ORDER_STATES.format(ph=_placeholders(len(chunk))), chunk):
             isn = _str(r[0]).upper()
             out[isn] = OrderState(isn, _str(r[1]), int(r[2] or 0), int(r[3] or 0), int(r[4] or 0), _str(r[5]),
-                                  int(r[6] or 0) > 0)
+                                  int(r[6] or 0) > 0, r[7] if isinstance(r[7], str) else None)
     return out
 
 

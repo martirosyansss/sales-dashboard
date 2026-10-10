@@ -719,10 +719,11 @@
 
     // ---------- «Գրել ERP-ում» (ответ владельца №97): առաքիչ и машина заказов дня в ERP по отправленному плану ----------
     // Кнопка — только если запись включена на сервере (d.erp_write), план отправлен водителям и день не прошёл. Окно:
-    // предпросмотр по машинам (что изменится, что пропущено и почему — текст причины с сервера) → «Հաստատել» пишет, только
-    // если план и ERP с тех пор не изменились (signature; иначе 409) → итог ✅/❌ по заказам; «Վերադարձնել» — откат
-    // записанного сейчас (для пробы). Строки из ERP (имена, коды, номера) — только textContent.
-    const erp = { sig: null, done: [], busy: false };
+    // предпросмотр по машинам (что изменится, что пропущено и почему — текст причины с сервера; у заказа к записи —
+    // документ ERP до и после) → галочки: писать все или только отмеченные (проба — один заказ) → «Հաստատել» пишет, только
+    // если план и ERP с тех пор не изменились (signature; иначе 409) → итог ✅/❌/❓ по заказам; «Վերադարձնել» — откат
+    // записанного сейчас (сервер проверит, что в ERP ровно наши значения). Строки из ERP — только textContent.
+    const erp = { sig: null, done: [], busy: false, all: [] };
     const erpVan = (v) => (v ? v.code + (v.name ? ' ' + v.name : '') : '—');
     const erpCar = (c) => c || '—';
     function renderErpState(box) {
@@ -742,11 +743,13 @@
         if (!codes.length) return;
         const line = document.createElement('span');
         line.className = 'dp-erpline';
+        const unknown = codes.reduce((n, c) => n + (trucks[c].unknown || 0), 0);
         line.textContent = 'ERP՝ ' + codes.map(c => {
             const t = trucks[c];
             return (c.indexOf(', ') < 0 ? truckLabel(truckBy(c)) : c) + ' ✅' + t.written + (t.failed ? ' ❌' + t.failed : '')
-                + (t.undone ? ' ↩' + t.undone : '');
-        }).join(' · ');
+                + (t.unknown ? ' ❓' + t.unknown : '') + (t.undone ? ' ↩' + t.undone : '');
+        }).join(' · ') + (unknown ? ' · Անհայտ՝ ստուգեք ERP-ում' : '');
+        line.classList.toggle('is-unknown', !!unknown);
         box.appendChild(line);
     }
     function erpCell(tr, text, cls) {
@@ -766,9 +769,35 @@
         rows.forEach(r => tb.appendChild(r));
         return table;
     }
+    // документ ERP до и после (проба): весь текст, строки — как в ERP
+    function erpBodyDiff(o) {
+        const det = document.createElement('details');
+        det.className = 'dp-erp-body-diff';
+        const sum = document.createElement('summary');
+        sum.textContent = 'Փաստաթուղթը ERP-ում՝ առաջ և հետո';
+        det.appendChild(sum);
+        [['Հիմա', o.old_body], ['Գրելուց հետո', o.new_body]].forEach(([t, text]) => {
+            const h = document.createElement('div');
+            h.className = 'dp-erp-body-t';
+            h.textContent = t;
+            const pre = document.createElement('pre');
+            pre.textContent = String(text || '').replace(/\r\n/g, '\n');
+            det.append(h, pre);
+        });
+        return det;
+    }
+    function erpPicked() {
+        return [...$('dpErpBody').querySelectorAll('input.dp-erp-pick:checked')].map(cb => cb.value);
+    }
+    function syncErpOk() {
+        const n = erpPicked().length;
+        $('dpErpOk').disabled = !erp.sig || !n;
+        $('dpErpOk').lastChild.textContent = n && n < erp.all.length ? 'Հաստատել (' + n + ')' : 'Հաստատել';
+    }
     function renderErpPreview(p) {
         const box = $('dpErpBody');
         box.textContent = '';
+        erp.all = [];
         $('dpErpSum').textContent = (p.counts.write ? 'Կփոխվի ' + pl(p.counts.write, 'պատվեր') : 'ERP-ում փոխելու բան չկա')
             + (p.counts.skip ? ' · բաց կթողնվի ' + pl(p.counts.skip, 'պատվեր') : '');
         p.trucks.forEach(g => {
@@ -786,7 +815,20 @@
             const rows = g.orders.map(o => {
                 const tr = document.createElement('tr');
                 tr.className = o.write ? 'is-write' : 'is-skip';
-                erpCell(tr, o.doc_num);
+                const pick = erpCell(tr, '');
+                if (o.write) {
+                    const cb = document.createElement('input');
+                    cb.type = 'checkbox';
+                    cb.className = 'dp-erp-pick';
+                    cb.value = o.isn;
+                    cb.checked = true;
+                    cb.setAttribute('aria-label', 'Գրել ' + o.doc_num + ' պատվերը');
+                    cb.addEventListener('change', syncErpOk);
+                    pick.appendChild(cb);
+                    erp.all.push(o.isn);
+                }
+                const doc = erpCell(tr, o.doc_num);
+                if (o.write && typeof o.new_body === 'string') doc.appendChild(erpBodyDiff(o));
                 erpCell(tr, (o.code ? o.code + ' ' : '') + o.name);
                 const vanMoves = o.write && (o.old_van ? o.old_van.id : 0) !== (o.new_van ? o.new_van.id : 0);
                 erpCell(tr, vanMoves ? erpVan(o.old_van) + ' → ' + erpVan(o.new_van) : erpVan(o.old_van));
@@ -794,18 +836,20 @@
                 erpCell(tr, o.reason_text || (o.write ? 'Կփոխվի' : ''), o.write ? 'dp-erp-ok' : 'dp-erp-skip');
                 return tr;
             });
-            sec.appendChild(erpTable(['Պատվեր', 'Խանութ', 'Առաքիչ', 'Մեքենա', ''], rows));
+            sec.appendChild(erpTable(['', 'Պատվեր', 'Խանութ', 'Առաքիչ', 'Մեքենա', ''], rows));
             box.appendChild(sec);
         });
     }
     function renderErpResults(r, title) {
         const box = $('dpErpBody');
         box.textContent = '';
-        $('dpErpSum').textContent = title + ' ✅ ' + r.counts.ok + (r.counts.failed ? ' · ❌ ' + r.counts.failed : '');
+        $('dpErpSum').textContent = title + ' ✅ ' + r.counts.ok + (r.counts.failed ? ' · ❌ ' + r.counts.failed : '')
+            + (r.counts.unknown ? ' · ❓ ' + r.counts.unknown : '');
+        if (r.stopped) $('dpErpErr').textContent = r.stopped;
         const rows = r.results.map(x => {
             const tr = document.createElement('tr');
             tr.className = x.ok ? 'is-write' : 'is-skip';
-            erpCell(tr, x.ok ? (x.reason ? '⚠️' : '✅') : '❌');
+            erpCell(tr, x.ok ? (x.reason ? '⚠️' : '✅') : x.reason === 'commit_unknown' ? '❓' : '❌');
             erpCell(tr, x.doc_num);
             erpCell(tr, x.truck);
             erpCell(tr, x.old_code !== x.new_code ? (x.old_code || '—') + ' → ' + (x.new_code || '—') : (x.new_code || '—'));
@@ -827,25 +871,31 @@
     function openErp() {
         erp.sig = null;
         erp.done = [];
+        erp.all = [];
         $('dpErpBody').textContent = '';
         $('dpErpErr').textContent = '';
         $('dpErpSum').textContent = 'Կարդում եմ ERP-ից…';
         $('dpErpOk').hidden = false;
+        $('dpErpOk').lastChild.textContent = 'Հաստատել';
         $('dpErpUndo').hidden = true;
         $('dpErpDlg').showModal();
         erpCall(async () => {
             const p = await api('GET', '/api/routes/dispatch/erp-write?date=' + encodeURIComponent(state.day));
             erp.sig = p.signature;
             renderErpPreview(p);
-            $('dpErpOk').disabled = !p.counts.write;
+            syncErpOk();
         });
     }
     function erpConfirm() {
-        if (!erp.sig) return;
+        const picked = erpPicked();
+        if (!erp.sig || !picked.length) return;
+        const body = { date: state.day, expected: erp.sig };
+        if (picked.length < erp.all.length) body.orders = picked;   // проба: только отмеченные
         erpCall(async () => {
-            const r = await api('POST', '/api/routes/dispatch/erp-write', { date: state.day, expected: erp.sig });
+            const r = await api('POST', '/api/routes/dispatch/erp-write', body);
             erp.sig = null;
-            erp.done = r.results.filter(x => x.ok).map(x => x.isn);
+            // «Վերադարձնել» — записанные и с обрывом на COMMIT (сервер вернёт, только если в ERP ровно наши значения)
+            erp.done = r.results.filter(x => x.ok || x.reason === 'commit_unknown').map(x => x.isn);
             renderErpResults(r, 'Գրված է ERP-ում՝');
             $('dpErpOk').hidden = true;
             $('dpErpUndo').hidden = !erp.done.length;

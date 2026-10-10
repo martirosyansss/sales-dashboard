@@ -258,15 +258,20 @@ _LIVE_ACK_TABLE = (
 # Схема 29 (№97, «Գրել ERP-ում», docs/plans/erp-write-plan.md): журнал записи сайта в заказы ERP — строка на заказ и попытку:
 # op — запись по плану (write) или «Վերադարձնել» (undo); было → стало (առաքիչ — id ERP-агента, машина — код, '' — нет);
 # old_car_null — ORDERS.fDELIVERYCAR был NULL до записи (возврат к пустой машине пишет как было); result — ok (COMMIT
-# прошёл) или failed (откат), reason — причина (erp_write.FAIL_REASONS) или verify_failed у ok. Для показа и отката пробы.
+# прошёл), failed (откат) или unknown (обрыв на COMMIT, проверка не подтвердила — erp_write.COMMIT_UNKNOWN), reason —
+# причина (erp_write.FAIL_REASONS) или verify_failed у ok. Для показа и отката пробы. erp_write_lease — одна запись в ERP
+# на все процессы сервера (строка id = 1: чей замок и до когда; просроченный — свободен: процесс мог упасть).
 _ERP_WRITE_LOG_TABLE = (
     "CREATE TABLE IF NOT EXISTS erp_write_log(id INTEGER PRIMARY KEY AUTOINCREMENT, day TEXT NOT NULL, "
     "op TEXT NOT NULL CHECK (op IN ('write', 'undo')), order_isn TEXT NOT NULL, doc_num TEXT NOT NULL DEFAULT '', "
     "customer_id INTEGER NOT NULL, truck TEXT NOT NULL DEFAULT '', old_van INTEGER NOT NULL, new_van INTEGER NOT NULL, "
     "old_car TEXT NOT NULL, new_car TEXT NOT NULL, old_car_null INTEGER NOT NULL CHECK (old_car_null IN (0, 1)), "
-    "result TEXT NOT NULL CHECK (result IN ('ok', 'failed')), reason TEXT NOT NULL DEFAULT '', by_user TEXT, "
+    "result TEXT NOT NULL CHECK (result IN ('ok', 'failed', 'unknown')), reason TEXT NOT NULL DEFAULT '', by_user TEXT, "
     "at TEXT NOT NULL)")
 _ERP_WRITE_LOG_INDEX = 'CREATE INDEX IF NOT EXISTS erp_write_log_day ON erp_write_log(day, order_isn)'
+_ERP_WRITE_LEASE_TABLE = (
+    "CREATE TABLE IF NOT EXISTS erp_write_lease(id INTEGER PRIMARY KEY CHECK (id = 1), token TEXT NOT NULL, "
+    "at TEXT NOT NULL, until REAL NOT NULL)")
 ERP_WRITE_LOG_FIELDS = ('id', 'day', 'op', 'order_isn', 'doc_num', 'customer_id', 'truck', 'old_van', 'new_van', 'old_car',
                         'new_car', 'old_car_null', 'result', 'reason', 'by_user', 'at')
 
@@ -357,6 +362,7 @@ _SCHEMA = (
     _LIVE_ACK_TABLE,
     _ERP_WRITE_LOG_TABLE,
     _ERP_WRITE_LOG_INDEX,
+    _ERP_WRITE_LEASE_TABLE,
     _GEO_OVERRIDE_TABLE,
     _DISPATCH_TABLE,
     _TRUCKS_ONE_VAN,
@@ -515,7 +521,7 @@ _MIGRATIONS: dict[int, tuple[str, ...]] = {
     # 27 → 28 (владелец 08.10): только добавляем — общие отметки «Տեսա» карты машин.
     27: (_LIVE_ACK_TABLE,),
     # 28 → 29 (№97): только добавляем — журнал записи сайта в заказы ERP; прежнее не меняется.
-    28: (_ERP_WRITE_LOG_TABLE, _ERP_WRITE_LOG_INDEX),
+    28: (_ERP_WRITE_LOG_TABLE, _ERP_WRITE_LOG_INDEX, _ERP_WRITE_LEASE_TABLE),
 }
 
 FUEL_TYPES = ('diesel', 'petrol', 'lpg')
@@ -2955,7 +2961,7 @@ class Store:
         Неверные данные — ValueError (записывает сам сервер после попытки, не пользователь)."""
         if _iso_day(day) is None or op not in ('write', 'undo'):
             raise ValueError('day: YYYY-MM-DD, op: write | undo')
-        if row.get('result') not in ('ok', 'failed') or not isinstance(row.get('order_isn'), str) \
+        if row.get('result') not in ('ok', 'failed', 'unknown') or not isinstance(row.get('order_isn'), str) \
                 or not all(_is_int(row.get(k)) for k in ('customer_id', 'old_van', 'new_van')) \
                 or not all(isinstance(row.get(k), str) for k in ('doc_num', 'truck', 'old_car', 'new_car', 'reason')):
             raise ValueError('строка журнала записи в ERP не прошла проверку')
@@ -2969,6 +2975,27 @@ class Store:
                  row['reason'], user, _now()))
             return int(cur.lastrowid)
         return self._transaction(write, 'не удалось сохранить журнал записи в ERP')
+
+    def erp_write_lease(self, token: str, ttl_s: float = 600.0) -> bool:
+        """Занять запись в ERP для всех процессов (BEGIN IMMEDIATE): свободно, свой или просрочен (дольше ttl_s — процесс
+        упал) — True; занят другим — False."""
+        if not isinstance(token, str) or not token:
+            raise ValueError('token: непустая строка')
+
+        def write(conn: sqlite3.Connection) -> bool:
+            now = datetime.now().timestamp()
+            row = conn.execute('SELECT token, until FROM erp_write_lease WHERE id = 1').fetchone()
+            if row is not None and row[0] != token and row[1] > now:
+                return False
+            conn.execute('INSERT OR REPLACE INTO erp_write_lease(id, token, at, until) VALUES(1, ?, ?, ?)',
+                         (token, _now(), now + ttl_s))
+            return True
+        return self._transaction(write, 'не удалось занять запись в ERP')
+
+    def erp_write_release(self, token: str) -> None:
+        """Освободить запись в ERP, если она занята этим token."""
+        self._transaction(lambda conn: conn.execute('DELETE FROM erp_write_lease WHERE id = 1 AND token = ?', (token,)),
+                          'не удалось освободить запись в ERP')
 
     def erp_write_log(self, day: str) -> list[dict[str, Any]]:
         """Журнал записи в ERP за день YYYY-MM-DD по порядку записи — словари ERP_WRITE_LOG_FIELDS (old_car_null — bool)."""

@@ -6,16 +6,23 @@ ORDERS.fVANAGENTID, ORDERS.fDELIVERYCAR; DOCUMENTS.fBODY (только стро�
 fLASTMODIFIERID того же fISN (fDOCTYPE = 1); строка истории DOCUMENTSLOG. Ничего больше — накладные, остатки, проводки и
 справочники не трогаются. Весь SQL записи — статические константы SQL_W_* с параметрами `?`, без динамического SQL.
 
-Инварианты (доказуемо безопасно):
-- решение по заказу — чистая функция plan_assignments: пишется только заказ клиента рейса ровно одной машины T отправленного
-  плана, в состоянии fSTATE 1 или 2, без дочерних документов (DOCPARENTS: ни накладной, ни տրամադրում), առաքիչ — ровно один
-  не закрытый ERP-агент с именем водителя T на день, значения отличаются от текущих; иначе — пропуск с причиной;
+Инварианты (доказуемо безопасно; ERP — locking read committed, fBODY — nvarchar(max) с двоичным сравнением):
+- решение по заказу — чистая функция plan_assignments: пишется только заказ, который видел отправленный план (не заведённый
+  после отправки), клиента рейса ровно одной машины T, в состоянии fSTATE 1 или 2, без дочерних документов (DOCPARENTS: ни
+  накладной, ни տրամադրում), առաքիչ — ровно один открытый ERP-агент с кодом B… (экспедиторы; A… — менеджеры) с именем
+  водителя T на день, fBODY с ровно теми строками VANAGENTID / DELIVERYCAR, что в ORDERS (rewrite_body), значения
+  отличаются от текущих; иначе — пропуск с причиной;
 - каждый заказ — своя транзакция (apply): UPDATE ORDERS оптимистично по прежним значениям и при отсутствии дочерних
-  документов (не 1 строка — откат), повторная проверка дочерних документов, fBODY — замена только двух строк (rewrite_body:
-  остальной текст байт-в-байт тот же) по прежней версии строки (fTS), DOCUMENTSLOG; COMMIT; потом чтение назад и сверка;
-- любая ошибка — откат этого заказа, остальные идут дальше; результат каждого заказа — в отчёте (и в журнале сайта).
-Соединение записи — env ROUTES_ERP_WRITE_DSN (connect_write); его нет — запись выключена. Строка подключения не пишется в
-журнал. Предпросмотр читает ERP обычным путём только для чтения (erp.load_order_states).
+  документов (DOCPARENTS под UPDLOCK, HOLDLOCK: накладная не появится до COMMIT; не 1 строка — откат), повторная проверка
+  дочерних документов под тем же замком, fBODY — тот, что видел предпросмотр (sha256), замена только двух строк
+  (остальной текст байт-в-байт), UPDATE по прежним fTS и fBODY, чтение назад внутри транзакции (fBODY и ORDERS — ровно
+  новые значения), DOCUMENTSLOG; COMMIT; потом чтение назад после COMMIT;
+- ошибка заказа — откат его транзакции, остальные идут дальше; обрыв на COMMIT (неизвестно, записано ли) — проверка новым
+  соединением, иначе состояние commit_unknown, и запись останавливается целиком; сбой журнала сайта после COMMIT —
+  тоже стоп (JournalError).
+Соединение записи — env ROUTES_ERP_WRITE_DSN (connect_write: autocommit выключен, SET LOCK_TIMEOUT 5000); его нет — запись
+выключена. Строка подключения не пишется в журнал. Предпросмотр читает ERP обычным путём только для чтения
+(erp.load_order_states).
 """
 from __future__ import annotations
 
@@ -24,7 +31,7 @@ import json
 import logging
 import os
 from dataclasses import asdict, dataclass, replace
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Collection, Mapping, Sequence
 
 import pyodbc
 
@@ -35,10 +42,13 @@ logger = logging.getLogger(__name__)
 DSN_ENV = 'ROUTES_ERP_WRITE_DSN'
 LOGIN_TIMEOUT_S = 15
 QUERY_TIMEOUT_S = 30
-COMPNAME = 'ARAQICH-SITE'
+LOCK_TIMEOUT_MS = 5000      # ждать чужой замок ERP не дольше 5 с (SQL_W_LOCK_TIMEOUT) — потом ошибка и откат заказа
+COMPNAME = 'ARAQICH-SITE'   # DOCUMENTSLOG.fCOMPNAME nvarchar(32)
 COMMENT_PREFIX = 'Կայք՝ '
-COMMENT_MAX = 100           # fCOMMENT DOCUMENTSLOG: длина столбца не известна — не длиннее 100 символов
+COMMENT_MAX = 100           # DOCUMENTSLOG.fCOMMENT nvarchar(255) — с запасом
+CAR_MAX = 12                # ORDERS.fDELIVERYCAR nvarchar(12)
 STATES = (1, 2)             # заказ в этих состояниях ERP можно править (fSTATE)
+COURIER_PREFIX = 'B'        # առաքիչ — только экспедиторы (коды B…); A… — менеджеры (A000 Rocarm, A008/6 «19 լ» возят сами)
 LABEL_VAN = 'Առաքիչ'        # подписи полей в истории ERP (fCHANGEDESCRIPTION), как пишет сама ERP
 LABEL_CAR = 'Առաքող ավտոմեքենա'
 KEY_VAN = 'VANAGENTID'
@@ -46,17 +56,19 @@ KEY_CAR = 'DELIVERYCAR'
 EOL = '\r\n'
 
 # причины пропуска (plan_assignments) и неудачи записи (apply); тексты — для страницы
-SKIP_REASONS = ('not_in_plan', 'split_store', 'order_state', 'has_child_docs', 'courier_not_found', 'courier_ambiguous',
-                'unchanged')
+SKIP_REASONS = ('not_in_plan', 'not_in_sent_plan', 'split_store', 'order_state', 'has_child_docs', 'courier_not_found',
+                'courier_ambiguous', 'body_format', 'body_mismatch', 'unchanged')
 CAR_NOT_IN_ERP = 'car_not_in_erp'   # не пропуск: пишется только առաքիչ
 FAIL_REASONS = ('changed_in_erp', 'has_child_docs', 'body_format', 'body_mismatch', 'error')
 VERIFY_FAILED = 'verify_failed'     # записано (COMMIT), но чтение назад не совпало — смотреть заказ в ERP
+COMMIT_UNKNOWN = 'commit_unknown'   # обрыв на COMMIT и проверка не подтвердила — записано ли, неизвестно
 REASON_HY = {
     'not_in_plan': 'Ուղարկված պլանի երթերում չէ',
+    'not_in_sent_plan': 'Ուղարկելուց հետո մուտքագրված պատվեր',
     'split_store': 'Խանութը մի քանի մեքենայի երթերում է',
     'order_state': 'Պատվերի վիճակը թույլ չի տալիս փոխել',
     'has_child_docs': 'Պատվերից արդեն փաստաթուղթ կա (ապրանքագիր)',
-    'courier_not_found': 'Մեքենայի վարորդը ERP-ում չի գտնվել',
+    'courier_not_found': 'Մեքենայի վարորդը ERP-ում (B կոդով) չի գտնվել',
     'courier_ambiguous': 'ERP-ում այդ անունով մի քանի աշխատակից կա',
     'unchanged': 'ERP-ում արդեն նույնն է',
     'car_not_in_erp': 'Մեքենան ERP-ում չկա — կգրվի միայն առաքիչը',
@@ -65,24 +77,28 @@ REASON_HY = {
     'body_mismatch': 'Պատվերի տվյալներն ERP-ում իրար չեն համապատասխանում — չգրվեց',
     'error': 'Սխալ — չգրվեց',
     'verify_failed': 'Գրվեց, բայց ստուգումը չհամընկավ — նայեք ERP-ում',
+    'commit_unknown': 'Անհայտ՝ ստուգեք ERP-ում',
     'not_written': 'Այս պատվերը կայքից չի գրվել',
 }
 
 # --- SQL записи (статические; значения — только параметрами) ---
+SQL_W_LOCK_TIMEOUT = 'SET LOCK_TIMEOUT 5000'
 # Внутри транзакции чтение без NOLOCK: видим только зафиксированное (и своё).
-SQL_W_ORDER_CAR = """SELECT fDELIVERYCAR FROM ORDERS WHERE fISN = ?"""
-# Оптимистично: те же состояние, առաքիչ и машина, что в предпросмотре, и ни одного дочернего документа
+SQL_W_ORDER = """SELECT fSTATE, fVANAGENTID, fDELIVERYCAR FROM ORDERS WHERE fISN = ?"""
+# Оптимистично: те же состояние, առաքիչ и машина, что в предпросмотре, и ни одного дочернего документа (замок на диапазон
+# DOCPARENTS до конца транзакции: накладная из этого заказа не создастся, пока мы не зафиксировали или не откатили)
 SQL_W_UPDATE_ORDER = """UPDATE ORDERS SET fVANAGENTID = ?, fDELIVERYCAR = ?
 WHERE fISN = ? AND fSTATE = ? AND ISNULL(fVANAGENTID, 0) = ? AND LTRIM(RTRIM(ISNULL(fDELIVERYCAR, ''))) = ?
-  AND NOT EXISTS (SELECT 1 FROM DOCPARENTS p WHERE p.fPARENTISN = ORDERS.fISN)"""
+  AND NOT EXISTS (SELECT 1 FROM DOCPARENTS p WITH (UPDLOCK, HOLDLOCK) WHERE p.fPARENTISN = ORDERS.fISN)"""
 # машина не меняется (нет в ERP или та же) — столбец fDELIVERYCAR не трогаем вовсе
 SQL_W_UPDATE_ORDER_VAN = """UPDATE ORDERS SET fVANAGENTID = ?
 WHERE fISN = ? AND fSTATE = ? AND ISNULL(fVANAGENTID, 0) = ? AND LTRIM(RTRIM(ISNULL(fDELIVERYCAR, ''))) = ?
-  AND NOT EXISTS (SELECT 1 FROM DOCPARENTS p WHERE p.fPARENTISN = ORDERS.fISN)"""
-SQL_W_CHILDREN = """SELECT COUNT(*) FROM DOCPARENTS WHERE fPARENTISN = ?"""
+  AND NOT EXISTS (SELECT 1 FROM DOCPARENTS p WITH (UPDLOCK, HOLDLOCK) WHERE p.fPARENTISN = ORDERS.fISN)"""
+SQL_W_CHILDREN = """SELECT COUNT(*) FROM DOCPARENTS WITH (UPDLOCK, HOLDLOCK) WHERE fPARENTISN = ?"""
 SQL_W_BODY = """SELECT fBODY, fTS FROM DOCUMENTS WHERE fISN = ? AND fDOCTYPE = 1"""
+# по прежней версии строки (fTS) и прежнему тексту (fBODY — nvarchar(max), двоичное сравнение)
 SQL_W_UPDATE_BODY = """UPDATE DOCUMENTS SET fBODY = ?, fLASTMODIFYDATE = GETDATE(), fLASTMODIFIERID = 0
-WHERE fISN = ? AND fDOCTYPE = 1 AND fTS = ?"""
+WHERE fISN = ? AND fDOCTYPE = 1 AND fTS = ? AND fBODY = ?"""
 SQL_W_LOG = """INSERT INTO DOCUMENTSLOG (fISN, fDATE, fUSERID, fSTATE, fOP, fCOMMENT, fCOMPNAME, fCHANGEDESCRIPTION, fSOURCE)
 VALUES (?, GETDATE(), 0, ?, 2, ?, ?, ?, 0)"""
 # чтение назад после COMMIT
@@ -95,13 +111,26 @@ class BodyFormatError(ValueError):
     """fBODY заказа не того вида, что ожидаем (нет строки VANAGENTID, ключ дважды, не текст) — не пишем."""
 
 
+class BodyMismatchError(BodyFormatError):
+    """Строки VANAGENTID / DELIVERYCAR в fBODY не ровно те, что в ORDERS, — ERP расходится сама с собой, не пишем."""
+
+
 class ErpWriteError(ErpError):
     """Соединение записи не открылось (API — как недоступная ERP, 503)."""
+
+
+class JournalError(RuntimeError):
+    """Журнал сайта не записался после COMMIT в ERP — запись останавливается (apply)."""
 
 
 def name_key(name: str | None) -> str:
     """Имя человека для сравнения водителя дня с ERP-агентом: пробелы схлопнуты (в ERP бывают двойные), регистр не важен."""
     return ' '.join((name or '').split()).casefold()
+
+
+def body_sha(body: Any) -> str:
+    """Отпечаток fBODY (что видел предпросмотр); не текст — ''."""
+    return hashlib.sha256(body.encode('utf-8')).hexdigest() if isinstance(body, str) else ''
 
 
 # --- Решения (чисто) ---
@@ -112,7 +141,8 @@ class Decision:
     '' или CAR_NOT_IN_ERP (машина не меняется, пишется только առաքիչ). truck — машина плана ('' — заказ не в рейсах; у
     магазина в рейсах нескольких машин — коды через «, »). Коды агентов — для истории ERP и страницы. empty_null — какой
     писать пустую машину в ORDERS.fDELIVERYCAR: NULL (True) или '' — только у «Վերադարձնել» к пустой машине (как было до
-    нашей записи, store.erp_write_log.old_car_null); запись по плану пустую машину не пишет."""
+    нашей записи, store.erp_write_log.old_car_null); запись по плану пустую машину не пишет. body_sha — отпечаток fBODY,
+    который видел предпросмотр: в транзакции другой — не пишем ('' — не сверять, у «Վերադարձնել»)."""
     isn: str
     doc_num: str
     customer_id: int
@@ -128,6 +158,7 @@ class Decision:
     new_code: str = ''
     new_name: str = ''
     empty_null: bool = True
+    body_sha: str = ''
 
     @property
     def car_changes(self) -> bool:
@@ -138,12 +169,13 @@ class Decision:
 
 
 def courier_of(name: str | None, agents: Mapping[int, Agent]) -> tuple[Agent | None, str]:
-    """ERP-агент водителя по имени: (агент, '') или (None, 'courier_not_found' | 'courier_ambiguous'). Закрытые агенты не
-    в счёт; тёзки — не угадываем."""
+    """ERP-агент водителя по имени: (агент, '') или (None, 'courier_not_found' | 'courier_ambiguous'). Только открытые
+    экспедиторы с кодом B… (A… — менеджеры: совпало только с ним — не найден); тёзки — не угадываем."""
     key = name_key(name)
     if not key:
         return None, 'courier_not_found'
-    found = [a for a in agents.values() if not a.closed and name_key(a.name) == key]
+    found = [a for a in agents.values()
+             if not a.closed and a.code.startswith(COURIER_PREFIX) and name_key(a.name) == key]
     if not found:
         return None, 'courier_not_found'
     if len(found) > 1:
@@ -153,15 +185,18 @@ def courier_of(name: str | None, agents: Mapping[int, Agent]) -> tuple[Agent | N
 
 def plan_assignments(trips: Sequence[tuple[str, Sequence[int]]], orders: Sequence[OrderState],
                      drivers: Mapping[str, str | None], agents: Mapping[int, Agent],
-                     cars: Mapping[str, Car]) -> list[Decision]:
+                     cars: Mapping[str, Car], seen: Collection[str]) -> list[Decision]:
     """Решения по заказам отправленного плана дня (порядок — как orders).
 
     trips — рейсы отправленного водителям плана (Draft.for_drivers): (машина, клиенты); orders — текущее состояние ERP
-    заказов магазинов плана (erp.load_order_states); drivers — машина → водитель на день (None — не указан / не вышел);
-    agents — ERP-агенты (id → агент); cars — машины ERP CARS (код → машина). Правила — по порядку: магазин в рейсах ни одной
-    машины — not_in_plan, нескольких — split_store; fSTATE не 1/2 — order_state; есть дочерние документы — has_child_docs;
-    առաքիչ — ровно один не закрытый агент с именем водителя машины (courier_of); машина — код T, если она есть в CARS и
-    не закрыта, иначе машина заказа не меняется (CAR_NOT_IN_ERP); ничего не меняется — unchanged."""
+    заказов магазинов плана с fBODY (erp.load_order_states); drivers — машина → водитель на день (None — не указан / не
+    вышел); agents — ERP-агенты (id → агент); cars — машины ERP CARS (код → машина); seen — заказы, которые видел
+    отправленный план (заказы сборки, добавленные, взятые заказы дня). Правила — по порядку: магазин в рейсах ни одной
+    машины — not_in_plan; заказа отправленный план не видел — not_in_sent_plan; магазин в рейсах нескольких машин —
+    split_store; fSTATE не 1/2 — order_state; есть дочерние документы — has_child_docs; առաքիչ — ровно один открытый агент
+    B… с именем водителя машины (courier_of); машина — код T, если она есть в CARS, не закрыта и влезает в столбец, иначе
+    машина заказа не меняется (CAR_NOT_IN_ERP); ничего не меняется — unchanged; fBODY не того вида или его строки не те,
+    что в ORDERS (rewrite_body), — body_format / body_mismatch."""
     trucks_of: dict[int, set[str]] = {}
     for truck, cids in trips:
         for cid in cids:
@@ -172,9 +207,10 @@ def plan_assignments(trips: Sequence[tuple[str, Sequence[int]]], orders: Sequenc
         truck = ', '.join(trucks)
         old_code = agents[o.van_id].code if o.van_id in agents else ''
         base = Decision(o.isn, o.doc_num, o.customer_id, truck, o.state, o.van_id, o.van_id, o.car, o.car, False, '',
-                        old_code, old_code)
-        reason = ('not_in_plan' if not trucks else 'split_store' if len(trucks) > 1
-                  else 'order_state' if o.state not in STATES else 'has_child_docs' if o.children else '')
+                        old_code, old_code, body_sha=body_sha(o.body))
+        reason = ('not_in_plan' if not trucks else 'not_in_sent_plan' if o.isn not in seen
+                  else 'split_store' if len(trucks) > 1 else 'order_state' if o.state not in STATES
+                  else 'has_child_docs' if o.children else '')
         agent = None
         if not reason:
             agent, reason = courier_of(drivers.get(truck), agents)
@@ -183,19 +219,28 @@ def plan_assignments(trips: Sequence[tuple[str, Sequence[int]]], orders: Sequenc
             continue
         assert agent is not None
         car = cars.get(truck)
-        in_erp = car is not None and not car.closed
+        in_erp = car is not None and not car.closed and len(truck) <= CAR_MAX
         new_car = truck if in_erp else o.car
         d = replace(base, new_van=agent.id, new_car=new_car, new_code=agent.code, new_name=' '.join(agent.name.split()),
                     reason='' if in_erp else CAR_NOT_IN_ERP)
         if d.new_van == d.old_van and not d.car_changes:
             out.append(replace(d, reason='unchanged'))
-        else:
-            out.append(replace(d, write=True))
+            continue
+        try:
+            new_body(o.body, d)
+        except BodyMismatchError:
+            out.append(replace(base, reason='body_mismatch'))
+            continue
+        except BodyFormatError:
+            out.append(replace(base, reason='body_format'))
+            continue
+        out.append(replace(d, write=True))
     return out
 
 
 def signature(decisions: Sequence[Decision]) -> str:
-    """Отпечаток предпросмотра: подтверждение пишет, только если план и ERP с тех пор не изменились (тот же отпечаток)."""
+    """Отпечаток предпросмотра (и fBODY заказов — body_sha): подтверждение пишет, только если план и ERP с тех пор не
+    изменились (тот же отпечаток)."""
     raw = json.dumps(sorted((d.json() for d in decisions), key=lambda x: x['isn']), ensure_ascii=False, sort_keys=True)
     return hashlib.sha256(raw.encode('utf-8')).hexdigest()[:32]
 
@@ -226,19 +271,37 @@ def body_values(body: Any) -> tuple[str, str | None]:
     return lines[van][len(KEY_VAN) + 1:], None if car is None else lines[car][len(KEY_CAR) + 1:]
 
 
-def rewrite_body(body: Any, van_id: int, car_code: str | None) -> str:
-    """fBODY заказа с новыми առաքիչ и машиной: строка VANAGENTID заменяется; DELIVERYCAR — заменяется, без неё —
-    вставляется сразу после VANAGENTID, car_code '' — строка удаляется, None — машина не меняется (строка как была).
-    Строки — `\\r\\nKEY:VALUE\\r\\n`, значения бывают с пробелами. Остальной текст — байт-в-байт прежний (проверяется).
-    Нет VANAGENTID, ключ дважды, не текст, значение с переводом строки — BodyFormatError."""
-    if not isinstance(van_id, int) or isinstance(van_id, bool) or van_id <= 0:
+def _clean(value: str, what: str) -> None:
+    if '\r' in value or '\n' in value or value != value.strip():
+        raise BodyFormatError(f'{what}: перевод строки или краевые пробелы')
+
+
+def rewrite_body(body: Any, van_id: int, car_code: str | None, *, old_van: int, old_car: str) -> str:
+    """fBODY заказа с новыми առաքիչ и машиной. Сначала — прежние строки ровно те, что в ORDERS: «VANAGENTID:old_van» и
+    «DELIVERYCAR:old_car» (old_car '' — строки нет), иначе BodyMismatchError. Строка VANAGENTID заменяется; DELIVERYCAR —
+    заменяется, без неё — вставляется сразу после VANAGENTID, car_code '' — строка удаляется, None — машина не меняется
+    (строка как была). Строки — `\\r\\nKEY:VALUE\\r\\n`, значения бывают с пробелами внутри. Остальной текст — байт-в-байт
+    прежний (проверяется). Нет VANAGENTID, ключ дважды, не текст, значение с переводом строки или краевыми пробелами —
+    BodyFormatError."""
+    for v in (van_id, old_van):
+        if not isinstance(v, int) or isinstance(v, bool) or v < 0:
+            raise BodyFormatError('առաքիչ — целый id')
+    if van_id <= 0:
         raise BodyFormatError('առաքիչ — положительный id')
-    if car_code is not None and (car_code != car_code.strip() or '\r' in car_code or '\n' in car_code):
-        raise BodyFormatError('код машины с краевыми пробелами или переводом строки')
+    if not isinstance(old_car, str) or (car_code is not None and not isinstance(car_code, str)):
+        raise BodyFormatError('машина — строка')
+    _clean(old_car, 'прежняя машина')
+    if car_code is not None:
+        _clean(car_code, 'код машины')
+        if len(car_code) > CAR_MAX:
+            raise BodyFormatError('код машины длиннее столбца')
     lines = _lines(body)
     van, car = _index(lines, KEY_VAN), _index(lines, KEY_CAR)
     if van is None:
         raise BodyFormatError('нет строки VANAGENTID')
+    if lines[van] != f'{KEY_VAN}:{old_van}' or (lines[car] if car is not None else '') != (
+            f'{KEY_CAR}:{old_car}' if old_car else ''):
+        raise BodyMismatchError('строки VANAGENTID / DELIVERYCAR не те, что в ORDERS')
     out = list(lines)
     out[van] = f'{KEY_VAN}:{van_id}'
     if car_code is not None:
@@ -257,6 +320,11 @@ def rewrite_body(body: Any, van_id: int, car_code: str | None) -> str:
     if got_van != str(van_id) or (car_code is not None and (got_car or '') != car_code):
         raise BodyFormatError('правка не дала нужных значений')
     return new
+
+
+def new_body(body: Any, d: Decision) -> str:
+    """fBODY после записи решения d (rewrite_body: прежние строки — d.old_*, машина — только если меняется)."""
+    return rewrite_body(body, d.new_van, d.new_car if d.car_changes else None, old_van=d.old_van, old_car=d.old_car)
 
 
 def change_description(d: Decision) -> str:
@@ -278,21 +346,42 @@ def log_comment(site_user: str | None) -> str:
 
 @dataclass(frozen=True)
 class Result:
-    """Итог записи заказа: ok — COMMIT прошёл; reason — FAIL_REASONS (не записано) или VERIFY_FAILED (записано, но чтение
-    назад не совпало); old_car_null — ORDERS.fDELIVERYCAR был NULL до записи (для «Վերադարձնել»)."""
+    """Итог записи заказа: ok — COMMIT прошёл (и чтение назад его подтвердило, если COMMIT оборвался); reason —
+    FAIL_REASONS (не записано), VERIFY_FAILED (записано, но чтение назад не совпало) или COMMIT_UNKNOWN (не ok: записано
+    ли — неизвестно); old_car_null — ORDERS.fDELIVERYCAR был NULL до записи (для «Վերադարձնել»)."""
     decision: Decision
     ok: bool
     reason: str = ''
     old_car_null: bool = True
 
 
+@dataclass(frozen=True)
+class Batch:
+    """Итог apply: результаты по порядку; stopped — запись остановлена: COMMIT_UNKNOWN или 'journal' (журнал сайта не
+    записался после COMMIT); '' — прошли все решения."""
+    results: tuple[Result, ...]
+    stopped: str = ''
+
+
 def connect_write(dsn: str) -> Any:
-    """Соединение записи: autocommit выключен (транзакция на заказ — apply), таймауты. Строку подключения не логируем."""
+    """Соединение записи: autocommit выключен (транзакция на заказ — apply), таймауты, чужой замок — не дольше
+    LOCK_TIMEOUT_MS. Строку подключения не логируем."""
     try:
         conn = pyodbc.connect(dsn, autocommit=False, timeout=LOGIN_TIMEOUT_S)
     except pyodbc.Error:
         raise ErpWriteError('Не удалось подключиться к ERP для записи') from None   # текст драйвера может нести DSN
     conn.timeout = QUERY_TIMEOUT_S
+    try:
+        cur = conn.cursor()
+        cur.execute(SQL_W_LOCK_TIMEOUT)
+        cur.close()
+        conn.commit()
+    except pyodbc.Error:
+        try:
+            conn.close()
+        except pyodbc.Error:
+            pass
+        raise ErpWriteError('Не удалось настроить соединение записи ERP') from None
     return conn
 
 
@@ -308,62 +397,81 @@ def _rollback(conn: Any) -> None:
         logger.warning('[Routes] ERP-запись: откат не выполнен', exc_info=True)
 
 
-def _one(conn: Any, d: Decision, site_user: str | None) -> Result:
-    """Один заказ — одна транзакция. Не 1 строка, дочерний документ, не тот fBODY — откат и причина."""
+class _Abort(Exception):
+    """Откат заказа с причиной (внутри _one)."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+def _one(conn: Any, d: Decision, site_user: str | None,
+         reconnect: Callable[[], Any] | None) -> Result:
+    """Один заказ — одна транзакция. Любое расхождение — откат и причина; обрыв на COMMIT — COMMIT_UNKNOWN, если чтение
+    назад новым соединением не подтвердило запись."""
     cur = conn.cursor()
+    old_null = True
     try:
-        if not d.write or d.state not in STATES or d.new_van <= 0:
+        if not d.write or d.state not in STATES or d.new_van <= 0 or len(d.new_car) > CAR_MAX:
             raise ValueError('решение не для записи')
-        row = cur.execute(SQL_W_ORDER_CAR, (d.isn,)).fetchone()
-        old_null = row is None or row[0] is None
+        row = cur.execute(SQL_W_ORDER, (d.isn,)).fetchone()
+        old_null = row is None or row[2] is None
+        db_car = d.new_car if d.new_car else (None if d.empty_null else '')
         if d.car_changes:
-            db_car = d.new_car if d.new_car else (None if d.empty_null else '')
             cur.execute(SQL_W_UPDATE_ORDER, (d.new_van, db_car, d.isn, d.state, d.old_van, d.old_car))
         else:
             cur.execute(SQL_W_UPDATE_ORDER_VAN, (d.new_van, d.isn, d.state, d.old_van, d.old_car))
         if cur.rowcount != 1:
-            children = cur.execute(SQL_W_CHILDREN, (d.isn,)).fetchone()[0]
-            _rollback(conn)
-            return Result(d, False, 'has_child_docs' if children else 'changed_in_erp', old_null)
-        if cur.execute(SQL_W_CHILDREN, (d.isn,)).fetchone()[0]:    # и после UPDATE — повторно
-            _rollback(conn)
-            return Result(d, False, 'has_child_docs', old_null)
+            raise _Abort('has_child_docs' if cur.execute(SQL_W_CHILDREN, (d.isn,)).fetchone()[0] else 'changed_in_erp')
+        if cur.execute(SQL_W_CHILDREN, (d.isn,)).fetchone()[0]:    # и после UPDATE — повторно, под тем же замком
+            raise _Abort('has_child_docs')
         rows = cur.execute(SQL_W_BODY, (d.isn,)).fetchall()
         if len(rows) != 1:
-            _rollback(conn)
-            return Result(d, False, 'body_format', old_null)
+            raise _Abort('body_format')
         body, ts = rows[0][0], rows[0][1]
-        van, car = body_values(body)
-        if van.strip() != str(d.old_van) or (car or '').strip() != d.old_car:
-            _rollback(conn)
-            return Result(d, False, 'body_mismatch', old_null)
-        new_body = rewrite_body(body, d.new_van, d.new_car if d.car_changes else None)
-        cur.execute(SQL_W_UPDATE_BODY, (new_body, d.isn, ts))
+        if d.body_sha and body_sha(body) != d.body_sha:            # не тот fBODY, что видел предпросмотр
+            raise _Abort('changed_in_erp')
+        text = new_body(body, d)
+        cur.execute(SQL_W_UPDATE_BODY, (text, d.isn, ts, body))
         if cur.rowcount != 1:
-            _rollback(conn)
-            return Result(d, False, 'changed_in_erp', old_null)
+            raise _Abort('changed_in_erp')
+        # чтение назад внутри транзакции: ровно то, что записали
+        after = cur.execute(SQL_W_BODY, (d.isn,)).fetchall()
+        if len(after) != 1 or after[0][0] != text:
+            raise _Abort('body_mismatch')
+        o = cur.execute(SQL_W_ORDER, (d.isn,)).fetchone()
+        want_car = db_car if d.car_changes else (row[2] if row is not None else None)
+        if o is None or (o[0], int(o[1] or 0), o[2]) != (d.state, d.new_van, want_car):
+            raise _Abort('changed_in_erp')
         cur.execute(SQL_W_LOG, (d.isn, d.state, log_comment(site_user), COMPNAME, change_description(d)))
         if cur.rowcount != 1:
-            _rollback(conn)
-            return Result(d, False, 'error', old_null)
+            raise _Abort('error')
         try:
             conn.commit()
         except Exception:
-            # обрыв на COMMIT: зафиксировано или нет — неизвестно; чтение назад (без NOLOCK — только зафиксированное)
-            # решает, а не догадка: новые значения на месте — записано, иначе — нет (или проверить не удалось: ERP
-            # покажет следующий предпросмотр)
-            logger.exception('[Routes] ERP-запись: заказ %s — COMMIT не подтверждён', d.doc_num)
+            # обрыв на COMMIT: зафиксировано или нет — неизвестно. Решает чтение назад НОВЫМ соединением (locking read
+            # committed: незавершённая транзакция держала бы замок — чтение ждёт и падает, а не видит чужое); не
+            # подтвердилось — COMMIT_UNKNOWN, запись останавливается (apply)
+            logger.exception('[Routes] ERP-запись: заказ %s (%s) — COMMIT не подтверждён', d.doc_num, d.isn)
             _rollback(conn)
-            ok = _verify(conn, d)
-            return Result(d, ok, '' if ok else 'error', old_null)
+            if _verify_new(reconnect, d):
+                return Result(d, True, '', old_null)
+            return Result(d, False, COMMIT_UNKNOWN, old_null)
+    except _Abort as a:
+        _rollback(conn)
+        return Result(d, False, a.reason, old_null)
+    except BodyMismatchError:
+        _rollback(conn)
+        logger.warning('[Routes] ERP-запись: заказ %s — строки fBODY не те, что в ORDERS, не записан', d.doc_num)
+        return Result(d, False, 'body_mismatch', old_null)
     except BodyFormatError:
         _rollback(conn)
         logger.warning('[Routes] ERP-запись: заказ %s — fBODY не того вида, не записан', d.doc_num, exc_info=True)
-        return Result(d, False, 'body_format')
+        return Result(d, False, 'body_format', old_null)
     except Exception:
         _rollback(conn)
         logger.exception('[Routes] ERP-запись: заказ %s не записан (откат)', d.doc_num)
-        return Result(d, False, 'error')
+        return Result(d, False, 'error', old_null)
     finally:
         try:
             cur.close()
@@ -374,15 +482,19 @@ def _one(conn: Any, d: Decision, site_user: str | None) -> Result:
 
 def _verify(conn: Any, d: Decision) -> bool:
     """Чтение назад после COMMIT: ORDERS и fBODY — новые значения. Сбой чтения — не совпало (смотреть в ERP)."""
-    cur = conn.cursor()
+    try:
+        cur = conn.cursor()
+    except Exception:
+        logger.warning('[Routes] ERP-запись: заказ %s — чтение назад не удалось', d.doc_num, exc_info=True)
+        return False
     try:
         rows = cur.execute(SQL_W_VERIFY, (d.isn,)).fetchall()
         if len(rows) != 1:
             return False
-        van_id, car, body = rows[0]
-        bvan, bcar = body_values(body)
+        van_id, car, text = rows[0]
+        bvan, bcar = body_values(text)
         return (int(van_id or 0) == d.new_van and (car or '') == d.new_car and bvan == str(d.new_van)
-                and (bcar or '').strip() == d.new_car)
+                and (bcar or '') == d.new_car)
     except Exception:
         logger.warning('[Routes] ERP-запись: заказ %s — чтение назад не удалось', d.doc_num, exc_info=True)
         return False
@@ -394,19 +506,43 @@ def _verify(conn: Any, d: Decision) -> bool:
             pass
 
 
+def _verify_new(reconnect: Callable[[], Any] | None, d: Decision) -> bool:
+    """Чтение назад новым соединением (после обрыва на COMMIT); нет способа или сбой — не подтверждено."""
+    if reconnect is None:
+        return False
+    try:
+        conn = reconnect()
+    except Exception:
+        logger.warning('[Routes] ERP-запись: новое соединение для проверки %s не открылось', d.doc_num, exc_info=True)
+        return False
+    try:
+        return _verify(conn, d)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 def apply(conn: Any, decisions: Sequence[Decision], site_user: str | None,
-          on_result: Callable[[Result], None] | None = None) -> list[Result]:
+          on_result: Callable[[Result], None] | None = None, reconnect: Callable[[], Any] | None = None) -> Batch:
     """Записать решения write=True — каждое своей транзакцией; пропуски не трогаются. on_result — сразу после заказа
-    (журнал сайта: сбой процесса посреди записи не теряет уже записанное). Ошибка заказа не останавливает остальные."""
-    out = []
+    (журнал сайта); он бросил JournalError — стоп ('journal'). Ошибка заказа не останавливает остальные; COMMIT_UNKNOWN —
+    стоп (reconnect — новое соединение для проверки после обрыва на COMMIT)."""
+    out: list[Result] = []
     for d in decisions:
         if not d.write:
             continue
-        r = _one(conn, d, site_user)
+        r = _one(conn, d, site_user, reconnect)
         logger.info('[Routes] ERP-запись %s (%s): առաքիչ %s→%s, машина %r→%r — %s%s', d.doc_num, d.isn, d.old_code,
                     d.new_code, d.old_car, d.new_car if d.car_changes else d.old_car, 'да' if r.ok else 'нет',
                     f' ({r.reason})' if r.reason else '')
-        if on_result is not None:
-            on_result(r)
         out.append(r)
-    return out
+        if on_result is not None:
+            try:
+                on_result(r)
+            except JournalError:
+                return Batch(tuple(out), 'journal')
+        if r.reason == COMMIT_UNKNOWN:
+            return Batch(tuple(out), COMMIT_UNKNOWN)
+    return Batch(tuple(out))
