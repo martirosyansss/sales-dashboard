@@ -111,11 +111,54 @@ def test_sync_case_of_10_10():
     assert {205, 206, 207} & set(first.stops) == set()                              # лишние без накладной — вон из него
     placed = [c for t in draft.trips for c in t.stops]
     assert len(placed) == len(set(placed))                                          # магазин — один раз
+    _assert_not_mixed(draft, inv)
     assert set(range(210, 220)) <= set(placed)                                      # второй рейс никого не потерял
     assert draft.erp_sig == dp.invoiced_sig(inv)
     before = draft.to_json()
     assert dp.sync_invoiced(ctx, stops, draft, inv) is False                        # второй вызов — ничего
     assert draft.to_json() == before
+
+
+def _assert_not_mixed(draft, inv, code=T.car_code):
+    """Свободный рейс машины — либо только с накладными, либо только без них; рейсы накладных — первыми."""
+    kinds = [{code in inv.get(c, ()) for c in t.stops} for t in draft.trips if t.truck == code]
+    assert all(len(k) == 1 for k in kinds), kinds
+    flags = [k == {True} for k in kinds]
+    assert flags == sorted(flags, reverse=True), flags
+
+
+def test_sync_10_10_two_trips_no_mixed_and_ids_kept():
+    """Ровно 10.10: у 333DN33 рейс 1 — 15 магазинов без накладной, рейс 2 — 5 с накладными, ещё 12 накладных вне рейсов.
+    Товара без накладной в машине нет: рейс 2 (номер тот же) — все 17 накладных и он первый, рейс 1 — 15 без накладных."""
+    ctx = _dp_ctx(trucks=(T,))
+    stops, _ = _dp_stops([(200 + i, _pt(i), 130.0) for i in range(32)])
+    draft = dp.Draft(trucks=[T.car_code], trips=[dp.DraftTrip(1, T.car_code, list(range(205, 220))),
+                                                  dp.DraftTrip(2, T.car_code, list(range(200, 205)))], next_id=3)
+    inv = _inv([*range(200, 205), *range(220, 232)])
+    assert dp.sync_invoiced(ctx, stops, draft, inv) is True
+    assert [t.id for t in draft.trips] == [2, 1] and draft.next_id == 3
+    assert sorted(draft.trips[0].stops) == sorted(inv) and sorted(draft.trips[1].stops) == list(range(205, 220))
+    _assert_not_mixed(draft, inv)
+    before = draft.to_json()
+    assert dp.sync_invoiced(ctx, stops, draft, inv) is False and draft.to_json() == before
+
+
+def test_sync_live_mixed_trip_is_split():
+    """Живая проверка 5256495: рейс 1 — 12 старых накладных вперемешку с 8 магазинами без накладной, рейс 2 — 5 накладных,
+    7 магазинов вне рейсов. После приведения смешанных рейсов нет: все 17 накладных — первый рейс, без накладных — позже
+    или «ещё не в рейсах»."""
+    ctx = _dp_ctx(trucks=(T,))
+    stops, _ = _dp_stops([(200 + i, _pt(i), 130.0) for i in range(32)])
+    old, five, plain = list(range(220, 232)), list(range(200, 205)), list(range(205, 213))
+    draft = dp.Draft(trucks=[T.car_code], trips=[dp.DraftTrip(1, T.car_code, [*old[:6], *plain, *old[6:]]),
+                                                  dp.DraftTrip(2, T.car_code, five)], next_id=3)
+    inv = _inv([*five, *old])
+    assert dp.sync_invoiced(ctx, stops, draft, inv) is True
+    assert draft.trips[0].id == 1 and sorted(draft.trips[0].stops) == sorted(inv)   # больше накладных — номер у него
+    _assert_not_mixed(draft, inv)
+    placed = [c for t in draft.trips for c in t.stops]
+    assert len(placed) == len(set(placed)) and set(placed) - set(inv) <= set(plain)
+    assert dp.sync_invoiced(ctx, stops, draft, inv) is False
 
 
 def test_sync_moves_store_from_other_truck_unless_pinned_by_logist():
@@ -154,15 +197,18 @@ def test_sync_follows_delivery_fact_not_plan_clock():
     now = max(tl[1][0], tl[3][0]) + 1                                               # по плану первый рейс T и HOWO уехали
     assert dp.started_trips(ctx, stops, d, now) == {1, 3}
     assert dp.sync_invoiced(ctx, stops, d, _inv([406, 407]), now) is True
-    assert {406, 407} <= set(next(t for t in d.trips if t.id == 1).stops)           # первый рейс T — с накладными
-    assert 407 not in _trucks_of(d, 407)[1:] and _trucks_of(d, 407) == [T.car_code]
+    mine = [t for t in d.trips if t.truck == T.car_code]
+    assert (mine[0].id, sorted(mine[0].stops)) == (4, [406, 407])                   # рейс накладных — раньше «уехавшего»
+    assert [t.stops for t in mine[1:]] == [[400, 401, 402, 403], [404, 405]] or         [sorted(t.stops) for t in mine[1:]] == [[400, 401, 402, 403], [404, 405]]
+    assert _trucks_of(d, 407) == [T.car_code]                                       # и из «уехавшего» рейса HOWO
     # ход доставки по факту «Առաքիչ»: у первого рейса T и у рейса HOWO — эти рейсы не трогаем
     d = draft()
     done = {T.car_code: {400}, HOWO.car_code: {407}}
     trip1 = list(d.trips[0].stops)
     assert dp.sync_invoiced(ctx, stops, d, _inv([406, 407]), now, done) is True
     assert d.trips[0].stops == trip1                                                # развозит — как был
-    assert 406 in next(t for t in d.trips if t.id == 2).stops                        # в первый свободный рейс T
+    mine = [t for t in d.trips if t.truck == T.car_code]
+    assert [(t.id, sorted(t.stops)) for t in mine] == [(1, trip1), (4, [406]), (2, [404, 405])]
     assert _trucks_of(d, 407) == [HOWO.car_code]                                    # чужой рейс в пути — не правим
     assert dp.erp_held(ctx, stops, d, _inv([406, 407]), done) == {407}
     assert dp.sync_invoiced(ctx, stops, d, _inv([406, 407]), now, done) is False
