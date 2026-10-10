@@ -388,6 +388,7 @@
         if ($('dpSameDayDlg').open) { if (sdData()) renderSdDialog(); else $('dpSameDayDlg').close(); }
         $('dpStep3').hidden = !plan;
         if (plan) renderPlan(plan);
+        renderErp();   // №96: накладные ERP дня — и без плана (сколько магазинов с накладной)
         renderInbox();
         renderTabs();
         layoutWs();
@@ -2970,6 +2971,46 @@
         box.appendChild(div);
     }
 
+    // ---------- Накладные ERP дня (ответ владельца №96) ----------
+    // Накладная ERP — факт: магазины накладных машины сервер сам ставит в её рейсы (dispatch.sync_invoiced). Плашка над
+    // рейсами: по машине — магазинов с накладной, из них в её рейсах, добавлено из ERP, магазины её рейсов без накладной;
+    // что не переставить самому (рейс другой машины начат или закреплён, нет точки) и экспедиторы без машины в экипаже дня.
+    function erpTruckOfTrip(tripId) {
+        const erp = state.data.erp, plan = state.data.plan;
+        if (!isObj(erp) || !plan) return false;
+        const t = plan.trucks.find(x => x.trips.some(tr => tr.id === tripId));
+        return !!t && (erp.trucks || []).some(x => x.car_code === t.car_code);
+    }
+    function renderErp() {
+        const box = $('dpErp'), erp = state.data.erp;
+        box.textContent = '';
+        if (!isObj(erp)) return;
+        const sec = document.createElement('section');
+        sec.className = 'dp-erp';
+        sec.setAttribute('aria-label', 'ERP ապրանքագրեր');
+        sec.innerHTML = '<div class="dp-erp-head"><span class="rt-badge b-ok">ERP</span><b>ERP ապրանքագրեր</b>'
+            + '<span class="dp-erp-note">ապրանքագիրը փաստ է՝ խանութն իր մեքենայի երթում է</span></div><ul class="dp-erp-list"></ul>';
+        const ul = sec.querySelector('ul');
+        const row = (warn, text) => {
+            const li = document.createElement('li');
+            if (warn) li.className = 'is-warn';
+            li.textContent = text;
+            ul.appendChild(li);
+        };
+        (erp.trucks || []).forEach(t => {
+            const name = sdTruckName(t.car_code);
+            const parts = [pl(t.invoiced, 'խանութ') + ' ապրանքագրով', 'երթերում՝ ' + fmt(t.in_trips)];
+            if (t.from_erp) parts.push('ավելացվել է ERP-ից՝ ' + fmt(t.from_erp));
+            if (t.no_invoice) parts.push('ապրանքագիր չկա՝ ' + pl(t.no_invoice, 'խանութ'));
+            row(false, name + ' — ' + parts.join(' · '));
+            if (t.held) row(true, name + '՝ ' + pl(t.held, 'խանութ') + ' այլ մեքենայի սկսված, բեռնված կամ ամրացված երթում է — տեղափոխեք ձեռքով');
+            if (t.no_coords) row(true, name + '՝ ' + pl(t.no_coords, 'խանութ') + ' առանց կոորդինատի — երթում չէ');
+        });
+        (erp.unknown || []).forEach(u => row(true, 'Առաքիչ ' + (u.name || '#' + u.van_agent_id) + ' — մեքենան հայտնի չէ ('
+            + pl(u.customers, 'խանութ') + ')։ Նշեք նրան մեքենայի «Վարորդ» կամ «Առաքիչ»'));
+        box.appendChild(sec);
+    }
+
     // Все рейсы плана — для списка «Перенести в…»
     function tripOptions(currentTrip, placeholder, stop) {
         const opts = [['', placeholder]];
@@ -3484,6 +3525,11 @@
         // новый заказ дня, взятый в сегодняшний развоз (№72)
         const sdIsns = new Set(sdTaken().map(o => o.isn));
         if ((stop.orders || []).some(o => sdIsns.has(o.isn))) tag('b-ok', 'Այսօրվա նոր պատվեր', 'fa-bolt');
+        // №96: накладная ERP дня — факт (магазин в рейсе своей машины); у машины рейса накладные есть, а у магазина — нет
+        if (stop.erp_truck) {
+            tag('b-ok', 'ERP ապրանքագիր', 'fa-file-invoice');
+            tags.lastChild.title = 'ERP-ում ապրանքագիրը դուրս է գրված՝ ' + stop.erp_truck;
+        } else if (tripId !== null && erpTruckOfTrip(tripId)) tag('b-none', 'ապրանքագիր չկա', 'fa-file-circle-question');
         if (tags.children.length) main.appendChild(tags);
         const kg = document.createElement('span');
         kg.className = 'dp-stop-kg';

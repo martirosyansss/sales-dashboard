@@ -50,7 +50,7 @@ from . import clock
 from .erp_day import (ContainerLink, CustomerInfo, DayData, Doc, GiftRule, Line, OrdersPick, Product, collect_for,
                       expected_tare)
 from .order import order_customers
-from .routes_link import RoutesView, distance_fn, invoice_owner, orders_window, pick_orders
+from .routes_link import RoutesView, distance_fn, invoice_owner, orders_window, pick_orders, van_cars
 from .store import MarkSetting, Store
 
 logger = logging.getLogger(__name__)
@@ -74,7 +74,9 @@ def clear_matrix_cache() -> None:
 DEMO_CAR = 'TEST'
 DEMO_DAY = date(2000, 1, 1)
 
-DayLoader = Callable[[str, date, tuple[date, date], OrdersPick, Callable[[int], bool]], DayData]
+# (машина, день, окно заказов, отбор заказов, чья накладная по плану, экспедиторы → машины — №96) → данные дня
+DayLoader = Callable[[str, date, tuple[date, date], OrdersPick, Callable[[int], bool],
+                     Callable[[Mapping[int, str]], Mapping[int, str]]], DayData]
 
 
 def _num(x: float) -> float | int:
@@ -399,5 +401,5 @@ class DayService:
         loaded = clock.now()
         data = self.loader(car_code, day, orders_window(day, view),
                            lambda orders, places: pick_orders(orders, day, view, car_code, places),
-                           invoice_owner(view, car_code))
+                           invoice_owner(view, car_code), lambda agents: van_cars(view, agents))
         return day_payload(data, view, self.store, loaded)

@@ -26,6 +26,7 @@ import courier  # noqa: E402
 from courier import clock, day as dy, erp_day as ed, events as ev, merge as mg, order as od, routes_link as rl  # noqa: E402
 from courier.state import CourierState  # noqa: E402
 from courier.store import SCHEMA_VERSION, MarkSetting, PinConflict, PinReset, Store, StoreError  # noqa: E402
+from route_optimizer import dispatch as dp  # noqa: E402
 from route_optimizer import erp  # noqa: E402
 from route_optimizer.dispatch import DispatchOrder  # noqa: E402
 from route_optimizer.store import StoreError as RoutesStoreError  # noqa: E402
@@ -257,6 +258,8 @@ class FakeErp:
         self.orders = list(orders)
         self.parents = list(parents)
         self.plan_sales = []      # (строка SQL_DAY_SALES накладной без машины, ISN заказа-родителя)
+        self.van_sales = []       # (строка SQL_DAY_SALES накладной без машины, id экспедитора) — №96
+        self.agents = [(7, 'A7', 'Մենեջեր', False, 'Կենտրոն')]   # строки SQL_AGENTS
         self.gifts = []           # строки SQL_DOC_GIFTS: (fISN, fROWNUM, товар, количество) — подарки (№90)
         self.promos = []          # строки SQL_GIFT_PROMOTIONS — акции подарков (№90, «APK сам пересчитывает»)
         self.groups = []          # строки SQL_CUSTOMER_GIFT_GROUPS: (клиент, группа акций)
@@ -272,6 +275,9 @@ class FakeErp:
         if sql.startswith(ed.SQL_PLAN_SALES.split('{')[0]):
             assert "ISNULL(s.fDELIVERYCAR, ''))) = ''" in sql and 'fPARENTDOCTYPE = 1' in sql
             return [row for row, parent in self.plan_sales if parent in params[2:]]
+        if sql.startswith(ed.SQL_VAN_SALES.split('{')[0]):
+            assert "ISNULL(s.fDELIVERYCAR, ''))) = ''" in sql and 's.fVANAGENTID <> ISNULL(s.fSALESAGENTID, 0)' in sql
+            return [row for row, van in self.van_sales if van in params[2:]]
         if sql == erp.SQL_DISPATCH_ORDERS:
             return self.orders
         if sql.startswith(ed.SQL_SALE_PARENTS.split('{')[0]):
@@ -305,7 +311,7 @@ class FakeErp:
         if sql.startswith(ed.SQL_GPS_VISITS.split('{')[0]):
             return [(12, 40.3, 44.6, 10), (12, 40.3, 44.6, 10), (12, 40.3, 44.6, 500), (12, 40.3, 44.6, None)]
         if sql == erp.SQL_AGENTS:
-            return [(7, 'A7', 'Մենեջեր', False, 'Կենտրոն')]
+            return self.agents
         if sql == erp.SQL_CARS:
             return [('991AT61', 'HOWO', False, None)]
         if sql.startswith(ed.SQL_DEBIT_BEFORE.split('{')[0]):
@@ -343,7 +349,7 @@ def test_load_day_invoices(fake_erp):
 
 
 def test_load_day_falls_back_to_orders(fake_erp):
-    fake_erp.orders = [(ISN[1], 'Z0002', date(2026, 10, 1), 12, 7, '991AT61', 3600, 58.5, None, 0, None)]
+    fake_erp.orders = [(ISN[1], 'Z0002', date(2026, 10, 1), 12, 7, '991AT61', 3600, 58.5, None, 0, None, None, '')]
     picked = []
 
     def pick(orders, places):
@@ -359,7 +365,7 @@ def test_day_payload_from_erp(fake_erp, tmp_path, now):
     store = Store(str(tmp_path / 'c.db'))
     store.save_mark_settings([MarkSetting(200, False, None), MarkSetting(135, True, 6)], 'admin')
     view = rl.RoutesView(depot=YEREVAN, geo_overrides={12: (40.15, 44.45)})
-    svc = dy.DayService(store, lambda car, d, w, pick, owner: ed.load_day('cs', car, d, w, pick, owner), lambda d: view)
+    svc = dy.DayService(store, lambda car, d, w, pick, owner, vans: ed.load_day('cs', car, d, w, pick, owner, vans), lambda d: view)
     body = svc.get('991AT61', date(2026, 10, 2))
     s1 = next(s for s in body['stops'] if s['customer']['id'] == 11)
     s2 = next(s for s in body['stops'] if s['customer']['id'] == 12)
@@ -1572,9 +1578,9 @@ def test_m3_load_day_per_customer_source(fake_erp, tmp_path):
     d = date(2026, 10, 2)
     fake_erp.sales = [(ISN[0], '000318001', 11, 7, '1', 18000)]
     fake_erp.parents = [(ISN[0], ISN[2])]
-    fake_erp.orders = [(ISN[2], 'Z0011', date(2026, 10, 1), 11, 7, '991AT61', 18000, 10, d, 0, None),     # стал накладной
-                       (ISN[1], 'Z0012', date(2026, 10, 1), 12, 7, '991AT61', 3600, 5, None, 0, None),    # накладной нет
-                       (ISN[3], 'Z0013', date(2026, 10, 1), 13, 7, '991AT61', 900, 1, d, 0, None)]        # накладная у другой
+    fake_erp.orders = [(ISN[2], 'Z0011', date(2026, 10, 1), 11, 7, '991AT61', 18000, 10, d, 0, None, None, ''),     # стал накладной
+                       (ISN[1], 'Z0012', date(2026, 10, 1), 12, 7, '991AT61', 3600, 5, None, 0, None, None, ''),    # накладной нет
+                       (ISN[3], 'Z0013', date(2026, 10, 1), 13, 7, '991AT61', 900, 1, d, 0, None, None, '')]        # накладная у другой
     data = ed.load_day('cs', '991AT61', d, (date(2026, 9, 29), d), lambda orders, places: list(orders))
     assert [(x.stop_id, x.replaces) for x in data.docs] == [(f'S:{ISN[0]}', (f'O:{ISN[2]}',)), (f'O:{ISN[1]}', ())]
     view = rl.RoutesView(depot=YEREVAN)
@@ -1588,8 +1594,8 @@ def test_load_day_plan_invoice_without_car(fake_erp):
     """05.10.2026: офис не поставил машину в накладной (fDELIVERYCAR пуст) — заказ уже отгружен (O: нет), и точка
     пропадала у всех. Накладная без машины из заказа, который «Развоз» отдал машине, — точка S: этой машины."""
     d = date(2026, 10, 2)
-    fake_erp.orders = [(ISN[2], 'Z0011', date(2026, 10, 1), 11, 7, '', 18000, 10, d, 0, None),       # отгружен, без машины
-                       (ISN[3], 'Z0013', date(2026, 10, 1), 13, 7, '', 900, 1, d, 0, None)]           # не отдан этой машине
+    fake_erp.orders = [(ISN[2], 'Z0011', date(2026, 10, 1), 11, 7, '', 18000, 10, d, 0, None, None, ''),       # отгружен, без машины
+                       (ISN[3], 'Z0013', date(2026, 10, 1), 13, 7, '', 900, 1, d, 0, None, None, '')]           # не отдан этой машине
     fake_erp.plan_sales = [((ISN[0], '000318001', 11, 7, '1', 18000), ISN[2]),
                            ((ISN[4], '000318004', 13, 7, '1', 900), ISN[3])]
     fake_erp.parents = [(ISN[0], ISN[2]), (ISN[4], ISN[3])]
@@ -1606,12 +1612,12 @@ def test_load_day_plan_invoice_not_doubled_and_skipped_without_shipped(fake_erp)
     отгруженных заказов машины — запроса накладных без машины нет."""
     d = date(2026, 10, 2)
     fake_erp.sales = [(ISN[0], '000318001', 11, 7, '1', 18000)]
-    fake_erp.orders = [(ISN[2], 'Z0011', date(2026, 10, 1), 11, 7, '991AT61', 18000, 10, d, 0, None)]
+    fake_erp.orders = [(ISN[2], 'Z0011', date(2026, 10, 1), 11, 7, '991AT61', 18000, 10, d, 0, None, None, '')]
     fake_erp.plan_sales = [((ISN[0], '000318001', 11, 7, '1', 18000), ISN[2])]   # подмена не фильтрует машину
     data = ed.load_day('cs', '991AT61', d, (date(2026, 9, 29), d), lambda orders, places: list(orders), lambda cid: True)
     assert [x.stop_id for x in data.docs] == [f'S:{ISN[0]}']
     fake_erp.calls.clear()
-    fake_erp.orders = [(ISN[1], 'Z0012', date(2026, 10, 1), 12, 7, '991AT61', 3600, 5, None, 0, None)]
+    fake_erp.orders = [(ISN[1], 'Z0012', date(2026, 10, 1), 12, 7, '991AT61', 3600, 5, None, 0, None, None, '')]
     ed.load_day('cs', '991AT61', d, (date(2026, 9, 29), d), lambda orders, places: list(orders), lambda cid: True)
     assert not any(sql.startswith(ed.SQL_PLAN_SALES.split('{')[0]) for sql in fake_erp.calls)
 
@@ -1620,7 +1626,7 @@ def test_load_day_plan_invoice_customer_on_two_trucks_is_nobodys(fake_erp):
     """Клиент в рейсах двух машин (тяжёлый заказ разделён) — накладная без машины ничья: иначе одну сумму
     потребовали бы два водителя. Клиент одной машины — накладная её; без invoice_owner накладные без машины не берутся."""
     d = date(2026, 10, 2)
-    fake_erp.orders = [(ISN[2], 'Z0011', date(2026, 10, 1), 11, 7, '', 18000, 10, d, 0, None)]
+    fake_erp.orders = [(ISN[2], 'Z0011', date(2026, 10, 1), 11, 7, '', 18000, 10, d, 0, None, None, '')]
     fake_erp.plan_sales = [((ISN[0], '000318001', 11, 7, '1', 18000), ISN[2])]
     fake_erp.parents = [(ISN[0], ISN[2])]
     split = rl.RoutesView(plan_exists=True, released=True, trips=(('A', (11,)), ('B', (11, 12))))
@@ -1645,14 +1651,14 @@ def _gate_erp(fake_erp):
     клиента 13 — две последние приходят на терминал только по плану «Развоза»."""
     d = date(2026, 10, 2)
     fake_erp.sales = [(ISN[0], '000318001', 11, 7, '1', 18000)]
-    fake_erp.orders = [(ISN[1], 'Z0012', date(2026, 10, 1), 12, 7, '991AT61', 3600, 5, None, 0, None),
-                       (ISN[2], 'Z0013', date(2026, 10, 1), 13, 7, '', 9000, 10, d, 0, None)]
+    fake_erp.orders = [(ISN[1], 'Z0012', date(2026, 10, 1), 12, 7, '991AT61', 3600, 5, None, 0, None, None, ''),
+                       (ISN[2], 'Z0013', date(2026, 10, 1), 13, 7, '', 9000, 10, d, 0, None, None, '')]
     fake_erp.plan_sales = [((ISN[3], '000318003', 13, 7, '1', 9000), ISN[2])]
     return d
 
 
 def _gate_service(tmp_path, views):
-    loader = lambda car, day, window, pick, owner: ed.load_day('cs', car, day, window, pick, owner)   # noqa: E731
+    loader = lambda car, day, window, pick, owner, vans: ed.load_day('cs', car, day, window, pick, owner, vans)   # noqa: E731
     return dy.DayService(Store(str(tmp_path / 'c.db')), loader, lambda day: views[0], ttl=60)
 
 
@@ -1754,12 +1760,72 @@ def test_plan_mismatch_before_approval_keeps_plan_without_coverage(app, st, monk
     assert [(x['doc_number'], x['erp_car'], x['plan_cars']) for x in out['items']] == [('002', 'B', ['A'])]
 
 
+VAN_ROW = (ISN[0], '000318001', 11, 7, '1', 18000)   # накладная без машины экспедитора 3208 (№96)
+ARMEN = 'Հարությունյան  Արմեն'                    # ERP-агент 3208 — с двойным пробелом
+
+
+def test_load_day_van_invoice_without_plan_and_namesake(fake_erp, tmp_path, now):
+    """№96: с 06.10.2026 офис не ставит машину в накладной — машина по экспедитору: человек экипажа машины на дату с именем
+    ERP-агента. Такая накладная — накладная машины и без плана, и до утверждения (№80 закрывает только план и заказы);
+    тёзки у двух машин — ничья; чужой машине — нет."""
+    d = date(2026, 10, 2)
+    fake_erp.agents = [(7, 'A7', 'Մենեջեր', False, ''), (3208, 'B208', ARMEN, False, '')]
+    fake_erp.van_sales = [(VAN_ROW, 3208)]
+    view = rl.RoutesView(crew=dp.crew_index({'A': ['հարությունյան արմեն'], 'B': ['Ուրիշ Մարդ']}))   # плана нет
+    svc = dy.DayService(Store(str(tmp_path / 'c.db')),
+                        lambda car, d, w, pick, owner, vans: ed.load_day('cs', car, d, w, pick, owner, vans), lambda d: view)
+    body = svc.get('A', d)
+    assert [s['stop_id'] for s in body['stops']] == [f'S:{ISN[0]}'] and body['stops'][0]['amount_due'] == 18000
+    assert svc.get('B', d)['stops'] == []
+    i = next(i for i, sql in enumerate(fake_erp.calls) if sql.startswith(ed.SQL_VAN_SALES.split('{')[0]))
+    assert fake_erp.params[i] == (d, date(2026, 10, 3), 3208)
+    namesake = rl.RoutesView(crew=dp.crew_index({'A': [ARMEN], 'B': ['Հարությունյան Արմեն']}))
+    fake_erp.calls.clear()
+    data = ed.load_day('cs', 'A', d, (date(2026, 9, 29), d), lambda o, p: [], None, lambda agents: rl.van_cars(namesake, agents))
+    assert data.docs == () and not any(sql.startswith(ed.SQL_VAN_SALES.split('{')[0]) for sql in fake_erp.calls)
+    assert rl.van_cars(rl.RoutesView(van_trucks={3208: 'MAN1'}), {3208: ARMEN}) == {3208: 'MAN1'}   # ручная машина
+
+
+def test_load_day_plan_invoice_of_other_cars_van_is_not_taken(fake_erp):
+    """№96: клиент в рейсе A по плану, а накладную выписали на экспедитора машины B — по плану A её не берёт (одну сумму
+    не берут два водителя), её берёт B по экспедитору."""
+    d = date(2026, 10, 2)
+    fake_erp.agents = [(7, 'A7', 'Մենեջեր', False, ''), (3208, 'B208', ARMEN, False, '')]
+    fake_erp.orders = [(ISN[2], 'Z0011', date(2026, 10, 1), 11, 7, '', 18000, 10, d, 0, None, 3208, '')]
+    fake_erp.plan_sales = [(VAN_ROW, ISN[2])]
+    fake_erp.van_sales = [(VAN_ROW, 3208)]
+    view = rl.RoutesView(plan_exists=True, released=True, trips=(('A', (11,)),), crew=dp.crew_index({'B': [ARMEN]}))
+    ed.load_day('cs', 'A', d, (date(2026, 9, 29), d), lambda o, p: rl.pick_orders(o, d, view, 'A', p),
+                rl.invoice_owner(view, 'A'), lambda agents: rl.van_cars(view, agents))
+    i = next(i for i, sql in enumerate(fake_erp.calls) if sql.startswith(ed.SQL_PLAN_SALES.split('{')[0]))
+    assert 'NOT IN' in fake_erp.calls[i] and fake_erp.params[i] == (d, date(2026, 10, 3), ISN[2], 3208)
+    got = ed.load_day('cs', 'B', d, (date(2026, 9, 29), d), lambda o, p: rl.pick_orders(o, d, view, 'B', p),
+                      rl.invoice_owner(view, 'B'), lambda agents: rl.van_cars(view, agents))
+    assert [x.stop_id for x in got.docs] == [f'S:{ISN[0]}']
+
+
+def test_plan_mismatch_by_van(app, st, monkeypatch):
+    """№96: сверка с планом — машина накладной без машины по экспедитору (dispatch.fact_truck), а не только fDELIVERYCAR."""
+    from courier import views as cv
+    view = rl.RoutesView(plan_exists=True, released=True, trips=(('A', (1,)), ('B', (2,))),
+                         crew=dp.crew_index({'A': ['Ուրիշ Մարդ'], 'B': [ARMEN]}))
+    monkeypatch.setattr(cv, 'routes_view', lambda state, d: view)
+    st.invoice_loader = lambda d: ([ed.InvoiceCar(ISN[0], '001', 1, '', 3208, 7, ARMEN),     # у A в плане, а везёт B
+                                    ed.InvoiceCar(ISN[1], '002', 2, '', 3208, 7, ARMEN),     # у B — сходится
+                                    ed.InvoiceCar(ISN[2], '003', 2, '', 7, 7, 'Մենեջեր')],   # менеджер сам — без машины
+                                   {1: ('C1', 'Մեկ'), 2: ('C2', 'Երկու')})
+    with app.test_request_context():
+        out = cv.plan_mismatches(date(2026, 10, 2))
+    assert [(x['doc_number'], x['erp_car'], x['plan_cars']) for x in out['items']] == [('001', 'B', ['A'])]
+    assert out['no_car'] == 1
+
+
 def test_load_day_plan_invoice_from_two_orders_in_two_chunks(fake_erp, monkeypatch):
     """Накладная из двух заказов машины, попавших в разные чанки запроса, — одна точка с обоими replaces."""
     d = date(2026, 10, 2)
     monkeypatch.setattr(ed, '_chunks', lambda ids, size=1: (ids[i:i + 1] for i in range(len(ids))))
-    fake_erp.orders = [(ISN[2], 'Z0011', date(2026, 10, 1), 11, 7, '', 9000, 5, d, 0, None),
-                       (ISN[3], 'Z0012', date(2026, 10, 1), 11, 7, '', 9000, 5, d, 0, None)]
+    fake_erp.orders = [(ISN[2], 'Z0011', date(2026, 10, 1), 11, 7, '', 9000, 5, d, 0, None, None, ''),
+                       (ISN[3], 'Z0012', date(2026, 10, 1), 11, 7, '', 9000, 5, d, 0, None, None, '')]
     row = (ISN[0], '000318001', 11, 7, '1', 18000)
     fake_erp.plan_sales = [(row, ISN[2]), (row, ISN[3])]
     fake_erp.parents = [(ISN[0], ISN[2]), (ISN[0], ISN[3])]
@@ -3522,7 +3588,7 @@ def test_day_payload_gift_lines(fake_erp, tmp_path, now):
 
     def payload():
         ed.clear_ref_cache()
-        svc = dy.DayService(store, lambda car, d, w, pick, owner: ed.load_day('cs', car, d, w, pick, owner), lambda d: view)
+        svc = dy.DayService(store, lambda car, d, w, pick, owner, vans: ed.load_day('cs', car, d, w, pick, owner, vans), lambda d: view)
         return {s['customer']['id']: s for s in svc.get('991AT61', date(2026, 10, 2))['stops']}
 
     before = payload()
@@ -3658,7 +3724,7 @@ def test_day_payload_gift_rule(fake_erp, tmp_path, now):
 
     def gift_line():
         ed.clear_ref_cache()
-        svc = dy.DayService(store, lambda car, d, w, pick, owner: ed.load_day('cs', car, d, w, pick, owner),
+        svc = dy.DayService(store, lambda car, d, w, pick, owner, vans: ed.load_day('cs', car, d, w, pick, owner, vans),
                             lambda d: rl.RoutesView(depot=YEREVAN))
         (s,) = svc.get('991AT61', date(2026, 10, 2))['stops']
         return next(ln for ln in s['lines'] if ln.get('gift'))

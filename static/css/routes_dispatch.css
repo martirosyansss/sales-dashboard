@@ -387,7 +387,16 @@
 .dp-bend small { font-size: .75rem; color: var(--rt-fg-mute); white-space: nowrap; }
 
 /* --- Не помещается / ещё не в рейсах --- */
-#dpOverflow:empty, #dpUnassigned:empty { display: none; }
+#dpOverflow:empty, #dpUnassigned:empty, #dpErp:empty { display: none; }
+/* №96: накладные ERP дня — плашка над рейсами */
+.dp-erp {
+    padding: 10px 14px; border-radius: 12px; background: var(--rt-inset); border: 1px solid var(--rt-line);
+    color: var(--rt-fg); line-height: 1.5; font-size: .9375rem;
+}
+.dp-erp-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
+.dp-erp-note { color: var(--rt-fg-mute); font-size: .8125rem; }
+.dp-erp-list { margin: 6px 0 0; padding-left: 18px; }
+.dp-erp-list .is-warn { color: var(--rt-warn); }
 #dpUnassigned { display: grid; gap: 12px; }
 #rtDispatch .dp-problem { margin: 0; padding: 14px 18px; border-radius: var(--rt-radius); }
 .dp-problem ul { margin: 6px 0 8px; padding-left: 20px; display: grid; gap: 4px; }
@@ -993,9 +1002,9 @@ details.dp-costnote p { margin: 6px 0 0; }
     .dp-tab[aria-pressed="true"] { color: var(--rt-acc); background: var(--rt-acc-glow); }
     .dp-tab[hidden] { display: none; }
     /* «Օր»: день, подготовка и сводка; «Երթեր»: шкала и рейсы; «Քարտեզ»: только карта */
-    #rtDispatch[data-tab="day"] :is(#dpBoard, #dpOverflow, #dpUnassigned, .dp-split) { display: none !important; }
+    #rtDispatch[data-tab="day"] :is(#dpBoard, #dpErp, #dpOverflow, #dpUnassigned, .dp-split) { display: none !important; }
     #rtDispatch[data-tab="trips"] :is(.dp-kicker, .dp-help, #dpTodo, #dpInbox, #dpNoDriver, #dpSameDay, .dp-prep, #dpRun, .dp-summary, .dp-mapcol, #dpAnalysis) { display: none !important; }
-    #rtDispatch[data-tab="map"] :is(.dp-kicker, .dp-help, #dpTodo, #dpInbox, #dpNoDriver, #dpSameDay, .dp-prep, #dpRun, .dp-summary, #dpBoard, #dpOverflow, #dpUnassigned, .dp-trucklist, #dpAnalysis) { display: none !important; }
+    #rtDispatch[data-tab="map"] :is(.dp-kicker, .dp-help, #dpTodo, #dpInbox, #dpNoDriver, #dpSameDay, .dp-prep, #dpRun, .dp-summary, #dpBoard, #dpErp, #dpOverflow, #dpUnassigned, .dp-trucklist, #dpAnalysis) { display: none !important; }
     #rtDispatch[data-tab="map"] .dp-mapbox-body > .dp-map { height: calc(100vh - var(--rt-nav-h, 64px) - 330px); min-height: 300px; }
     /* «Երթեր» и «Քարտեզ»: от шапки — только день и что видят водители */
     body:is([data-dp-tab="trips"], [data-dp-tab="map"]) .rt-secnav-bar { display: none; }

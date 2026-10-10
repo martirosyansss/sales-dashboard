@@ -14,6 +14,11 @@ RoadProvider.get); запись — только экипаж машины из 
 После выпуска терминал видит отправленный снимок плана (№81, Draft.sent): правки логиста — после «Ուղարկել վարորդներին».
 Офис (courier.views.plan_mismatches) видит план и до выпуска.
 
+Накладные ERP дня — факт (ответ владельца №96, dispatch.fact_truck): накладная без машины, чей экспедитор (ERP-агент) —
+человек экипажа машины на дату (водитель или առաքիչ, Store.truck_drivers; имя у двух машин — ничья) или за кем закреплена
+ручная машина (Bundle.van_trucks), — накладная этой машины и до выпуска плана (van_cars; №80 закрывает только план и
+заказы). Такая накладная чужой машины по плану не берётся (erp_day.load_day).
+
 Срок магазина у водителя (ответ владельца №93, контракт v1.8 §12): вид несёт окна приёма дня (Bundle.windows_on), запас
 до срока (настройка until_buffer_min), плановый выезд рейсов машин (прогноз сборки) и дорожную модель «Развоза» для матрицы
 рейса (route_optimizer.views.trip_road — вызывается только при сборке /day).
@@ -71,6 +76,9 @@ class RoutesView:
     road: TripRoad | None = None                           # дорожная модель для матрицы рейса; нет — матрицы нет
     # телефоны менеджеров (09.10): agent_id → номер из настройки agent_phones — кнопка звонка менеджеру магазина в /day
     agent_phones: Mapping[int, str] = field(default_factory=dict)
+    # экипаж дня (№96): имя (dispatch.name_key) → машина ('' — тёзки у двух машин) и экспедитор → ручная машина
+    crew: Mapping[str, str] = field(default_factory=dict)
+    van_trucks: Mapping[int, str] = field(default_factory=dict)
 
     def car_customers(self, car_code: str) -> list[int]:
         """Клиенты машины по плану: порядок рейсов черновика, внутри — порядок объезда; повтор (тяжёлый
@@ -116,6 +124,12 @@ def routes_view(state: Any, day: date) -> RoutesView:
                   until_buffer_min=int(round(float(s['until_buffer_min']))), work_start_min=float(h * 60 + m),
                   road=lambda customers, car: _trip_road(state, day, customers, car))
     phones = {int(a): p for a, p in (s.get('agent_phones') or {}).items()}   # ключи JSON — строки
+    # №96: экипаж дня — чьи накладные без машины (по экспедитору); RoutesStoreError — наружу, как у плана
+    crew: dict[str, list[str]] = {}
+    for role in ('driver', 'helper'):
+        for code, name in state.store.truck_drivers(day.isoformat(), role)[0].items():
+            crew.setdefault(code, []).append(name)
+    timing.update(crew=dp.crew_index(crew), van_trucks=bundle.van_trucks())
     base = RoutesView(depot=bundle.depot, geo_overrides=dict(bundle.geo_overrides), workdays=workdays,
                       holidays=holidays, fleet=dp.FleetRule.from_settings(bundle.settings), roads=roads,
                       agent_phones=phones, **timing)
@@ -341,6 +355,13 @@ def pick_orders(orders: Sequence[DispatchOrder], day: date, view: RoutesView, ca
         + [o for o in sel.backlog if dp.backlog_delivered(o, inside, view.added, view.agents_off)]
     mine = set(view.car_customers(car_code))
     return [o for o in active if o.customer_id in mine]
+
+
+def van_cars(view: RoutesView, agents: Mapping[int, str]) -> dict[int, str]:
+    """ERP-агенты (id → имя) → экспедиторы, чьи накладные без машины на дату — накладные машины (№96, dispatch.van_truck:
+    человек экипажа дня, иначе ручная машина экспедитора): id → машина. Не для экспедиторов, которых не нашли."""
+    out = {aid: dp.van_truck(aid, agents, view.crew, view.van_trucks) for aid in agents}
+    return {aid: car for aid, car in out.items() if car}
 
 
 def invoice_owner(view: RoutesView, car_code: str) -> Callable[[int], bool]:

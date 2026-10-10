@@ -41,6 +41,11 @@
 План дня не утверждён ни разу или его нет (ответ владельца №80) — pick_orders пуст: ни точек O:, ни накладных без машины
 по плану; остаются только накладные с fDELIVERYCAR = машина (их машину поставил офис — это документ, а не план).
 
+Накладные экспедитора (ответ владельца №96; с 06.10.2026 офис машину в накладной не ставит): накладная без машины, чей
+экспедитор fVANAGENTID (не сам менеджер) — человек экипажа машины на дату или за ним закреплена ручная машина
+(routes_link.van_cars), — накладная этой машины, как с машиной в накладной: и до утверждения плана, и у клиента вне плана
+(SQL_VAN_SALES). По плану (SQL_PLAN_SALES) такая накладная другой машины не берётся — одну сумму не берут два водителя.
+
 Подарки (ответ владельца №90 «учесть везде»; проверено 08.10.2026, только SELECT): ERP пишет подарки акций отдельной
 таблицей SALEDOCGIFTS (fISN, fPRODUCTID, fQUANTITY, fROWNUM, fADDITIONALINFO) того же документа — и у заказов, и у
 накладных; в SALEDOCDETAILS их нет, цены нет (fTOTALSUM не меняется). fROWNUM подарков — свой счёт с 0 (у строк тоже с 0),
@@ -329,6 +334,19 @@ WHERE s.fSTATE = 2 AND s.fDATE >= ? AND s.fDATE < ? AND LTRIM(RTRIM(ISNULL(s.fDE
                  WHERE p.fPARENTDOCTYPE = 1 AND p.fPARENTISN IN ({ph}))
 """
 
+# Накладные дня БЕЗ машины экспедиторов машины (№96, routes_link.van_cars; не сам менеджер) — те же столбцы, что
+# SQL_DAY_SALES; параметры: день, день + 1, id экспедиторов
+SQL_VAN_SALES = """
+SELECT CAST(s.fISN AS nvarchar(36)), RTRIM(s.fDOCNUM), s.fCUSTOMERID, s.fSALESAGENTID,
+       LTRIM(RTRIM(ISNULL(s.fPAYTYPE, ''))), s.fTOTALSUM
+FROM SALES s WITH (NOLOCK)
+WHERE s.fSTATE = 2 AND s.fDATE >= ? AND s.fDATE < ? AND LTRIM(RTRIM(ISNULL(s.fDELIVERYCAR, ''))) = ''
+  AND s.fVANAGENTID IN ({ph}) AND s.fVANAGENTID <> ISNULL(s.fSALESAGENTID, 0)
+"""
+# к SQL_PLAN_SALES: кроме накладных экспедиторов других машин (№96); параметры — их id после ISN заказов
+_NOT_VANS = """  AND ISNULL(s.fVANAGENTID, 0) NOT IN ({ph})
+"""
+
 # Заказы, из которых сделаны накладные (см. docstring модуля: fISN — накладная, fPARENTISN — заказ)
 SQL_SALE_PARENTS = """
 SELECT CAST(p.fISN AS nvarchar(36)), CAST(p.fPARENTISN AS nvarchar(36))
@@ -460,9 +478,12 @@ WHERE s.fSTATE = 2 AND s.fDATE >= ? AND LTRIM(RTRIM(ISNULL(s.fDELIVERYCAR, '')))
 GROUP BY LTRIM(RTRIM(s.fDELIVERYCAR))
 """
 
+# + экспедитор, менеджер и имя экспедитора (№96: машина накладной без машины — по экспедитору, dispatch.fact_truck)
 SQL_INVOICE_CARS = """
-SELECT CAST(s.fISN AS nvarchar(36)), RTRIM(s.fDOCNUM), s.fCUSTOMERID, LTRIM(RTRIM(ISNULL(s.fDELIVERYCAR, '')))
+SELECT CAST(s.fISN AS nvarchar(36)), RTRIM(s.fDOCNUM), s.fCUSTOMERID, LTRIM(RTRIM(ISNULL(s.fDELIVERYCAR, ''))),
+       ISNULL(s.fVANAGENTID, 0), ISNULL(s.fSALESAGENTID, 0), va.fNAME
 FROM SALES s WITH (NOLOCK)
+LEFT JOIN SALESAGENTS va WITH (NOLOCK) ON va.fID = s.fVANAGENTID
 WHERE s.fSTATE = 2 AND s.fDATE >= ? AND s.fDATE < ?
 """
 
@@ -482,11 +503,25 @@ def day_sales(conn: Any, car_code: str, day: date) -> list[Doc]:
     return [_sale_doc(r) for r in _select(conn, SQL_DAY_SALES, (day, day + timedelta(days=1), car_code))]
 
 
-def plan_sales(conn: Any, order_isns: Sequence[str], day: date) -> list[Doc]:
-    """Накладные дня без машины, сделанные из данных заказов (заказы, которые «Развоз» отдал машине)."""
+def van_sales(conn: Any, van_ids: Sequence[int], day: date) -> list[Doc]:
+    """Накладные дня без машины экспедиторов van_ids (№96: экспедиторы машины), не самих менеджеров."""
     out: dict[str, Doc] = {}
+    for chunk in _chunks(sorted(set(van_ids))):
+        for r in _select(conn, SQL_VAN_SALES.format(ph=_ph(len(chunk))), (day, day + timedelta(days=1), *chunk)):
+            doc = _sale_doc(r)
+            out[doc.isn] = doc
+    return sorted(out.values(), key=lambda d: (d.customer_id, d.doc_number))
+
+
+def plan_sales(conn: Any, order_isns: Sequence[str], day: date, skip_vans: Sequence[int] = ()) -> list[Doc]:
+    """Накладные дня без машины, сделанные из данных заказов (заказы, которые «Развоз» отдал машине); skip_vans — кроме
+    накладных этих экспедиторов (№96: экспедиторы других машин — накладная их машины)."""
+    out: dict[str, Doc] = {}
+    skip = sorted(set(skip_vans))
+    tail = _NOT_VANS.format(ph=_ph(len(skip))) if skip else ''
     for chunk in _chunks(sorted(set(order_isns))):
-        for r in _select(conn, SQL_PLAN_SALES.format(ph=_ph(len(chunk))), (day, day + timedelta(days=1), *chunk)):
+        for r in _select(conn, SQL_PLAN_SALES.format(ph=_ph(len(chunk))) + tail,
+                         (day, day + timedelta(days=1), *chunk, *skip)):
             doc = _sale_doc(r)
             out[doc.isn] = doc   # накладная из нескольких заказов разных чанков — одна точка
     return sorted(out.values(), key=lambda d: (d.customer_id, d.doc_number))
@@ -722,22 +757,33 @@ OrdersPick = Callable[[Sequence[DispatchOrder], Callable[[Sequence[int]], dict[i
 
 
 def load_day(connection_string: str, car_code: str, day: date, orders_window: tuple[date, date],
-             pick_orders: OrdersPick, invoice_owner: Callable[[int], bool] | None = None) -> DayData:
+             pick_orders: OrdersPick, invoice_owner: Callable[[int], bool] | None = None,
+             van_cars: Callable[[Mapping[int, str]], Mapping[int, str]] | None = None) -> DayData:
     """Всё для /day машины на дату — одним read-only соединением.
 
-    Точки — по клиенту (docstring модуля): проведённые накладные машины на дату (с машиной в накладной или без
-    машины из заказов, которые pick_orders отдаёт этой машине, у клиентов, для которых invoice_owner — да
-    (routes_link.invoice_owner; None — накладные без машины не берутся); с `replaces` — их заказами) + заказы окна
-    orders_window, которые pick_orders отдаёт этой машине, у клиентов без накладной машины и без накладной вообще."""
+    Точки — по клиенту (docstring модуля): проведённые накладные машины на дату (с машиной в накладной; без машины —
+    экспедиторов машины: van_cars — ERP-агенты (id → имя) → id экспедитора → его машина, routes_link.van_cars, None — не
+    берутся; и из заказов, которые pick_orders отдаёт этой машине, у клиентов, для которых invoice_owner — да
+    (routes_link.invoice_owner; None — не берутся), кроме накладных экспедиторов других машин; с `replaces` — их
+    заказами) + заказы окна orders_window, которые pick_orders отдаёт этой машине, у клиентов без накладной машины и без
+    накладной вообще."""
     conn = erp.connect(connection_string)
     try:
         sales = day_sales(conn, car_code, day)
+        vans: Mapping[int, str] = {}
+        if van_cars is not None:   # №96: накладные экспедиторов машины — факт, и до утверждения плана
+            vans = van_cars(_ref(connection_string, 'agents', lambda: {a.id: a.name for a in erp.agents(conn).values()}))
+            mine = [a for a, car in vans.items() if car == car_code]
+            if mine:
+                own = {d.isn for d in sales}
+                sales += [d for d in van_sales(conn, mine, day) if d.isn not in own]
         picked = pick_orders(erp.dispatch_orders(conn, *orders_window), lambda ids: erp.place_texts(conn, ids))
         shipped = [o.isn for o in picked if o.shipped is not None
                    and invoice_owner is not None and invoice_owner(o.customer_id)]
         if shipped:
             own = {d.isn for d in sales}
-            sales += [d for d in plan_sales(conn, shipped, day) if d.isn not in own]
+            sales += [d for d in plan_sales(conn, shipped, day, [a for a, car in vans.items() if car != car_code])
+                      if d.isn not in own]
         parents = sale_parents(conn, [d.isn for d in sales]) if sales else {}
         sales = [Doc(d.stop_id, d.source, d.isn, d.doc_number, d.customer_id, d.agent_id, d.pay_type, d.amount,
                      parents.get(d.isn, ())) for d in sales]
@@ -859,13 +905,16 @@ class InvoiceCar:
     doc_number: str
     customer_id: int
     car_code: str
+    van_agent_id: int = 0   # экспедитор (SALES.fVANAGENTID), 0 — нет
+    agent_id: int = 0       # менеджер (SALES.fSALESAGENTID)
+    van_name: str = ''      # имя экспедитора — ERP-агент (№96: сравнивается с экипажем дня)
 
 
 def invoice_cars(connection_string: str, day: date) -> tuple[list[InvoiceCar], dict[int, tuple[str, str]]]:
-    """Накладные дня с машинами и (код, название) клиентов — для сравнения с планом «Развоза»."""
+    """Накладные дня с машинами и экспедиторами и (код, название) клиентов — для сравнения с планом «Развоза»."""
     conn = erp.connect(connection_string)
     try:
-        rows = [InvoiceCar(_str(r[0]).upper(), _str(r[1]), int(r[2]), _str(r[3]))
+        rows = [InvoiceCar(_str(r[0]).upper(), _str(r[1]), int(r[2]), _str(r[3]), int(r[4] or 0), int(r[5] or 0), _str(r[6]))
                 for r in _select(conn, SQL_INVOICE_CARS, (day, day + timedelta(days=1)))]
         names = {c.id: (c.code, c.name) for c in erp.customers(conn, sorted({r.customer_id for r in rows})).values()}
     finally:
