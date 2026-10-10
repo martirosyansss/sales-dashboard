@@ -63,7 +63,7 @@ def test_schema_28_migrates_copy_of_old_schema_and_acks_roundtrip(tmp_path, old)
     assert s2.live_acks('2026-10-03') == []
     v1, after = _version_tables(copy)
     new = {'live_ack': 0} | ({'tg_message': 0, 'tg_kv': 0} if old == 26 else {})
-    assert v1 == str(st.SCHEMA_VERSION) == '28' and after == {**before, **new}   # прежние строки целы
+    assert v1 == str(st.SCHEMA_VERSION) == '29' and after == {**before, **new}   # прежние строки целы (… → 29, №97)
     assert st._MIGRATIONS[27] == (st._LIVE_ACK_TABLE,)
     assert st._MIGRATIONS[26] == (st._TG_MESSAGE_TABLE, st._TG_MESSAGE_INDEX, st._TG_KV_TABLE)   # шаг бота — как в trunk
     assert s2.truck_drivers('2026-10-02')[0] == {'CAR1': 'Արամ'}

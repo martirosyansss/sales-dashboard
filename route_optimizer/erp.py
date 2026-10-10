@@ -466,6 +466,17 @@ WHERE s.fSTATE = 2 AND s.fDATE >= ? AND s.fDATE < ?
 GROUP BY CAST(s.fDATE AS date), s.fCUSTOMERID, ISNULL(s.fSALESAGENTID, 0), ISNULL(s.fVANAGENTID, 0)
 """
 
+# «Գրել ERP-ում» (№97, erp_write): текущее состояние заказов плана для предпросмотра записи — состояние (любое, не только
+# проведённые), առաքիչ, машина и сколько у заказа дочерних документов (DOCPARENTS: накладные, տրամադրում — любые). Запись
+# всё перепроверяет в своей транзакции (erp_write.apply); здесь — только чтение, как везде.
+SQL_ORDER_STATES = """
+SELECT CAST(o.fISN AS nvarchar(36)), RTRIM(o.fDOCNUM), o.fCUSTOMERID, o.fSTATE, o.fVANAGENTID,
+       LTRIM(RTRIM(ISNULL(o.fDELIVERYCAR, ''))), ch.n
+FROM ORDERS o WITH (NOLOCK)
+OUTER APPLY (SELECT COUNT(*) AS n FROM DOCPARENTS p WITH (NOLOCK) WHERE p.fPARENTISN = o.fISN) ch
+WHERE o.fISN IN ({ph})
+"""
+
 
 # --- Справочники ---
 
@@ -827,6 +838,40 @@ def load_crew_pay(connection_string: str, since: date, until: date) -> CrewData:
                                  float(r[5] or 0), float(r[6] or 0))
                          for r in _select(conn, SQL_CREW_PAY, (since, until)))
         return CrewData(invoices, {a.id: (a.code, ' '.join(a.name.split())) for a in agents(conn).values()})
+    finally:
+        close_quietly(conn)
+
+
+@dataclass(frozen=True)
+class OrderState:
+    """Заказ ERP сейчас (№97, предпросмотр «Գրել ERP-ում»): состояние fSTATE, առաքիչ fVANAGENTID (0 — нет), машина
+    (без краевых пробелов, '' — нет), есть ли дочерние документы."""
+    isn: str
+    doc_num: str
+    customer_id: int
+    state: int
+    van_id: int
+    car: str
+    children: bool
+
+
+def order_states(conn: Any, isns: Sequence[str]) -> dict[str, OrderState]:
+    """fISN → состояние заказа; заказа нет в ORDERS (удалён) — нет и в словаре."""
+    out: dict[str, OrderState] = {}
+    for chunk in _chunks(sorted({i.upper() for i in isns})):  # type: ignore[arg-type]
+        for r in _select(conn, SQL_ORDER_STATES.format(ph=_placeholders(len(chunk))), chunk):
+            isn = _str(r[0]).upper()
+            out[isn] = OrderState(isn, _str(r[1]), int(r[2] or 0), int(r[3] or 0), int(r[4] or 0), _str(r[5]),
+                                  int(r[6] or 0) > 0)
+    return out
+
+
+def load_order_states(connection_string: str, isns: Sequence[str]
+                      ) -> tuple[dict[str, OrderState], dict[int, Agent], dict[str, Car]]:
+    """Заказы isns сейчас, ERP-агенты и машины ERP — одним соединением, только чтение (№97, предпросмотр записи)."""
+    conn = connect(connection_string)
+    try:
+        return order_states(conn, isns), agents(conn), cars(conn)
     finally:
         close_quietly(conn)
 

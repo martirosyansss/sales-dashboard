@@ -553,7 +553,7 @@
     const interacting = () => {
         const a = document.activeElement;
         return state.dragging || !!state.mapDrag || (!!state.stopCard && state.stopCard.isOpen() && wsOn()) || $('dpGeoDlg').open || $('dpUnloadDlg').open || $('dpCondDlg').open || $('dpUntilDlg').open || $('dpDriverDlg').open
-            || $('dpSameDayDlg').open || $('dpAbsentDlg').open || $('dpSendFirstDlg').open || $('dpAddDlg').open || $('dpWhyDlg').open || $('dpCmpDlg').open
+            || $('dpSameDayDlg').open || $('dpAbsentDlg').open || $('dpSendFirstDlg').open || $('dpErpDlg').open || $('dpAddDlg').open || $('dpWhyDlg').open || $('dpCmpDlg').open
             || (!!a && $('dpBody').contains(a) && /^(SELECT|INPUT|TEXTAREA)$/.test(a.tagName));
     };
     async function poll() {
@@ -699,6 +699,7 @@
         }
         pill.title = (unsent ? unsentDetail(d.unsent) : long.textContent) + (d.approved ? ' · Պլանը հաստատված է' : '');
         box.appendChild(pill);
+        renderErpState(box);
         if (!unsent) return;
         const b = document.createElement('button');
         b.type = 'button';
@@ -714,6 +715,153 @@
         x.textContent = 'Չեղարկել փոփոխությունները';
         x.addEventListener('click', discardPlan);
         box.append(b, x);
+    }
+
+    // ---------- «Գրել ERP-ում» (ответ владельца №97): առաքիչ и машина заказов дня в ERP по отправленному плану ----------
+    // Кнопка — только если запись включена на сервере (d.erp_write), план отправлен водителям и день не прошёл. Окно:
+    // предпросмотр по машинам (что изменится, что пропущено и почему — текст причины с сервера) → «Հաստատել» пишет, только
+    // если план и ERP с тех пор не изменились (signature; иначе 409) → итог ✅/❌ по заказам; «Վերադարձնել» — откат
+    // записанного сейчас (для пробы). Строки из ERP (имена, коды, номера) — только textContent.
+    const erp = { sig: null, done: [], busy: false };
+    const erpVan = (v) => (v ? v.code + (v.name ? ' ' + v.name : '') : '—');
+    const erpCar = (c) => c || '—';
+    function renderErpState(box) {
+        const d = state.data;
+        if (!d.erp_write || !d.sent || d.is_past) return;
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.id = 'dpErpBtn';
+        b.className = 'rt-btn rt-btn-ghost rt-btn-sm';
+        b.innerHTML = '<i class="fas fa-file-export" aria-hidden="true"></i><span>Գրել ERP-ում</span>';
+        b.setAttribute('aria-label', 'Գրել առաքիչին և մեքենան ERP-ի պատվերներում');
+        b.addEventListener('click', openErp);
+        box.appendChild(b);
+        // что сайт записал по машинам (последняя попытка по каждому заказу)
+        const trucks = d.erp_write.trucks || {};
+        const codes = Object.keys(trucks).filter(c => c).sort();
+        if (!codes.length) return;
+        const line = document.createElement('span');
+        line.className = 'dp-erpline';
+        line.textContent = 'ERP՝ ' + codes.map(c => {
+            const t = trucks[c];
+            return (c.indexOf(', ') < 0 ? truckLabel(truckBy(c)) : c) + ' ✅' + t.written + (t.failed ? ' ❌' + t.failed : '')
+                + (t.undone ? ' ↩' + t.undone : '');
+        }).join(' · ');
+        box.appendChild(line);
+    }
+    function erpCell(tr, text, cls) {
+        const td = document.createElement('td');
+        td.textContent = text;
+        if (cls) td.className = cls;
+        tr.appendChild(td);
+        return td;
+    }
+    function erpTable(head, rows) {
+        const table = document.createElement('table');
+        table.className = 'dp-erp-table';
+        const tr = document.createElement('tr');
+        head.forEach(h => { const th = document.createElement('th'); th.scope = 'col'; th.textContent = h; tr.appendChild(th); });
+        table.createTHead().appendChild(tr);
+        const tb = table.createTBody();
+        rows.forEach(r => tb.appendChild(r));
+        return table;
+    }
+    function renderErpPreview(p) {
+        const box = $('dpErpBody');
+        box.textContent = '';
+        $('dpErpSum').textContent = (p.counts.write ? 'Կփոխվի ' + pl(p.counts.write, 'պատվեր') : 'ERP-ում փոխելու բան չկա')
+            + (p.counts.skip ? ' · բաց կթողնվի ' + pl(p.counts.skip, 'պատվեր') : '');
+        p.trucks.forEach(g => {
+            const sec = document.createElement('section');
+            sec.className = 'dp-erp-truck';
+            const h = document.createElement('h3');
+            h.className = 'dp-erp-th';
+            h.textContent = (g.truck ? (g.truck.indexOf(', ') < 0 ? truckLabel(truckBy(g.truck)) : g.truck) : 'Երթերում չեն')
+                + (g.driver ? ' · ' + g.driver : '');
+            const m = document.createElement('span');
+            m.className = 'dp-erp-tm';
+            m.textContent = 'Կփոխվի ' + g.write + (g.skip ? ' · բաց կթողնվի ' + g.skip : '');
+            h.appendChild(m);
+            sec.appendChild(h);
+            const rows = g.orders.map(o => {
+                const tr = document.createElement('tr');
+                tr.className = o.write ? 'is-write' : 'is-skip';
+                erpCell(tr, o.doc_num);
+                erpCell(tr, (o.code ? o.code + ' ' : '') + o.name);
+                const vanMoves = o.write && (o.old_van ? o.old_van.id : 0) !== (o.new_van ? o.new_van.id : 0);
+                erpCell(tr, vanMoves ? erpVan(o.old_van) + ' → ' + erpVan(o.new_van) : erpVan(o.old_van));
+                erpCell(tr, o.write && o.old_car !== o.new_car ? erpCar(o.old_car) + ' → ' + erpCar(o.new_car) : erpCar(o.old_car));
+                erpCell(tr, o.reason_text || (o.write ? 'Կփոխվի' : ''), o.write ? 'dp-erp-ok' : 'dp-erp-skip');
+                return tr;
+            });
+            sec.appendChild(erpTable(['Պատվեր', 'Խանութ', 'Առաքիչ', 'Մեքենա', ''], rows));
+            box.appendChild(sec);
+        });
+    }
+    function renderErpResults(r, title) {
+        const box = $('dpErpBody');
+        box.textContent = '';
+        $('dpErpSum').textContent = title + ' ✅ ' + r.counts.ok + (r.counts.failed ? ' · ❌ ' + r.counts.failed : '');
+        const rows = r.results.map(x => {
+            const tr = document.createElement('tr');
+            tr.className = x.ok ? 'is-write' : 'is-skip';
+            erpCell(tr, x.ok ? (x.reason ? '⚠️' : '✅') : '❌');
+            erpCell(tr, x.doc_num);
+            erpCell(tr, x.truck);
+            erpCell(tr, x.old_code !== x.new_code ? (x.old_code || '—') + ' → ' + (x.new_code || '—') : (x.new_code || '—'));
+            erpCell(tr, x.old_car !== x.new_car ? erpCar(x.old_car) + ' → ' + erpCar(x.new_car) : erpCar(x.new_car));
+            erpCell(tr, x.reason_text, x.ok && !x.reason ? 'dp-erp-ok' : 'dp-erp-skip');
+            return tr;
+        });
+        if (rows.length) box.appendChild(erpTable(['', 'Պատվեր', 'Պլանի մեքենա', 'Առաքիչ', 'Մեքենա', ''], rows));
+    }
+    async function erpCall(run) {
+        if (erp.busy) return;
+        erp.busy = true;
+        $('dpErpErr').textContent = '';
+        ['dpErpOk', 'dpErpUndo'].forEach(id => { $(id).disabled = true; });
+        try { await run(); } catch (e) {
+            $('dpErpErr').textContent = e.message || String(e);
+        } finally { erp.busy = false; }
+    }
+    function openErp() {
+        erp.sig = null;
+        erp.done = [];
+        $('dpErpBody').textContent = '';
+        $('dpErpErr').textContent = '';
+        $('dpErpSum').textContent = 'Կարդում եմ ERP-ից…';
+        $('dpErpOk').hidden = false;
+        $('dpErpUndo').hidden = true;
+        $('dpErpDlg').showModal();
+        erpCall(async () => {
+            const p = await api('GET', '/api/routes/dispatch/erp-write?date=' + encodeURIComponent(state.day));
+            erp.sig = p.signature;
+            renderErpPreview(p);
+            $('dpErpOk').disabled = !p.counts.write;
+        });
+    }
+    function erpConfirm() {
+        if (!erp.sig) return;
+        erpCall(async () => {
+            const r = await api('POST', '/api/routes/dispatch/erp-write', { date: state.day, expected: erp.sig });
+            erp.sig = null;
+            erp.done = r.results.filter(x => x.ok).map(x => x.isn);
+            renderErpResults(r, 'Գրված է ERP-ում՝');
+            $('dpErpOk').hidden = true;
+            $('dpErpUndo').hidden = !erp.done.length;
+            $('dpErpUndo').disabled = !erp.done.length;
+            reloadQuiet().catch(() => {});
+        });
+    }
+    function erpUndo() {
+        if (!erp.done.length || !window.confirm('Վերադարձնե՞լ ERP-ում նախկին առաքիչին և մեքենան՝ ' + pl(erp.done.length, 'պատվեր') + '։')) return;
+        erpCall(async () => {
+            const r = await api('POST', '/api/routes/dispatch/erp-write/undo', { date: state.day, orders: erp.done });
+            erp.done = [];
+            renderErpResults(r, 'Վերադարձված է՝');
+            $('dpErpUndo').hidden = true;
+            reloadQuiet().catch(() => {});
+        });
     }
 
     // ---------- Требует внимания (№81): счётчики одной строкой, нажатие — к месту на странице ----------
@@ -6168,6 +6316,10 @@
             if (go) go(true);
         });
         $('dpSfCancel').addEventListener('click', () => $('dpSendFirstDlg').close());
+        $('dpErpOk').addEventListener('click', erpConfirm);
+        $('dpErpUndo').addEventListener('click', erpUndo);
+        $('dpErpClose').addEventListener('click', () => $('dpErpDlg').close());
+        $('dpErpDlg').addEventListener('cancel', (e) => { if (erp.busy) e.preventDefault(); });
         $('dpSendFirstDlg').addEventListener('close', () => { paperNext = null; });
         try { state.boardFolded = window.localStorage.getItem('dpBoardFolded') === '1'; } catch (e) { /* хранилище недоступно */ }
         $('dpStep1Tog').addEventListener('click', () => toggleStep('dpStep1'));

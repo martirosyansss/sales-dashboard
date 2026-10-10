@@ -1554,3 +1554,23 @@ body.dp-ws-on .rt-shell { --rt-secnav-gap: 8px; }
     .dp-cmp tbody th, .dp-cmp :is(thead, tfoot) td:first-child { position: sticky; left: 0; z-index: 1; background: var(--rt-panel); }
     .dp-cmp tbody th { white-space: normal; min-width: 120px; }
 }
+
+/* ==========================================================================
+   №97 — «Գրել ERP-ում»: предпросмотр записи в заказы ERP по машинам, итог по заказам
+   ========================================================================== */
+.dp-erpline { font-size: .8125rem; color: var(--rt-fg-dim); overflow-wrap: anywhere; }
+.dp-dlg.dp-erp-dlg { width: min(980px, calc(100vw - 32px)); }
+.dp-erp-sum { margin: 0 0 10px; font-weight: 600; }
+.dp-erp-body { display: grid; gap: 14px; }
+.dp-erp-truck { min-width: 0; }
+.dp-erp-th { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; margin: 0 0 6px; font-size: 1rem; font-weight: 700; }
+.dp-erp-tm { font-size: .8125rem; font-weight: 600; color: var(--rt-fg-dim); }
+.dp-erp-table { width: 100%; border-collapse: collapse; font-size: .8125rem; }
+.dp-erp-table th, .dp-erp-table td { padding: 5px 8px; border-bottom: 1px solid var(--rt-line-soft); text-align: left; vertical-align: top; overflow-wrap: anywhere; }
+.dp-erp-table th { color: var(--rt-fg-mute); font-weight: 600; }
+.dp-erp-table tr.is-skip td { color: var(--rt-fg-dim); }
+.dp-erp-table td.dp-erp-ok { color: var(--rt-ok); }
+.dp-erp-table td.dp-erp-skip { color: var(--rt-warn); }
+@media (max-width: 767px) {
+    .dp-erp-table { display: block; overflow-x: auto; }
+}

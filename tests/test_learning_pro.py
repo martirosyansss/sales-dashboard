@@ -569,8 +569,8 @@ def test_store_migrates_20_to_21_keeps_rows_and_allows_new_kinds(tmp_path):
                                    lr.Outcome('truck_unload', '', False, 'нет'),
                                    lr.Outcome('truck_travel', '', False, 'нет', model_id='straight')])
     with closing(sqlite3.connect(path)) as conn:
-        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == ('28',) == \
-            (str(st.SCHEMA_VERSION),)                                       # 20 → … → 28 («Տեսա» карты)
+        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == ('29',) == \
+            (str(st.SCHEMA_VERSION),)                                       # 20 → … → 29 (журнал записи в ERP, №97)
         rows = conn.execute('SELECT * FROM learned_norms ORDER BY id').fetchall()
         assert rows[:len(before)] == before and rows[len(before)][0] == 41
         assert conn.execute("SELECT name FROM sqlite_sequence WHERE name LIKE 'learned_norms%'").fetchall() == \
@@ -590,4 +590,4 @@ def test_learning_page_texts_armenian():
     djs = (ROOT / 'static' / 'js' / 'routes_dispatch.js').read_text(encoding='utf-8')
     assert 'dp-buffer-mark' in djs and 'ժամանակի պաշար երթի վերջում՝' in djs
     page = (ROOT / 'templates' / 'routes_dispatch.html').read_text(encoding='utf-8')
-    assert "routes_dispatch.js') }}?v=115" in page and "routes_dispatch.css') }}?v=72" in page
+    assert "routes_dispatch.js') }}?v=117" in page and "routes_dispatch.css') }}?v=74" in page

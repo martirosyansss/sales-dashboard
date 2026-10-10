@@ -30,7 +30,7 @@ from .patterns import parse_freq_key, parse_pattern_key, parse_plan_freq_key, pa
 from .running_costs import LOAD_COST_FIELDS, profile_fields
 from .vehicle_access import VehicleAccess, check_access
 
-SCHEMA_VERSION = 28
+SCHEMA_VERSION = 29
 logger = logging.getLogger(__name__)
 CREW_PAY_KEY = 'crew_pay'   # строка settings с параметрами «Աշխատավարձ» (Store.crew_pay_params); не ключ DEFAULT_SETTINGS
 # строка settings: какие виды тревог карты знала программа, сохранившая live_alert_kinds (№87); не ключ
@@ -255,6 +255,21 @@ _LIVE_ACK_TABLE = (
     "CREATE TABLE IF NOT EXISTS live_ack(day TEXT NOT NULL, car TEXT NOT NULL, key TEXT NOT NULL, since TEXT, "
     "user TEXT, at TEXT NOT NULL, seen_at TEXT NOT NULL, PRIMARY KEY (day, car, key))")
 
+# Схема 29 (№97, «Գրել ERP-ում», docs/plans/erp-write-plan.md): журнал записи сайта в заказы ERP — строка на заказ и попытку:
+# op — запись по плану (write) или «Վերադարձնել» (undo); было → стало (առաքիչ — id ERP-агента, машина — код, '' — нет);
+# old_car_null — ORDERS.fDELIVERYCAR был NULL до записи (возврат к пустой машине пишет как было); result — ok (COMMIT
+# прошёл) или failed (откат), reason — причина (erp_write.FAIL_REASONS) или verify_failed у ok. Для показа и отката пробы.
+_ERP_WRITE_LOG_TABLE = (
+    "CREATE TABLE IF NOT EXISTS erp_write_log(id INTEGER PRIMARY KEY AUTOINCREMENT, day TEXT NOT NULL, "
+    "op TEXT NOT NULL CHECK (op IN ('write', 'undo')), order_isn TEXT NOT NULL, doc_num TEXT NOT NULL DEFAULT '', "
+    "customer_id INTEGER NOT NULL, truck TEXT NOT NULL DEFAULT '', old_van INTEGER NOT NULL, new_van INTEGER NOT NULL, "
+    "old_car TEXT NOT NULL, new_car TEXT NOT NULL, old_car_null INTEGER NOT NULL CHECK (old_car_null IN (0, 1)), "
+    "result TEXT NOT NULL CHECK (result IN ('ok', 'failed')), reason TEXT NOT NULL DEFAULT '', by_user TEXT, "
+    "at TEXT NOT NULL)")
+_ERP_WRITE_LOG_INDEX = 'CREATE INDEX IF NOT EXISTS erp_write_log_day ON erp_write_log(day, order_isn)'
+ERP_WRITE_LOG_FIELDS = ('id', 'day', 'op', 'order_isn', 'doc_num', 'customer_id', 'truck', 'old_van', 'new_van', 'old_car',
+                        'new_car', 'old_car_null', 'result', 'reason', 'by_user', 'at')
+
 _MEASUREMENT_TABLE = (
     'CREATE TABLE IF NOT EXISTS route_measurement(day TEXT NOT NULL, car_code TEXT NOT NULL, '
     'data TEXT NOT NULL, updated_at TEXT NOT NULL, updated_by TEXT, PRIMARY KEY(day, car_code))')
@@ -340,6 +355,8 @@ _SCHEMA = (
     _TG_MESSAGE_INDEX,
     _TG_KV_TABLE,
     _LIVE_ACK_TABLE,
+    _ERP_WRITE_LOG_TABLE,
+    _ERP_WRITE_LOG_INDEX,
     _GEO_OVERRIDE_TABLE,
     _DISPATCH_TABLE,
     _TRUCKS_ONE_VAN,
@@ -497,6 +514,8 @@ _MIGRATIONS: dict[int, tuple[str, ...]] = {
     26: (_TG_MESSAGE_TABLE, _TG_MESSAGE_INDEX, _TG_KV_TABLE),
     # 27 → 28 (владелец 08.10): только добавляем — общие отметки «Տեսա» карты машин.
     27: (_LIVE_ACK_TABLE,),
+    # 28 → 29 (№97): только добавляем — журнал записи сайта в заказы ERP; прежнее не меняется.
+    28: (_ERP_WRITE_LOG_TABLE, _ERP_WRITE_LOG_INDEX),
 }
 
 FUEL_TYPES = ('diesel', 'petrol', 'lpg')
@@ -2928,6 +2947,34 @@ class Store:
                 conn.execute('DELETE FROM live_explain WHERE id = ?', (explanation_id,))
             return (row[0], row[1]) if row is not None else None
         return self._transaction(write, 'не удалось отменить объяснение тревоги')
+
+    # --- запись в ERP (схема 29, №97) ---
+
+    def add_erp_write(self, day: str, op: str, row: Mapping[str, Any], user: str | None) -> int:
+        """Строка журнала записи в ERP (erp_write_log; row — поля ERP_WRITE_LOG_FIELDS от order_isn до reason) → id.
+        Неверные данные — ValueError (записывает сам сервер после попытки, не пользователь)."""
+        if _iso_day(day) is None or op not in ('write', 'undo'):
+            raise ValueError('day: YYYY-MM-DD, op: write | undo')
+        if row.get('result') not in ('ok', 'failed') or not isinstance(row.get('order_isn'), str) \
+                or not all(_is_int(row.get(k)) for k in ('customer_id', 'old_van', 'new_van')) \
+                or not all(isinstance(row.get(k), str) for k in ('doc_num', 'truck', 'old_car', 'new_car', 'reason')):
+            raise ValueError('строка журнала записи в ERP не прошла проверку')
+
+        def write(conn: sqlite3.Connection) -> int:
+            cur = conn.execute(
+                'INSERT INTO erp_write_log(day, op, order_isn, doc_num, customer_id, truck, old_van, new_van, old_car, '
+                'new_car, old_car_null, result, reason, by_user, at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                (day, op, row['order_isn'], row['doc_num'], row['customer_id'], row['truck'], row['old_van'],
+                 row['new_van'], row['old_car'], row['new_car'], int(bool(row.get('old_car_null', True))), row['result'],
+                 row['reason'], user, _now()))
+            return int(cur.lastrowid)
+        return self._transaction(write, 'не удалось сохранить журнал записи в ERP')
+
+    def erp_write_log(self, day: str) -> list[dict[str, Any]]:
+        """Журнал записи в ERP за день YYYY-MM-DD по порядку записи — словари ERP_WRITE_LOG_FIELDS (old_car_null — bool)."""
+        rows = self._read(lambda conn: conn.execute(
+            f'SELECT {", ".join(ERP_WRITE_LOG_FIELDS)} FROM erp_write_log WHERE day = ? ORDER BY id', (day,)).fetchall())
+        return [{**dict(zip(ERP_WRITE_LOG_FIELDS, r)), 'old_car_null': bool(r[11])} for r in rows]
 
     # --- Telegram-бот (схема 27, №91) ---
 

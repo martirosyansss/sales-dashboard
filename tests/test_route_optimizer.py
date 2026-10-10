@@ -1252,7 +1252,8 @@ def test_static_erp_access_only_through_guard():
             'tsp.py', 'evaluate.py', 'snapshot.py'} <= set(trees)
     for name, tree in trees.items():
         imports = _imports(tree)
-        assert ('pyodbc' in imports) == (name == 'erp.py'), f'{name}: pyodbc только в erp.py'
+        # №97: запись в ERP — только erp_write.py (своё соединение записи); остальное — через guard erp.py
+        assert ('pyodbc' in imports) == (name in ('erp.py', 'erp_write.py')), f'{name}: pyodbc только в erp.py и erp_write.py'
         if name != 'store.py':
             assert 'sqlite3' not in imports, f'{name}: sqlite3 только в store.py'
     # в erp.py execute вызывается только внутри _select
@@ -1266,6 +1267,8 @@ def test_static_erp_access_only_through_guard():
 def test_static_no_sql_writes_outside_guard_list():
     for name, tree in _module_trees().items():
         if name == 'store.py':     # своё хранилище SQLite, не ERP
+            continue
+        if name == 'erp_write.py':   # №97: единственная запись в ERP — её состав проверяет test_route_dispatch_erp_write
             continue
         for node in ast.walk(tree):
             if isinstance(node, ast.Constant) and isinstance(node.value, str):

@@ -5,7 +5,8 @@
     import route_optimizer
     route_optimizer.init_app(app, db)
 
-ERP читается только через route_optimizer.erp (read-only guard); свои настройки — SQLite.
+ERP читается только через route_optimizer.erp (read-only guard); свои настройки — SQLite. Единственная запись в ERP —
+route_optimizer.erp_write (№97: առաքիչ и машина заказов дня), только при env ROUTES_ERP_WRITE_DSN.
 Ни ERP, ни SQLite не трогаются при подключении: только при первом запросе к разделу.
 """
 from __future__ import annotations
@@ -19,7 +20,7 @@ from typing import Any
 
 from flask import Flask
 
-from . import erp, learning, live, live_alerts, scorecard, tg_api, tg_bot, tg_reports, waybill
+from . import erp, erp_write, learning, live, live_alerts, scorecard, tg_api, tg_bot, tg_reports, waybill
 from .actuals import YEREVAN
 from .roads import RoadProvider, osm_path
 from .snapshot import ResultCache, SnapshotCache, load_snapshot
@@ -47,6 +48,8 @@ def init_app(app: Flask, db: Any, db_path: str | None = None) -> None:
     """
     path = db_path or os.environ.get('ROUTES_DB_PATH') or os.path.join(app.root_path, DB_FILENAME)
     connection_string: str = db.connection_string
+    # №97 «Գրել ERP-ում»: отдельное соединение записи (ROUTES_ERP_WRITE_DSN); нет — запись выключена. Строку не логируем
+    write_dsn = erp_write.write_dsn()
     roads = RoadProvider(osm_path())
     valhalla = ValhallaProvider(pbf=roads.path)
     valhalla.start()
@@ -67,10 +70,13 @@ def init_app(app: Flask, db: Any, db_path: str | None = None) -> None:
         customer_hint_loader=lambda since, until: erp.load_customer_hints(connection_string, since, until),
         crew_pay_loader=lambda since, until: erp.load_crew_pay(connection_string, since, until),
         cost_sales_loader=lambda since, until: erp.load_cost_sales(connection_string, since, until),
+        erp_states_loader=(lambda isns: erp.load_order_states(connection_string, isns)) if write_dsn else None,
+        erp_write_conn=(lambda: erp_write.connect_write(write_dsn)) if write_dsn else None,
     )
     app.register_blueprint(bp)
     logger.info('[Routes] Раздел «Маршруты» подключён; база настроек: %s; карта дорог: %s%s', path,
                 roads.path, '' if os.path.exists(roads.path) else ' (нет — км по прямой)')
+    logger.info('[Routes] Запись в ERP («Գրել ERP-ում», №97): %s', 'включена' if write_dsn else 'выключена')
 
 
 def attach_driver_geo(app: Flask, source: DriverGeo) -> None:
