@@ -498,7 +498,7 @@ def test_open_day_syncs_stored_plan_and_unknown_van(client):
 def test_page_has_erp_banner_and_stop_badge():
     page = (ROOT / 'templates' / 'routes_dispatch.html').read_text(encoding='utf-8')
     js = (ROOT / 'static' / 'js' / 'routes_dispatch.js').read_text(encoding='utf-8')
-    assert 'id="dpErp"' in page and "routes_dispatch.js') }}?v=115" in page and "routes_dispatch.css') }}?v=72" in page
+    assert 'id="dpErp"' in page and "routes_dispatch.js') }}?v=116" in page and "routes_dispatch.css') }}?v=73" in page
     assert 'function renderErp()' in js and 'ERP ապրանքագրեր' in js and 'մեքենան հայտնի չէ' in js
     assert "'ERP ապրանքագիր'" in js and "'ապրանքագիր չկա'" in js and 'stop.erp_truck' in js
     assert 'textContent = text' in js.split('function renderErp()')[1].split('function ')[0]   # имена из ERP — только текстом
