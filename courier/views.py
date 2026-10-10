@@ -648,14 +648,14 @@ def plan_mismatches(day: date) -> dict[str, Any]:
         return {'plan_exists': view.plan_exists, 'items': []}
     invoices, names = st.invoice_loader(day)
     plan = view.plan_trucks()
-    owners = st.store.invoice_cars(day.isoformat())   # №96: накладная с событиями терминала — машины этих событий
+    owners = st.store.stop_cars(day.isoformat())   # №96: накладная с событиями терминала — машины этих событий
     items = []
     no_car = 0
     for inv in sorted(invoices, key=lambda x: (x.customer_id, x.doc_number)):
         trucks = plan.get(inv.customer_id)
         if not trucks:
             continue
-        car = owners.get(inv.isn) or dp.fact_truck(inv.car_code, inv.van_agent_id, inv.agent_id,
+        car = owners.get(f'S:{inv.isn}') or dp.fact_truck(inv.car_code, inv.van_agent_id, inv.agent_id,
                                                    {inv.van_agent_id: inv.van_name}, view.crew, view.van_trucks)
         if not car and len(trucks) == 1:
             no_car += 1

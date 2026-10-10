@@ -260,6 +260,7 @@ class FakeErp:
         self.plan_sales = []      # (строка SQL_DAY_SALES накладной без машины, ISN заказа-родителя)
         self.van_sales = []       # (строка SQL_DAY_SALES накладной без машины, id экспедитора) — №96
         self.by_isn = []          # строки SQL_SALES_BY_ISN (№96: накладные машины по событиям её терминала)
+        self.by_order = []        # (строка SQL_SALES_BY_ORDER, ISN заказа-родителя) — №96
         self.agents = [(7, 'A7', 'Մենեջեր', False, 'Կենտրոն')]   # строки SQL_AGENTS
         self.gifts = []           # строки SQL_DOC_GIFTS: (fISN, fROWNUM, товар, количество) — подарки (№90)
         self.promos = []          # строки SQL_GIFT_PROMOTIONS — акции подарков (№90, «APK сам пересчитывает»)
@@ -276,6 +277,8 @@ class FakeErp:
         if sql.startswith(ed.SQL_PLAN_SALES.split('{')[0]):
             assert "ISNULL(s.fDELIVERYCAR, ''))) = ''" in sql and 'fPARENTDOCTYPE = 1' in sql
             return [row for row, parent in self.plan_sales if parent in params[2:]]
+        if sql.startswith(ed.SQL_SALES_BY_ORDER.split('{')[0]):
+            return [row for row, parent in self.by_order if parent in params[2:]]
         if sql.startswith(ed.SQL_SALES_BY_ISN.split('{')[0]):
             return [row for row in self.by_isn if row[0] in params[2:]]
         if sql.startswith(ed.SQL_VAN_SALES.split('{')[0]):
@@ -1818,11 +1821,31 @@ def test_van_invoice_with_events_stays_on_its_car(fake_erp):
     fake_erp.van_sales = [(VAN_ROW, 3208), (other, 3208)]
     fake_erp.by_isn = [VAN_ROW]
     view = rl.RoutesView(crew=dp.crew_index({'B': [ARMEN]}))                         # теперь он в экипаже B
-    owners = {ISN[0]: 'A'}                                                           # события по S:ISN[0] — у машины A
+    owners = {f'S:{ISN[0]}': 'A'}                                                    # события по S:ISN[0] — у машины A
     load = lambda car: ed.load_day('cs', car, d, (date(2026, 9, 29), d), lambda o, p: [], None,   # noqa: E731
                                    lambda agents: rl.van_cars(view, agents), owners)
     assert [x.stop_id for x in load('A').docs] == [f'S:{ISN[0]}']
     assert [x.stop_id for x in load('B').docs] == [f'S:{ISN[1]}']
+
+
+def test_invoice_from_order_delivered_by_other_car_stays_there(fake_erp, tmp_path):
+    """Ревью a795995 (M2): машина A по заказу ISN[2] (точка O:) уже отдала товар и взяла деньги; накладную ISN[0] из него
+    выписали позже на экспедитора машины B. Она — A (машина событий по заказу), а не B неоплаченной."""
+    d = date(2026, 10, 2)
+    fake_erp.agents = [(7, 'A7', 'Մենեջեր', False, ''), (3208, 'B208', ARMEN, False, '')]
+    fake_erp.van_sales = [(VAN_ROW, 3208)]
+    fake_erp.by_order = [(VAN_ROW, ISN[2])]
+    fake_erp.parents = [(ISN[0], ISN[2])]
+    view = rl.RoutesView(crew=dp.crew_index({'B': [ARMEN]}))
+    owners = {f'O:{ISN[2]}': 'A'}
+    load = lambda car: ed.load_day('cs', car, d, (date(2026, 9, 29), d), lambda o, p: [], None,   # noqa: E731
+                                   lambda agents: rl.van_cars(view, agents), owners)
+    got = load('A').docs
+    assert [(x.stop_id, x.replaces) for x in got] == [(f'S:{ISN[0]}', (f'O:{ISN[2]}',))]
+    assert load('B').docs == ()
+    store = Store(str(tmp_path / 'c.db'))
+    assert store.stop_cars('2026-10-02') == {}
+    assert 'CASE WHEN ISNULL(va.fCLOSED, 0) = 0 THEN va.fNAME END' in ed.SQL_INVOICE_CARS   # L1: закрытый — не тёзка
 
 
 def test_van_agents_open_only_and_symmetric_plan_filter(fake_erp):
@@ -1853,7 +1876,7 @@ def test_plan_mismatch_by_van(app, st, monkeypatch):
     assert [(x['doc_number'], x['erp_car'], x['plan_cars']) for x in out['items']] == [('001', 'B', ['A'])]
     assert out['no_car'] == 1
     # по 001 уже есть события терминала A — накладная A (как у терминалов), расхождения нет
-    monkeypatch.setattr(st.store, 'invoice_cars', lambda day: {ISN[0]: 'A'})
+    monkeypatch.setattr(st.store, 'stop_cars', lambda day: {f'S:{ISN[0]}': 'A'})
     with app.test_request_context():
         out = cv.plan_mismatches(date(2026, 10, 2))
     assert out['items'] == []

@@ -92,8 +92,12 @@ def test_invoice_with_terminal_events_stays_with_their_car():
         replace(_dorder(2, 102, 100.0), shipped=D, shipped_van=VAN, shipped_isn=_isn(92))
     crew = dp.crew_index({HOWO.car_code: [ARMEN]})                                  # теперь он в экипаже U (HOWO)
     inv, _ = dp.invoiced_trucks([done, rest], D, {VAN: ARMEN}, crew, {}, {T.car_code, HOWO.car_code},
-                                owners={_isn(91): T.car_code})
+                                owners={f'S:{_isn(91)}': T.car_code})
     assert inv == {_isn(1): T.car_code, _isn(2): HOWO.car_code}
+    # ревью a795995 (M2): машина A везла сам заказ (точка O:), накладную из него выписали позже — она тоже A
+    inv, _ = dp.invoiced_trucks([done, rest], D, {VAN: ARMEN}, crew, {}, {T.car_code, HOWO.car_code},
+                                owners={f'O:{_isn(2)}': T.car_code})
+    assert inv == {_isn(1): HOWO.car_code, _isn(2): T.car_code}
 
 
 def test_old_draft_with_erp_sig_loads():
@@ -265,13 +269,34 @@ def test_sync_invoices_by_weight_only_and_split_store_regrouped():
     d = dp.Draft(trucks=[T.car_code, HOWO.car_code], next_id=2, trips=[dp.DraftTrip(1, T.car_code, [703])])
     assert dp.sync_invoiced(ctx, stops, d, _inv([700, 701, 702])) is True
     assert [sorted(t.stops) for t in d.trips if t.truck == T.car_code] == [[700, 701, 702], [703]]   # один рейс накладных
-    # 710 (4 т) вёз HOWO и T пополам; накладная — только у T: у T он целиком, а 4 т — больше её предела
+    # 710 (4 т) вёз HOWO и T пополам; накладная — только у T: у T он целиком, а 4 т больше её предела — поровну в два её
+    # рейса подряд (как сборка; ревью a795995, M3), не одним визитом на 4 т
     d = dp.Draft(trucks=[T.car_code, HOWO.car_code], next_id=3,
                  trips=[dp.DraftTrip(1, HOWO.car_code, [710, 703]), dp.DraftTrip(2, T.car_code, [710, 700])])
     assert dp.sync_invoiced(ctx, stops, d, _inv([700, 710])) is True
     mine = [t for t in d.trips if t.truck == T.car_code]
-    assert _trucks_of(d, 710) == [T.car_code] and sorted(c for t in mine for c in t.stops) == [700, 710]
-    assert len(mine) == 2                                                           # 710 — отдельным рейсом: по весу
+    assert _trucks_of(d, 710) == [T.car_code, T.car_code] and sorted(c for t in mine for c in t.stops) == [700, 710, 710]
+    assert dp.sync_invoiced(ctx, stops, d, _inv([700, 710])) is False
+
+
+def test_sync_never_changes_share_in_loaded_or_running_trip():
+    """Ревью a795995 (M1, M3): тяжёлый магазин накладной T — в загруженном рейсе 1 и в свободном рейсе 2 с магазином без
+    накладной. Убрать его из рейса 2 — его доля в рейсе 1 стала бы целой (груз загруженного рейса изменился бы, открытие
+    дня откатывалось бы каждый раз): его доли не трогаем, рейс 2 — как был. Так же, когда рейс 1 уже развозит по факту:
+    свободная доля не теряется; новая накладная — своим рейсом."""
+    ctx = _dp_ctx(trucks=(T,))
+    stops, _ = _dp_stops([(900, _pt(0), 4000.0), *((901 + i, _pt(i + 1), 100.0) for i in range(4))])
+    loaded = {'at': '2026-10-01T08:00:00', 'by': None, 'pin': True}
+    d = dp.Draft(trucks=[T.car_code], next_id=3, trips=[dp.DraftTrip(1, T.car_code, [900, 901], True, loaded=loaded),
+                                                         dp.DraftTrip(2, T.car_code, [900, 902])])
+    cargo = dp.loaded_cargo(d, stops)
+    assert dp.sync_invoiced(ctx, stops, d, _inv([900])) is False and dp.loaded_cargo(d, stops, cargo) == cargo
+    d = dp.Draft(trucks=[T.car_code], next_id=3, trips=[dp.DraftTrip(1, T.car_code, [900, 901, 902]),
+                                                         dp.DraftTrip(2, T.car_code, [900, 903])])
+    done = {T.car_code: {901}}                                                      # рейс 1 развозит, 900 там ещё не отдан
+    assert dp.sync_invoiced(ctx, stops, d, _inv([900, 901, 902, 904]), None, done) is True
+    assert [(t.id, sorted(t.stops)) for t in d.trips] == [(1, [900, 901, 902]), (3, [904]), (2, [900, 903])]
+    assert dp.sync_invoiced(ctx, stops, d, _inv([900, 901, 902, 904]), None, done) is False
 
 
 # --- страница «Развоза» ---
@@ -392,6 +417,57 @@ def test_open_day_keeps_loaded_cargo_and_discard_is_not_resynced(client, caplog)
     with caplog.at_level('WARNING'):
         client.get(f'/api/routes/dispatch?date={DAY}')
     assert state.store.load_dispatch(DAY)[1] == rev and 'груз загруженного рейса' in caplog.text
+
+
+def test_sync_failure_does_not_break_page_or_edit(client, monkeypatch):
+    """Ревью a795995 (M4, L3): сбой приведения (база, ошибка правила) и непрочитанные события терминалов — страница и правка
+    логиста работают без приведения."""
+    state = _setup(client)
+    d = client.post('/api/routes/dispatch/build', json={'date': DAY, 'trucks': ['CAR1', 'CAR2']}).get_json()
+
+    def boom(*a, **k):
+        raise RuntimeError('сбой правила')
+    monkeypatch.setattr(dp, 'sync_invoiced', boom)
+    r = client.get(f'/api/routes/dispatch?date={DAY}')
+    assert r.status_code == 200 and r.get_json()['success']
+    d = _edit(client, r.get_json(), action='exclude', order=_isn(3))
+    monkeypatch.undo()
+
+    class Facts:
+        def fleet(self, day):
+            return {}
+
+        def stop_cars(self, day):
+            raise OSError('courier.db занята')
+    state.live_facts = Facts()
+    raw, rev = state.store.load_dispatch(DAY)
+    plan = dp.Draft.from_json(raw)
+    for t in plan.trips:
+        t.stops = [c for c in t.stops if c != 104]
+    plan.trips = [t for t in plan.trips if t.stops]
+    assert state.store.save_dispatch(DAY, plan.to_json(), 'test', expected_rev=rev) is not None
+    rev = state.store.load_dispatch(DAY)[1]
+    r = client.get(f'/api/routes/dispatch?date={DAY}')
+    assert r.status_code == 200 and state.store.load_dispatch(DAY)[1] == rev and _truck_of(r.get_json(), 104) == set()
+
+
+def test_open_day_auto_selected_truck_counts_off_manager_invoices_at_once(client):
+    """Ревью a795995 (L2): приведение при открытии дня отметило CAR2 (накладная менеджера 1); накладная менеджера 2, снятого
+    фильтром, на ту же CAR2 — в том же открытии (машина теперь в плане), одним сохранением."""
+    orders = [replace(_dorder(1, 101, 400.0), shipped=D, shipped_van=VAN),
+              replace(_dorder(2, 102, 300.0, agent=2), shipped=D, shipped_van=VAN), _dorder(3, 103, 200.0)]
+    _dispatch_setup(client, orders)
+    state = client.application.extensions['route_optimizer']
+    snap = make_snapshot()
+    snap = replace(snap, agents={**snap.agents, VAN: erp.Agent(VAN, 'B208', ARMEN, False)})
+    state.snapshots = SnapshotCache(lambda: snap)
+    d = client.post('/api/routes/dispatch/build', json={'date': DAY, 'trucks': ['CAR1'], 'agents_off': [2]}).get_json()
+    assert d['success'] and _truck_of(d, 102) == set()
+    rev = state.store.load_dispatch(DAY)[1]
+    state.store.save_truck_driver('CAR2', DAY, 'Հարությունյան Արմեն', 'test')   # экспедитор — водитель CAR2
+    d = client.get(f'/api/routes/dispatch?date={DAY}').get_json()
+    assert _truck_of(d, 101) == {'CAR2'} and _truck_of(d, 102) == {'CAR2'}
+    assert state.store.load_dispatch(DAY)[1] == rev + 1
 
 
 def test_open_day_syncs_stored_plan_and_unknown_van(client):

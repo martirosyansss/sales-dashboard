@@ -108,9 +108,9 @@ class LiveSource:
     def _exists(self) -> bool:
         return os.path.exists(self.store.path)   # нет базы — не создаём её чтением
 
-    def invoice_cars(self, day: str) -> dict[str, str]:
-        """Накладные с событиями терминала за день → машина этих событий (Store.invoice_cars, №96); базы нет — пусто."""
-        return self.store.invoice_cars(day) if self._exists() else {}
+    def stop_cars(self, day: str) -> dict[str, str]:
+        """Точки S:/O: с событиями терминала за день → машина этих событий (Store.stop_cars, №96); базы нет — пусто."""
+        return self.store.stop_cars(day) if self._exists() else {}
 
     def fleet(self, day: str) -> dict[str, dict[str, Any]]:
         """Машина → факт дня (с кэшем — см. класс; состав — _compute)."""

@@ -1306,16 +1306,17 @@ class Store:
             (day, etype) if etype else (day,)).fetchall())
         return [_event_json(r, self._name()) for r in rows]
 
-    def invoice_cars(self, day: str) -> dict[str, str]:
-        """Накладные (точки S:), по которым за дату есть события терминала (любые, кроме heartbeat `track`): fISN
-        (заглавными) → машина первого из них (№96: накладная, которую машина уже везла и, может, оплатили, остаётся её —
-        экспедитор днём перешёл на другую машину, а накладная не уходит к ней неоплаченной)."""
+    def stop_cars(self, day: str) -> dict[str, str]:
+        """Точки накладных (S:) и заказов (O:), по которым за дату есть события терминала (любые, кроме heartbeat `track`):
+        stop_id (fISN заглавными) → машина первого из них (№96: накладная, которую машина уже везла и, может, оплатили, —
+        и накладная из заказа, который она везла, — остаётся её: экспедитор днём перешёл на другую машину, а накладная не
+        уходит к ней неоплаченной)."""
         rows = self._read(lambda c: c.execute(
-            "SELECT stop_id, car_code FROM events WHERE date = ? AND type <> 'track' AND stop_id LIKE 'S:%' "
-            'ORDER BY at_utc, received_at, id', (day,)).fetchall())
+            "SELECT stop_id, car_code FROM events WHERE date = ? AND type <> 'track' "
+            "AND (stop_id LIKE 'S:%' OR stop_id LIKE 'O:%') ORDER BY at_utc, received_at, id", (day,)).fetchall())
         out: dict[str, str] = {}
         for sid, car in rows:
-            out.setdefault(sid[2:].upper(), car)
+            out.setdefault(sid[:2] + sid[2:].upper(), car)
         return out
 
     def heartbeats_for_day(self, day: str) -> list[dict[str, Any]]:

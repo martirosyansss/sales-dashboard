@@ -403,5 +403,5 @@ class DayService:
         data = self.loader(car_code, day, orders_window(day, view),
                            lambda orders, places: pick_orders(orders, day, view, car_code, places),
                            invoice_owner(view, car_code), lambda agents: van_cars(view, agents),
-                           self.store.invoice_cars(day.isoformat()))
+                           self.store.stop_cars(day.isoformat()))
         return day_payload(data, view, self.store, loaded)
