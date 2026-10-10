@@ -100,7 +100,6 @@
 from __future__ import annotations
 
 import copy
-import hashlib
 import math
 import re
 from dataclasses import dataclass, field, replace
@@ -168,6 +167,7 @@ class DispatchOrder:
     # машина (SALES.fDELIVERYCAR без пробелов, '' — не указана) — по ним fact_truck
     shipped_van: int | None = None
     shipped_car: str = ''
+    shipped_isn: str = ''   # fISN этой накладной (заглавными; '' — нет): чья она по событиям терминала — invoiced_trucks
 
     @property
     def self_delivery(self) -> bool:
@@ -248,19 +248,23 @@ class UnknownVan:
 
 def invoiced_trucks(orders: Sequence[DispatchOrder], day: date, names: Mapping[int, str], crew: Mapping[str, str],
                     van_trucks: Mapping[int, str], fleet: Collection[str], off: Collection[int] = (),
-                    planned: Collection[str] = ()) -> tuple[dict[str, str], list[UnknownVan]]:
+                    planned: Collection[str] = (), owners: Mapping[str, str] | None = None
+                    ) -> tuple[dict[str, str], list[UnknownVan]]:
     """Заказы с накладной именно в day (shipped == day) на машину парка fleet (fact_truck по первой накладной заказа):
     (isn → машина, накладные без машины с экспедитором — не менеджером, — чья машина неизвестна: по экспедитору, клиенты).
     Машина накладной не из парка (машина менеджера, без тоннажа) — ни там, ни там: это не развоз парка. Заказ менеджера,
     снятого фильтром «Մենեջերներ» (off, №69: «только заказы двух менеджеров»), — только если его машина уже в плане
     (planned: есть рейсы или логист отметил её); иначе его накладной для «Развоза» нет — ни машины, ни магазина, ни строки
-    «машина неизвестна» (у водителя на терминале она всё равно есть: courier.erp_day)."""
+    «машина неизвестна» (у водителя на терминале она всё равно есть: courier.erp_day). owners — накладные (fISN), по
+    которым у терминала «Առաքիչ» за день уже есть события: машина этих событий главнее fact_truck (экспедитор днём перешёл
+    на другую машину — накладная, которую уже везли и, может, оплатили, остаётся у первой; как courier.erp_day.load_day)."""
     out: dict[str, str] = {}
     unknown: dict[int, set[int]] = {}
     for o in orders:
         if o.shipped != day:
             continue
-        truck = fact_truck(o.shipped_car, o.shipped_van, o.agent_id, names, crew, van_trucks)
+        truck = (owners or {}).get(o.shipped_isn) or fact_truck(o.shipped_car, o.shipped_van, o.agent_id, names, crew,
+                                                                  van_trucks)
         if o.agent_id in off and truck not in planned:
             continue
         if truck in fleet:
@@ -277,12 +281,6 @@ def invoiced_customers(orders: Sequence[DispatchOrder], inv: Mapping[str, str]) 
         if o.isn in inv:
             out.setdefault(o.customer_id, set()).add(inv[o.isn])
     return {c: frozenset(ts) for c, ts in out.items()}
-
-
-def invoiced_sig(inv: Mapping[int, Collection[str]]) -> str:
-    """Отпечаток накладных дня (клиент → машины) для черновика (Draft.erp_sig)."""
-    raw = repr(sorted((c, sorted(ts)) for c, ts in inv.items()))
-    return hashlib.sha1(raw.encode('utf-8')).hexdigest()[:16]
 
 
 @dataclass(frozen=True)
@@ -871,8 +869,6 @@ class Draft:
     # «Երբ տանել» (владелец 08.10): заказы магазина, который сегодня не принимает, — fISN → (день доставки, дата заказа);
     # тот день сам берёт их в развоз как перенесённые (later_carried). Дата заказа — чтобы тот день прочёл их из ERP
     later: dict[str, tuple[date, date]] = field(default_factory=dict)
-    # отпечаток накладных ERP дня, под которые рейсы приведены (№96, sync_invoiced: invoiced_sig); None — не приводились
-    erp_sig: str | None = None
 
     def to_json(self) -> dict[str, Any]:
         built = None if self.built_orders is None else {
@@ -901,8 +897,7 @@ class Draft:
                 **({'solo_spare': dict(self.solo_spare)} if self.solo_spare is not None else {}),
                 **({'dismissed': sorted(self.dismissed)} if self.dismissed else {}),
                 **({'later': {k: [to.isoformat(), od.isoformat()] for k, (to, od) in sorted(self.later.items())}}
-                   if self.later else {}),
-                **({'erp_sig': self.erp_sig} if self.erp_sig is not None else {})}
+                   if self.later else {})}
 
     @classmethod
     def from_json(cls, raw: Any, *, snapshot: bool = False) -> Draft:
@@ -953,8 +948,7 @@ class Draft:
                    absent=sorted({x for x in (raw.get('absent') or [])[:MAX_TRIPS] if isinstance(x, str) and x})
                    if isinstance(raw.get('absent'), list) else [],
                    solo_spare=raw.get('solo_spare') if isinstance(raw.get('solo_spare'), dict) else None,
-                   dismissed=isns('dismissed'), later=_later(raw.get('later')),
-                   erp_sig=raw.get('erp_sig') if isinstance(raw.get('erp_sig'), str) else None)
+                   dismissed=isns('dismissed'), later=_later(raw.get('later')))
         if released is not None and not snapshot:
             draft.sent = _sent(raw.get('sent'))
             if draft.sent is None:   # выпущен до №81 (или снимок битый): водители видят сам черновик — он и отправлен
@@ -1871,8 +1865,16 @@ def _can_carry(ctx: DayContext, sel: Sequence[fl.FleetTruck], code: str, cids: S
         return False
     if len(cids) > 1 and any(c in ctx.solo for c in cids):
         return False
+    return _carry_kg(ctx, sel, code, cids, stops, shares)
+
+
+def _carry_kg(ctx: DayContext, sel: Sequence[fl.FleetTruck], code: str, cids: Sequence[int],
+              stops: Mapping[int, Stop], shares: Mapping[int, int]) -> bool:
+    """Груз рейса cids не тяжелее предела сборки машины code (fl.load_limit, №45: 90% тоннажа) — без права въезда и
+    «отдельного рейса» (_can_carry); накладные ERP (№96) проверяются только так: остальное в них — факт."""
     kgs = [stops[c].kg / shares.get(c, 1) for c in cids]
-    lim = fl.load_limit(kgs, [_central(ctx, stops[c]) for c in cids], [_allowed_trucks(ctx, c) for c in cids], truck, sel)
+    lim = fl.load_limit(kgs, [_central(ctx, stops[c]) for c in cids], [_allowed_trucks(ctx, c) for c in cids],
+                        ctx.trucks[code], sel)
     return math.fsum(kgs) <= lim + 0.5
 
 
@@ -2543,10 +2545,11 @@ def erp_held(ctx: DayContext, stops: Sequence[Stop], draft: Draft, inv: Mapping[
 def _erp_pack(ctx: DayContext, sel: Sequence[fl.FleetTruck], code: str, cids: Sequence[int], routable: Mapping[int, Stop],
               shares: Mapping[int, int]) -> list[list[int]]:
     """Магазины накладных машины code — в как можно меньше рейсов: по одному (тяжёлые первыми) в первый рейс, где груз в
-    пределе сборки (_can_carry), дешёвой вставкой; нигде — новый рейс (и тот, что не по силам одному, — факт)."""
+    пределе сборки (_carry_kg — только вес: допуск машины, центр и «отдельный рейс» у накладной — факт, план покажет
+    vehicle_miss / center_miss), дешёвой вставкой; нигде — новый рейс (и тот, что тяжелее предела один, — факт)."""
     bins: list[list[int]] = []
     for c in sorted(cids, key=lambda c: (-routable[c].kg / shares.get(c, 1), c)):
-        b = next((b for b in bins if _can_carry(ctx, sel, code, [*b, c], routable, shares)), None)
+        b = next((b for b in bins if _carry_kg(ctx, sel, code, [*b, c], routable, shares)), None)
         if b is None:
             b = []
             bins.append(b)
@@ -2565,16 +2568,16 @@ def sync_invoiced(ctx: DayContext, stops: Sequence[Stop], draft: Draft, inv: Map
     - магазин накладной T в свободном рейсе другой машины — убирается оттуда; в несвободном рейсе чужой машины и в
       загруженном рейсе — не трогается вовсе (erp_held — странице);
     - свободный рейс T — либо только с накладными T, либо только без них: магазины накладных T вне несвободных рейсов
-      собираются в как можно меньше рейсов (_erp_pack: предел сборки, дешёвая вставка, без проверки конца дня — это факт)
+      собираются в как можно меньше рейсов (_erp_pack: только вес, дешёвая вставка, без проверки конца дня — это факт)
       и идут первыми среди её свободных рейсов (_erp_first); номера — у рейсов, где накладных T было больше всего, нового —
       draft.next_id (сегодня — не раньше «сейчас»). T не отмечена в шаге 1 или без водителя (№77) — отмечается;
     - магазины без накладной из рейсов, ставших рейсами накладных, — в другие свободные рейсы T без накладных или новым
       рейсом T (place_added: конец дня, окна), некуда — «ещё не в рейсах»; прочие рейсы T без накладных — как были;
+    - магазин убран из рейса другой машины, а его машина везла его с ней пополам, — её рейсы собираются заново по весу;
     - затронутые рейсы — порядок объезда заново (2-opt с их выезда).
-    Идемпотентно: при тех же накладных второй вызов ничего не меняет. Draft.erp_sig — отпечаток накладных. Ответ — рейсы
-    изменены (черновик надо сохранить)."""
+    Идемпотентно: при тех же накладных второй вызов ничего не меняет (решает расхождение рейсов с накладными — _erp_todo,
+    _erp_first). Ответ — рейсы изменены (черновик надо сохранить)."""
     routable = {s.customer_id: s for s in stops if s.point is not None}
-    draft.erp_sig = invoiced_sig(inv)
     inv = {c: frozenset(ts) & set(ctx.trucks) for c, ts in inv.items() if c in routable}
     inv = {c: ts for c, ts in inv.items() if ts}
     frozen = _erp_frozen(draft, done)
@@ -2589,6 +2592,8 @@ def sync_invoiced(ctx: DayContext, stops: Sequence[Stop], draft: Draft, inv: Map
             t.stops = [c for c in t.stops if not (c in away and t.truck not in inv[c])]
             touched.add(t.id)
     draft.trips = [t for t in draft.trips if t.stops]
+    # тяжёлый магазин, деливший рейсы с другой машиной, теперь у своей машины целиком: её рейсы — заново по весу
+    regroup = {t.truck for t in draft.trips if _movable(draft, t, frozen) and set(t.stops) & away}
     for code in sorted(missing):
         if code not in draft.trucks:
             draft.trucks = sorted({*draft.trucks, code})
@@ -2597,7 +2602,7 @@ def sync_invoiced(ctx: DayContext, stops: Sequence[Stop], draft: Draft, inv: Map
     not_before = float(ctx.work_start_min + now_min) if now_min is not None else None
     displaced: dict[str, list[int]] = {}
     invoiced_trips: set[int] = set()
-    for code in sorted({*missing, *mixed}):
+    for code in sorted({*missing, *mixed, *regroup}):
         mine = [t for t in draft.trips if t.truck == code and _movable(draft, t, frozen)]
         fixed = {c for t in draft.trips if t.truck == code and not _movable(draft, t, frozen) for c in t.stops}
         want = sorted(c for c, ts in inv.items() if code in ts and c not in hold and c not in fixed)

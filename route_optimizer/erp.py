@@ -360,11 +360,11 @@ GROUP BY LTRIM(RTRIM(s.fDELIVERYCAR)), CAST(s.fDATE AS date)
 #   эту дату (ответ владельца №79, dispatch.DispatchOrder.predated); документа нет — NULL, заказ как обычный;
 # - кто и на чём везёт накладную (ответ владельца №96, dispatch.fact_truck): экспедитор и машина первой проведённой
 #   накладной по заказу (та же связь DOCPARENTS, что у sh; раньше по дате, затем по fISN) — с 06.10.2026 офис машину в
-#   накладной не ставит, машина — по экспедитору (водитель экипажа дня).
+#   накладной не ставит, машина — по экспедитору (водитель экипажа дня); её fISN — у кого её точка S: на терминале.
 SQL_DISPATCH_ORDERS = f"""
 SELECT CAST(o.fISN AS nvarchar(36)), RTRIM(o.fDOCNUM), CAST(o.fDATE AS date), o.fCUSTOMERID,
        o.fSALESAGENTID, LTRIM(RTRIM(ISNULL(o.fDELIVERYCAR, ''))), o.fTOTALSUM, ISNULL(k.kg, 0), sh.shipped,
-       o.fVANAGENTID, cr.entered, si.van, si.car
+       o.fVANAGENTID, cr.entered, si.van, si.car, si.isn
 FROM ORDERS o WITH (NOLOCK)
 OUTER APPLY (SELECT MIN(CAST(d.fCREATIONDATE AS date)) AS entered
              FROM DOCUMENTS d WITH (NOLOCK)
@@ -374,7 +374,8 @@ OUTER APPLY (SELECT MIN(CAST(s.fDATE AS date)) AS shipped
              FROM DOCPARENTS p WITH (NOLOCK)
              JOIN SALES s WITH (NOLOCK) ON s.fISN = p.fISN
              WHERE p.fPARENTISN = o.fISN AND p.fPARENTDOCTYPE = 1 AND s.fSTATE = 2) sh
-OUTER APPLY (SELECT TOP 1 s.fVANAGENTID AS van, LTRIM(RTRIM(ISNULL(s.fDELIVERYCAR, ''))) AS car
+OUTER APPLY (SELECT TOP 1 s.fVANAGENTID AS van, LTRIM(RTRIM(ISNULL(s.fDELIVERYCAR, ''))) AS car,
+                    CAST(s.fISN AS nvarchar(36)) AS isn
              FROM DOCPARENTS p WITH (NOLOCK)
              JOIN SALES s WITH (NOLOCK) ON s.fISN = p.fISN
              WHERE p.fPARENTISN = o.fISN AND p.fPARENTDOCTYPE = 1 AND s.fSTATE = 2
@@ -647,7 +648,8 @@ def dispatch_orders(conn: Any, since: date, until: date) -> list[DispatchOrder]:
                           revenue=float(r[6] or 0), kg=float(r[7] or 0),
                           shipped=_day(r[8]) if r[8] is not None else None, van_agent_id=int(r[9] or 0),
                           entered=_day(r[10]) if r[10] is not None else None,
-                          shipped_van=int(r[11]) if r[11] is not None else None, shipped_car=_str(r[12]))
+                          shipped_van=int(r[11]) if r[11] is not None else None, shipped_car=_str(r[12]),
+                          shipped_isn=_str(r[13]).upper())
             for r in _select(conn, SQL_DISPATCH_ORDERS, (since, until))]
 
 

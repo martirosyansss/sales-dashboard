@@ -2991,6 +2991,12 @@
         sec.innerHTML = '<div class="dp-erp-head"><span class="rt-badge b-ok">ERP</span><b>ERP ապրանքագրեր</b>'
             + '<span class="dp-erp-note">ապրանքագիրը փաստ է՝ խանութն իր մեքենայի երթում է</span></div><ul class="dp-erp-list"></ul>';
         const ul = sec.querySelector('ul');
+        if (erp.synced) {   // открытие дня только что привело рейсы к накладным: правка — не логиста, она не отправлена
+            const note = document.createElement('p');
+            note.className = 'dp-erp-note dp-erp-synced';
+            note.textContent = 'Պլանը համապատասխանեցվեց ERP ապրանքագրերին';
+            sec.insertBefore(note, ul);
+        }
         const row = (warn, text) => {
             const li = document.createElement('li');
             if (warn) li.className = 'is-warn';

@@ -84,13 +84,22 @@ def test_invoiced_trucks_only_this_day_and_fleet():
     assert inv == {_isn(1): T.car_code} and unknown == []
 
 
-def test_draft_erp_sig_roundtrip_and_old_drafts():
-    raw = dp.Draft(trucks=['A'], trips=[dp.DraftTrip(1, 'A', [1])], next_id=2, erp_sig='abc').to_json()
-    assert raw['erp_sig'] == 'abc' and dp.Draft.from_json(raw).erp_sig == 'abc'
-    old = dp.Draft(trucks=['A'], trips=[dp.DraftTrip(1, 'A', [1])], next_id=2).to_json()
-    assert 'erp_sig' not in old                                                    # нет отпечатка — ключа нет
-    assert dp.Draft.from_json(old).erp_sig is None and dp.Draft.from_json({**old, 'erp_sig': 5}).erp_sig is None
-    assert dp.invoiced_sig({1: {'A'}}) == dp.invoiced_sig({1: frozenset({'A'})}) != dp.invoiced_sig({1: {'B'}})
+def test_invoice_with_terminal_events_stays_with_their_car():
+    """Ревью 448ee64 (HIGH): экспедитор утром — экипаж T, T везёт и собирает его накладные; в обед он входит PIN на машине U
+    (№84 переносит человека). Накладная, по которой у терминала T уже есть события, остаётся T (машина событий главнее
+    экипажа), прочие — по экипажу: U."""
+    done, rest = replace(_dorder(1, 101, 100.0), shipped=D, shipped_van=VAN, shipped_isn=_isn(91)), \
+        replace(_dorder(2, 102, 100.0), shipped=D, shipped_van=VAN, shipped_isn=_isn(92))
+    crew = dp.crew_index({HOWO.car_code: [ARMEN]})                                  # теперь он в экипаже U (HOWO)
+    inv, _ = dp.invoiced_trucks([done, rest], D, {VAN: ARMEN}, crew, {}, {T.car_code, HOWO.car_code},
+                                owners={_isn(91): T.car_code})
+    assert inv == {_isn(1): T.car_code, _isn(2): HOWO.car_code}
+
+
+def test_old_draft_with_erp_sig_loads():
+    """Отпечаток накладных (erp_sig) убран — решает расхождение рейсов с накладными; черновик с ним читается, ключ уходит."""
+    old = {**dp.Draft(trucks=['A'], trips=[dp.DraftTrip(1, 'A', [1])], next_id=2).to_json(), 'erp_sig': 'abc'}
+    assert 'erp_sig' not in dp.Draft.from_json(old).to_json() and not hasattr(dp.Draft(), 'erp_sig')
 
 
 # --- рейсы под накладные ---
@@ -113,7 +122,6 @@ def test_sync_case_of_10_10():
     assert len(placed) == len(set(placed))                                          # магазин — один раз
     _assert_not_mixed(draft, inv)
     assert set(range(210, 220)) <= set(placed)                                      # второй рейс никого не потерял
-    assert draft.erp_sig == dp.invoiced_sig(inv)
     before = draft.to_json()
     assert dp.sync_invoiced(ctx, stops, draft, inv) is False                        # второй вызов — ничего
     assert draft.to_json() == before
@@ -249,6 +257,23 @@ def test_sync_spills_invoices_over_capacity_and_adds_truck():
     assert dp.sync_invoiced(ctx, stops, d, _inv([501, 502, 503])) is False
 
 
+def test_sync_invoices_by_weight_only_and_split_store_regrouped():
+    """Ревью 448ee64: у накладной допуск машины, центр и «отдельный рейс» — факт (план пометит), а не рейс на магазин;
+    тяжёлый магазин, деливший рейсы HOWO и T, у T целиком — её рейсы собираются заново по весу."""
+    ctx = replace(_dp_ctx(trucks=(T, HOWO)), solo=frozenset({701}))
+    stops, _ = _dp_stops([(700 + i, _pt(i), 100.0) for i in range(4)] + [(710, _pt(9), 4000.0)])
+    d = dp.Draft(trucks=[T.car_code, HOWO.car_code], next_id=2, trips=[dp.DraftTrip(1, T.car_code, [703])])
+    assert dp.sync_invoiced(ctx, stops, d, _inv([700, 701, 702])) is True
+    assert [sorted(t.stops) for t in d.trips if t.truck == T.car_code] == [[700, 701, 702], [703]]   # один рейс накладных
+    # 710 (4 т) вёз HOWO и T пополам; накладная — только у T: у T он целиком, а 4 т — больше её предела
+    d = dp.Draft(trucks=[T.car_code, HOWO.car_code], next_id=3,
+                 trips=[dp.DraftTrip(1, HOWO.car_code, [710, 703]), dp.DraftTrip(2, T.car_code, [710, 700])])
+    assert dp.sync_invoiced(ctx, stops, d, _inv([700, 710])) is True
+    mine = [t for t in d.trips if t.truck == T.car_code]
+    assert _trucks_of(d, 710) == [T.car_code] and sorted(c for t in mine for c in t.stops) == [700, 710]
+    assert len(mine) == 2                                                           # 710 — отдельным рейсом: по весу
+
+
 # --- страница «Развоза» ---
 
 DAY = '2026-10-01'
@@ -338,6 +363,37 @@ def test_off_manager_invoice_only_on_planned_truck(client):
     assert d['orders']['agents_off'] == 0
 
 
+def test_open_day_keeps_loaded_cargo_and_discard_is_not_resynced(client, caplog):
+    """Ревью 448ee64: открытие дня не меняет груз загруженного рейса (№78) — не сохраняет; «Չեղարկել փոփոխությունները»
+    (№81) возвращает отправленный план без приведения, следующее открытие приводит его с пометкой."""
+    state = _setup(client)
+    d = client.post('/api/routes/dispatch/build', json={'date': DAY, 'trucks': ['CAR1', 'CAR2']}).get_json()
+    d = _edit(client, d, action='approve')                                          # отправлен водителям
+    # экспедитор перешёл на CAR1: открытие дня переставляет накладные — изменения не отправлены, пометка ERP
+    state.store.save_truck_driver('CAR2', DAY, 'Ուրիշ Մարդ', 'test')
+    state.store.save_truck_driver('CAR1', DAY, 'Հարությունյան Արմեն', 'test')
+    d = client.get(f'/api/routes/dispatch?date={DAY}').get_json()
+    assert d['erp']['synced'] is True and _truck_of(d, 101) == {'CAR1'} and d['unsent'] is not None
+    d = _edit(client, d, action='discard')
+    assert _truck_of(d, 101) == {'CAR2'} and d['unsent'] is None                    # назад к отправленному — как есть
+    # экспедитор снова на CAR2, магазин 104 выпал из рейсов (приводить есть что), а в загруженном рейсе CAR1 — магазин 999
+    # без заказов: приведение убрало бы его (prune) — груз в машине; открытие дня не сохраняет
+    state.store.save_truck_driver('CAR1', DAY, 'Ուրիշ Մարդ', 'test')
+    state.store.save_truck_driver('CAR2', DAY, 'Հարությունյան Արմեն', 'test')
+    raw, rev = state.store.load_dispatch(DAY)
+    plan = dp.Draft.from_json(raw)
+    for t in plan.trips:
+        t.stops = [c for c in t.stops if c != 104]
+    plan.trips = [t for t in plan.trips if t.stops] + [dp.DraftTrip(plan.next_id, 'CAR1', [999], True,
+                                                                    loaded={'at': '2026-10-01T08:00:00', 'by': None, 'pin': True})]
+    plan.next_id += 1
+    assert state.store.save_dispatch(DAY, plan.to_json(), 'test', expected_rev=rev) is not None
+    rev = state.store.load_dispatch(DAY)[1]
+    with caplog.at_level('WARNING'):
+        client.get(f'/api/routes/dispatch?date={DAY}')
+    assert state.store.load_dispatch(DAY)[1] == rev and 'груз загруженного рейса' in caplog.text
+
+
 def test_open_day_syncs_stored_plan_and_unknown_van(client):
     state = _setup(client)
     d = client.post('/api/routes/dispatch/build', json={'date': DAY, 'trucks': ['CAR1', 'CAR2']}).get_json()
@@ -348,15 +404,15 @@ def test_open_day_syncs_stored_plan_and_unknown_van(client):
         t.stops = [c for c in t.stops if c not in (101, 102, 104)]
     plan.trips = [t for t in plan.trips if t.stops] + [dp.DraftTrip(plan.next_id, 'CAR1', [101, 102])]
     plan.next_id += 1
-    plan.erp_sig = None
     assert state.store.save_dispatch(DAY, plan.to_json(), 'test', expected_rev=rev) is not None
     d = client.get(f'/api/routes/dispatch?date={DAY}').get_json()
     assert all(_truck_of(d, c) == {'CAR2'} for c in (101, 102, 104))
     saved = dp.Draft.from_json(state.store.load_dispatch(DAY)[0])
-    assert saved.erp_sig is not None and all(_trucks_of(saved, c) == ['CAR2'] for c in (101, 102, 104))
+    assert all(_trucks_of(saved, c) == ['CAR2'] for c in (101, 102, 104))
+    assert d['erp']['synced'] is True                                               # пометка: правка из ERP, не логиста
     rev = state.store.load_dispatch(DAY)[1]
-    client.get(f'/api/routes/dispatch?date={DAY}')
-    assert state.store.load_dispatch(DAY)[1] == rev                                 # второе открытие — без записи
+    d = client.get(f'/api/routes/dispatch?date={DAY}').get_json()
+    assert state.store.load_dispatch(DAY)[1] == rev and 'synced' not in d['erp']   # второе открытие — без записи
     # экспедитор не в экипаже дня — машина неизвестна: на странице отдельно
     state.store.save_truck_driver('CAR2', DAY, 'Ուրիշ Մարդ', 'test')
     d = client.get(f'/api/routes/dispatch?date={DAY}').get_json()

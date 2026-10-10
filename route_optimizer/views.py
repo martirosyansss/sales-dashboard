@@ -1385,6 +1385,7 @@ class _DispatchDay:
     # накладные ERP дня (№96, _invoiced): заказ (isn) → машина парка; накладные без машины с неизвестным экспедитором
     invoiced: dict[str, str] = field(default_factory=dict)
     erp_unknown: list[dp.UnknownVan] = field(default_factory=list)
+    erp_synced: bool = False   # открытие дня только что привело рейсы к накладным ERP (_erp_sync_saved) — странице пометка
 
 
 def _sent_plan(state: RoutesState, d: date) -> dp.Draft | None:
@@ -1517,19 +1518,27 @@ def _invoiced(state: RoutesState, snap: Snapshot, bundle: Bundle, day: date, ord
               fleet: Collection[str], draft: dp.Draft | None) -> tuple[dict[str, str], list[dp.UnknownVan]]:
     """Накладные ERP дня на машины парка fleet (№96, dp.invoiced_trucks): машина накладной, без неё — по экспедитору:
     человек экипажа дня (водитель и առաքիչ, Store.truck_drivers) с именем ERP-агента (снимок: erp.agents — все агенты, и
-    экспедиторы), иначе ручная машина экспедитора (Bundle.van_trucks). Заказы менеджеров, снятых фильтром (№69,
-    dp.agents_off_of), — только на машинах, уже стоящих в плане draft (рейсы или отметка в шаге 1). Накладных дня нет —
-    экипаж не читается."""
+    экспедиторы; только открытые), иначе ручная машина экспедитора (Bundle.van_trucks). Накладная, по которой у терминала
+    «Առաքիչ» за день уже есть события, — машины этих событий (live_facts.invoice_cars; как терминал, courier.erp_day).
+    Заказы менеджеров, снятых фильтром (№69, dp.agents_off_of), — только на машинах, уже стоящих в плане draft (рейсы или
+    отметка в шаге 1). Накладных дня нет — экипаж не читается."""
     if not any(o.shipped == day for o in orders):
         return {}, []
     crew: dict[str, list[str]] = {}
     for role in CREW_TABLES:
         for code, name in state.store.truck_drivers(day.isoformat(), role)[0].items():
             crew.setdefault(code, []).append(name)
-    names = {aid: a.name for aid, a in snap.agents.items()}
+    names = {aid: a.name for aid, a in snap.agents.items() if not a.closed}
     planned = {t.truck for t in draft.trips} | set(draft.trucks) if draft is not None else set()
+    owners: dict[str, str] = {}
+    if state.live_facts is not None:
+        try:
+            owners = state.live_facts.invoice_cars(day.isoformat())
+        except Exception:   # без событий терминала — по экипажу дня; терминал своё возьмёт сам (в лог)
+            logger.warning('[Routes] События терминалов %s не прочитаны — машина накладных по экипажу дня', day,
+                           exc_info=True)
     return dp.invoiced_trucks(orders, day, names, dp.crew_index(crew), bundle.van_trucks(), fleet,
-                              dp.agents_off_of(draft, bundle.settings), planned)
+                              dp.agents_off_of(draft, bundle.settings), planned, owners)
 
 
 def _carried(state: RoutesState, day: date, workdays: Sequence[int], backlog: list[dp.DispatchOrder],
@@ -1757,7 +1766,7 @@ def _sync_erp(dd: _DispatchDay, draft: dp.Draft) -> bool:
     """Рейсы черновика draft под накладные ERP дня (№96, dp.sync_invoiced; dd.stops — точки этого черновика): сегодня и
     впереди, рейсы есть; прошедший день — как проехали. Рейсы, которые уже развозят по факту «Առաքիչ», — не меняются
     (_erp_done; не прочитан — ничего не приводится). Ответ — рейсы изменены."""
-    if dd.ctx is None or not draft.trips or dd.day < _clock().date():
+    if dd.ctx is None or not draft.trips or dd.day < _same_day_now().date():   # день — по Еревану, как «сейчас»
         return False
     done = _erp_done(dd)
     if done is None:
@@ -1790,7 +1799,8 @@ def _erp_json(dd: _DispatchDay) -> dict[str, Any] | None:
                      'no_coords': len(mine - routable), 'held': len((mine - own) & held),
                      'no_invoice': len(own - set(inv))})
     return {'trucks': rows, 'unknown': [{'van_agent_id': u.van_agent_id, 'name': u.name, 'customers': len(u.customers)}
-                                        for u in dd.erp_unknown]}
+                                        for u in dd.erp_unknown],
+            **({'synced': True} if dd.erp_synced else {})}
 
 
 def _dispatch_body(dd: _DispatchDay) -> dict[str, Any]:
@@ -2758,11 +2768,18 @@ def api_dispatch() -> Any:
 
 def _erp_sync_saved(state: RoutesState, dd: _DispatchDay) -> None:
     """Открытие дня (№96): рейсы под накладные ERP дня (_sync_erp) и сохранение, как после правки (закрепление новых рейсов
-    утверждённого плана, переработка, прогноз). Водителям не отправляется (№81: правка видна как неотправленная). План
-    изменили тем временем (rev) — без сохранения: страница покажет прежний, следующее открытие приведёт снова."""
+    утверждённого плана, переработка, прогноз). Водителям не отправляется (№81: правка видна как неотправленная; страница —
+    пометкой erp.synced). План изменили тем временем (rev) — без сохранения: страница покажет прежний, следующее открытие
+    приведёт снова. Груз загруженного рейса (№78, dp.loaded_cargo — и уход точки без заказов при prune) открытие дня не
+    меняет никогда: изменился бы — без сохранения, в лог (решит логист правкой с подтверждением)."""
     draft = copy.deepcopy(dd.draft)
     before = {t.id for t in draft.trips}
+    cargo = dp.loaded_cargo(draft, dd.stops)
     if not _sync_erp(dd, draft):
+        return
+    if dp.loaded_cargo(draft, dd.stops, cargo) != cargo:
+        logger.warning('[Routes] Развоз %s: рейсы под накладные ERP не сохранены — изменился бы груз загруженного рейса',
+                       dd.day)
         return
     dp.keep_approved(draft, before)   # №73: пока план утверждён, новые рейсы тоже закреплены
     draft.overtime = dp.runs_late(dd.ctx, dd.stops, draft)
@@ -2771,8 +2788,8 @@ def _erp_sync_saved(state: RoutesState, dd: _DispatchDay) -> None:
     if rev is None:
         logger.info('[Routes] Развоз %s: рейсы под накладные ERP не сохранены — план изменили тем временем', dd.day)
         return
-    logger.info('[Routes] Развоз %s: рейсы приведены к накладным ERP (%s)', dd.day, draft.erp_sig)
-    dd.draft, dd.rev = draft, rev
+    logger.info('[Routes] Развоз %s: рейсы приведены к накладным ERP', dd.day)
+    dd.draft, dd.rev, dd.erp_synced = draft, rev, True
 
 
 @bp.get('/api/routes/dispatch/status')
@@ -3096,7 +3113,10 @@ def api_dispatch_edit() -> Any:
     if payload.get('action') == 'include' and day >= _clock().date():
         dp.place_added(dd.ctx, dd.stops, draft, [o.customer_id for o in dd.backlog if o.isn in picked],
                        now_min=_today_min(dd))
-    _sync_erp(dd, draft)   # №96: накладные ERP дня — факт: правка не уводит их магазины из рейсов своих машин
+    # №96: накладные ERP дня — факт: правка не уводит их магазины из рейсов своих машин. «Չեղարկել փոփոխությունները» (№81)
+    # возвращает отправленный план как есть — иначе он сразу снова «не отправлен»; открытие дня приведёт его с пометкой
+    if payload.get('action') != 'discard':
+        _sync_erp(dd, draft)
     # №78: груз загруженного рейса изменился (любая правка: фильтр менеджеров, настройки дня, заказы дня, перенос тяжёлого
     # заказа соседнего рейса…) — только с подтверждением логиста; без него ничего не сохраняется
     # №81: «Չեղարկել փոփոխությունները» возвращает отправленный план — склад грузил по нему (_warehouse_body), товар в

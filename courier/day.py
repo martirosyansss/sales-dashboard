@@ -74,9 +74,10 @@ def clear_matrix_cache() -> None:
 DEMO_CAR = 'TEST'
 DEMO_DAY = date(2000, 1, 1)
 
-# (машина, день, окно заказов, отбор заказов, чья накладная по плану, экспедиторы → машины — №96) → данные дня
+# (машина, день, окно заказов, отбор заказов, чья накладная по плану, экспедиторы → машины, накладные с событиями
+# терминалов → машина — №96) → данные дня
 DayLoader = Callable[[str, date, tuple[date, date], OrdersPick, Callable[[int], bool],
-                     Callable[[Mapping[int, str]], Mapping[int, str]]], DayData]
+                     Callable[[Mapping[int, str]], Mapping[int, str]], Mapping[str, str]], DayData]
 
 
 def _num(x: float) -> float | int:
@@ -401,5 +402,6 @@ class DayService:
         loaded = clock.now()
         data = self.loader(car_code, day, orders_window(day, view),
                            lambda orders, places: pick_orders(orders, day, view, car_code, places),
-                           invoice_owner(view, car_code), lambda agents: van_cars(view, agents))
+                           invoice_owner(view, car_code), lambda agents: van_cars(view, agents),
+                           self.store.invoice_cars(day.isoformat()))
         return day_payload(data, view, self.store, loaded)

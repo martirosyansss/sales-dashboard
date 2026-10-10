@@ -45,6 +45,8 @@
 экспедитор fVANAGENTID (не сам менеджер) — человек экипажа машины на дату или за ним закреплена ручная машина
 (routes_link.van_cars), — накладная этой машины, как с машиной в накладной: и до утверждения плана, и у клиента вне плана
 (SQL_VAN_SALES). По плану (SQL_PLAN_SALES) такая накладная другой машины не берётся — одну сумму не берут два водителя.
+Накладная, по которой у терминала за день уже есть события (courier Store.invoice_cars), — только машины этих событий,
+каким бы путём её ни нашли: экспедитор днём перешёл на другую машину (№84) — уже собранная накладная к ней не уходит.
 
 Подарки (ответ владельца №90 «учесть везде»; проверено 08.10.2026, только SELECT): ERP пишет подарки акций отдельной
 таблицей SALEDOCGIFTS (fISN, fPRODUCTID, fQUANTITY, fROWNUM, fADDITIONALINFO) того же документа — и у заказов, и у
@@ -343,8 +345,18 @@ FROM SALES s WITH (NOLOCK)
 WHERE s.fSTATE = 2 AND s.fDATE >= ? AND s.fDATE < ? AND LTRIM(RTRIM(ISNULL(s.fDELIVERYCAR, ''))) = ''
   AND s.fVANAGENTID IN ({ph}) AND s.fVANAGENTID <> ISNULL(s.fSALESAGENTID, 0)
 """
-# к SQL_PLAN_SALES: кроме накладных экспедиторов других машин (№96); параметры — их id после ISN заказов
-_NOT_VANS = """  AND ISNULL(s.fVANAGENTID, 0) NOT IN ({ph})
+# к SQL_PLAN_SALES: кроме накладных экспедиторов других машин (№96; не сам менеджер — как SQL_VAN_SALES: накладную, которую
+# менеджер везёт сам, не берёт ни один путь — её и не отдать по плану); параметры — их id после ISN заказов
+_NOT_VANS = """  AND NOT (ISNULL(s.fVANAGENTID, 0) IN ({ph}) AND ISNULL(s.fVANAGENTID, 0) <> ISNULL(s.fSALESAGENTID, 0))
+"""
+
+# Накладные дня по fISN (№96: у машины есть события по ним, а экспедитор днём перешёл на другую) — столбцы SQL_DAY_SALES;
+# параметры: день, день + 1, fISN
+SQL_SALES_BY_ISN = """
+SELECT CAST(s.fISN AS nvarchar(36)), RTRIM(s.fDOCNUM), s.fCUSTOMERID, s.fSALESAGENTID,
+       LTRIM(RTRIM(ISNULL(s.fPAYTYPE, ''))), s.fTOTALSUM
+FROM SALES s WITH (NOLOCK)
+WHERE s.fSTATE = 2 AND s.fDATE >= ? AND s.fDATE < ? AND s.fISN IN ({ph})
 """
 
 # Заказы, из которых сделаны накладные (см. docstring модуля: fISN — накладная, fPARENTISN — заказ)
@@ -508,6 +520,16 @@ def van_sales(conn: Any, van_ids: Sequence[int], day: date) -> list[Doc]:
     out: dict[str, Doc] = {}
     for chunk in _chunks(sorted(set(van_ids))):
         for r in _select(conn, SQL_VAN_SALES.format(ph=_ph(len(chunk))), (day, day + timedelta(days=1), *chunk)):
+            doc = _sale_doc(r)
+            out[doc.isn] = doc
+    return sorted(out.values(), key=lambda d: (d.customer_id, d.doc_number))
+
+
+def sales_by_isn(conn: Any, isns: Sequence[str], day: date) -> list[Doc]:
+    """Проведённые накладные дня с этими fISN (№96: накладные машины по событиям её терминала)."""
+    out: dict[str, Doc] = {}
+    for chunk in _chunks(sorted(set(isns))):
+        for r in _select(conn, SQL_SALES_BY_ISN.format(ph=_ph(len(chunk))), (day, day + timedelta(days=1), *chunk)):
             doc = _sale_doc(r)
             out[doc.isn] = doc
     return sorted(out.values(), key=lambda d: (d.customer_id, d.doc_number))
@@ -758,7 +780,8 @@ OrdersPick = Callable[[Sequence[DispatchOrder], Callable[[Sequence[int]], dict[i
 
 def load_day(connection_string: str, car_code: str, day: date, orders_window: tuple[date, date],
              pick_orders: OrdersPick, invoice_owner: Callable[[int], bool] | None = None,
-             van_cars: Callable[[Mapping[int, str]], Mapping[int, str]] | None = None) -> DayData:
+             van_cars: Callable[[Mapping[int, str]], Mapping[int, str]] | None = None,
+             event_cars: Mapping[str, str] | None = None) -> DayData:
     """Всё для /day машины на дату — одним read-only соединением.
 
     Точки — по клиенту (docstring модуля): проведённые накладные машины на дату (с машиной в накладной; без машины —
@@ -766,13 +789,17 @@ def load_day(connection_string: str, car_code: str, day: date, orders_window: tu
     берутся; и из заказов, которые pick_orders отдаёт этой машине, у клиентов, для которых invoice_owner — да
     (routes_link.invoice_owner; None — не берутся), кроме накладных экспедиторов других машин; с `replaces` — их
     заказами) + заказы окна orders_window, которые pick_orders отдаёт этой машине, у клиентов без накладной машины и без
-    накладной вообще."""
+    накладной вообще. event_cars — накладные (fISN) с событиями терминалов за дату → машина событий (courier Store.invoice_cars):
+    такая накладная — только этой машины, каким бы путём её ни нашли (№96: экспедитор днём перешёл на другую машину —
+    накладная, которую уже везли и, может, оплатили, не уходит к другому терминалу неоплаченной). Экспедиторы ищутся только
+    среди открытых ERP-агентов."""
     conn = erp.connect(connection_string)
     try:
         sales = day_sales(conn, car_code, day)
         vans: Mapping[int, str] = {}
         if van_cars is not None:   # №96: накладные экспедиторов машины — факт, и до утверждения плана
-            vans = van_cars(_ref(connection_string, 'agents', lambda: {a.id: a.name for a in erp.agents(conn).values()}))
+            vans = van_cars(_ref(connection_string, 'van_agents',
+                                 lambda: {a.id: a.name for a in erp.agents(conn).values() if not a.closed}))
             mine = [a for a, car in vans.items() if car == car_code]
             if mine:
                 own = {d.isn for d in sales}
@@ -784,6 +811,12 @@ def load_day(connection_string: str, car_code: str, day: date, orders_window: tu
             own = {d.isn for d in sales}
             sales += [d for d in plan_sales(conn, shipped, day, [a for a, car in vans.items() if car != car_code])
                       if d.isn not in own]
+        if event_cars:   # №96: накладная с событиями терминала — машины этих событий, и только её
+            sales = [d for d in sales if event_cars.get(d.isn, car_code) == car_code]
+            own = {d.isn for d in sales}
+            kept = [isn for isn, car in event_cars.items() if car == car_code and isn not in own]
+            if kept:
+                sales += sales_by_isn(conn, kept, day)
         parents = sale_parents(conn, [d.isn for d in sales]) if sales else {}
         sales = [Doc(d.stop_id, d.source, d.isn, d.doc_number, d.customer_id, d.agent_id, d.pay_type, d.amount,
                      parents.get(d.isn, ())) for d in sales]

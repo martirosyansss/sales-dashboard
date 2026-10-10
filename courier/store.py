@@ -1306,6 +1306,18 @@ class Store:
             (day, etype) if etype else (day,)).fetchall())
         return [_event_json(r, self._name()) for r in rows]
 
+    def invoice_cars(self, day: str) -> dict[str, str]:
+        """Накладные (точки S:), по которым за дату есть события терминала (любые, кроме heartbeat `track`): fISN
+        (заглавными) → машина первого из них (№96: накладная, которую машина уже везла и, может, оплатили, остаётся её —
+        экспедитор днём перешёл на другую машину, а накладная не уходит к ней неоплаченной)."""
+        rows = self._read(lambda c: c.execute(
+            "SELECT stop_id, car_code FROM events WHERE date = ? AND type <> 'track' AND stop_id LIKE 'S:%' "
+            'ORDER BY at_utc, received_at, id', (day,)).fetchall())
+        out: dict[str, str] = {}
+        for sid, car in rows:
+            out.setdefault(sid[2:].upper(), car)
+        return out
+
     def heartbeats_for_day(self, day: str) -> list[dict[str, Any]]:
         """Heartbeat-ы `track` даты без полного payload (карта «Մեքենաները առցանց», №76): id, driver_id, driver_name,
         car_code, at, at_utc, received_at и device (track.device как записан при приёме, иначе None)."""

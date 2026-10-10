@@ -397,6 +397,7 @@
 .dp-erp-note { color: var(--rt-fg-mute); font-size: .8125rem; }
 .dp-erp-list { margin: 6px 0 0; padding-left: 18px; }
 .dp-erp-list .is-warn { color: var(--rt-warn); }
+.dp-erp-synced { margin: 4px 0 0; color: var(--rt-ok); }
 #dpUnassigned { display: grid; gap: 12px; }
 #rtDispatch .dp-problem { margin: 0; padding: 14px 18px; border-radius: var(--rt-radius); }
 .dp-problem ul { margin: 6px 0 8px; padding-left: 20px; display: grid; gap: 4px; }
