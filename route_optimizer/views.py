@@ -1514,10 +1514,12 @@ def _active_orders(deliver: list[dp.DispatchOrder], backlog: list[dp.DispatchOrd
 
 
 def _invoiced(state: RoutesState, snap: Snapshot, bundle: Bundle, day: date, orders: Sequence[dp.DispatchOrder],
-              fleet: Collection[str]) -> tuple[dict[str, str], list[dp.UnknownVan]]:
+              fleet: Collection[str], draft: dp.Draft | None) -> tuple[dict[str, str], list[dp.UnknownVan]]:
     """Накладные ERP дня на машины парка fleet (№96, dp.invoiced_trucks): машина накладной, без неё — по экспедитору:
     человек экипажа дня (водитель и առաքիչ, Store.truck_drivers) с именем ERP-агента (снимок: erp.agents — все агенты, и
-    экспедиторы), иначе ручная машина экспедитора (Bundle.van_trucks). Накладных дня нет — экипаж не читается."""
+    экспедиторы), иначе ручная машина экспедитора (Bundle.van_trucks). Заказы менеджеров, снятых фильтром (№69,
+    dp.agents_off_of), — только на машинах, уже стоящих в плане draft (рейсы или отметка в шаге 1). Накладных дня нет —
+    экипаж не читается."""
     if not any(o.shipped == day for o in orders):
         return {}, []
     crew: dict[str, list[str]] = {}
@@ -1525,7 +1527,9 @@ def _invoiced(state: RoutesState, snap: Snapshot, bundle: Bundle, day: date, ord
         for code, name in state.store.truck_drivers(day.isoformat(), role)[0].items():
             crew.setdefault(code, []).append(name)
     names = {aid: a.name for aid, a in snap.agents.items()}
-    return dp.invoiced_trucks(orders, day, names, dp.crew_index(crew), bundle.van_trucks(), fleet)
+    planned = {t.truck for t in draft.trips} | set(draft.trucks) if draft is not None else set()
+    return dp.invoiced_trucks(orders, day, names, dp.crew_index(crew), bundle.van_trucks(), fleet,
+                              dp.agents_off_of(draft, bundle.settings), planned)
 
 
 def _carried(state: RoutesState, day: date, workdays: Sequence[int], backlog: list[dp.DispatchOrder],
@@ -1678,7 +1682,7 @@ def _load_day(state: RoutesState, bundle: Bundle, day: date, refresh: bool = Fal
         return coords[cid]
 
     ready = _ready_trucks(snap, bundle)
-    invoiced, unknown = _invoiced(state, snap, bundle, day, [*deliver, *backlog, *today], ready)
+    invoiced, unknown = _invoiced(state, snap, bundle, day, [*deliver, *backlog, *today], ready, draft)
     stops = dp.build_stops(_active_orders(deliver, backlog, draft, carried, bundle.settings, today, invoiced), coord)
     ctx = _dispatch_ctx(state, snap, bundle, day, ready, [s.point for s in stops if s.point is not None],
                         {s.customer_id: s.point for s in stops if s.point is not None})
@@ -1731,12 +1735,34 @@ def _invoiced_customers(dd: _DispatchDay) -> dict[int, frozenset[str]]:
     return dp.invoiced_customers([*dd.deliver, *dd.backlog, *dd.same_day], dd.invoiced) if dd.invoiced else {}
 
 
+def _erp_done(dd: _DispatchDay) -> dict[str, set[int]] | None:
+    """Ход доставки сегодня по факту «Առաքիչ» (№96, dp.sync_invoiced: такие рейсы не меняются): машина → клиенты, у точек
+    которых статус терминала уже не «ждёт» (state.live_facts — тот же факт, что у карты машин и хода дня). Не сегодня или
+    раздела «Առաքիչ» нет — пусто; факт не прочитан — None (рейсы не приводятся: не знаем, что уже развезли)."""
+    state = _state()
+    if state.live_facts is None or dd.day != _same_day_now().date():
+        return {}
+    try:
+        fleet = state.live_facts.fleet(dd.day.isoformat())
+    except Exception:   # факт терминалов — защита рейсов в пути: без него рейсы не трогаем
+        logger.warning('[Routes] Ход доставки %s не прочитан — рейсы под накладные ERP не приводятся', dd.day,
+                       exc_info=True)
+        return None
+    return {car: {s['customer_id'] for s in (facts or {}).get('stops') or ()
+                  if isinstance(s.get('customer_id'), int) and (s.get('status') or 'pending') != 'pending'}
+            for car, facts in fleet.items()}
+
+
 def _sync_erp(dd: _DispatchDay, draft: dp.Draft) -> bool:
     """Рейсы черновика draft под накладные ERP дня (№96, dp.sync_invoiced; dd.stops — точки этого черновика): сегодня и
-    впереди, рейсы есть; прошедший день — как проехали. Ответ — рейсы изменены."""
+    впереди, рейсы есть; прошедший день — как проехали. Рейсы, которые уже развозят по факту «Առաքիչ», — не меняются
+    (_erp_done; не прочитан — ничего не приводится). Ответ — рейсы изменены."""
     if dd.ctx is None or not draft.trips or dd.day < _clock().date():
         return False
-    return dp.sync_invoiced(dd.ctx, dd.stops, draft, _invoiced_customers(dd), _today_min(dd))
+    done = _erp_done(dd)
+    if done is None:
+        return False
+    return dp.sync_invoiced(dd.ctx, dd.stops, draft, _invoiced_customers(dd), _today_min(dd), done)
 
 
 def _erp_json(dd: _DispatchDay) -> dict[str, Any] | None:
@@ -1754,7 +1780,8 @@ def _erp_json(dd: _DispatchDay) -> dict[str, Any] | None:
     routable = {s.customer_id for s in dd.stops if s.point is not None}
     normal = {o.isn for o in _active_orders(dd.deliver, dd.backlog, draft, dd.carried, dd.bundle.settings, dd.same_day)}
     forced = {s.customer_id for s in dd.stops if s.customer_id in inv and all(o.isn not in normal for o in s.orders)}
-    held = dp.erp_held(dd.ctx, dd.stops, draft, inv, _today_min(dd)) if dd.ctx is not None and draft is not None else set()
+    held = dp.erp_held(dd.ctx, dd.stops, draft, inv, _erp_done(dd) or {}) \
+        if dd.ctx is not None and draft is not None else set()
     rows = []
     for code in sorted({t for ts in inv.values() for t in ts}):
         mine = {c for c, ts in inv.items() if code in ts}
@@ -2783,7 +2810,7 @@ def api_dispatch_status() -> Any:
     invoiced: dict[str, str] = {}
     if any(o.shipped == day for o in orders):
         snap, _ = state.snapshots.cached()
-        invoiced, _ = _invoiced(state, snap, bundle, day, orders, _ready_trucks(snap, bundle))
+        invoiced, _ = _invoiced(state, snap, bundle, day, orders, _ready_trucks(snap, bundle), draft)
     active = _active_orders(sel.main, sel.backlog, draft, carried, bundle.settings, today, invoiced)
     return jsonify({'success': True, 'day': day.isoformat(), 'rev': rev,
                     'orders': {'count': len(active), 'kg': round(sum(o.kg for o in active)),
@@ -2896,6 +2923,9 @@ def api_dispatch_build() -> Any:
     # №78: новый фильтр менеджеров снял точки загруженного рейса — только с подтверждением логиста, без него не сохраняется
     if payload.get('confirm_loaded') is not True and dp.loaded_cargo(draft, dd.stops, cargo) != cargo:
         return _loaded_confirm()
+    # №96: накладные снятых менеджеров — только на машинах плана: план теперь с машинами этой сборки — точки дня по нему
+    if _invoiced(state, dd.snap, bundle, day, [*dd.deliver, *dd.backlog, *dd.same_day], dd.ready, draft)[0] != dd.invoiced:
+        dd = _load_day(state, bundle, day, draft=draft, rev=dd.rev)
     _sync_erp(dd, draft)   # №96: сборка раскладывает заново — магазины накладных ERP дня снова в рейсы своих машин
     # отметка сборки: все заказы дня (и исключённые — они не «новые») + добавленные заказы прошлых дней
     inside = _backlog_in(draft, dd.carried)
