@@ -226,6 +226,10 @@
 #rtDispatch .dp-truck:not(:has(input:checked)):not(.is-off) { opacity: .62; }
 #rtDispatch .dp-truck:not(:has(input:checked)):not(.is-off) .dp-truck-t b { text-decoration: line-through; text-decoration-color: var(--rt-fg-mute); }
 #rtDispatch .dp-truck.is-off { opacity: .5; border-style: dashed; }
+/* №98: менеджеры дня — правило настроек, плитки только для сведения */
+#rtDispatch .dp-agent:has(input:disabled) { cursor: default; }
+#rtDispatch .dp-agent:has(input:disabled):hover { border-color: var(--rt-line); }
+#rtDispatch .dp-agent input:disabled { cursor: default; }
 .dp-truck-center { color: var(--rt-acc); }
 /* «Մենեջերներ» — те же плитки, что у машин; над ними «отметить всех / снять», под ними «Կիրառել» */
 .dp-agents-acts { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 0 0 10px; }

@@ -95,11 +95,13 @@ def test_dont_take_folds_order_and_survives_rebuild(client):
 
 
 def test_take_today_wins_over_managers_filter(client):
-    """Заказ менеджера, снятого фильтром «Մենեջերներ»: раньше кнопка писала его в added, а фильтр тут же выкидывал."""
+    """Заказ менеджера, снятого фильтром «Մենեջերներ»: раньше кнопка писала его в added, а фильтр тут же выкидывал. №98:
+    сегодня и дальше менеджера снимает только правило настроек — снят им."""
     _dispatch_setup(client, _orders())
+    r = client.post('/api/routes/settings', json={'settings': {'dispatch_agents_off': [2]}})
+    assert r.status_code == 200, r.get_json()
     d = _build(client)
-    code, d = _edit(client, d, action='agents', off=[2])
-    assert code == 200 and 102 not in _in_trips(d)
+    assert 102 not in _in_trips(d)
     row = _row(d, 6)
     assert row['agent_off'] and not row['taken']
     code, d = _edit(client, d, action='include', order=_isn(6))

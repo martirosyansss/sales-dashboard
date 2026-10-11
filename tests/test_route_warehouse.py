@@ -449,9 +449,17 @@ def _edit(client, d, **body):
     return client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': d['rev'], **body})
 
 
+def _past_day(monkeypatch):
+    """№98: фильтр «Մենեջերներ» плана меняется только у прошедшего дня (сегодня и дальше — правило настроек)."""
+    monkeypatch.setattr(views, '_yerevan_now', lambda: datetime(2026, 10, 2, 9, 0, tzinfo=ac.YEREVAN))
+
+
 def test_agents_filter_that_drops_loaded_stop_needs_confirmation(client, monkeypatch):
     state, d, tr = _loaded_day(client, monkeypatch)
     before = state.store.load_dispatch(DAY)
+    r = _edit(client, d, action='agents', off=[1, 2])
+    assert r.status_code == 400 and r.get_json()['error'] == views.AGENTS_RULE_ONLY   # №98: сегодня — только правило
+    _past_day(monkeypatch)
     r = _edit(client, d, action='agents', off=[1, 2])
     assert r.status_code == 400 and r.get_json()['loaded_confirm'] is True and r.get_json()['error'] == dp.LOADED_EDIT
     assert state.store.load_dispatch(DAY) == before                    # ничего не сохранено
@@ -461,8 +469,10 @@ def test_agents_filter_that_drops_loaded_stop_needs_confirmation(client, monkeyp
 
 def test_apply_settings_and_same_day_paths_check_loaded_cargo(client, monkeypatch):
     state, d, tr = _loaded_day(client, monkeypatch)
-    # настройки дня: менеджеры 1 и 2 сняты правилом — «Կիրառել կարգավորումները» снимет точки загруженного рейса
-    state.store.save(st.Changes({**state.store.load().settings, 'dispatch_agents_off': [1, 2]}, False, None, (), ()),
+    # настройки дня: клиенты загруженного рейса — «машины не везут» (№74) — «Կիրառել կարգավորումները» снимет его точки
+    # (менеджеров правила, №98, день берёт и без «Կիրառել»)
+    off = sorted({s['customer_id'] for s in tr['stops']})
+    state.store.save(st.Changes({**state.store.load().settings, 'dispatch_customers_off': off}, False, None, (), ()),
                      'qa')
     before = state.store.load_dispatch(DAY)
     r = _edit(client, d, action='apply_settings')
@@ -517,6 +527,7 @@ def test_build_with_new_manager_filter_dropping_loaded_stop_needs_confirmation(c
     d = _edit(client, d, action='unapprove').get_json()
     before = state.store.load_dispatch(DAY)
     body = {'date': DAY, 'trucks': ['CAR1', 'CAR2'], 'agents_off': [1, 2]}
+    _past_day(monkeypatch)
     r = client.post('/api/routes/dispatch/build', json=body)
     assert r.status_code == 400 and r.get_json()['loaded_confirm'] is True
     assert state.store.load_dispatch(DAY) == before

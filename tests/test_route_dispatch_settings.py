@@ -57,10 +57,14 @@ def test_manager_with_only_new_orders_of_today_is_in_filter_and_rule_hides_them(
     assert _isn(20) not in {o['isn'] for o in d['same_day']['orders']} and d['same_day']['count'] == 3
     s = client.get('/api/routes/dispatch/status?date=' + DAY).get_json()
     assert s['same_day']['count'] == 3 and s['same_day']['sig'] == d['same_day']['sig']
-    # первая сборка начинает с правила; вернуть менеджера 3 в развоз дня — его новый заказ снова на плашке
+    # первая сборка начинает с правила; вернуть менеджера 3 в развоз дня — его новый заказ снова на плашке. №98: сегодня
+    # менеджеров снимает только правило настроек — правка дня не принимается, вернуть — в настройках
     d = _build(client)
     assert d['agents_off'] == [3] and _isn(20) not in {o['isn'] for o in d['same_day']['orders']}
-    d = client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': d['rev'], 'action': 'agents', 'off': []}).get_json()
+    r = client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': d['rev'], 'action': 'agents', 'off': []})
+    assert r.status_code == 400 and r.get_json()['error'] == views.AGENTS_RULE_ONLY
+    _settings(client, dispatch_agents_off=[])
+    d = client.get('/api/routes/dispatch?date=' + DAY).get_json()
     assert _isn(20) in {o['isn'] for o in d['same_day']['orders']} and _agents(d)[3]['off'] is False
 
 
@@ -470,7 +474,7 @@ def test_settings_and_dispatch_pages_have_rule_texts():
     assert "action: 'apply_settings'" in djs and 'other_vehicle' in djs
     assert "'agents', 'agentphones', 'fleet', 'custoff'" in js and '/api/routes/settings/customer-hints' in js
     assert 'գնում է այլ մեքենայով' in djs and 'չենք տանում՝ կարգավորումներով' in djs
-    assert "routes_dispatch.js') }}?v=118" in (ROOT / 'templates' / 'routes_dispatch.html').read_text(encoding='utf-8')
+    assert "routes_dispatch.js') }}?v=119" in (ROOT / 'templates' / 'routes_dispatch.html').read_text(encoding='utf-8')
 
 
 
@@ -492,16 +496,20 @@ def test_built_day_keeps_its_rule_when_settings_change(client, monkeypatch):
     plan_before = d['plan']['trucks']
     view_before = rl.routes_view(state, D)
     # настройки поменяли днём: Rocarm снят, Капан и 108 — снова наши; собранный день — как был
-    _settings(client, dispatch_fleet_agents=[], dispatch_customers_off=[], dispatch_agents_off=[1])
+    _settings(client, dispatch_fleet_agents=[], dispatch_customers_off=[])
     d = client.get('/api/routes/dispatch?date=' + DAY).get_json()
     assert d['plan']['trucks'] == plan_before and (d['orders']['count'], d['orders']['other_vehicle']) == (4, 2)
-    assert d['settings_differ'] == {'agents': True, 'fleet': True}
+    assert d['settings_differ'] == {'fleet': True}
     assert d['new_since_build'] == {'count': 0, 'kg': 0, 'revenue': 0} and d['removed_since_build']['count'] == 0
     view = rl.routes_view(state, D)
     assert view.fleet == view_before.fleet and view.agents_off == frozenset()
     places = lambda ids: {c: (ADDRESSES.get(c, ''), NAMES[c][1]) for c in ids}   # noqa: E731
     for car in ('CAR1', 'CAR2'):
         assert rl.pick_orders(ORDERS, D, view, car, places) == rl.pick_orders(ORDERS, D, view_before, car, places)
+    # №98: менеджеров снимает правило настроек — и у собранного дня (сегодня и дальше); «Կիրառել» ради них не нужно
+    _settings(client, dispatch_agents_off=[1])
+    d = client.get('/api/routes/dispatch?date=' + DAY).get_json()
+    assert d['agents_off'] == [1] and d['settings_differ'] == {'fleet': True} and d['agents_rule'] is True
     # день без плана — уже по новым настройкам
     nxt = client.get('/api/routes/dispatch?date=2026-10-02').get_json()
     assert 'settings_differ' not in nxt and nxt['agents_off'] == [1]
@@ -528,7 +536,7 @@ def test_apply_settings_button(client, monkeypatch):
     d, _ = _built(client, state)
     _settings(client, **RULE, dispatch_agents_off=[3])
     d = client.get('/api/routes/dispatch?date=' + DAY).get_json()
-    assert d['settings_differ'] == {'agents': True, 'fleet': True}
+    assert d['settings_differ'] == {'fleet': True} and d['agents_off'] == [3]   # №98: менеджеры — уже по правилу
     stale = client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': d['rev'] - 1, 'action': 'apply_settings'})
     assert stale.status_code == 409
     r = client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': d['rev'], 'action': 'apply_settings'})

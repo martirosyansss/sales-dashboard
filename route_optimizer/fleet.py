@@ -308,6 +308,7 @@ class _Stop:
     allowed_trucks: frozenset[str] | None = None
     yerevan: bool = False  # в зоне Еревана (№68): большой машине — надбавка к разгрузке и плата за точку
     solo: bool = False     # отдельный рейс (№78): только этот заказ в рейсе
+    priority: int = 0      # №98: сколько рабочих дней ждёт заказ — не всё помещается, вне рейсов сначала младшие (_prioritize)
 
 
 @dataclass(frozen=True)
@@ -1606,6 +1607,73 @@ def _polish_orders(trips: list[Trip], stops: Sequence[_Stop], d: Matrix, m: Matr
     return out
 
 
+def _prioritize(trips: list[Trip], stops: Sequence[_Stop], d: Matrix, m: Matrix, trucks: Sequence[FleetTruck],
+                tn: TruckNorms, used: Mapping[str, float] | None, fixed: Sequence[tuple[str, Sequence[int], float]] | None,
+                fed: Collection[str], load_cap: float | None) -> list[Trip]:
+    """Старшие заказы вне рейсов — вместо младших в рейсах (№98, _Stop.priority: сколько рабочих дней ждёт заказ). Для
+    каждого ждущего старшего заказа, от самого старшего: в рейсе (не закреплённом, не за пределами дня) младший заказ одной
+    поездки заменяется им — на место, где рейс короче всего; рейс проверяется как у сборки: допуск машин и центр, отдельный
+    рейс (№78), предел загрузки (_load_limit), окна и конец дня всей машины (_days, _late), закреплённые рейсы выезжают не
+    позже. Из подходящих — замена самого младшего, при равных — с меньшим приростом км. Снятый младший — вне рейсов
+    (причина — время). Решатель PyVRP так не умеет: огромный приз необязательного заказа (vrp.PRIZE) сильнее штрафа за
+    опоздание — поиск уходит в недопустимые решения, а принимаются только допустимые. Ждущих старших нет — рейсы те же."""
+    placed = Counter(i for t in trips for i in t.items)
+    waiting = sorted((i for i, s in enumerate(stops) if s.priority > 0 and i not in placed),
+                     key=lambda i: (-stops[i].priority, i))
+    if not waiting or not trips:
+        return trips
+    by_code = {t.car_code: t for t in trucks}
+    start0 = {c: float((used or {}).get(c, 0.0)) for c in by_code}
+    pinned = {(code, tuple(idx)) for code, idx, _ in (fixed or ())}
+    out = list(trips)
+    for w in waiting:
+        vs = _shared(out, stops, tn)
+        ends: dict[str, float] = {}
+        base = _days(out, vs, m, start0, tn, fed, ends)
+        best: tuple[tuple[int, float], int, list[int], list[tuple[int, float, float, float]]] | None = None
+        for k, t in enumerate(out):
+            truck = by_code.get(t.truck)
+            rows0 = base.get(t.truck)
+            if truck is None or t.extra or (t.truck, t.items) in pinned or rows0 is None \
+                    or _late(rows0, tn, ends.get(t.truck, 0.0)):
+                continue
+            mine = [n for n, x in enumerate(out) if x.truck == t.truck]
+            dep0 = {n: dep for n, dep, _, _ in rows0}
+            for u in t.items:
+                if stops[u].priority >= stops[w].priority or placed[u] != 1:
+                    continue
+                rest = [i for i in t.items if i != u]
+                for pos in range(len(rest) + 1):
+                    seq = [*rest[:pos], w, *rest[pos:]]
+                    if not _eligible(seq, vs, [truck]) or (len(seq) > 1 and any(vs[i].solo for i in seq)) \
+                            or math.fsum(vs[i].kg for i in seq) > _load_limit(seq, vs, truck, trucks, load_cap) + _EPS:
+                        continue
+                    key = (stops[u].priority, _closed(seq, vs, d) - _closed(list(t.items), vs, d))
+                    if best is not None and key >= best[0]:
+                        continue
+                    day = [replace(out[n], items=tuple(seq)) if n == k else out[n] for n in mine]
+                    got: dict[str, float] = {}
+                    rows = _days(day, vs, m, {t.truck: start0[t.truck]}, tn, fed, got).get(t.truck)
+                    if rows is None or _late(rows, tn, got.get(t.truck, 0.0)) or any(
+                            (out[mine[j]].truck, out[mine[j]].items) in pinned and dep > dep0[mine[j]] + _EPS
+                            for j, dep, _, _ in rows):
+                        continue
+                    best = (key, k, seq, [(mine[j], *r) for j, *r in rows])
+        if best is None:
+            continue
+        _, k, seq, rows = best
+        t, truck = out[k], by_code[out[k].truck]
+        cost = _sequence_cost(seq, vs, d, truck)
+        placed.subtract(t.items)
+        out[k] = Trip(t.truck, len(seq), math.fsum(vs[i].kg for i in seq), math.fsum(vs[i].revenue for i in seq),
+                      _closed(seq, vs, d), t.minutes, truck.capacity_kg, cost.liters, False, tuple(seq), cost.wear_amd,
+                      cost.payload_tonne_km)
+        placed.update(seq)
+        for n, _, minutes, _ in rows:   # выезд рейсов машины после замены — другой: минуты по её дню
+            out[n] = replace(out[n], minutes=minutes)
+    return out
+
+
 def _better(new: Sequence[Trip], old: Sequence[Trip], tn: TruckNorms | None = None,
             bias: Callable[[Sequence[Trip]], float] | None = None) -> bool:
     """Рейсы решателя лучше: заказов в рейсах больше; при тех же заказах — литров не больше или рейсов тяжелее
@@ -1834,7 +1902,8 @@ def route_day(points: Sequence[Point], kgs: Sequence[float], revenues: Sequence[
               fixed: Sequence[tuple[str, Sequence[int], float]] | None = None,
               balance: bool = False, solver: bool = False, load_cap: float | None = None,
               allowed_trucks: Sequence[Collection[str] | None] | None = None, fed: Collection[str] = (),
-              iterations: int = vrp.ITERATIONS, solo: Sequence[bool] | None = None, report: bool = True) -> list[Trip]:
+              iterations: int = vrp.ITERATIONS, solo: Sequence[bool] | None = None, report: bool = True,
+              priority: Sequence[int] | None = None) -> list[Trip]:
     """Рейсы дня по известным заказам — тот же расчёт, что у пробы Монте-Карло (plan_trips):
     заказ i — точка points[i], kgs[i] кг; Trip.items — номера заказов по порядку объезда.
     Тяжелее самой большой машины — несколько поездок к одному заказу поровну. overflow=False (план
@@ -1849,7 +1918,9 @@ def route_day(points: Sequence[Point], kgs: Sequence[float], revenues: Sequence[
     прошли проверку и лучше (_better), иначе — рейсы сборки. Обед (tn с
     обедом, №61) — во всех шагах по одному правилу; fed — машины, чей обед уже в занятом времени used / busy.
     solo[i] — заказ i едет отдельным рейсом (№78, правило — в шапке модуля). report — литры рейсов с рельефом (№85,
-    _reported); сборка «Развоза» его не просит: литры её рейсов показывает dispatch.plan_view."""
+    _reported); сборка «Развоза» его не просит: литры её рейсов показывает dispatch.plan_view. priority[i] — сколько рабочих
+    дней ждёт заказ i (№98, план развоза): не всё помещается — вне рейсов сначала младшие (_prioritize); None — все равны,
+    расчёт прежний."""
     if (balance or solver) and (overflow or busy is not None or departs is not None):
         raise ValueError('balance и solver — только для сборки плана развоза: overflow=False, без busy и departs')
     load_cap = LOAD_CAP if solver else load_cap
@@ -1862,7 +1933,7 @@ def route_day(points: Sequence[Point], kgs: Sequence[float], revenues: Sequence[
     stops = [_Stop(node[p], float(kg), float(rev), tn.unload_at(float(kg), p),
                    *(windows[i] if windows is not None else (0.0, math.inf)), center is not None and bool(center[i]),
                    None if allowed_trucks is None or allowed_trucks[i] is None else frozenset(allowed_trucks[i]),
-                   p in yerevan, solo is not None and bool(solo[i]))
+                   p in yerevan, solo is not None and bool(solo[i]), int(priority[i]) if priority is not None else 0)
              for i, (p, kg, rev) in enumerate(zip(points, kgs, revenues))]
     if overflow or not trucks:
         trips = plan_trips(stops, d, m, trucks, tn, used, overflow, earliest, reasons, busy, departs, fixed, load_cap, fed)
@@ -1920,6 +1991,8 @@ def route_day(points: Sequence[Point], kgs: Sequence[float], revenues: Sequence[
             if _better(alt, best, tn, bias):
                 best = alt
         trips = best
+    if priority is not None and any(priority):   # №98: старшие заказы — в рейсы вместо младших
+        trips = _prioritize(trips, stops, d, m, trucks, tn, used, fixed, fed, load_cap)
     if reasons is not None:
         placed = {i for t in trips for i in t.items}
         reasons.update({i: why.get(i, 'time') for i in range(len(stops)) if i not in placed})

@@ -139,13 +139,15 @@ def test_compare_seats_drivers_like_rebuild(client, monkeypatch):
 
 
 def test_compare_page_manager_filter(client, monkeypatch):
-    """Фильтр «Մենեջերներ», ещё не применённый к плану (agents_off), — точки варианта по нему; черновик не меняется."""
+    """Фильтр «Մենեջերներ» страницы (agents_off) для сегодня и дальше не принимается (№98: только правило настроек) —
+    точки варианта те же; черновик не меняется."""
     state, _ = _page_setup(client, monkeypatch, now=NOW)
     _build(client, ('CAR1', 'CAR2'))
     before = state.store.load_dispatch(DAY)
     full = _compare(client, ['CAR1', 'CAR2']).get_json()['summary']
     off = _compare(client, ['CAR1', 'CAR2'], agents_off=[2]).get_json()['summary']
-    assert full['stops'] + full['unassigned'] == 3 and off['stops'] + off['unassigned'] == 1   # у менеджера 2 — 102, 104
+    assert full['stops'] + full['unassigned'] == 3 and off['stops'] + off['unassigned'] == 3   # у менеджера 2 — 102, 104
+    assert _compare(client, ['CAR1'], agents_off='x').status_code == 400                     # битое поле — как раньше
     assert state.store.load_dispatch(DAY) == before
 
 

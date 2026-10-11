@@ -363,13 +363,15 @@ def test_planned_on_target_day_not_shown_after_it(client):
 
 
 def test_target_plan_without_the_store_keeps_order_visible(client):
-    """План вторника есть, но магазина в его рейсах нет (агент снят фильтром) — заказ не везли: виден и дальше."""
+    """План вторника есть, но магазина в его рейсах нет (агент снят правилом настроек, №98) — заказ не везли: виден и
+    дальше."""
     _dispatch_setup(client, _orders())
     d = _build(client)
     _edit(client, d, action='defer_store', customer_id=101, to='2026-10-06')
+    r = client.post('/api/routes/settings', json={'settings': {'dispatch_agents_off': [1]}})
+    assert r.status_code == 200, r.get_json()
     tue = _build(client, '2026-10-06')
-    code, tue = _edit(client, tue, day='2026-10-06', action='agents', off=[1])
-    assert code == 200 and 101 not in _in_trips(tue)
+    assert 101 not in _in_trips(tue)
     assert _row(_get(client, '2026-10-07')['backlog'], 1) is not None
 
 

@@ -17,6 +17,10 @@ RoadProvider.get); запись — только экипаж машины из 
 Срок магазина у водителя (ответ владельца №93, контракт v1.8 §12): вид несёт окна приёма дня (Bundle.windows_on), запас
 до срока (настройка until_buffer_min), плановый выезд рейсов машин (прогноз сборки) и дорожную модель «Развоза» для матрицы
 рейса (route_optimizer.views.trip_road — вызывается только при сборке /day).
+
+«Все заказы дня» (ответ владельца №98): сегодня и дальше по Еревану менеджеров снимает только правило настроек
+(dp.day_agents_off — выбор дня в плане не действует), недовезённое вчера (точка O: терминала не закрыта, dp.auto_carried)
+само входит в перенесённые — как на странице «Развоза» (views._agents_off, views._auto_carried).
 """
 from __future__ import annotations
 
@@ -32,6 +36,8 @@ from route_optimizer.geo import Point, haversine_km
 from route_optimizer.store import CREW_BY_APK, Bundle, check_driver_name
 from route_optimizer.store import StoreError as RoutesStoreError
 from route_optimizer.tsp import Distance
+
+from . import clock
 
 logger = logging.getLogger(__name__)
 
@@ -121,7 +127,7 @@ def routes_view(state: Any, day: date) -> RoutesView:
                       agent_phones=phones, **timing)
     load = _plans(state)
     later = _later(load, day, workdays, holidays)
-    carried = _carried(state, day, workdays, holidays, load) | set(later)
+    carried = _carried(state, day, workdays, holidays, load) | set(later) | _auto(state, day, workdays, holidays, load)
     carried_since = min(later.values(), default=None)
     taken = _taken(state, day, workdays, holidays, load)
     seen = dp.PlanSeen.of(load(dp.previous_workday(day, workdays, holidays)))   # №81
@@ -139,7 +145,8 @@ def routes_view(state: Any, day: date) -> RoutesView:
                       trips=tuple((t.truck, tuple(t.stops)) for t in draft.trips),
                       excluded=frozenset(draft.excluded), added=frozenset(draft.added),
                       carried=frozenset(carried), carried_since=carried_since, dropped=frozenset(draft.dropped),
-                      agents_off=frozenset(dp.agents_off_of(draft, bundle.settings)), same_day=frozenset(draft.same_day),
+                      agents_off=frozenset(dp.day_agents_off(draft, bundle.settings, day, clock.today())),   # №98
+                      same_day=frozenset(draft.same_day),
                       taken=frozenset(taken), fleet=dp.fleet_rule_of(draft, bundle.settings), roads=roads, seen=seen,
                       departs=_departs(draft), agent_phones=phones, **timing)
 
@@ -270,6 +277,31 @@ def _carried(state: Any, day: date, workdays: Sequence[int],
             out |= plan.deferred
         d += timedelta(days=1)
     return out
+
+
+def _auto(state: Any, day: date, workdays: Sequence[int], holidays: Collection[date],
+          load: Callable[[date], dp.Draft | None]) -> set[str]:
+    """Недовезённое вчера (№98, dp.auto_carried; как views._auto_carried «Маршрутов»): сегодня и дальше по Еревану —
+    отправленные планы с прошлого рабочего дня по вчера (load; не прочитан — RoutesStoreError наружу, №80, как «Վաղը») и
+    факт терминалов тех дней (state.live_facts — подключает app_v2). Факта нет или он не прочитан — без переноса (в
+    журнал): довезли ли — неизвестно."""
+    facts = getattr(state, 'live_facts', None)
+    today = clock.today()
+    if facts is None or day < today:
+        return set()
+    days: list[tuple[dp.Draft | None, Mapping[str, Any], bool]] = []
+    d = dp.previous_workday(day, workdays, holidays)
+    while d < day:
+        plan = load(d)
+        try:
+            fleet = facts.fleet(d.isoformat())
+        except Exception:   # факт терминалов — дополнение: без него вид как раньше
+            logger.warning('[Courier] Факт терминалов на %s не прочитан — недовезённое не перенесено на %s', d, day,
+                           exc_info=True)
+            return set()
+        days.append((plan, fleet, d < today))
+        d += timedelta(days=1)
+    return dp.auto_carried(days)
 
 
 def _later(load: Callable[[date], dp.Draft | None], day: date, workdays: Sequence[int],

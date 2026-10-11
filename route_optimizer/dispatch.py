@@ -84,6 +84,12 @@
   вместо его окна) или постоянное. После сохранения рейсы с магазином переставляются под окна (fit_until, _fit_windows),
   кроме закреплённых логистом, загруженных и уже грузящихся — у них только пометка window_miss; не успеть и так —
   window_miss и подсказка машины, которая успела бы (_until_hint).
+- Все заказы дня (ответ владельца №98, «как у больших компаний», вид экрана прежний): сегодня и дальше по Еревану
+  менеджеров снимает только правило настроек dispatch_agents_off (day_agents_off) — выбор дня (Draft.agents_off) не действует
+  и правкой не меняется (views), прошедший день — как был. Недовезённое вчера (auto_carried): заказ отправленного плана
+  прошлого рабочего дня, чью точку терминал не закрыл, сам входит в развоз следующего — как «Վաղը» (views._carried,
+  courier.routes_link), на странице с плашкой «Երեկվանից»; не довезли и там — дальше (окно ERP — BACKLOG_MAX_WORKDAYS).
+  Не всё помещается — сборка оставляет вне рейсов сначала новые заказы (Stop.priority — late_days, fleet.route_day).
 - Запас до срока (ответ владельца №93, настройка until_buffer_min): у окна с концом сборка, перестановка под срок и
   подсказка машины целятся в конец окна минус запас (deadline_windows: DayContext.windows — с запасом, until_real —
   настоящие концы). Не вышло с запасом — по настоящему сроку: сборка пересобирает с ним магазины, ушедшие в no_window
@@ -219,6 +225,13 @@ def agents_off_of(draft: Draft | None, settings: Mapping[str, Any]) -> set[int]:
     return set(draft.agents_off) if draft is not None else set(settings.get('dispatch_agents_off') or ())
 
 
+def day_agents_off(draft: Draft | None, settings: Mapping[str, Any], day: date, today: date) -> set[int]:
+    """Менеджеры, чьи заказы дня day не везём (№98, «все заказы дня»): сегодня и дальше (today — дата по Еревану) — только
+    правило настроек dispatch_agents_off, выбор дня (Draft.agents_off) не действует (в черновике остаётся — история);
+    прошедший день — как был (agents_off_of): история плана не меняется. Одно правило для страницы и терминалов."""
+    return agents_off_of(None if day >= today else draft, settings)
+
+
 def backlog_delivered(o: DispatchOrder, inside: Collection[str], added: Collection[str], off: Collection[int]) -> bool:
     """Заказ прошлых дней везём сегодня: он в развозе дня (inside — добавлен или перенесён сюда, views._backlog_in) и его
     менеджер не снят фильтром «Մենեջերներ» (off) — или логист сам взял его «Տանել այսօր» (added; владелец 08.10: явный
@@ -296,6 +309,58 @@ def backlog_held(draft: Draft | None, carried: Collection[str]) -> set[str]:
         if draft.sent is not None:   # и взятые в отправленном плане: водитель их ещё везёт, пока правку не отправили
             held |= draft.for_drivers().added
     return held
+
+
+# №98: точка терминала закрыта водителем — доставлена целиком или частью, отказ, товар отдан по заказу (courier.live.DONE)
+STOP_CLOSED = frozenset({'full', 'partial', 'refused', 'covered'})
+
+
+def auto_carried(days: Sequence[tuple[Draft | None, Mapping[str, Any], bool]]) -> set[str]:
+    """Недовезённое вчера (№98, B): заказы, которые сами входят в развоз следующего рабочего дня, как «Վաղը» (views._carried,
+    courier.routes_link). days — дни с прошлого рабочего по вчера (и нерабочие между ними): (отправленный водителям план
+    дня — Draft.for_drivers, факт терминалов дня — live.LiveFacts.fleet, день кончился — раньше сегодня по Еревану).
+
+    Заказ переносится, если его точка O:<fISN> была на терминале машины (её туда отдал отправленный план — pick_orders: с
+    фильтрами, исключениями и переносами того дня, поэтому цепочка «не довезли и там» идёт сама) и водитель её не закрыл
+    (STOP_CLOSED), день машины кончился (день прошёл или она закрыла день — closed_at), план выпущен (№80), магазин в его
+    рейсах и логист того дня заказ не убирал: «Այսօր չենք տանում» (excluded), «Վաղը» (deferred — его и так берёт
+    следующий день), «Երբ տանել» (later), «Չտանել» (dismissed), убран перенесённый (dropped). Закрыта точка заказа хоть в
+    одном из дней (довезли в выходной) — не переносится. Нет точки на терминале (терминала нет, водитель не обновлял день) —
+    не переносится: довезли ли — неизвестно, заказ виден в «Նախորդ օրերից», решит логист. Отгружен ли заказ (накладная) и
+    не старше ли он окна ERP (BACKLOG_MAX_WORKDAYS) — сверяет вызывающий: перенос — только среди «не отгружены с прошлых
+    дней» дня."""
+    open_: set[str] = set()
+    closed: set[str] = set()
+    for plan, fleet, over in days:
+        sent = plan is not None and plan.released is not None
+        customers = {c for t in plan.trips for c in t.stops} if sent else set()
+        kept = plan.excluded | plan.deferred | plan.dismissed | plan.dropped | set(plan.later) if sent else set()
+        for row in fleet.values():
+            if not isinstance(row, Mapping):
+                continue
+            done = over or bool(row.get('closed_at'))
+            for s in row.get('stops') or ():
+                sid = s.get('stop_id') if isinstance(s, Mapping) else None
+                if not isinstance(sid, str) or not sid.startswith('O:') or not ISN_RE.match(sid[2:]):
+                    continue
+                if s.get('status') in STOP_CLOSED:
+                    closed.add(sid[2:])
+                elif sent and done and s.get('customer_id') in customers and sid[2:] not in kept:
+                    open_.add(sid[2:])
+    return open_ - closed
+
+
+def late_days(o: DispatchOrder, day: date, workdays: Sequence[int], holidays: Collection[date] = ()) -> int:
+    """Сколько рабочих дней заказ уже ждёт к day (№98: «Երեկվանից» — 1, «N օր»; приоритет при сборке — старее важнее): рабочие
+    дни от его дня доставки (следующий день после даты заказа — order_window; заведённый заранее, №79, — сама дата) до day,
+    не считая day. Заказ дня, новый заказ дня (№72) — 0."""
+    d = o.order_date if o.predated else o.order_date + timedelta(days=1)
+    n = 0
+    while d < day:
+        if is_workday(d, workdays, holidays):
+            n += 1
+        d += timedelta(days=1)
+    return n
 
 
 def defer_days(day: date, workdays: Sequence[int], holidays: Collection[date] = ()) -> list[date]:
@@ -675,10 +740,15 @@ class Stop:
     revenue: float
     orders: tuple[DispatchOrder, ...]
     agent_id: int            # менеджер самого тяжёлого заказа клиента
+    # №98: сколько рабочих дней ждёт самый старый заказ точки (late_days): не всё помещается — сборка оставляет вне рейсов
+    # сначала новые (fleet.route_day, priority); 0 — заказы дня
+    priority: int = 0
 
 
-def build_stops(orders: Sequence[DispatchOrder], coord: Callable[[int], Coord]) -> list[Stop]:
-    """Клиент с заказами дня — одна остановка; порядок — по коду клиента (детерминизм)."""
+def build_stops(orders: Sequence[DispatchOrder], coord: Callable[[int], Coord],
+                age: Callable[[DispatchOrder], int] | None = None) -> list[Stop]:
+    """Клиент с заказами дня — одна остановка; порядок — по коду клиента (детерминизм). age — сколько рабочих дней ждёт
+    заказ (№98, late_days): приоритет точки — самый старый; None — все 0."""
     by: dict[int, list[DispatchOrder]] = {}
     for o in orders:
         by.setdefault(o.customer_id, []).append(o)
@@ -688,7 +758,7 @@ def build_stops(orders: Sequence[DispatchOrder], coord: Callable[[int], Coord]) 
         c = coord(cid)
         main = max(os, key=lambda o: (o.kg, o.revenue, o.isn))
         out.append(Stop(cid, c.point, c.source, math.fsum(o.kg for o in os), math.fsum(o.revenue for o in os),
-                        tuple(os), main.agent_id))
+                        tuple(os), main.agent_id, max(age(o) for o in os) if age is not None else 0))
     return out
 
 
@@ -1283,9 +1353,11 @@ def _plan_around(ctx: DayContext, sel: Sequence[fl.FleetTruck], routable: Mappin
             access.append(_allowed_trucks(ctx, c))
     reasons: dict[int, str] = {}
     solo = [*(_solo(ctx, rest) or [False] * len(rest)), *(c in ctx.solo for t in keep for c in t.stops)] if ctx.solo else None
+    # №98: старее — важнее (Stop.priority); у закреплённых рейсов — не нужен, их состав не меняется
+    prio = [*(s.priority for s in rest), *(0 for t in keep for _ in t.stops)] if any(s.priority for s in rest) else None
     trips = fl.route_day(pts, kgs, revs, ctx.depot, sel, ctx.norms, _horizon(ctx), overflow=False, windows=wins, center=cen,
                          reasons=reasons, fixed=fixed, balance=True, solver=True, allowed_trucks=access, iterations=iterations,
-                         solo=solo, report=False)
+                         solo=solo, report=False, priority=prio)
     own = {tuple(idx): t for t, (_, idx, _) in zip(keep, fixed)}
     out: list[DraftTrip] = []
     for t in trips:
@@ -1349,7 +1421,10 @@ def build(ctx: DayContext, stops: Sequence[Stop], old: Draft | None, trucks: Seq
                              windows=[_span(ctx, s.customer_id) for s in rest], center=[_central(ctx, s) for s in rest],
                              reasons=reasons, balance=True, solver=True,
                              allowed_trucks=[_allowed_trucks(ctx, s.customer_id) for s in rest], fed=fed,
-                             iterations=iterations, solo=_solo(ctx, rest), report=False) if rest and sel else []
+                             iterations=iterations, solo=_solo(ctx, rest), report=False,
+                             # №98: не всё помещается — вне рейсов сначала новые заказы, перенесённые — в рейсы
+                             priority=[s.priority for s in rest] if any(s.priority for s in rest) else None
+                             ) if rest and sel else []
         draft.trips = list(pinned)
         for t in trips:
             draft.trips.append(DraftTrip(draft.next_id, t.truck, [rest[i].customer_id for i in t.items]))

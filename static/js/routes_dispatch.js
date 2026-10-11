@@ -1604,6 +1604,10 @@
         box.hidden = list.length < 2 && !st.shown;
         if (box.hidden) return;
         if (agentsDirty()) box.open = true;
+        // №98: сегодня и дальше менеджеров снимает только правило настроек — список только для сведения
+        const rule = !!state.data.agents_rule;
+        $('dpAgentsLead').hidden = rule;
+        $('dpAgentsActs').hidden = rule;
         $('dpAgentsNote').textContent = st.shown ? st.kept + ' / ' + st.total : 'բոլորը՝ ' + st.total;
         const fs = $('dpAgentsList');
         fs.querySelectorAll('.dp-truck').forEach(x => x.remove());
@@ -1614,6 +1618,7 @@
             cb.type = 'checkbox';
             cb.value = String(a.agent_id);
             cb.checked = !st.off.has(a.agent_id);
+            cb.disabled = rule;
             cb.addEventListener('change', () => {
                 const off = new Set(agentsOff());
                 if (cb.checked) off.delete(a.agent_id); else off.add(a.agent_id);
@@ -1655,7 +1660,7 @@
         if (plan && dirty && st.kept) sum += (sum ? ' ' : '') + 'Սեղմեք «Կիրառել»՝ երթերը կթարմացվեն։';
         $('dpAgentsSum').textContent = sum;
         // у дня нет плана и выбор не меняли — он из правила настроек (№69)
-        $('dpAgentsRule').hidden = !(state.data.agents_from_settings && !dirty);
+        $('dpAgentsRule').hidden = !(rule || (state.data.agents_from_settings && !dirty));
         $('dpAgentsApplyBox').hidden = !(plan && dirty);
         $('dpAgentsApply').disabled = state.busy || !st.kept;
     }
@@ -3734,6 +3739,12 @@
         // новый заказ дня, взятый в сегодняшний развоз (№72)
         const sdIsns = new Set(sdTaken().map(o => o.isn));
         if ((stop.orders || []).some(o => sdIsns.has(o.isn))) tag('b-ok', 'Այսօրվա նոր պատվեր', 'fa-bolt');
+        // №98: недовезённое вчера — само в развозе дня; сколько рабочих дней ждёт
+        const late = Math.max(0, ...(stop.orders || []).map(o => num(o.carried_days) || 0));
+        if (late) {
+            tag('b-warn', late === 1 ? 'Երեկվանից' : late + NB + 'օր', 'fa-clock-rotate-left');
+            tags.lastChild.title = 'նախորդ օրը չի առաքվել՝ ինքնաբերաբար տեղափոխվել է այս օր';
+        }
         if (tags.children.length) main.appendChild(tags);
         const kg = document.createElement('span');
         kg.className = 'dp-stop-kg';
