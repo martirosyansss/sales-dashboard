@@ -1526,12 +1526,46 @@ def _carried(state: RoutesState, day: date, workdays: Sequence[int], backlog: li
     return (_deferred_here(state, day, workdays, holidays) | set(later) | set(auto)) & {o.isn for o in backlog}
 
 
-def _day_auto(state: RoutesState, day: date, settings: Mapping[str, Any], draft: dp.Draft | None) -> set[str]:
+def _day_auto(state: RoutesState, day: date, settings: Mapping[str, Any], draft: dp.Draft | None,
+              live: bool = True) -> set[str]:
     """Недовезённое вчера дня day (№98): снимок плана дня (Draft.auto_carried — с чем план сделан и отправлен) и, для дня
     сегодня и дальше по Еревану, ещё не вошедшее в него (_auto_carried — на странице «новые после сборки», в план — сборкой
-    или правкой и «Ուղարկել»). Прошедший день — только снимок: история плана не пересчитывается."""
+    или правкой и «Ուղարկել»), без доставленного позже (_released: поздняя пачка APK — снять перенос всегда безопасно).
+    Прошедший день — только снимок: история плана не пересчитывается. live False — пути водителей (склад, Բեռնագիր, запись
+    в ERP — по Draft.for_drivers): только снимок отправленного плана, как у терминала (courier.routes_link), без доставленного
+    позже."""
     own = set(draft.auto_carried) if draft is not None else set()
-    return own if day < _same_day_now().date() else own | _auto_carried(state, day, settings)
+    if day < _same_day_now().date():
+        return own
+    return ((own | _auto_carried(state, day, settings)) if live else own) - _released(state, day, settings, draft)
+
+
+def _released(state: RoutesState, day: date, settings: Mapping[str, Any], draft: dp.Draft | None) -> set[str]:
+    """Перенесённые заказы, чью точку водитель всё же закрыл (№98, dp.closed_points; поздняя пачка APK) в днях цепочки: с
+    даты самого раннего заказа снимков — плана дня и отправленных планов с прошлого рабочего дня (dp.carry_since) — по
+    вчера. Раздела «Առաքիչ» нет — ничего; день, чей факт не прочитан, — без него (в журнал)."""
+    if state.live_facts is None:
+        return set()
+    workdays, holidays = settings['workdays'], dp.holidays_of(settings)
+    auto = dict(draft.auto_carried) if draft is not None else {}
+    d = dp.previous_workday(day, workdays, holidays)
+    while d < day:
+        try:
+            plan = _sent_plan(state, d)
+        except StoreError:
+            plan = None
+        auto.update(plan.auto_carried if plan is not None else {})
+        d += timedelta(days=1)
+    out: set[str] = set()
+    d = dp.carry_since(auto, day, workdays, holidays)
+    while d < day:
+        try:
+            out |= dp.closed_points(state.live_facts.fleet(d.isoformat()))
+        except Exception:   # факт терминалов — дополнение: без него день как раньше
+            logger.warning('[Routes] Факт терминалов на %s не прочитан — поздняя доставка не учтена для %s', d, day,
+                           exc_info=True)
+        d += timedelta(days=1)
+    return out
 
 
 def _auto_carried(state: RoutesState, day: date, settings: Mapping[str, Any]) -> set[str]:
@@ -1563,10 +1597,47 @@ def _order_age(day: date, settings: Mapping[str, Any], auto: Collection[str] = (
     return lambda o: max(dp.late_days(o, day, workdays, holidays), 1 if o.isn in auto else 0)
 
 
-def _auto_snapshot(dd: _DispatchDay) -> dict[str, int]:
-    """Снимок недовезённого вчера для плана дня (№98, Draft.auto_carried): fISN → клиент. Пишут сборка, «Կիրառել
-    կարգավորումները», утверждение и отправка; отправленный — терминалам (courier.routes_link) и следующему дню."""
-    return {o.isn: o.customer_id for o in (*dd.deliver, *dd.backlog) if o.isn in dd.auto}
+def _auto_snapshot(dd: _DispatchDay) -> dict[str, tuple[int, date]]:
+    """Снимок недовезённого вчера для плана дня (№98, Draft.auto_carried): fISN → (клиент, дата заказа). Пишут сборка,
+    «Կիրառել կարգավորումները», утверждение и отправка; отправленный — терминалам (courier.routes_link) и следующему дню.
+    Заказы менеджеров, снятых правилом дня, — нет: их не везут, цепочка на них не нужна."""
+    off = dp.agents_off_of(dd.draft, dd.bundle.settings)
+    added = dd.draft.added if dd.draft is not None else set()
+    return {o.isn: (o.customer_id, o.order_date) for o in (*dd.deliver, *dd.backlog)
+            if o.isn in dd.auto and (o.agent_id not in off or o.isn in added)}
+
+
+def _pending_carry(dd: _DispatchDay) -> dict[str, tuple[int, date]]:
+    """Недовезённое вчера, которое уже в рейсах плана (его магазин в рейсе, заказ в развозе), но ещё не отправлено водителям
+    (№98): груз машины у водителей и на странице разный — правка «до отправки» (_with_carry)."""
+    if dd.draft is None or dd.draft.sent is None:
+        return {}
+    placed = {c for t in dd.draft.trips for c in t.stops}
+    active = {o.isn for o in _active_orders(dd.deliver, dd.backlog, dd.draft, dd.carried, dd.bundle.settings, dd.same_day)
+              if o.customer_id in placed}
+    sent = dd.draft.for_drivers().auto_carried
+    return {isn: v for isn, v in _auto_snapshot(dd).items() if isn in active and isn not in sent}
+
+
+def _with_carry(dd: _DispatchDay) -> dp.Draft:
+    """Черновик дня, каким его видит страница сейчас (№98): с новым недовезённым вчера в рейсах (_pending_carry) — dp.unsent
+    видит его как изменённый отбор заказов: «Ուղարկել» на странице, склад — «меняется» (_changing_trucks)."""
+    pending = _pending_carry(dd)
+    if not pending:
+        return dd.draft
+    return replace(dd.draft, auto_carried={**dd.draft.auto_carried, **pending})
+
+
+def _changing_now(state: RoutesState, bundle: Bundle, day: date, draft: dp.Draft, rev: int) -> set[str]:
+    """_changing_trucks с недовезённым вчера, вошедшим в рейсы после отправки (№98, _with_carry): сегодня и дальше, при
+    факте терминалов. ERP не ответила — как раньше, по черновику (в журнал)."""
+    if state.live_facts is None or draft.sent is None or day < _same_day_now().date():
+        return _changing_trucks(draft)
+    try:
+        return _changing_trucks(_with_carry(_load_day(state, bundle, day, draft=draft, rev=rev)))
+    except ErpError:
+        logger.warning('[Routes] Заказы %s не прочитаны — склад без учёта нового переноса', day, exc_info=True)
+        return _changing_trucks(draft)
 
 
 def _held(state: RoutesState, day: date, settings: Mapping[str, Any], draft: dp.Draft | None,
@@ -1674,7 +1745,7 @@ def _freshness(day: date, bundle: Bundle, data: dp.DispatchData, deliver: list[d
 
 
 def _load_day(state: RoutesState, bundle: Bundle, day: date, refresh: bool = False,
-              draft: dp.Draft | None = None, rev: int | None = None) -> _DispatchDay:
+              draft: dp.Draft | None = None, rev: int | None = None, live: bool = True) -> _DispatchDay:
     snap, _ = state.snapshots.cached()          # до цены журнала: модели машин — по именам снимка
     bundle = _with_garage(state, bundle, day)   # ремонт ֏/км журнала гаража — на день развоза
     if draft is None:
@@ -1683,7 +1754,7 @@ def _load_day(state: RoutesState, bundle: Bundle, day: date, refresh: bool = Fal
     rule = dp.fleet_rule_of(draft, bundle.settings)
     later = _later_scan(state, day, bundle.settings['workdays'], dp.holidays_of(bundle.settings))
     due = _later_due(later, day)
-    auto = _day_auto(state, day, bundle.settings, draft)   # №98: недовезённое вчера — само в развоз
+    auto = _day_auto(state, day, bundle.settings, draft, live)   # №98: недовезённое вчера — само в развоз
     since, until, data, sel = _day_orders(state, bundle, day, refresh, rule, later,
                                           _held(state, day, bundle.settings, draft, {*due, *auto}), auto)
     deliver, backlog = sel.main, sel.backlog
@@ -1978,7 +2049,7 @@ def _dispatch_page_body(dd: _DispatchDay) -> dict[str, Any]:
 def _unsent_json(dd: _DispatchDay) -> dict[str, Any] | None:
     """Неотправленные правки (№81, dp.unsent) и on_road — машины из них, чей рейс по отправленному плану уже грузится или
     в пути (сегодня): водитель увидит правку в дороге — страница предупреждает перед «Ուղարկել»."""
-    out = dp.unsent(dd.draft)
+    out = dp.unsent(_with_carry(dd))   # №98: и новое недовезённое вчера в рейсах
     if out is None:
         return None
     now = _same_day_now()
@@ -3514,7 +3585,8 @@ def _erp_write_plan(state: RoutesState, day: date) -> tuple[list[ew.Decision], d
     dd = _load_day(state, bundle, day, draft=draft, rev=rev)
     sent = draft.for_drivers()
     seen = set(sent.built_orders or ()) | set(sent.same_day) | set(sent.added)
-    stops = _day_stops(dd, sent)
+    # заказы — отправленного плана: его снимок недовезённого вчера (№98), не перенос, который водитель ещё не получил
+    stops = _load_day(state, bundle, day, draft=sent, rev=rev, live=False).stops
     plan_orders = [o for s in stops for o in s.orders]
     log = state.store.erp_write_log(day.isoformat())
     hanging = [row for row in _latest(log).values() if row['result'] == 'pending']
@@ -7178,14 +7250,14 @@ def _warehouse_body(state: RoutesState, bundle: Bundle, day: date) -> dict[str, 
     if draft.approved is None:
         return {**head, 'approved': False, 'planned': True, 'trucks': []}
     # №81: склад грузит то, что отправлено водителям (не неотправленные правки черновика); отметки «Բեռնված է» — черновика
-    dd = _load_day(state, bundle, day, draft=draft.for_drivers(), rev=rev)
+    dd = _load_day(state, bundle, day, draft=draft.for_drivers(), rev=rev, live=False)   # №98: перенос — из снимка
     if dd.ctx is None:
         raise dp.DispatchError(WAREHOUSE_NO_SETUP)
     plan = dp.plan_view(dd.ctx, dd.stops, dd.draft, _stop_info(dd), explain=False)
     seats = dp.crew_view(dd.draft, _crew(state, day, bundle.trucks)[0])   # водители — плана водителей, как и рейсы
     by_id = {t.id: t for t in dd.draft.trips}
     marks = {t.id: t.loaded for t in draft.trips}
-    changing = _changing_trucks(draft)   # логист меняет машину и не отправил — ни отметки, ни печати (одно правило)
+    changing = _changing_now(state, bundle, day, draft, rev)   # логист меняет машину и не отправил — ни отметки, ни печати
     trucks = []
     for t in plan['trucks']:
         trips = []
@@ -7259,7 +7331,7 @@ def api_warehouse_goods() -> Any:
     dd = _load_day(state, bundle, day)
     if int(rev) != dd.rev or dd.draft is None or dd.draft.approved is None:
         return _conflict(WAREHOUSE_STALE)
-    dd = _load_day(state, bundle, day, draft=dd.draft.for_drivers(), rev=dd.rev)   # №81: товар — по плану водителей
+    dd = _load_day(state, bundle, day, draft=dd.draft.for_drivers(), rev=dd.rev, live=False)   # №81, №98: план водителей
     if dd.ctx is None:
         return _bad_request({'_': WAREHOUSE_NO_SETUP})
     plan = dp.plan_view(dd.ctx, dd.stops, dd.draft, _stop_info(dd), explain=False)
@@ -7295,11 +7367,11 @@ def api_warehouse_waybill() -> Any:
     draft, cur = _stored_draft(state, day)   # проверки — по сохранённому черновику, до заказов и строк ERP
     if int(rev) != cur or draft is None or draft.approved is None:
         return _conflict(WAREHOUSE_STALE)
-    if car in _changing_trucks(draft):       # ответ владельца 07.10: до «Ուղարկել» — не печатать
+    if car in _changing_now(state, bundle, day, draft, cur):   # ответ владельца 07.10: до «Ուղարկել» — не печатать
         return jsonify({'success': False, 'error': WAREHOUSE_WAYBILL_CHANGING, 'conflict': True, 'changing': True}), 409
     if all(t.truck != car for t in draft.for_drivers().trips):
         return _conflict(WAREHOUSE_STALE)
-    dd = _load_day(state, bundle, day, draft=draft.for_drivers(), rev=cur)   # №81: как страница — план водителей
+    dd = _load_day(state, bundle, day, draft=draft.for_drivers(), rev=cur, live=False)   # №81, №98: план водителей
     if dd.ctx is None:
         return _bad_request({'_': WAREHOUSE_NO_SETUP})
     plan = dp.plan_view(dd.ctx, dd.stops, dd.draft, _stop_info(dd), explain=False)
@@ -7346,7 +7418,7 @@ def api_warehouse_loaded() -> Any:
     # (снятие убрало бы защиту груза, который уже в машине, пока логист её правит: его правки и «Ուղարկել» перестали бы
     # спрашивать подтверждение). Машина рейса — у водителей, нет там — в черновике.
     car = next((t.truck for d in (draft.for_drivers(), draft) for t in d.trips if t.id == payload.get('trip')), None)
-    if car is not None and car in _changing_trucks(draft):
+    if car is not None and car in _changing_now(state, bundle, day, draft, rev):
         return _conflict(WAREHOUSE_CHANGING)
     me = session.get('username')
     now = _same_day_now()

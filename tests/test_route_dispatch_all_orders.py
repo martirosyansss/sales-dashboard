@@ -190,16 +190,22 @@ def test_auto_carried_rule():
         other = dp.Draft(trips=plan.trips, released=released, excluded=plan.excluded, **decided)
         assert dp.auto_carried([(other, fleet, True)]) == set(), decided
     # следующий шаг — по снимку (M4): не поставлен в рейс (106) — не довезён и без точки; поставлен (101) — когда день его
-    # машины кончился; закрыт хоть где-то — нет
-    chain = dp.Draft(trips=plan.trips, released=released, auto_carried={_isn(6): 106, _isn(7): 101, _isn(8): 104})
+    # машины кончился и у неё были точки на терминале (ревью: без них — как первый шаг, нет); закрыт хоть где-то — нет
+    chain = dp.Draft(trips=plan.trips, released=released,
+                     auto_carried={_isn(6): (106, WED), _isn(7): (101, WED), _isn(8): (104, WED)})
     shut = {'CAR1': {'stops': [{'stop_id': 'O:' + _isn(8), 'customer_id': 104, 'status': 'full'}], 'closed_at': None}}
     assert dp.auto_carried([(chain, shut, False)]) == {_isn(6)}
     assert dp.auto_carried([(chain, shut, True)]) == {_isn(6), _isn(7)}
-    assert dp.auto_carried([(chain, {}, True)]) == {_isn(6), _isn(7), _isn(8)}
+    assert dp.auto_carried([(chain, {}, True)]) == {_isn(6)}             # у машин 101 и 104 точек не было вовсе
     raw = chain.to_json()
-    assert raw['auto_carried'] == {_isn(6): 106, _isn(7): 101, _isn(8): 104}
+    assert raw['auto_carried'] == {_isn(6): [106, '2026-09-30'], _isn(7): [101, '2026-09-30'], _isn(8): [104, '2026-09-30']}
     assert dp.Draft.from_json(raw).auto_carried == chain.auto_carried
-    assert dp.Draft.from_json({'auto_carried': {'x': 1, _isn(1): 'a', _isn(2): 5}}).auto_carried == {_isn(2): 5}
+    assert dp.Draft.from_json({'auto_carried': {'x': [1, '2026-09-30'], _isn(1): 5, _isn(2): [5, '2026-13-01'],
+                                                _isn(3): [5, '2026-09-30']}}).auto_carried == {_isn(3): (5, WED)}
+    # поздняя доставка: закрытые точки дня и откуда их искать
+    assert dp.closed_points(fleet) == {_isn(2)} and dp.closed_points({'CAR1': None}) == set()
+    assert dp.carry_since({}, FRI, SIX) == THU and dp.carry_since(chain.auto_carried, FRI, SIX) == WED
+    assert dp.carry_since({_isn(1): (1, date(2026, 8, 1))}, FRI, SIX) == date(2026, 9, 19)   # не раньше окна ERP
     assert 'auto_carried' not in dp.Draft().to_json() and 'yielded' not in dp.Draft().to_json()
 
 
@@ -225,7 +231,7 @@ def test_undelivered_order_comes_next_day_with_badge(client, monkeypatch):
     d = _build(client, FRI)
     orders = _stop_orders(d['plan'])
     assert orders[_isn(1)]['carried_days'] == 1 and _isn(2) not in orders   # плашка «Երեկվանից»
-    assert _stored(client, FRI).auto_carried == {_isn(1): 101}        # снимок — в плане
+    assert _stored(client, FRI).auto_carried == {_isn(1): (101, WED)}  # снимок — в плане
     # терминал — по отправленному плану
     code, d = _edit(client, d, FRI, action='approve')
     assert code == 200
@@ -343,7 +349,7 @@ def test_chain_goes_on_for_carried_order_left_out_of_trips(client, monkeypatch):
     code, d = _edit(client, d, FRI, action='move', customer_id=101, from_trip=trip['id'], to_trip=None, truck=None)
     assert code == 200 and 101 in {s['customer_id'] for s in d['plan']['unassigned']}
     code, d = _edit(client, d, FRI, action='approve')
-    assert code == 200 and _stored(client, FRI).for_drivers().auto_carried == {_isn(1): 101}
+    assert code == 200 and _stored(client, FRI).for_drivers().auto_carried == {_isn(1): (101, WED)}
     # на терминале 02.10 точки 101 нет — а 03.10 заказ всё равно сам в развозе
     _now(monkeypatch, datetime(2026, 10, 3, 8, 0))
     d = _get(client, SAT)
@@ -487,3 +493,81 @@ def test_plan_around_path_prioritizes():
     old = dp.Draft(trucks=[FORD.car_code], trips=[dp.DraftTrip(1, FORD.car_code, [104], pinned=True)], next_id=2)
     draft = dp.build(ctx, stops, old, [FORD.car_code], 'now')
     assert sorted(t.stops for t in draft.trips) == [[101], [104]] and draft.yielded == {102}
+
+
+# ============================== ревью 2: пути водителей, поздняя доставка ==============================
+
+def _warehouse(client, day):
+    state = _state(client)
+    with client.application.test_request_context():
+        return views._warehouse_body(state, views._bundle(state), day)
+
+
+def _wh_kg(w, car):
+    return sum(tr['kg'] for t in w['trucks'] if t['car_code'] == car for tr in t['trips'])
+
+
+def test_warehouse_follows_terminal_and_new_carry_marks_unsent(client, monkeypatch):
+    """Ревью H-A: план 02.10 отправлен, пока машина 01.10 в пути; она закрыла день с недовезённым 101 — склад, Բեռնագիր и
+    терминал грузят отправленное (без него), страница — «Ուղարկել» (не отправлено), склад — машины «меняются»; после
+    отправки — у всех с ним."""
+    orders = [*ORDERS, _dorder(5, 101, 100.0, day=THU)]               # у 101 и заказ 01.10 — магазин в рейсе 02.10
+    facts = _thursday_sent(client, monkeypatch, orders)
+    _now(monkeypatch, datetime(2026, 10, 1, 16, 0))
+    facts.stop(THU, 'CAR1', 1, 101)
+    facts.stop(THU, 'CAR1', 2, 102, 'full')
+    d = _build(client, FRI)
+    code, d = _edit(client, d, FRI, action='approve')
+    assert code == 200 and d['unsent'] is None
+    truck = _truck_of(d, 101)
+    facts.days[THU.isoformat()]['CAR1']['closed_at'] = '2026-10-01T19:00:00+04:00'
+    d = _get(client, FRI)
+    assert _stop_orders(d['plan'])[_isn(1)]['carried_days'] == 1
+    assert d['unsent'] is not None and d['unsent']['orders'] is True     # страница: «Ուղարկել»
+    term = sorted(o.isn for o in rl.pick_orders(orders, FRI, rl.routes_view(_state(client), FRI), truck))
+    w = _warehouse(client, FRI)
+    assert term == [_isn(5)] and _wh_kg(w, truck) == 100                 # склад = терминал: без неотправленного
+    assert all(t.get('changing') for t in w['trucks'])                   # и машины «меняются» — Բեռնագիր не печатается
+    code, d = _edit(client, d, FRI, action='send')
+    assert code == 200 and d['unsent'] is None
+    term = sorted(o.isn for o in rl.pick_orders(orders, FRI, rl.routes_view(_state(client), FRI), truck))
+    w = _warehouse(client, FRI)
+    assert term == [_isn(1), _isn(5)] and _wh_kg(w, truck) == 500 and not any(t.get('changing') for t in w['trucks'])
+
+
+def test_late_delivery_releases_carry_on_page_and_terminal(client, monkeypatch):
+    """Ревью H-B: перенесённый 02.10 заказ, о доставке которого 01.10 терминал сообщил поздно, снимается сразу — на
+    странице и у водителя, без «Ուղարկել»; 03.10 не переносится, хотя 02.10 его точку не закрыли; прошедший 02.10 — как был."""
+    facts = _thursday_sent(client, monkeypatch, ORDERS)              # сейчас — утро 02.10
+    facts.stop(THU, 'CAR1', 1, 101)                                  # APK без связи — «не довезли»
+    facts.stop(THU, 'CAR1', 2, 102, 'full')
+    d = _build(client, FRI)
+    code, d = _edit(client, d, FRI, action='approve')
+    truck = _truck_of(d, 101)
+    assert [o.isn for o in rl.pick_orders(ORDERS, FRI, rl.routes_view(_state(client), FRI), truck)] == [_isn(1)]
+    facts.days[THU.isoformat()]['CAR1']['stops'][0]['status'] = 'full'   # поздняя пачка: довезли 01.10
+    page = _get(client, FRI)
+    assert _isn(1) not in _stop_orders(page['plan']) and not _row(page['backlog'], 1)['carried']
+    assert rl.pick_orders(ORDERS, FRI, rl.routes_view(_state(client), FRI), truck) == []
+    facts.stop(FRI, truck, 1, 101)                                   # 02.10 точку (старый /day) не закрыли
+    _now(monkeypatch, datetime(2026, 10, 3, 8, 0))
+    row = _row(_get(client, SAT)['backlog'], 1)
+    assert row is None or not row['carried']
+    # 02.10 прошёл — его история (снимок) не меняется
+    assert _isn(1) in _stop_orders(_get(client, FRI)['plan'])
+    assert [o.isn for o in rl.pick_orders(ORDERS, FRI, rl.routes_view(_state(client), FRI), truck)] == [_isn(1)]
+
+
+def test_chain_needs_terminal_points_of_store_trucks(client, monkeypatch):
+    """Ревью MEDIUM: перенесённый сам, магазин в рейсах, а у его машин в тот день не было точек на терминале — как первый
+    шаг, дальше сам не идёт (виден в «Նախորդ օրերից»)."""
+    facts = _thursday_sent(client, monkeypatch, ORDERS)
+    facts.stop(THU, 'CAR1', 1, 101)
+    facts.stop(THU, 'CAR1', 2, 102, 'full')
+    d = _build(client, FRI)
+    code, d = _edit(client, d, FRI, action='approve')
+    assert code == 200                                               # 02.10 терминалы молчат — факта нет
+    _now(monkeypatch, datetime(2026, 10, 3, 8, 0))
+    assert not _row(_get(client, SAT)['backlog'], 1)['carried']
+    facts.stop(FRI, _truck_of(d, 101), 9, 101, 'full')               # точки у машины были (другой заказ) — переносится
+    assert _row(_get(client, SAT)['backlog'], 1)['carried']

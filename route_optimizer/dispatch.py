@@ -322,27 +322,22 @@ def auto_carried(days: Sequence[tuple[Draft | None, Mapping[str, Any], bool]]) -
     перенесённый (dropped). Закрыта точка заказа водителем (STOP_CLOSED) хоть в одном из дней (довезли в выходной) — не
     переносится. В развозе плана:
     - перенесённый в него сам (снимок Draft.auto_carried — следующий шаг цепочки): магазина нет в рейсах (не поместился) —
-      не довезён; есть — когда день его машин кончился (день прошёл или машина закрыла день — closed_at), точки нет на
-      терминале — тоже не довезён (он был в развозе плана);
+      не довезён; есть — когда день его машин кончился (день прошёл или машина закрыла день — closed_at) и у них в тот день
+      были точки на терминале (точки заказа может и не быть: он был в развозе плана); точек у его машин нет вовсе
+      (терминала нет) — как в первом шаге, не переносится;
     - прочие (первый шаг — снимка нет): только по терминалу — точка O:<fISN> была у машины (её туда отдал отправленный
       план, pick_orders), день машины кончился, водитель её не закрыл, магазин в рейсах. Точки нет (терминала нет, водитель
       не обновлял день) — не переносится: довезли ли — неизвестно, заказ виден в «Նախորդ օրերից», решит логист.
-    Отгружен ли заказ (накладная — офис уже решил, такой не переносится) и не старше ли он окна ERP (BACKLOG_MAX_WORKDAYS) —
-    сверяет вызывающий: перенос — только среди заказов дня, ещё не отгруженных."""
+    Отгружен ли заказ (накладная — офис уже решил, такой не переносится), не закрыта ли его точка в более ранние дни цепочки
+    (поздняя пачка APK — closed_points) и не старше ли он окна ERP (BACKLOG_MAX_WORKDAYS) — сверяет вызывающий: перенос —
+    только среди заказов дня, ещё не отгруженных."""
     open_: set[str] = set()
     closed: set[str] = set()
     for plan, fleet, over in days:
         rows = {car: row for car, row in fleet.items() if isinstance(row, Mapping)}
-        points: list[tuple[str, str, Any]] = []   # открытые точки O: — (fISN, машина, клиент)
-        for car, row in rows.items():
-            for s in row.get('stops') or ():
-                sid = s.get('stop_id') if isinstance(s, Mapping) else None
-                if not isinstance(sid, str) or not sid.startswith('O:') or not ISN_RE.match(sid[2:]):
-                    continue
-                if s.get('status') in STOP_CLOSED:
-                    closed.add(sid[2:])
-                else:
-                    points.append((sid[2:], car, s.get('customer_id')))
+        closed |= closed_points(fleet)
+        points = [(sid[2:], car, s.get('customer_id')) for car, s, sid in _order_points(rows)
+                  if s.get('status') not in STOP_CLOSED]   # открытые точки O: — (fISN, машина, клиент)
         if plan is None or plan.released is None:
             continue
         trucks: dict[int, set[str]] = {}
@@ -351,10 +346,38 @@ def auto_carried(days: Sequence[tuple[Draft | None, Mapping[str, Any], bool]]) -
                 trucks.setdefault(c, set()).add(t.truck)
         kept = plan.excluded | plan.deferred | plan.dismissed | plan.dropped | set(plan.later)
         shut = {car for car, row in rows.items() if row.get('closed_at')}   # машины, закрывшие день
+        seen = {car for car, row in rows.items() if row.get('stops')}       # машины с точками на терминале в тот день
         open_ |= {isn for isn, car, cid in points if (over or car in shut) and cid in trucks and isn not in kept}
-        open_ |= {isn for isn, cid in plan.auto_carried.items()
-                  if isn not in kept and (over or trucks.get(cid, set()) <= shut)}
+        open_ |= {isn for isn, (cid, _) in plan.auto_carried.items() if isn not in kept and (
+            cid not in trucks or (trucks[cid] & seen and (over or trucks[cid] <= shut)))}
     return open_ - closed
+
+
+def _order_points(rows: Mapping[str, Mapping[str, Any]]) -> list[tuple[str, Mapping[str, Any], str]]:
+    """Точки заказов O:<fISN> терминалов дня: (машина, точка, stop_id)."""
+    out = []
+    for car, row in rows.items():
+        for s in row.get('stops') or ():
+            sid = s.get('stop_id') if isinstance(s, Mapping) else None
+            if isinstance(sid, str) and sid.startswith('O:') and ISN_RE.match(sid[2:]):
+                out.append((car, s, sid))
+    return out
+
+
+def closed_points(fleet: Mapping[str, Any]) -> set[str]:
+    """Заказы (fISN), чьи точки O: водитель закрыл (STOP_CLOSED) в факте терминалов дня (live.LiveFacts.fleet) — №98:
+    поздняя доставка снимает перенос (views._day_auto, courier.routes_link)."""
+    rows = {car: row for car, row in fleet.items() if isinstance(row, Mapping)}
+    return {sid[2:] for _, s, sid in _order_points(rows) if s.get('status') in STOP_CLOSED}
+
+
+def carry_since(auto: Mapping[str, tuple[int, date]], day: date, workdays: Sequence[int],
+                holidays: Collection[date] = ()) -> date:
+    """С какого дня искать позднюю доставку перенесённого (№98, closed_points): с даты самого раннего заказа снимка, не
+    раньше окна чтения ERP дня (BACKLOG_MAX_WORKDAYS); снимка нет — с прошлого рабочего дня."""
+    since, _ = order_window(day, workdays, holidays)
+    first = backlog_since(since, workdays, BACKLOG_MAX_WORKDAYS, holidays)
+    return max(first, min((od for _, od in auto.values()), default=since))
 
 
 def late_days(o: DispatchOrder, day: date, workdays: Sequence[int], holidays: Collection[date] = ()) -> int:
@@ -853,10 +876,10 @@ class Draft:
     # «Երբ տանել» (владелец 08.10): заказы магазина, который сегодня не принимает, — fISN → (день доставки, дата заказа);
     # тот день сам берёт их в развоз как перенесённые (later_carried). Дата заказа — чтобы тот день прочёл их из ERP
     later: dict[str, tuple[date, date]] = field(default_factory=dict)
-    # недовезённое вчера (№98, auto_carried), перенесённое в этот день сам, — снимок (fISN → клиент): пишут сборка,
-    # «Կիրառել կարգավորումները», утверждение и отправка (views); терминал берёт его только из отправленного плана, следующий
-    # день по нему продолжает цепочку
-    auto_carried: dict[str, int] = field(default_factory=dict)
+    # недовезённое вчера (№98, auto_carried), перенесённое в этот день сам, — снимок (fISN → (клиент, дата заказа)): пишут
+    # сборка, «Կիրառել կարգավորումները», утверждение и отправка (views); терминал берёт его только из отправленного плана,
+    # следующий день по нему продолжает цепочку; дата — откуда искать позднюю доставку (carry_since)
+    auto_carried: dict[str, tuple[int, date]] = field(default_factory=dict)
     # клиенты сборки, уступившие место заказам, которые ждут дольше (№98, fleet._prioritize): они и в no_room — причина на
     # странице «Զիջեց ավելի հին պատվերին»
     yielded: set[int] = field(default_factory=set)
@@ -889,7 +912,8 @@ class Draft:
                 **({'dismissed': sorted(self.dismissed)} if self.dismissed else {}),
                 **({'later': {k: [to.isoformat(), od.isoformat()] for k, (to, od) in sorted(self.later.items())}}
                    if self.later else {}),
-                **({'auto_carried': dict(sorted(self.auto_carried.items()))} if self.auto_carried else {}),
+                **({'auto_carried': {k: [cid, od.isoformat()] for k, (cid, od) in sorted(self.auto_carried.items())}}
+                   if self.auto_carried else {}),
                 **({'yielded': sorted(self.yielded)} if self.yielded else {})}
 
     @classmethod
@@ -994,11 +1018,20 @@ def _later(raw: Any) -> dict[str, tuple[date, date]]:
     return out
 
 
-def _auto(raw: Any) -> dict[str, int]:
-    """Снимок недовезённого вчера из черновика (№98): fISN → клиент; битые строки — мимо."""
+def _auto(raw: Any) -> dict[str, tuple[int, date]]:
+    """Снимок недовезённого вчера из черновика (№98): fISN → (клиент, дата заказа); битые строки — мимо."""
     if not isinstance(raw, dict):
         return {}
-    return {k: v for k, v in list(raw.items())[:MAX_BUILT_ORDERS] if isinstance(k, str) and ISN_RE.match(k) and _is_int(v)}
+    out: dict[str, tuple[int, date]] = {}
+    for k, v in list(raw.items())[:MAX_BUILT_ORDERS]:
+        if not (isinstance(k, str) and ISN_RE.match(k) and isinstance(v, list) and len(v) == 2 and _is_int(v[0])
+                and isinstance(v[1], str) and re.fullmatch(r'\d{4}-\d{2}-\d{2}', v[1])):
+            continue
+        try:
+            out[k] = (v[0], date.fromisoformat(v[1]))
+        except ValueError:
+            continue
+    return out
 
 
 def _approved(raw: Any) -> dict[str, Any] | None:

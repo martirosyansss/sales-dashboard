@@ -1638,7 +1638,8 @@ def _prioritize(trips: list[Trip], stops: Sequence[_Stop], d: Matrix, m: Matrix,
         ends: dict[str, float] = {}
         base = _days(out, vs, m, start0, tn, fed, ends)
         # (ключ, рейс — номер в out или None: новый рейс, машина, порядок, снятые, строки дня машины: (номер в out, …))
-        best: tuple[tuple[int, int, float], int | None, str, list[int], list[int], list[tuple[int, float, float, float]]]             | None = None
+        best: tuple[tuple[int, int, float], int | None, str, list[int], list[int], list[tuple[int, float, float, float]]] \
+            | None = None
         for code in sorted(by_code):
             truck = by_code[code]
             mine = [n for n, x in enumerate(out) if x.truck == code]
@@ -1654,11 +1655,13 @@ def _prioritize(trips: list[Trip], stops: Sequence[_Stop], d: Matrix, m: Matrix,
                     continue
                 younger = sorted((u for u in t.items if stops[u].priority < stops[w].priority and placed[u] == 1),
                                  key=lambda u: (stops[u].priority, -vs[u].kg, u))
-                options += [(k, [], list(t.items))] + [(k, [u], [i for i in t.items if i != u]) for u in younger]                     + [(k, younger[:n], [i for i in t.items if i not in younger[:n]]) for n in range(2, len(younger) + 1)]
+                options += [(k, [], list(t.items))] + [(k, [u], [i for i in t.items if i != u]) for u in younger] \
+                    + [(k, younger[:n], [i for i in t.items if i not in younger[:n]]) for n in range(2, len(younger) + 1)]
             for k, gone, rest in options:
                 for pos in range(len(rest) + 1):
                     seq = [*rest[:pos], w, *rest[pos:]]
-                    if not _eligible(seq, vs, [truck]) or (len(seq) > 1 and any(vs[i].solo for i in seq))                             or math.fsum(vs[i].kg for i in seq) > _load_limit(seq, vs, truck, trucks, load_cap) + _EPS:
+                    if not _eligible(seq, vs, [truck]) or (len(seq) > 1 and any(vs[i].solo for i in seq)) \
+                            or math.fsum(vs[i].kg for i in seq) > _load_limit(seq, vs, truck, trucks, load_cap) + _EPS:
                         continue
                     was = _closed(list(out[k].items), vs, d) if k is not None else 0.0
                     key = (max((stops[u].priority for u in gone), default=-1), len(gone), _closed(seq, vs, d) - was)

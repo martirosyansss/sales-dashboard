@@ -20,8 +20,9 @@ RoadProvider.get); запись — только экипаж машины из 
 
 Недовезённое вчера (ответ владельца №98): терминал берёт его только из отправленного плана дня (Draft.auto_carried —
 снимок, который пишут сборка, «Կիրառել կարգավորումները», утверждение и отправка, route_optimizer.views): как перенесённые
-«Վաղը», а взятые в развоз дня их приёма (№72) — снова заказы дня. Без отправки новый перенос до водителя не доходит; вид не
-зависит от часов и факта терминалов.
+«Վաղը», а взятые в развоз дня их приёма (№72) — снова заказы дня. Без отправки новый перенос до водителя не доходит.
+Доставленное позже (поздняя пачка APK: точка закрыта в днях цепочки, dp.closed_points) снимается сразу, без отправки — на
+сегодня и дальше по Еревану, как на странице (views._released); прошедший день — как был.
 """
 from __future__ import annotations
 
@@ -37,6 +38,8 @@ from route_optimizer.geo import Point, haversine_km
 from route_optimizer.store import CREW_BY_APK, Bundle, check_driver_name
 from route_optimizer.store import StoreError as RoutesStoreError
 from route_optimizer.tsp import Distance
+
+from . import clock
 
 logger = logging.getLogger(__name__)
 
@@ -139,7 +142,8 @@ def routes_view(state: Any, day: date) -> RoutesView:
     # водителям — отправленный план (№81, Draft.for_drivers), не черновик с неотправленными правками; правило №74 — то, с
     # которым день собран: заказы рейсов не пропадут
     draft = dp.Draft.from_json(stored[0]).for_drivers()
-    auto = set(draft.auto_carried)   # №98: недовезённое вчера — из отправленного снимка
+    # №98: недовезённое вчера — из отправленного снимка, без доставленного позже
+    auto = set(draft.auto_carried) - _released(state, day, draft.auto_carried, workdays, holidays)
     return RoutesView(depot=bundle.depot, geo_overrides=base.geo_overrides, workdays=workdays, holidays=holidays,
                       plan_exists=bool(draft.trips), released=bool(draft.trips) and draft.released is not None,
                       trips=tuple((t.truck, tuple(t.stops)) for t in draft.trips),
@@ -274,6 +278,26 @@ def _carried(state: Any, day: date, workdays: Sequence[int],
         plan = load(d)   # RoutesStoreError — наружу (№80)
         if plan is not None:
             out |= plan.deferred
+        d += timedelta(days=1)
+    return out
+
+
+def _released(state: Any, day: date, auto: Mapping[str, tuple[int, date]], workdays: Sequence[int],
+              holidays: Collection[date]) -> set[str]:
+    """Перенесённые сами (№98), чью точку водитель всё же закрыл в днях цепочки (dp.closed_points, dp.carry_since — как
+    views._released): сегодня и дальше по Еревану, при факте терминалов (state.live_facts — подключает app_v2); прошедший
+    день — ничего (история). День, чей факт не прочитан, — без него (в журнал)."""
+    facts = getattr(state, 'live_facts', None)
+    if facts is None or not auto or day < clock.today():
+        return set()
+    out: set[str] = set()
+    d = dp.carry_since(auto, day, workdays, holidays)
+    while d < day:
+        try:
+            out |= dp.closed_points(facts.fleet(d.isoformat()))
+        except Exception:   # факт терминалов — дополнение: без него снимок как есть
+            logger.warning('[Courier] Факт терминалов на %s не прочитан — поздняя доставка не учтена для %s', d, day,
+                           exc_info=True)
         d += timedelta(days=1)
     return out
 
