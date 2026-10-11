@@ -5,6 +5,7 @@
     пользователь ещё не сворачивал/не раскрывал меню сам — начать со свёрнутого (рабочий экран «Развоза»).
     Меню — только администратору: роль «Гараж» видит «Ավտոտնակ», «Մեքենաները առցանց» и «Վարորդներ» без него, как раньше. -#}
 {% block page %}
+{% include "_routes_theme.html" %}
 {%- if rt_nav and is_admin -%}
 <div class="rt-shell" id="rtShell"{% if rt_nav_compact %} data-compact-below="1400"{% endif %}>
 <script>(function () {
@@ -18,7 +19,7 @@
 {{ self.content() }}
 </div>
 </div>
-<script src="{{ url_for('static', filename='js/routes_side.js') }}?v=2" defer></script>
+<script src="{{ url_for('static', filename='js/routes_side.js') }}?v=3" defer></script>
 {%- else -%}
 {{ self.content() }}
 {%- endif -%}

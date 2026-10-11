@@ -6,7 +6,8 @@
    плитки не изменять (п. 5.1.2) — тёмный фильтр routes.css действует только на слой OpenStreetMap (rt-tiles-osm).
    Тёмная карта Яндекса (владелец 08.10: «Яндекс тоже чёрным, если остальное чёрное») — тёмная тема, которую рисует
    сам Яндекс (theme=dark; в документации Tiles API параметра нет, проверено 08.10: те же плитки, тёмные). Перестанет
-   работать — Яндекс вернёт обычную светлую карту, не ошибку. Все страницы «Маршрутов» тёмные.
+   работать — Яндекс вернёт обычную светлую карту, не ошибку. Тема страниц ☀/☾ (Tesla+, routes_side.js): тёмная —
+   theme=dark, светлая — обычные плитки без параметра; при смене (событие rt-theme-change) плитки перезагружаются.
    Проверка в браузере: tests/routes_basemap_browser_check.py. */
 (function () {
     'use strict';
@@ -23,6 +24,11 @@
     let loaded = 0;
     let failed = 0;
     let broken = false;
+    // параметр темы плиток — по текущей теме страницы (html[data-rt-theme]; без атрибута — тёмная)
+    const themeParam = () => (document.documentElement.dataset.rtTheme === 'light' ? '' : '&theme=dark');
+    document.addEventListener('rt-theme-change', () => {
+        for (const { map, layer } of yandexMaps) if (map.hasLayer(layer)) layer.redraw();
+    });
 
     function addOsm(map) {
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -67,10 +73,11 @@
 
     function addYandex(map) {
         const layer = L.tileLayer('https://tiles.api-maps.yandex.ru/v1/tiles/?x={x}&y={y}&z={z}'
-            + '&lang=ru_RU&l=map&theme=dark&projection=web_mercator&scale={ymScale}&apikey={ymKey}', {
+            + '&lang=ru_RU&l=map{ymTheme}&projection=web_mercator&scale={ymScale}&apikey={ymKey}', {
             maxZoom: 19,
             updateWhenIdle: true,           // при перетаскивании не грузить промежуточные плитки — меньше запросов
             ymScale: SCALE,
+            ymTheme: themeParam,            // функция: Leaflet вызывает её для каждой плитки — после redraw() новая тема
             ymKey: encodeURIComponent(KEY),
             attribution: '&copy; <a href="https://yandex.ru/legal/maps_termsofuse/" target="_blank" rel="noopener">Яндекс</a>',
         });

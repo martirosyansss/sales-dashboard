@@ -4,9 +4,9 @@
    (routes.css, ≤ 575 px), вкладки прилипают к верху, «Պահպանել» — к низу экрана. Новых файлов статики нет: на публичном
    хосте открыт только их список (app_v2._PUBLIC_STATIC, deploy/COURIER_TUNNEL.md). */
 
-/* шрифт и цвета — общие из routes.css (тема «Развоза»: Google Sans с армянскими буквами); тема только тёмная */
+/* шрифт и цвета — общие из routes.css (Tesla+, обе темы ☀/☾; color-scheme — от темы) */
 #gjPage {
-    max-width: 1280px; margin: 0 auto; color-scheme: dark;
+    max-width: 1280px; margin: 0 auto;
     /* viewport-fit=cover (routes_garage.html): в альбомной ориентации — не под вырезом камеры, внизу — не под полоской «домой» */
     padding: 0 env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
 }
@@ -14,7 +14,9 @@
 /* не под прилипшими вкладками: карточка при переходе к ней, поле при фокусе (ошибка проверки, «Далее» на клавиатуре) */
 #gjPage .rt-card, #gjPage .rt-input, #gjPage .rt-select { scroll-margin-top: calc(var(--gj-top, 0px) + 84px); }
 
-/* Шапка роли «Гараж» (base_v2.html, .gj-nav): кто вошёл и «Ելք» — без меню и без названия программы */
+/* Шапка роли «Гараж» (base_v2.html, .gj-nav): кто вошёл и «Ելք» — без меню и без названия программы.
+   Цвета-литералы намеренно: шапка лежит вне .rt-page (токены --rt-* до неё не доходят) на тёмной полосе .navbar
+   дашборда (base.css), которая тёмная в обеих темах ☀/☾ «Маршрутов» */
 .gj-nav { padding: 6px max(12px, env(safe-area-inset-right, 0px)) 6px max(12px, env(safe-area-inset-left, 0px)); backdrop-filter: none; }
 .gj-nav > .container-fluid { flex-wrap: nowrap; gap: 12px; padding: 0; }
 .gj-nav form { margin: 0; flex: 0 0 auto; }
@@ -58,14 +60,14 @@ main:has(> #gjPage) { padding-top: 12px !important; }   /* py-4 дашборда
     font: 600 1rem var(--rt-font); cursor: pointer; transition: background .15s, color .15s;
 }
 .gj-tabs button:hover { color: var(--rt-fg); background: var(--rt-panel-2); }
-.gj-tabs button[aria-selected="true"] { background: var(--rt-acc); color: #06201d; }
+.gj-tabs button[aria-selected="true"] { background: var(--rt-acc-fill); color: var(--rt-acc-ink); }
 .gj-tabs button i { font-size: .9em; }
 
 /* Форма записи: крупные поля, на ПК — две колонки */
 .gj-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 18px; margin-top: 10px; }
 .gj-grid .gj-wide { grid-column: 1 / -1; }
 .gj-form .rt-select, .gj-form .rt-input, .gj-filters .rt-select, .gj-filters .rt-input, .gj-odo-day .rt-input { height: 46px; font-size: 1rem; width: 100%; }
-.gj-date { color-scheme: dark; font-family: var(--rt-mono); }
+.gj-date { font-family: var(--rt-mono); }
 .gj-opt { color: var(--rt-fg-mute); font-weight: 400; }
 .gj-form [hidden] { display: none; }
 .gj-what-other { margin-top: 8px; }   /* «Այլ…» — короткий текст сразу под списком */
@@ -124,11 +126,12 @@ main:has(> #gjPage) { padding-top: 12px !important; }   /* py-4 дашборда
 .gj-map-touch { display: none; }
 .gj-map-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; font-size: .8125rem; color: var(--rt-fg-dim); margin: 0; }
 .gj-map-legend > span { display: inline-flex; align-items: center; gap: 6px; }
-.gj-line { display: inline-block; width: 22px; border-top: 3px solid #3b82f6; }
-.gj-line.is-plan { border-top: 3px dashed #8791a3; }
-.gj-map-legend .rt-dot.is-ok { background: #45d98f; }
-.gj-map-legend .rt-dot.is-late { background: #ff6b79; }
-.gj-map-legend .rt-dot.is-none { background: #8791a3; }
+/* образцы — как слои карты (routes_garage.js: TRACK_STYLE, PLAN_STYLE, stopTone) */
+.gj-line { display: inline-block; width: 22px; border-top: 3px solid var(--rt-route-1); }
+.gj-line.is-plan { border-top: 3px dashed var(--rt-fg-mute); }
+.gj-map-legend .rt-dot.is-ok { background: var(--rt-ok); }
+.gj-map-legend .rt-dot.is-late { background: var(--rt-danger); }
+.gj-map-legend .rt-dot.is-none { background: var(--rt-fg-mute); }
 #gjMapBox .rt-card-head { flex-wrap: nowrap; }
 #gjMapBox .rt-card-title { min-width: 0; overflow-wrap: anywhere; }
 #gjMapClose { margin-left: auto; flex: 0 0 auto; }
@@ -144,7 +147,7 @@ main:has(> #gjPage) { padding-top: 12px !important; }   /* py-4 дашборда
         position: sticky; bottom: 0; z-index: 15; margin: 8px -18px -18px;
         padding: 10px 18px calc(10px + env(safe-area-inset-bottom, 0px));
         background: var(--rt-panel); border-top: 1px solid var(--rt-line);
-        border-radius: 0 0 var(--rt-radius) var(--rt-radius); box-shadow: 0 -10px 22px rgba(0, 0, 0, .35);
+        border-radius: 0 0 var(--rt-radius) var(--rt-radius); box-shadow: var(--rt-shadow);
     }
     /* поле в фокусе не прячется под этой полосой */
     .gj-form .rt-input, .gj-form .rt-select, #gjOdoForm .rt-input { scroll-margin-bottom: 96px; }
@@ -158,7 +161,7 @@ main:has(> #gjPage) { padding-top: 12px !important; }   /* py-4 дашборда
     .gj-tabs {
         max-width: none; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px;
         margin: 12px -12px 14px; padding: 6px 12px; border-radius: 0; border-left: 0; border-right: 0;
-        background: var(--rt-bg); box-shadow: 0 6px 16px rgba(0, 0, 0, .35);
+        background: var(--rt-bg); box-shadow: var(--rt-shadow-sm);
     }
     .gj-tabs button {
         flex-direction: column; gap: 4px; min-height: 56px; padding: 6px 2px;

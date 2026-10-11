@@ -87,8 +87,12 @@ def test_basemap_follows_yandex_terms():
     assert url, 'Tiles API URL'
     params = dict(p.split('=') for p in (url.group(1) + url.group(2)).split('?')[1].split('&'))
     assert params['projection'] == 'web_mercator'     # иначе эллиптическая проекция — сдвиг относительно Leaflet
-    assert params['l'] == 'map' and params['lang'] == 'ru_RU' and params['apikey'] == '{ymKey}'
-    assert params['theme'] == 'dark'   # тёмную карту рисует сам Яндекс (страницы «Маршрутов» тёмные) — не фильтр
+    assert params['l'] == 'map{ymTheme}' and params['lang'] == 'ru_RU' and params['apikey'] == '{ymKey}'
+    # тема плиток — по теме страницы ☀/☾ (Tesla+): тёмную карту рисует сам Яндекс (theme=dark) — не фильтр; светлая — без
+    # параметра; без выбора темы — тёмная; смена темы перерисовывает плитки
+    assert "ymTheme: themeParam" in js
+    assert "dataset.rtTheme === 'light' ? '' : '&theme=dark'" in js
+    assert "addEventListener('rt-theme-change'" in js and 'layer.redraw()' in js
     # логотип обязателен: в углу, ссылка на Яндекс Карты, картинка из официального набора
     assert "position: 'bottomleft'" in js and "'https://yandex.ru/maps/'" in js
     logo = ROOT / 'static' / 'img' / 'yandex_maps_logo_ru.svg'

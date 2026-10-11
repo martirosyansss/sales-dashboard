@@ -647,7 +647,7 @@ def test_learning_api_eta_tile(client, sc_app):
     assert e['median_abs_min'] == pytest.approx(22.5, abs=2.5) and e['within_pct'] == 50.0   # (≈5 + ≈40) / 2
     html = (ROOT / 'templates' / 'routes_learning.html').read_text(encoding='utf-8')
     js = (ROOT / 'static' / 'js' / 'routes_learning.js').read_text(encoding='utf-8')
-    assert 'id="lrEta"' in html and "routes_learning.js') }}?v=18" in html and 'renderEta(d.eta)' in js
+    assert 'id="lrEta"' in html and "routes_learning.js') }}?v=19" in html and 'renderEta(d.eta)' in js
 
 
 # ============================== доступ ==============================

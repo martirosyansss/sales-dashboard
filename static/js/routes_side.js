@@ -1,5 +1,27 @@
 // Меню раздела «Маршруты» слева (templates/_routes_side.html): свернуть до иконок — помнится в этом браузере;
 // уже 992 px — выезжающая панель (Esc и клик по затемнению закрывают, фокус — в меню и обратно на кнопку).
+
+// Тема ☀/☾ (Tesla+, routes.css): html[data-rt-theme] и Bootstrap data-bs-theme, выбор — в этом браузере (rtTheme);
+// до отрисовки их ставит _routes_theme.html. Смена — событие rt-theme-change: карты перекрашивают слои и подложку.
+(function () {
+    'use strict';
+    const buttons = Array.from(document.querySelectorAll('[data-rt-theme-set]'));
+    if (!buttons.length) return;
+    const root = document.documentElement;
+    const current = () => (root.dataset.rtTheme === 'light' ? 'light' : 'dark');
+    const sync = () => buttons.forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.rtThemeSet === current())));
+    buttons.forEach((b) => b.addEventListener('click', () => {
+        const theme = b.dataset.rtThemeSet === 'light' ? 'light' : 'dark';
+        if (theme === current()) return;
+        root.dataset.rtTheme = theme;
+        root.setAttribute('data-bs-theme', theme);
+        try { window.localStorage.setItem('rtTheme', theme); } catch (e) { /* хранилище недоступно — тема до перехода */ }
+        sync();
+        document.dispatchEvent(new CustomEvent('rt-theme-change', { detail: { theme } }));
+    }));
+    sync();
+})();
+
 (function () {
     'use strict';
     const shell = document.getElementById('rtShell');

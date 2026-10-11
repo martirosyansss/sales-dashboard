@@ -32,6 +32,10 @@
     const MGR_COLORS = ['#18c1fc', '#fe904d', '#b0a2ff', '#a77601', '#397be9', '#14cfa3',
                         '#0d9298', '#b8b90c', '#ae55c1', '#37981b', '#fe80c0', '#d64651'];
     const MGR_OTHER = '#8b93a7';
+    // Литералы выше намеренно: цвета-имена дней недели и менеджеров (категориальная серия), одинаковы в обеих темах ☀/☾ —
+    // точка и линия обведены --rt-map-ink, поэтому видны на светлой и тёмной подложке.
+    // Цвет карты из токенов темы (routes.css): Leaflet рисует на canvas, var() туда не передать — берём значение
+    const themeColor = (name) => getComputedStyle(document.querySelector('.rt-page')).getPropertyValue(name).trim();
     // Вид изменения — для листа «Изменения» в Excel (как было)
     const TYPE_TEXT = { move: 'տեղափոխում', frequency: 'հաճախականություն', both: 'տեղափոխում և հաճախականություն', remove: 'հանել', transfer: 'փոխանցել' };
     // Какие решения отправляет изменение: у «both» — два, шаблон дней и частота; «убрать из маршрута» — remove;
@@ -2216,6 +2220,8 @@
         map.on('mouseout blur', () => map.scrollWheelZoom.disable());
         state.map = map;
         state.layers = { points: L.layerGroup().addTo(map), route: L.layerGroup().addTo(map), base: L.layerGroup().addTo(map) };
+        // тема ☀/☾ сменилась (routes_side.js): обводки и линии — из новых токенов, вид карты тот же
+        document.addEventListener('rt-theme-change', () => { if (state.result) drawMap(true); });
     }
     const mapOpen = () => $('roMapBox').open;
 
@@ -2260,9 +2266,9 @@
             const to = mgrOf(c.to_agent), frm = mgrOf(c.from_agent);
             const toHome = to ? homeOf(to) : null, fromHome = frm ? homeOf(frm) : null;
             const color = to && to._color ? to._color : MGR_OTHER;
-            if (fromHome) L.polyline([fromHome, at], { color: '#a7b0c0', weight: 2, opacity: 0.7, dashArray: '4 6', interactive: false }).addTo(state.layers.route);
+            if (fromHome) L.polyline([fromHome, at], { color: themeColor('--rt-fg-dim'), weight: 2, opacity: 0.7, dashArray: '4 6', interactive: false }).addTo(state.layers.route);
             if (toHome) {
-                L.polyline([at, toHome], { color: '#0c0f14', weight: 6, opacity: 0.55, interactive: false }).addTo(state.layers.route);
+                L.polyline([at, toHome], { color: themeColor('--rt-map-ink'), weight: 6, opacity: 0.55, interactive: false }).addTo(state.layers.route);
                 L.polyline([at, toHome], { color, weight: 3, opacity: 0.95, interactive: false }).addTo(state.layers.route);
                 const mid = [at[0] + (toHome[0] - at[0]) * 0.7, at[1] + (toHome[1] - at[1]) * 0.7];
                 L.marker(mid, { icon: L.divIcon({ className: 'rt-arrow', html: h('span', { style: 'color:' + color + ';transform:rotate(' + bearing(at, toHome).toFixed(0) + 'deg)' }, icon('fa-arrow-up')),
@@ -2271,7 +2277,7 @@
             }
             const mk = L.marker(at, { icon: pin('rt-pin-transfer', color, 'fa-people-arrows', 24), title: 'Փոխանցել՝ ' + custName(c.customer_id), zIndexOffset: 800 })
                 .bindTooltip(() => h('div', {}, h('b', { text: custName(c.customer_id) }), h('br'),
-                    h('span', { style: 'color:#a7b0c0', text: 'փոխանցել՝ ' + agentName(c.from_agent) + ' → ' + agentName(c.to_agent) })), { direction: 'top', offset: [0, -10] })
+                    h('span', { style: 'color:var(--rt-fg-dim)', text: 'փոխանցել՝ ' + agentName(c.from_agent) + ' → ' + agentName(c.to_agent) })), { direction: 'top', offset: [0, -10] })
                 .bindPopup(() => popupNode(frm || m, c.customer_id), { maxWidth: 320 })
                 .addTo(state.layers.route);
             state.transferMarkers.set(c._key, mk);
@@ -2374,12 +2380,12 @@
         wds.forEach(wd => box.append(item(h('span', { class: 'ro-lg-sw', style: 'background:' + wdColor(wd), 'aria-hidden': 'true' }),
             WD_SHORT[wd] || String(wd))));
         if (W > 1) {
-            box.append(item(h('span', { class: 'ro-lg-sw', style: 'background:#a7b0c0', 'aria-hidden': 'true' }), 'ամեն շաբաթ կամ 1-ին շաբաթը'));
-            box.append(item(h('span', { class: 'ro-lg-sw is-hollow', style: 'color:#a7b0c0', 'aria-hidden': 'true' }), 'միայն 2-րդ շաբաթը — կետագիծ'));
+            box.append(item(h('span', { class: 'ro-lg-sw', style: 'background:var(--rt-fg-dim)', 'aria-hidden': 'true' }), 'ամեն շաբաթ կամ 1-ին շաբաթը'));
+            box.append(item(h('span', { class: 'ro-lg-sw is-hollow', style: 'color:var(--rt-fg-dim)', 'aria-hidden': 'true' }), 'միայն 2-րդ շաբաթը — կետագիծ'));
         }
-        box.append(item(h('span', { class: 'rt-lg-ico', style: 'border:1.5px solid #a7b0c0;border-radius:50%', 'aria-hidden': 'true' }, icon('fa-house')), 'մենեջերի տուն'));
-        if (depotOf()) box.append(item(h('span', { class: 'rt-lg-ico', style: 'background:#eef1f6;color:#0c0f14', 'aria-hidden': 'true' }, icon('fa-warehouse')), 'պահեստ'));
-        if (mapTransfersOf(m).length) box.append(item(h('span', { class: 'rt-lg-ico', style: 'border:1.5px solid #a7b0c0;border-radius:50%', 'aria-hidden': 'true' },
+        box.append(item(h('span', { class: 'rt-lg-ico', style: 'border:1.5px solid var(--rt-fg-dim);border-radius:50%', 'aria-hidden': 'true' }, icon('fa-house')), 'մենեջերի տուն'));
+        if (depotOf()) box.append(item(h('span', { class: 'rt-lg-ico', style: 'background:var(--rt-fg);color:var(--rt-map-ink)', 'aria-hidden': 'true' }, icon('fa-warehouse')), 'պահեստ'));
+        if (mapTransfersOf(m).length) box.append(item(h('span', { class: 'rt-lg-ico', style: 'border:1.5px solid var(--rt-fg-dim);border-radius:50%', 'aria-hidden': 'true' },
             icon('fa-people-arrows')), 'փոխանցել — սլաք դեպի նրա տունը, ում փոխանցում են'));
     }
 
@@ -2396,7 +2402,7 @@
 
     function tipNode(m, cid) {
         return h('div', {}, h('b', { text: custName(cid) }), h('br'),
-            h('span', { style: 'color:#a7b0c0', text: visitsHuman(m, state.mapMode, cid) }));
+            h('span', { style: 'color:var(--rt-fg-dim)', text: visitsHuman(m, state.mapMode, cid) }));
     }
 
     function popupNode(m, cid) {
@@ -2424,7 +2430,8 @@
         });
     }
 
-    function drawMap() {
+    // keepView — перерисовать на месте (смена темы ☀/☾), не подгоняя масштаб
+    function drawMap(keepView) {
         const m = curMgr();
         updateMapNote(m);
         renderMapLegend(m);
@@ -2449,11 +2456,12 @@
                 });
             });
             const onRoute = sel ? new Set(sel.stops.map(st => String(st.customer_id))) : null;
+            const ink = themeColor('--rt-map-ink');
             pts.forEach(p => {
                 if (sel && p.wd === num(sel.weekday) && onRoute.has(String(p.cid))) return;   // эти — номерами маршрута
                 const color = wdColor(p.wd), hollow = W > 1 && !p.weeks.has(1);
                 L.circleMarker(p.ll, {
-                    radius: 5.5, weight: hollow ? 2 : 1.5, color: hollow ? color : '#0c0f14', dashArray: hollow ? '3 3' : null,
+                    radius: 5.5, weight: hollow ? 2 : 1.5, color: hollow ? color : ink, dashArray: hollow ? '3 3' : null,
                     fillColor: color, fillOpacity: hollow ? 0.15 : (sel ? 0.28 : 0.92), opacity: sel ? 0.45 : 0.95,
                 })
                     .bindTooltip(() => tipNode(m, p.cid), { direction: 'top', offset: [0, -6] })
@@ -2478,6 +2486,7 @@
                 .addTo(layers.base);
         }
         state.map.invalidateSize();
+        if (keepView) return;
         if (bounds.length) state.map.fitBounds(L.latLngBounds(bounds).pad(0.08), { animate: !RM, maxZoom: 15 });
         else state.map.setView(YEREVAN, 9, { animate: !RM });
         const focus = state.mapFocus && state.transferMarkers ? state.transferMarkers.get(state.mapFocus) : null;
@@ -2492,7 +2501,7 @@
         const path = stops.map(x => [num(x.st.lat), num(x.st.lon)]);
         if (home) { path.unshift(home); path.push(home); }
         if (path.length >= 2) {
-            L.polyline(path, { color: '#0c0f14', weight: 7, opacity: 0.6, interactive: false }).addTo(state.layers.route);
+            L.polyline(path, { color: themeColor('--rt-map-ink'), weight: 7, opacity: 0.6, interactive: false }).addTo(state.layers.route);
             L.polyline(path, { color, weight: 3, opacity: 0.95, lineJoin: 'round', dashArray: w2 ? '8 6' : null, interactive: false })
                 .addTo(state.layers.route);
         }

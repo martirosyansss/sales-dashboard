@@ -4,17 +4,18 @@
    друг под другом. */
 
 #lvPage {
-    max-width: 1640px; margin: 0 auto; color-scheme: dark;
+    max-width: 1640px; margin: 0 auto;   /* color-scheme — от темы (.rt-page, routes.css) */
     padding: 0 env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
-    --lv-moving:  #45d98f;
-    --lv-standing: #38bdf8;
-    --lv-alert:   #ff6b79;
-    --lv-offline: #8693a5;
-    --lv-closed:  #5b6779;
-    --lv-unmarked: #a78bfa;   /* магазин посещён по GPS, водитель не отметил: на тёмном фоне контраст ≥ 7:1 */
-    --lv-warn:    #ffb547;    /* тревога «զգուշացում» (жёлтая): долгая стоянка, отклонение, нет связи */
-    --lv-alert-hi: rgba(255, 90, 106, .42);   /* мигание новой тревоги: яркая фаза фона */
-    --lv-warn-hi:  rgba(255, 176, 58, .40);
+    /* состояния машин и тревог — из токенов темы (routes.css), обе темы ☀/☾ */
+    --lv-moving:  var(--rt-ok);
+    --lv-standing: var(--rt-acc);
+    --lv-alert:   var(--rt-danger);
+    --lv-offline: var(--rt-fg-mute);
+    --lv-closed:  color-mix(in srgb, var(--rt-fg-mute) 60%, var(--rt-panel));   /* день закрыт — бледнее «нет связи» */
+    --lv-unmarked: var(--rt-violet);   /* магазин посещён по GPS, водитель не отметил */
+    --lv-warn:    var(--rt-warn);    /* тревога «զգուշացում» (жёлтая): долгая стоянка, отклонение, нет связи */
+    --lv-alert-hi: color-mix(in srgb, var(--rt-danger) 42%, transparent);   /* мигание новой тревоги: яркая фаза фона */
+    --lv-warn-hi:  color-mix(in srgb, var(--rt-warn) 40%, transparent);
 }
 #lvPage .rt-title { display: flex; align-items: center; gap: 12px; }
 .lv-title-ico { color: var(--rt-acc); font-size: .8em; }
@@ -24,12 +25,12 @@
 
 /* «Обновлено …» — живой индикатор опроса */
 .lv-live { display: inline-flex; align-items: center; gap: 8px; color: var(--rt-fg-mute); font-size: .875rem; }
-.lv-live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--lv-moving); box-shadow: 0 0 0 0 rgba(69, 217, 143, .5); }
+.lv-live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--lv-moving); box-shadow: 0 0 0 0 color-mix(in srgb, var(--lv-moving) 50%, transparent); }
 .lv-live.is-paused .lv-live-dot { background: var(--lv-offline); }
 @media (prefers-reduced-motion: no-preference) {
     .lv-live:not(.is-paused) .lv-live-dot { animation: lv-pulse 2s ease-out infinite; }
 }
-@keyframes lv-pulse { 0% { box-shadow: 0 0 0 0 rgba(69, 217, 143, .45); } 100% { box-shadow: 0 0 0 9px rgba(69, 217, 143, 0); } }
+@keyframes lv-pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--lv-moving) 45%, transparent); } 100% { box-shadow: 0 0 0 9px transparent; } }
 
 .lv-layout {
     display: grid; gap: 14px;
@@ -98,9 +99,10 @@ button.lv-prob:focus-visible { outline: 2px solid var(--rt-acc); outline-offset:
 .lv-dlg {
     width: min(520px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow: auto; padding: 22px;
     color: var(--rt-fg); background: var(--rt-panel); border: 1px solid var(--rt-line); border-radius: 20px;
-    box-shadow: 0 24px 64px rgba(0, 0, 0, .55); font-family: var(--rt-font);
+    box-shadow: var(--rt-shadow); font-family: var(--rt-font);
 }
-.lv-dlg::backdrop { background: rgba(5, 7, 10, .7); backdrop-filter: blur(2px); }
+/* запасной литерал — для браузеров, где ::backdrop ещё не наследует переменные от диалога */
+.lv-dlg::backdrop { background: var(--rt-scrim, rgba(0, 0, 0, .6)); backdrop-filter: blur(2px); }
 .lv-dlg-t { margin: 0 0 6px; font-size: 1.25rem; font-weight: 700; overflow-wrap: anywhere; }
 .lv-dlg-lead { margin: 0 0 12px; color: var(--rt-fg-dim); line-height: 1.5; overflow-wrap: anywhere; }
 .lv-dlg-label { display: block; margin: 0 0 6px; font-size: .8125rem; font-weight: 600; color: var(--rt-fg-mute); }
@@ -121,7 +123,7 @@ button.lv-prob:focus-visible { outline: 2px solid var(--rt-acc); outline-offset:
     padding: 8px 6px; border-radius: var(--rt-radius-sm); background: var(--rt-panel); border: 1px solid var(--rt-line);
     text-align: center; line-height: 1.2;
 }
-.lv-sum b { display: block; font-size: 1.375rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+.lv-sum b { display: block; font-size: 1.375rem; font-weight: 300; font-variant-numeric: tabular-nums; }   /* Tesla+: тонкие числа */
 .lv-sum span { font-size: .75rem; color: var(--rt-fg-mute); }
 .lv-sum.is-moving b { color: var(--lv-moving); }
 .lv-sum.is-standing b { color: var(--lv-standing); }
@@ -163,17 +165,17 @@ button.lv-prob:focus-visible { outline: 2px solid var(--rt-acc); outline-offset:
 
 /* Карта */
 .lv-map { height: calc(100vh - var(--rt-nav-h, 64px) - 170px); min-height: 420px; border-radius: var(--rt-radius);
-    border: 1px solid var(--rt-line); background: #12161d; }
+    border: 1px solid var(--rt-line); background: var(--rt-inset); }
 .lv-legend {
     display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 8px; font-size: .8125rem; color: var(--rt-fg-mute);
 }
 .lv-legend span { display: inline-flex; align-items: center; gap: 6px; }
 .lv-legend .lv-dot { width: 10px; height: 10px; }
 .lv-sq { display: inline-block; width: 10px; height: 10px; border-radius: 3px; }
-.lv-sq.is-full { background: #45d98f; }
-.lv-sq.is-partial { background: #ffb547; }
-.lv-sq.is-refused { background: #ff6b79; }
-.lv-sq.is-pending { background: #8693a5; }
+.lv-sq.is-full { background: var(--rt-ok); }
+.lv-sq.is-partial { background: var(--rt-warn); }
+.lv-sq.is-refused { background: var(--rt-danger); }
+.lv-sq.is-pending { background: var(--rt-fg-mute); }
 .lv-sq.is-unmarked { background: var(--lv-unmarked); }
 .lv-legend .lv-dot.is-stale { opacity: .55; }
 
@@ -181,37 +183,37 @@ button.lv-prob:focus-visible { outline: 2px solid var(--rt-acc); outline-offset:
 .lv-marker { position: relative; width: 34px; height: 34px; }
 .lv-marker-body {
     position: absolute; inset: 4px; border-radius: 50%; background: var(--lv-standing);
-    border: 3px solid #0e1116; box-shadow: 0 2px 8px rgba(0, 0, 0, .5); display: grid; place-items: center;
-    color: #0e1116; font-size: 11px;
+    border: 3px solid var(--rt-map-ink); box-shadow: var(--rt-shadow-sm); display: grid; place-items: center;
+    color: var(--rt-map-ink); font-size: 11px;
 }
 .lv-marker.is-moving .lv-marker-body { background: var(--lv-moving); }
 .lv-marker.is-alert .lv-marker-body { background: var(--lv-alert); }
 .lv-marker.is-offline .lv-marker-body, .lv-marker.is-nodata .lv-marker-body { background: var(--lv-offline); }
 .lv-marker.is-closed .lv-marker-body { background: var(--lv-closed); }
-.lv-marker.is-selected .lv-marker-body { border-color: #e8edf4; }
+.lv-marker.is-selected .lv-marker-body { border-color: var(--rt-fg); }
 /* нет связи: последнее известное положение — полупрозрачно, подпись «վերջինը՝ HH:MM» под номером остаётся читаемой */
 .lv-marker.is-stale .lv-marker-body, .lv-marker.is-stale .lv-marker-arrow { opacity: .55; }
 .lv-marker-last {
     position: absolute; left: 50%; top: 56px; transform: translateX(-50%); white-space: nowrap;
-    padding: 0 6px; border-radius: 6px; background: rgba(14, 17, 22, .88); color: #aab4c3;
-    font: 500 10px/1.6 'Google Sans', 'Noto Sans Armenian', system-ui, sans-serif; border: 1px solid #283140;
+    padding: 0 6px; border-radius: 6px; background: var(--rt-glass); color: var(--rt-fg-dim);
+    font: 500 10px/1.6 var(--rt-font); border: 1px solid var(--rt-line);
 }
 .lv-marker-arrow {
     position: absolute; left: 50%; top: -3px; width: 0; height: 0; margin-left: -6px;
-    border-left: 6px solid transparent; border-right: 6px solid transparent; border-bottom: 9px solid #e8edf4;
+    border-left: 6px solid transparent; border-right: 6px solid transparent; border-bottom: 9px solid var(--rt-fg);
     transform-origin: 6px 20px;
 }
 .lv-marker-plate {
     position: absolute; left: 50%; top: 35px; transform: translateX(-50%); white-space: nowrap;
-    padding: 1px 7px; border-radius: 7px; background: rgba(14, 17, 22, .88); color: #e8edf4;
-    font: 600 11px/1.5 'Google Sans', 'Noto Sans Armenian', system-ui, sans-serif; border: 1px solid #283140;
+    padding: 1px 7px; border-radius: 7px; background: var(--rt-glass); color: var(--rt-fg);
+    font: 600 11px/1.5 var(--rt-font); border: 1px solid var(--rt-line);
 }
 .lv-marker-count {
     position: absolute; right: -6px; top: -6px; min-width: 18px; height: 18px; padding: 0 4px; border-radius: 9px;
-    background: var(--lv-alert); color: #fff; font: 700 11px/18px system-ui, sans-serif; text-align: center;
-    border: 2px solid #0e1116;
+    background: var(--lv-alert); color: var(--rt-status-ink); font: 700 11px/18px var(--rt-font); text-align: center;
+    border: 2px solid var(--rt-map-ink);
 }
-.lv-store-label { font: 600 11px 'Google Sans', 'Noto Sans Armenian', system-ui, sans-serif; }
+.lv-store-label { font: 600 11px var(--rt-font); }
 
 /* Карточка выбранной машины */
 .lv-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
@@ -301,29 +303,30 @@ button.lv-prob:focus-visible { outline: 2px solid var(--rt-acc); outline-offset:
 .lv-mapbar .lv-legend { margin-top: 0; }
 .lv-toggle { display: inline-flex; align-items: center; gap: 8px; min-height: 36px; font-size: .875rem; font-weight: 600; color: var(--rt-fg); cursor: pointer; }
 .lv-toggle input { width: 16px; height: 16px; margin: 0; accent-color: var(--rt-acc); }
-/* образцы — как линии на карте (routes_live.js LN): цветная линия с белой обводкой, план — полупрозрачный коридор */
-.lv-ln { display: inline-block; width: 22px; height: 5px; border-radius: 3px; background: #1a73e8; box-shadow: 0 0 0 2px #fff; }
-.lv-ln.is-plan { height: 12px; border-radius: 6px; background: rgba(124, 77, 255, .45); box-shadow: none; }
-.lv-ln.is-dev { background: #d93025; }
-.lv-ln.is-minor { background: #f57c00; }
-.lv-ln.is-explained { background: #80868b; }
-.lv-ln.is-over { height: 14px; border-radius: 7px; background: rgba(217, 48, 37, .28); box-shadow: none; }
-/* стрелка направления на фактическом пути (поворот — в style), мышь не ловит */
+/* образцы — как линии на карте (routes_live.js LN): цветная линия с обводкой, план — полупрозрачный коридор */
+.lv-ln { display: inline-block; width: 22px; height: 5px; border-radius: 3px; background: var(--rt-route-1); box-shadow: 0 0 0 2px var(--rt-map-ink); }
+.lv-ln.is-plan { height: 12px; border-radius: 6px; background: color-mix(in srgb, var(--rt-route-6) 45%, transparent); box-shadow: none; }
+.lv-ln.is-dev { background: var(--rt-danger); }
+.lv-ln.is-minor { background: var(--rt-warn); }
+.lv-ln.is-explained { background: var(--rt-fg-mute); }
+.lv-ln.is-over { height: 14px; border-radius: 7px; background: color-mix(in srgb, var(--rt-danger) 28%, transparent); box-shadow: none; }
+/* стрелка направления на фактическом пути (поворот — в style), мышь не ловит; белая (%23fff в SVG) — она лежит
+   на линии цвета акцента, как текст на акценте (--rt-acc-ink), в обеих темах */
 .lv-arrow {
-    display: block; width: 14px; height: 14px; pointer-events: none; filter: drop-shadow(0 0 1px rgba(0, 0, 0, .55));
+    display: block; width: 14px; height: 14px; pointer-events: none; filter: drop-shadow(0 0 1px var(--rt-shadow-c));
     background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'%3E%3Cpath d='M4.5 2.5 9 7l-4.5 4.5' fill='none' stroke='%23fff' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 14px 14px no-repeat;
 }
 .lv-legs { min-width: 420px; }
 .lv-npin {
     display: grid; place-items: center; width: 24px; height: 24px; box-sizing: border-box; border-radius: 50%;
-    border: 2px solid #0e1116; background: #8693a5; color: #0e1116; box-shadow: 0 1px 4px rgba(0, 0, 0, .5);
-    font: 700 11px/1 'Google Sans', system-ui, sans-serif; font-variant-numeric: tabular-nums;
+    border: 2px solid var(--rt-map-ink); background: var(--rt-fg-mute); color: var(--rt-status-ink); box-shadow: 0 1px 4px var(--rt-shadow-c);
+    font: 700 11px/1 var(--rt-font); font-variant-numeric: tabular-nums;
 }
-.lv-npin.is-plan-only { background: rgba(14, 17, 22, .85); color: #e8edf4; border: 2px dashed #e8edf4; }
-.lv-npin.is-late { box-shadow: 0 0 0 3px #ff6b79; }
+.lv-npin.is-plan-only { background: var(--rt-glass); color: var(--rt-fg); border: 2px dashed var(--rt-fg); }
+.lv-npin.is-late { box-shadow: 0 0 0 3px var(--rt-danger); }
 .lv-npin-sq {
-    display: inline-grid; place-items: center; width: 16px; height: 16px; border-radius: 50%; background: #8693a5;
-    color: #0e1116; font: 700 9px/1 system-ui, sans-serif; font-style: normal;
+    display: inline-grid; place-items: center; width: 16px; height: 16px; border-radius: 50%; background: var(--rt-fg-mute);
+    color: var(--rt-status-ink); font: 700 9px/1 var(--rt-font); font-style: normal;
 }
 #lvPage .lv-sec-title { margin: 14px 0 8px; font-size: .875rem; font-weight: 700; color: var(--rt-fg-dim); }
 .lv-linkbtn {
@@ -333,18 +336,18 @@ button.lv-prob:focus-visible { outline: 2px solid var(--rt-acc); outline-offset:
 .lv-grid .is-bad .lv-linkbtn { color: var(--rt-danger); }
 .lv-linkbtn:focus-visible { outline: 2px solid var(--rt-acc); outline-offset: 2px; border-radius: 4px; }
 /* Стоянка не по плану (08.10): плашка с минутами — янтарная, длинная (тревога) — красная, обед — серая;
-   красное кольцо — вне плановой линии; пульс — стоит там сейчас. Светлая подложка Яндекса: белая обводка и тень */
+   красное кольцо — вне плановой линии; пульс — стоит там сейчас. Обводка цвета подложки темы (--rt-map-ink) и тень */
 .lv-spin-box { display: flex; align-items: center; justify-content: center; width: 64px; height: 26px; }
 .lv-spin {
     display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 7px; box-sizing: border-box; border-radius: 11px;
-    background: #f29900; color: #202124; box-shadow: 0 0 0 2px #fff, 0 2px 6px rgba(0, 0, 0, .45); white-space: nowrap;
-    font: 700 12px/1 'Google Sans', system-ui, sans-serif; font-style: normal; font-variant-numeric: tabular-nums;
+    background: var(--rt-warn); color: var(--rt-status-ink); box-shadow: 0 0 0 2px var(--rt-map-ink), 0 2px 6px var(--rt-shadow-c); white-space: nowrap;
+    font: 700 12px/1 var(--rt-font); font-style: normal; font-variant-numeric: tabular-nums;
 }
 .lv-spin i { font-size: 11px; }
 .lv-spin b { font-weight: 700; }
-.lv-spin.is-long { background: #d93025; color: #fff; }
-.lv-spin.is-lunch { background: #5f6368; color: #fff; }
-.lv-spin.is-off { box-shadow: 0 0 0 2px #fff, 0 0 0 4px #d93025, 0 2px 6px rgba(0, 0, 0, .45); }
+.lv-spin.is-long { background: var(--rt-danger); }
+.lv-spin.is-lunch { background: var(--rt-fg-mute); }
+.lv-spin.is-off { box-shadow: 0 0 0 2px var(--rt-map-ink), 0 0 0 4px var(--rt-danger), 0 2px 6px var(--rt-shadow-c); }
 .lv-spin.is-sample { height: 16px; padding: 0 5px; font-size: 10px; margin: 0 2px; }
 .lv-offs { min-width: 300px; }
 .lv-offs td small { display: block; color: var(--rt-fg-mute); font-size: .75rem; }
@@ -369,12 +372,12 @@ button.lv-prob:focus-visible { outline: 2px solid var(--rt-acc); outline-offset:
    с prefers-reduced-motion: reduce — ровная обводка 3px и метка «ՆՈՐ». Цвет — не единственный признак: значок и текст. */
 .lv-sev1 { --lv-c: var(--lv-alert); --lv-bg: var(--rt-danger-bg); --lv-line: var(--rt-danger-line); }
 .lv-sev2 { --lv-c: var(--lv-warn); --lv-bg: var(--rt-warn-bg); --lv-line: var(--rt-warn-line); }
-.lv-sev3 { --lv-c: var(--lv-unmarked); --lv-bg: rgba(167, 139, 250, .12); --lv-line: rgba(167, 139, 250, .45); }
+.lv-sev3 { --lv-c: var(--lv-unmarked); --lv-bg: var(--rt-violet-bg); --lv-line: color-mix(in srgb, var(--rt-violet) 45%, transparent); }
 .lv-new1 { --lv-nc: var(--lv-alert); --lv-hi: var(--lv-alert-hi); }
 .lv-new2 { --lv-nc: var(--lv-warn); --lv-hi: var(--lv-warn-hi); }
 .lv-new-tag {
     display: none; align-self: center; padding: 0 6px; border-radius: 6px; font-size: .6875rem; font-weight: 700; line-height: 1.6; font-style: normal;
-    letter-spacing: .04em; color: #0e1116; background: var(--lv-nc, var(--lv-alert));
+    letter-spacing: .04em; color: var(--rt-status-ink); background: var(--lv-nc, var(--lv-alert));
 }
 
 /* полоса новых проблем над страницей */
@@ -391,7 +394,7 @@ button.lv-prob:focus-visible { outline: 2px solid var(--rt-acc); outline-offset:
 .lv-alarm.is-escalated { border-width: 3px; box-shadow: 0 0 0 3px var(--lv-alert-hi); }
 .lv-alarm-wait {
     padding: 1px 10px; border-radius: 999px; font-size: .875rem; font-weight: 700; white-space: nowrap;
-    color: #0e1116; background: var(--lv-alert);
+    color: var(--rt-status-ink); background: var(--lv-alert);
 }
 .lv-alarm-wait[hidden] { display: none; }
 .lv-alarm-list { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 2px 16px; font-size: .875rem; }
@@ -401,7 +404,7 @@ button.lv-prob:focus-visible { outline: 2px solid var(--rt-acc); outline-offset:
     display: inline-flex; align-items: center; justify-content: center; gap: 6px; font: inherit; font-weight: 700; cursor: pointer;
     white-space: nowrap; border-radius: 999px;
 }
-.lv-alarm-ack { min-height: 38px; padding: 0 16px; border: 0; background: var(--lv-c); color: #0e1116; }
+.lv-alarm-ack { min-height: 38px; padding: 0 16px; border: 0; background: var(--lv-c); color: var(--rt-status-ink); }
 .lv-alarm-ack:hover { filter: brightness(1.08); }
 .lv-ack { min-height: 32px; padding: 2px 12px; background: transparent; border: 1px solid var(--lv-line, var(--rt-line)); color: var(--rt-fg); font-size: .8125rem; }
 .lv-prob-row:has(.lv-sev1) .lv-ack { --lv-line: var(--rt-danger-line); }

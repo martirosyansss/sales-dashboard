@@ -9,12 +9,13 @@
 <meta name="theme-color" content="#0e1116">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400..700&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+Armenian:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=25">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_warehouse.css') }}?v=5">
+<link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400..700&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+Armenian:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=26">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_warehouse.css') }}?v=6">
 {% endblock %}
 
 {% block content %}
+{% include "_routes_theme.html" %}
 <div class="rt-page" id="whPage" lang="hy">
     <header class="rt-head">
         <h1 class="rt-title">Պահեստ</h1>

@@ -18,9 +18,13 @@
     // Цвета менеджеров: фиксированный порядок 12 слотов. Соседние слоты различимы и при
     // дальтонизме (CVD ΔE ≥ 17, обычное зрение ΔE ≥ 17), контраст к тёмному фону ≥ 3:1.
     // Цвет закреплён за позицией менеджера в ответе API — фильтр не перекрашивает точки.
+    // Литералы намеренно: это цвета-имена менеджеров (категориальная серия), они одинаковы в обеих темах ☀/☾ —
+    // точка всегда обведена --rt-map-ink, поэтому видна и на светлой, и на тёмной подложке.
     const MGR_COLORS = ['#18c1fc', '#fe904d', '#b0a2ff', '#a77601', '#397be9', '#14cfa3',
                         '#0d9298', '#b8b90c', '#ae55c1', '#37981b', '#fe80c0', '#d64651'];
     const MGR_OTHER = '#8b93a7';   // 13-й и дальше — нейтральный серый, цвета не повторяем
+    // Цвет карты из токенов темы (routes.css): Leaflet рисует на canvas, var() туда не передать — берём значение
+    const themeColor = (name) => getComputedStyle(document.querySelector('.rt-page')).getPropertyValue(name).trim();
     const SIZE = { small: 'փոքր', medium: 'միջին', large: 'խոշոր' };
     const COORD = {
         erp: ['b-erp', 'ERP', 'կոորդինատը՝ ERP-ի հասցեից'],
@@ -709,9 +713,9 @@
             box.appendChild(b);
         });
         box.insertAdjacentHTML('beforeend',
-            '<span class="rt-lg rt-lg-static"><span class="rt-lg-ico" style="background:#eef1f6;color:#0c0f14" aria-hidden="true"><i class="fas fa-warehouse"></i></span>Պահեստ</span>' +
-            '<span class="rt-lg rt-lg-static"><span class="rt-lg-ico" style="border:1.5px solid #a7b0c0;border-radius:50%" aria-hidden="true"><i class="fas fa-house"></i></span>Մենեջերի տուն</span>' +
-            '<span class="rt-lg rt-lg-static"><span class="rt-lg-ico" aria-hidden="true"><span class="rt-dot" style="background:#a7b0c0;width:7px;height:7px"></span></span>որքան մեծ է կետը, այնքան խոշոր է խանութը</span>');
+            '<span class="rt-lg rt-lg-static"><span class="rt-lg-ico" style="background:var(--rt-fg);color:var(--rt-map-ink)" aria-hidden="true"><i class="fas fa-warehouse"></i></span>Պահեստ</span>' +
+            '<span class="rt-lg rt-lg-static"><span class="rt-lg-ico" style="border:1.5px solid var(--rt-fg-dim);border-radius:50%" aria-hidden="true"><i class="fas fa-house"></i></span>Մենեջերի տուն</span>' +
+            '<span class="rt-lg rt-lg-static"><span class="rt-lg-ico" aria-hidden="true"><span class="rt-dot" style="background:var(--rt-fg-dim);width:7px;height:7px"></span></span>որքան մեծ է կետը, այնքան խոշոր է խանութը</span>');
         box.insertAdjacentHTML('afterbegin', '<span class="rt-lg-cap">Կետի գույնը՝ մենեջեր (սեղմեք՝ միայն նրան թողնելու համար)</span>');
         syncFilterUI();
     }
@@ -780,9 +784,12 @@
         state.custLayer = L.layerGroup().addTo(map);
         state.routeLayer = L.layerGroup().addTo(map);
         state.baseLayer = L.layerGroup().addTo(map);
+        // тема ☀/☾ сменилась (routes_side.js): обводки и линии — из новых токенов, вид карты тот же
+        document.addEventListener('rt-theme-change', () => { if (state.data) renderMap(true); });
     }
 
-    function renderMap() {
+    // keepView — перерисовать на месте (смена темы ☀/☾), не подгоняя масштаб
+    function renderMap(keepView) {
         const f = filteredCustomers();
         const s = resolveSel();
         $('rtNoCoords').innerHTML = s ? ''
@@ -803,20 +810,22 @@
             drawDepot(bounds);
         }
         state.map.invalidateSize();
+        if (keepView) return;
         if (bounds.length) state.map.fitBounds(L.latLngBounds(bounds).pad(0.06), { animate: !RM, maxZoom: 15 });
         else state.map.setView(YEREVAN, 9, { animate: !RM });
     }
 
     function drawCustomers(pts, bounds) {
+        const ink = themeColor('--rt-map-ink');
         pts.forEach(p => {
             const c = p.c, ll = [num(c.lat), num(c.lon)];
             const mk = L.circleMarker(ll, {
                 radius: c.size === 'large' ? 7 : (c.size === 'medium' ? 5.5 : 4.5),
-                color: '#0c0f14', weight: 1.5, opacity: 0.9,
+                color: ink, weight: 1.5, opacity: 0.9,
                 fillColor: mgrColor(p.vis[0].mi), fillOpacity: 0.92,
             });
             mk.bindTooltip(() => '<b>' + esc(c.name || 'Հաճախորդ') + '</b>'
-                + '<br><span style="color:#a7b0c0">' + esc(visitsText(p.all)) + '</span>', { direction: 'top', offset: [0, -6] });
+                + '<br><span style="color:var(--rt-fg-dim)">' + esc(visitsText(p.all)) + '</span>', { direction: 'top', offset: [0, -6] });
             mk.bindPopup(() => popupHTML(c, p.all), { maxWidth: 320 });
             mk.addTo(state.custLayer);
             bounds.push(ll);
@@ -888,7 +897,7 @@
             iconSize: [24, 24], iconAnchor: [12, 12],
         });
         return L.marker([num(m.home.lat), num(m.home.lon)], { icon, title: 'Տուն՝ ' + mgrName(m), zIndexOffset: 500 })
-            .bindTooltip(() => '<b>Տուն</b> · ' + esc(mgrName(m)) + '<br><span style="color:#a7b0c0">'
+            .bindTooltip(() => '<b>Տուն</b> · ' + esc(mgrName(m)) + '<br><span style="color:var(--rt-fg-dim)">'
                 + esc(HOME_SRC[m.home.source] || '') + '</span>', { direction: 'top', offset: [0, -10] });
     }
 
@@ -925,7 +934,7 @@
         const home = hasHome(s.m) ? [num(s.m.home.lat), num(s.m.home.lon)] : null;
         if (home) { path.unshift(home); path.push(home); }
         if (path.length >= 2) {
-            L.polyline(path, { color: '#0c0f14', weight: 7, opacity: 0.6, interactive: false }).addTo(state.routeLayer);
+            L.polyline(path, { color: themeColor('--rt-map-ink'), weight: 7, opacity: 0.6, interactive: false }).addTo(state.routeLayer);
             L.polyline(path, { color, weight: 3, opacity: 0.95, lineJoin: 'round', interactive: false }).addTo(state.routeLayer);
         }
         stops.forEach(x => {
@@ -937,7 +946,7 @@
             const erpNo = num(x.st.erp_rownum);
             L.marker([num(x.st.lat), num(x.st.lon)], { icon, keyboard: false, riseOnHover: true })
                 .bindTooltip(() => '<b>' + x.n + '.</b> ' + esc(x.c.name || 'Հաճախորդ')
-                    + (erpNo !== null ? '<br><span style="color:#a7b0c0">№ ERP-ում՝ ' + fmt(erpNo) + '</span>' : ''),
+                    + (erpNo !== null ? '<br><span style="color:var(--rt-fg-dim)">№ ERP-ում՝ ' + fmt(erpNo) + '</span>' : ''),
                     { direction: 'top', offset: [0, -10] })
                 .bindPopup(() => popupHTML(x.c, state.idx.byCust.get(x.id) || [], x.st.coord_source), { maxWidth: 320 })
                 .addTo(state.routeLayer);
@@ -1094,7 +1103,7 @@
             + item('<span class="rt-hl-sw s-mid" aria-hidden="true"></span>', '50–80%')
             + item('<span class="rt-hl-sw s-good" aria-hidden="true"></span>', '80% և ավելի')
             + item('<i class="fas fa-clock f-over" aria-hidden="true"></i>', 'արտաժամ')
-            + item('<span class="rt-hl-sw" style="background:transparent;border:1px dashed #7c8698" aria-hidden="true"></span>', 'օր՝ աշխատանքային շաբաթից դուրս');
+            + item('<span class="rt-hl-sw" style="background:transparent;border:1px dashed var(--rt-fg-mute)" aria-hidden="true"></span>', 'օր՝ աշխատանքային շաբաթից դուրս');
     }
 
     // ---------- Развоз по дням (парк машин) ----------

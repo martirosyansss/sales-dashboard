@@ -1104,12 +1104,17 @@
     // Вершины тянутся мышью; щелчок по карте добавляет вершину на ближайшую сторону; двойной щелчок по вершине —
     // убирает её (меньше трёх нельзя). Сохраняется общей кнопкой вместе с остальными настройками (settings[key]).
     // Зону Еревана можно и очистить (empty) — правило «большая машина в Ереване» выключено.
+    // color — токен темы (routes.css): малый центр — акцент, зона Еревана — «внимание»
     const ZONES = {
         center: { key: 'center_zone', map: 'rsCenterMap', note: 'rsCenterNote', err: 'rsCenterErr', label: 'Փոքր կենտրոնի սահման',
-            zoom: 14, color: '#397be9', empty: false, fallback: 'կենտրոնի սահմանը մնում է նախկինը' },
+            zoom: 14, color: '--rt-route-1', empty: false, fallback: 'կենտրոնի սահմանը մնում է նախկինը' },
         yerevan: { key: 'yerevan_zone', map: 'rsYerevanMap', note: 'rsYerevanNote', err: 'rsYerevanErr', label: 'Երևանի գոտու սահման',
-            zoom: 11, color: '#d9480f', empty: true, fallback: 'Երևանի գոտու սահմանը մնում է նախկինը' },
+            zoom: 11, color: '--rt-warn', empty: true, fallback: 'Երևանի գոտու սահմանը մնում է նախկինը' },
     };
+    // Цвет карты из токенов темы: Leaflet пишет цвет в SVG-атрибут, var() туда не передать — берём значение
+    const themeColor = (name) => getComputedStyle(document.querySelector('.rt-page')).getPropertyValue(name).trim();
+    // тема ☀/☾ сменилась (routes_side.js) — границы перекрашиваются, вид карты тот же
+    document.addEventListener('rt-theme-change', () => Object.keys(ZONES).forEach(z => { if (state.zones[z].map) drawZone(z, false); }));
     const zoneValue = (z) => state.zones[z].pts.map(([a, b]) => [round(a, 6), round(b, 6)]);
 
     function renderZone(z) {
@@ -1146,8 +1151,8 @@
             : 'Սահմանի կետեր՝ ' + n + (n < 3 ? ' — պետք է առնվազն երեք' : n === 3 ? ' — երեքից պակաս չի կարող լինել' : '') + '։';
         if (!zs.map) return;
         zs.layer.clearLayers();
-        const poly = L.polygon(pts, { color: cfg.color, weight: 3, fillOpacity: 0.12, interactive: false }).addTo(zs.layer);
-        const icon = L.divIcon({ className: '', html: '<span class="rs-zone-pt" style="border-color:' + cfg.color + '"></span>', iconSize: [14, 14], iconAnchor: [7, 7] });
+        const poly = L.polygon(pts, { color: themeColor(cfg.color), weight: 3, fillOpacity: 0.12, interactive: false }).addTo(zs.layer);
+        const icon = L.divIcon({ className: '', html: '<span class="rs-zone-pt" style="border-color:var(' + cfg.color + ')"></span>', iconSize: [14, 14], iconAnchor: [7, 7] });
         pts.forEach((p, i) => {
             const mk = L.marker(p, { icon, draggable: true, keyboard: false, title: 'Կետ ' + (i + 1) + ' — քաշեք՝ տեղաշարժելու համար, կրկնակի սեղմեք՝ հեռացնելու համար' })
                 .addTo(zs.layer);

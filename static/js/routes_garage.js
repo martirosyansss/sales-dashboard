@@ -728,10 +728,20 @@
         map.obj.setView(YEREVAN, 11);
         map.layers = L.layerGroup().addTo(map.obj);
     }
-    function stopColor(s) {
-        if (!s.arrive) return '#8791a3';
-        return (num(s.late_min) > 0 || s.early) ? '#ff6b79' : '#45d98f';
+    // Цвета карты — из токенов темы (routes.css): Leaflet рисует на canvas, var() туда не передать — берём значение;
+    // у слоя в options.rtStyle — как его покрасить, при смене темы ☀/☾ (routes_side.js) слои перекрашиваются
+    const themeColor = (name) => getComputedStyle(document.querySelector('.rt-page')).getPropertyValue(name).trim();
+    const PLAN_STYLE = () => ({ color: themeColor('--rt-fg-mute') });
+    const TRACK_STYLE = () => ({ color: themeColor('--rt-route-1') });
+    document.addEventListener('rt-theme-change', () => {
+        if (map.layers) map.layers.eachLayer(l => { if (l.options.rtStyle) l.setStyle(l.options.rtStyle()); });
+    });
+    // Токен цвета точки: не заезжал — серый, опоздал или раньше окна — красный, вовремя — зелёный
+    function stopTone(s) {
+        if (!s.arrive) return '--rt-fg-mute';
+        return (num(s.late_min) > 0 || s.early) ? '--rt-danger' : '--rt-ok';
     }
+    const stopStyle = (s) => () => ({ color: themeColor('--rt-map-ink'), fillColor: themeColor(stopTone(s)) });
     function stopTip(s) {
         const fact = !s.arrive ? 'կանգառ չի եղել'
             : s.arrive + '–' + (s.leave || '?') + (num(s.late_min) > 0 ? ', ուշացում՝ ' + fmt(s.late_min) + ' րոպե' : '') + (s.early ? ', ընդունման ժամից շուտ' : '');
@@ -760,16 +770,16 @@
         const bounds = [];
         d.planned.forEach(line => {
             bounds.push(...line);
-            L.polyline(line, { color: '#8791a3', weight: 3, opacity: .85, dashArray: '6 6' }).addTo(map.layers);
+            L.polyline(line, { ...PLAN_STYLE(), weight: 3, opacity: .85, dashArray: '6 6', rtStyle: PLAN_STYLE }).addTo(map.layers);
         });
         if (d.track.length > 1) {
-            L.polyline(d.track, { color: '#3b82f6', weight: 3, opacity: .85 }).addTo(map.layers);
+            L.polyline(d.track, { ...TRACK_STYLE(), weight: 3, opacity: .85, rtStyle: TRACK_STYLE }).addTo(map.layers);
             bounds.push(...d.track);
         }
         d.stops.forEach(s => {
             if (s.lat === null) return;
             bounds.push([s.lat, s.lon]);
-            L.circleMarker([s.lat, s.lon], { radius: 7, color: '#0c0f14', weight: 2, fillColor: stopColor(s), fillOpacity: 1 })
+            L.circleMarker([s.lat, s.lon], { radius: 7, ...stopStyle(s)(), weight: 2, fillOpacity: 1, rtStyle: stopStyle(s) })
                 .bindTooltip(stopTip(s)).addTo(map.layers);
         });
         if (d.depot) {

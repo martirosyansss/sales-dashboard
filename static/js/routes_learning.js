@@ -319,10 +319,20 @@
         map.obj.on('mouseout blur', () => map.obj.scrollWheelZoom.disable());
         map.layers = L.layerGroup().addTo(map.obj);
     }
-    function stopColor(s) {
-        if (!s.arrive) return '#8791a3';
-        return (num(s.late_min) > 0 || s.early) ? '#ff6b79' : '#45d98f';
+    // Цвета карты — из токенов темы (routes.css): Leaflet рисует на canvas, var() туда не передать — берём значение;
+    // у слоя в options.rtStyle — как его покрасить, при смене темы ☀/☾ (routes_side.js) слои перекрашиваются
+    const themeColor = (name) => getComputedStyle(document.querySelector('.rt-page')).getPropertyValue(name).trim();
+    const PLAN_STYLE = () => ({ color: themeColor('--rt-fg-mute') });
+    const TRACK_STYLE = () => ({ color: themeColor('--rt-route-1') });
+    document.addEventListener('rt-theme-change', () => {
+        if (map.layers) map.layers.eachLayer(l => { if (l.options.rtStyle) l.setStyle(l.options.rtStyle()); });
+    });
+    // Токен цвета точки: не заезжал — серый, опоздал или раньше окна — красный, вовремя — зелёный
+    function stopTone(s) {
+        if (!s.arrive) return '--rt-fg-mute';
+        return (num(s.late_min) > 0 || s.early) ? '--rt-danger' : '--rt-ok';
     }
+    const stopStyle = (s) => () => ({ color: themeColor('--rt-map-ink'), fillColor: themeColor(stopTone(s)) });
     function windowText(w) {
         if (!w) return '';
         if (w[0] === null) return 'մինչև ' + clock(w[1]);
@@ -351,7 +361,7 @@
         const rows = d.stops.slice().sort((a, b) => (num(a.rank) ?? 1e9) - (num(b.rank) ?? 1e9));
         $('lrMapStops').innerHTML = rows.length ? rows.map(s => '<tr><td>' + (num(s.rank) === null ? '—' : fmt(s.rank + 1)) + '</td><td>' + esc(s.name || s.customer_id || s.stop_id)
             + '</td><td>' + esc(s.planned_eta || '—') + '</td><td>' + esc(windowText(s.window) || '—') + '</td><td>'
-            + '<span class="rt-dot" style="background:' + stopColor(s) + '"></span> ' + esc(stopFact(s)) + '</td></tr>').join('')
+            + '<span class="rt-dot" style="background:var(' + stopTone(s) + ')"></span> ' + esc(stopFact(s)) + '</td></tr>').join('')
             : '<tr><td colspan="5" class="rt-empty">Օրվա կետեր չկան։</td></tr>';
         if (!map.obj) return;
         map.obj.invalidateSize();
@@ -359,16 +369,16 @@
         const bounds = [];
         const planned = d.planned.map(line => {
             bounds.push(...line);
-            return [L.polyline(line, { color: '#8791a3', weight: 3, opacity: .85, dashArray: '6 6' }).addTo(map.layers), line];
+            return [L.polyline(line, { ...PLAN_STYLE(), weight: 3, opacity: .85, dashArray: '6 6', rtStyle: PLAN_STYLE }).addTo(map.layers), line];
         });
         if (d.track.length > 1) {
-            L.polyline(d.track, { color: '#3b82f6', weight: 3, opacity: .85 }).bindTooltip('Փաստացի ճանապարհ (GPS)').addTo(map.layers);
+            L.polyline(d.track, { ...TRACK_STYLE(), weight: 3, opacity: .85, rtStyle: TRACK_STYLE }).bindTooltip('Փաստացի ճանապարհ (GPS)').addTo(map.layers);
             bounds.push(...d.track);
         }
         d.stops.forEach(s => {
             if (s.lat === null) return;
             bounds.push([s.lat, s.lon]);
-            L.circleMarker([s.lat, s.lon], { radius: 7, color: '#0c0f14', weight: 2, fillColor: stopColor(s), fillOpacity: 1 })
+            L.circleMarker([s.lat, s.lon], { radius: 7, ...stopStyle(s)(), weight: 2, fillOpacity: 1, rtStyle: stopStyle(s) })
                 .bindTooltip(esc(s.name || s.customer_id || '') + '<br>պլան՝ ' + esc(s.planned_eta || '—') + ' · փաստ՝ ' + esc(stopFact(s))
                     + (s.window ? '<br>ընդունման ժամ՝ ' + esc(windowText(s.window)) : '')).addTo(map.layers);
         });

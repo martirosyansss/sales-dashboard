@@ -42,6 +42,11 @@
         <button type="button" class="rt-secnav-fold" id="rtSecNavFold" aria-controls="rtSecNav" aria-expanded="true"
                 aria-label="Փակել ընտրացանկը" title="Փակել ընտրացանկը"><i class="fas fa-angles-left" aria-hidden="true"></i></button>
         <button type="button" class="rt-secnav-close" id="rtSecNavClose" aria-label="Փակել ընտրացանկը"><i class="fas fa-xmark" aria-hidden="true"></i></button>
+        {#- Тема ☀/☾ (Tesla+): выбор — в этом браузере (routes_side.js), до отрисовки ставит routes_base.html -#}
+        <div class="rt-theme" role="group" aria-label="Թեմա">
+            <button type="button" class="rt-theme-btn" data-rt-theme-set="light" aria-pressed="false" aria-label="Լույս թեմա" title="Լույս թեմա"><i class="fas fa-sun" aria-hidden="true"></i></button>
+            <button type="button" class="rt-theme-btn" data-rt-theme-set="dark" aria-pressed="true" aria-label="Մութ թեմա" title="Մութ թեմա"><i class="fas fa-moon" aria-hidden="true"></i></button>
+        </div>
     </div>
     <nav class="rt-secnav-nav" aria-label="Երթուղիների բաժիններ">
         <div class="rt-secnav-scroll">

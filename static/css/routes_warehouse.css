@@ -4,13 +4,14 @@
    статики сверх этих двух нет: снаружи открыт только их список (app_v2._PUBLIC_STATIC, deploy/COURIER_TUNNEL.md). */
 
 #whPage {
-    max-width: 760px; margin: 0 auto; color-scheme: dark;
+    max-width: 760px; margin: 0 auto;   /* color-scheme — от темы (.rt-page, routes.css) */
     padding: 0 env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
 }
 #whPage .rt-title { font-size: clamp(1.5rem, 1.1rem + 1.6vw, 2.125rem); }
 main:has(> #whPage) { padding-top: 12px !important; }
 
-/* Шапка ролей из интернета (base_v2.html, .gj-nav): кто вошёл и «Ելք» — как у «Ավտոտնակ» */
+/* Шапка ролей из интернета (base_v2.html, .gj-nav): кто вошёл и «Ելք» — как у «Ավտոտնակ». Цвета-литералы намеренно:
+   шапка вне .rt-page (токены --rt-* до неё не доходят), на тёмной полосе .navbar дашборда — тёмной в обеих темах */
 .gj-nav { padding: 6px max(12px, env(safe-area-inset-right, 0px)) 6px max(12px, env(safe-area-inset-left, 0px)); backdrop-filter: none; }
 .gj-nav > .container-fluid { flex-wrap: nowrap; gap: 12px; padding: 0; }
 .gj-nav form { margin: 0; flex: 0 0 auto; }
@@ -41,7 +42,7 @@ main:has(> #whPage) { padding-top: 12px !important; }
 }
 .wh-days button small { font: 500 .8125rem var(--rt-mono); opacity: .85; }
 .wh-days button:hover { color: var(--rt-fg); background: var(--rt-panel-2); }
-.wh-days button[aria-selected="true"] { background: var(--rt-acc); color: var(--rt-acc-ink); }
+.wh-days button[aria-selected="true"] { background: var(--rt-acc-fill); color: var(--rt-acc-ink); }
 .wh-days button:focus-visible { outline: 2px solid var(--rt-acc-hover); outline-offset: 2px; }
 
 .wh-alert { margin-bottom: 12px; }
@@ -78,10 +79,10 @@ main:has(> #whPage) { padding-top: 12px !important; }
 
 .wh-load {
     display: inline-flex; align-items: center; justify-content: center; gap: 9px; min-height: 52px; min-width: 168px;
-    padding: 0 20px; border-radius: 12px; border: 1px solid var(--rt-acc-dim); background: var(--rt-acc); color: var(--rt-acc-ink);
+    padding: 0 20px; border-radius: 12px; border: 1px solid var(--rt-acc-fill); background: var(--rt-acc-fill); color: var(--rt-acc-ink);
     font: 700 1.0625rem var(--rt-font); cursor: pointer; transition: background .15s, transform .08s;
 }
-.wh-load:hover { background: var(--rt-acc-hover); }
+.wh-load:hover { background: var(--rt-acc-fill-hover); }
 .wh-load:active { transform: scale(.98); }
 .wh-load:focus-visible { outline: 2px solid var(--rt-acc-hover); outline-offset: 3px; }
 .wh-load:disabled { opacity: .55; cursor: progress; }
@@ -117,7 +118,7 @@ main:has(> #whPage) { padding-top: 12px !important; }
 /* Բեռնագիր без отдельного окна (routes_warehouse.js, printHere): на экране не виден, при печати — только он */
 #whPrint { display: none; }
 @media print {
-    body.wh-printing { margin: 0 !important; padding: 0 !important; background: #fff !important; }
+    body.wh-printing { margin: 0 !important; padding: 0 !important; background: #fff !important; }   /* бумага — белая в любой теме */
     body.wh-printing > :not(#whPrint) { display: none !important; }
     body.wh-printing > #whPrint { display: block; }
 }
@@ -127,4 +128,4 @@ main:has(> #whPage) { padding-top: 12px !important; }
     .wh-load:active { transform: none; }
 }
 /* №81: рейс водителей логист изменил и не отправил — без кнопки «Բեռնված է» */
-.wh-changing { display: inline-flex; align-items: center; gap: 8px; color: var(--rt-warn, #ffb03a); font-weight: 600; }
+.wh-changing { display: inline-flex; align-items: center; gap: 8px; color: var(--rt-warn); font-weight: 600; }
