@@ -93,8 +93,21 @@
     }
     const dateRu = (s) => (typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s) ? s.slice(8, 10) + '.' + s.slice(5, 7) + '.' + s.slice(0, 4) : '—');
     const wdOf = (s) => { const d = new Date(s + 'T12:00:00'); return Number.isNaN(d.getTime()) ? null : (d.getDay() || 7); };
-    // Цвета машин: тот же ряд, что у менеджеров в «Обзоре» (различимы и при дальтонизме)
+    // Цвета машин: тот же ряд, что у менеджеров в «Обзоре» (различимы и при дальтонизме). Литералы намеренно: это цвета-имена
+    // машин (категориальная серия), одинаковы в обеих темах ☀/☾ — точки обведены --rt-map-ink, видны на любой подложке
     const COLORS = ['#18c1fc', '#fe904d', '#b0a2ff', '#a77601', '#397be9', '#14cfa3', '#0d9298', '#b8b90c', '#ae55c1', '#37981b'];
+    // Цвета карты — из токенов темы (routes.css): Leaflet пишет цвет в SVG/canvas, var() туда не передать — берём значение.
+    // paint({ color: '--rt-…' | '#цвет машины' }) — стиль слоя и options.rtStyle: при смене темы ☀/☾ (routes_top.js) все
+    // слои всех карт страницы (MAPS) перекрашиваются на месте; подложку переключает routes_basemap.js
+    const tc = (name) => getComputedStyle(document.querySelector('.rt-page')).getPropertyValue(name).trim();
+    const paint = (tokens) => {
+        const style = () => Object.fromEntries(Object.entries(tokens).map(([k, v]) => [k, String(v).startsWith('--') ? tc(v) : v]));
+        return { ...style(), rtStyle: style };
+    };
+    const MAPS = [];
+    document.addEventListener('rt-theme-change', () => MAPS.forEach((m) => m.eachLayer((l) => {
+        if (l.options && l.options.rtStyle) l.setStyle(l.options.rtStyle());
+    })));
     const YEREVAN = [40.1792, 44.4991];
     const POLL_MS = 5 * 60 * 1000;          // автообновление заказов дня
     const MANAGERS_DONE = '16:40';          // владелец: менеджеры заканчивают день ≈ 16:40
@@ -2037,6 +2050,7 @@
     function smallMap(el) {
         const map = L.map(el, { zoomSnap: 0.5, scrollWheelZoom: false });
         RoutesBasemap.add(map);
+        MAPS.push(map);
         map.on('click focus', () => map.scrollWheelZoom.enable());
         map.on('mouseout blur', () => map.scrollWheelZoom.disable());
         return map;
@@ -2183,11 +2197,11 @@
         if (x.current) {
             const old = [x.current.lat, x.current.lon], src = COORD_HY[x.current.source];
             pts.push(old);
-            L.polyline([old, now], { color: '#8791a3', weight: 2, dashArray: '4 6' }).addTo(state.sugLayer);
-            L.circleMarker(old, { radius: 8, color: '#0c0f14', weight: 2, fillColor: '#8791a3', fillOpacity: 1 })
+            L.polyline([old, now], { ...paint({ color: '--rt-fg-mute' }), weight: 2, dashArray: '4 6' }).addTo(state.sugLayer);
+            L.circleMarker(old, { radius: 8, ...paint({ color: '--rt-map-ink', fillColor: '--rt-fg-mute' }), weight: 2, fillOpacity: 1 })
                 .bindTooltip('Հին կետը' + (src ? '՝ ' + src[1] : '')).addTo(state.sugLayer);
         }
-        L.circleMarker(now, { radius: 9, color: '#0c0f14', weight: 2, fillColor: '#45d98f', fillOpacity: 1 })
+        L.circleMarker(now, { radius: 9, ...paint({ color: '--rt-map-ink', fillColor: '--rt-ok' }), weight: 2, fillOpacity: 1 })
             .bindTooltip('Նոր կետը՝ ' + esc(x.driver_name || 'վարորդ')).addTo(state.sugLayer);
         if (pts.length > 1) state.sugMap.fitBounds(pts, { padding: [30, 30], maxZoom: 17, animate: false });
         else state.sugMap.setView(now, 16);
@@ -4634,6 +4648,7 @@
         const map = L.map(el, { preferCanvas: true, zoomSnap: 0.5, scrollWheelZoom: false });
         map.on('movestart zoomstart', () => { if (!state.mapFitting) state.mapUserMoved = true; });
         RoutesBasemap.add(map);
+        MAPS.push(map);
         map.setView(YEREVAN, 10);
         map.on('click focus', () => map.scrollWheelZoom.enable());
         map.on('mouseout blur', () => map.scrollWheelZoom.disable());
@@ -5215,7 +5230,7 @@
         if (state.hoverRing) { state.hoverRing.remove(); state.hoverRing = null; }
         if (!map || !m || !map.hasLayer(m)) return;
         if (!on) { m.closeTooltip(); return; }
-        state.hoverRing = L.circleMarker(m.getLatLng(), { radius: 17, color: '#fff', weight: 3, fill: false, interactive: false }).addTo(map);
+        state.hoverRing = L.circleMarker(m.getLatLng(), { radius: 17, ...paint({ color: '--rt-fg' }), weight: 3, fill: false, interactive: false }).addTo(map);
         m.openTooltip();
     }
     function initStopHover() {
@@ -5372,7 +5387,7 @@
                         ? L.marker([s.lat, s.lon], { icon: L.divIcon({ className: 'dp-npin', html: '<span' + (String(label).length > 3 ? ' class="is-long"' : '') + ' data-trip="' + tr.id + '" style="background:' + color + '">' + label + '</span>', iconSize: [26, 26] }), keyboard: false, draggable: canDrag })
                         : ws   // перетащить можно только маркер, не кружок на canvas
                             ? L.marker([s.lat, s.lon], { icon: L.divIcon({ className: 'dp-dpin', html: '<span data-trip="' + tr.id + '" style="background:' + color + '"></span>', iconSize: [16, 16] }), keyboard: false, draggable: canDrag })
-                            : L.circleMarker([s.lat, s.lon], { radius: 7, color: '#0c0f14', weight: 2, fillColor: color, fillOpacity: 1 });
+                            : L.circleMarker([s.lat, s.lon], { radius: 7, ...paint({ color: '--rt-map-ink', fillColor: color }), weight: 2, fillOpacity: 1 });
                     const tip = esc(truckLabel(t)) + ' · երթ ' + (ti + 1) + ' · №' + (si + 1) + '<br>' + esc(s.name || s.code);
                     m.bindTooltip(tip + (canDrag ? MAP_HINT : ''));
                     state.mapMarks.set(tr.id + ':' + s.customer_id, m);
@@ -5394,7 +5409,7 @@
             bounds.push([s.lat, s.lon]);
             const why = s.yielded ? 'Զիջեց ավելի հին պատվերին՝ ' : s.no_room ? 'Չտեղավորվեց մինչև ' + state.data.work_end + '-ը՝ ' : s.no_window ? 'Չենք հասցնում ընդունման ժամին՝ '
                 : s.no_vehicle ? 'Խանութը սպասարկող մեքենա չկա՝ ' : s.no_center ? 'Կենտրոն, այսօր չկա թույլատրված մեքենա՝ ' : 'Դեռ երթում չէ՝ ';
-            L.circleMarker([s.lat, s.lon], { radius: 7, color: s.no_room || s.no_window || s.no_center || s.no_vehicle ? '#ff6b79' : '#ffb547', weight: 3, fillColor: '#0c0f14', fillOpacity: 1 })
+            L.circleMarker([s.lat, s.lon], { radius: 7, ...paint({ color: s.no_room || s.no_window || s.no_center || s.no_vehicle ? '--rt-danger' : '--rt-warn', fillColor: '--rt-map-ink' }), weight: 3, fillOpacity: 1 })
                 .bindTooltip(esc(why) + esc(s.name || s.code)).addTo(state.layers);
         });
         if (depot) {
@@ -6108,6 +6123,7 @@
         const d = state.data, plan = d.plan;
         if (!plan) return;
         const dayText = (WD_NAME[d.weekday] || '') + ', ' + dateRu(d.day);
+        // лист для печати — чёрное на белой бумаге в любой теме (литералы цвета здесь намеренно)
         let html = '<!doctype html><html lang="hy"><head><meta charset="utf-8"><title>Առաքում ' + esc(dateRu(d.day)) + '</title><style>'
             + 'body{font-family:"Segoe UI",Sylfaen,"Noto Sans Armenian",Arial,sans-serif;color:#000;margin:0;padding:12mm;font-size:15px}'
             + '.sheet{page-break-after:always;break-after:page}.sheet:last-child{page-break-after:auto;break-after:auto}'

@@ -294,7 +294,8 @@ def main() -> int:
             def fits(pg, tag):
                 sw = pg.evaluate('document.documentElement.scrollWidth <= document.documentElement.clientWidth')
                 bg = pg.evaluate("getComputedStyle(document.body).backgroundColor")
-                check(sw and bg in ('rgb(14, 17, 22)',), f'E {tag}: no horizontal scroll ({sw}), dark background to the bottom ({bg})')
+                # фон страницы — --rt-bg темы Tesla+ (routes.css: тёмная #101113, светлая #F2F3F5) до самого низа
+                check(sw and bg in ('rgb(16, 17, 19)', 'rgb(242, 243, 245)'), f'E {tag}: no horizontal scroll ({sw}), theme background to the bottom ({bg})')
             fits(page, '1366×768')
             page.context.close()
             for w, h in ((1920, 1080), (390, 860)):
