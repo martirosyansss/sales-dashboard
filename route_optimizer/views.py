@@ -1392,7 +1392,8 @@ class _DispatchDay:
     customers_off: list[dp.DispatchOrder] = field(default_factory=list)
     # «Երբ տանել» прошлых дней (dp.later_carried): isn → (день доставки | None — снят, дата заказа, день плана)
     later: dict[str, tuple[date | None, date, date]] = field(default_factory=dict)
-    # недовезённое вчера (№98, _auto_carried): заказы прошлых дней, перенесённые сюда сами (входят и в carried) — «Երեկվանից»
+    # недовезённое вчера (№98, _day_auto): заказы, перенесённые сюда сами (прошлых дней — и в carried; взятые в развоз дня их
+    # приёма, №72, — среди заказов дня) — плашка «Երեկվանից», приоритет при сборке, снимок Draft.auto_carried
     auto: set[str] = field(default_factory=set)
 
 
@@ -1454,8 +1455,8 @@ def _day_orders(state: RoutesState, bundle: Bundle, day: date, refresh: bool, ru
     остаются только те, что dp.later_shown (перенесены сюда или позже, не довезены в свой день) — «Նախորդ օրերից» прежний.
     «Նախորդ օրերից» — заказы dispatch_backlog_days рабочих дней раньше окна (владелец 09.10); ERP читается на
     BACKLOG_MAX_WORKDAYS: старше выбранного окна остаются только заказы, которые день держит (held, dp.backlog_held).
-    auto — недовезённое вчера (№98, _auto_carried): взятый в развоз дня его приёма (№72) и не довезённый заказ — снова
-    заказ этого дня."""
+    auto — недовезённое вчера (№98, _day_auto): взятый в развоз дня его приёма (№72) и не довезённый заказ — снова заказ
+    этого дня (как courier.routes_link)."""
     workdays, off = bundle.settings['workdays'], dp.holidays_of(bundle.settings)
     since, until = dp.order_window(day, workdays, off)
     first = dp.backlog_since(since, workdays, dp.backlog_days_of(bundle.settings), holidays=off)
@@ -1501,22 +1502,15 @@ def _backlog_in(draft: dp.Draft | None, carried: Collection[str]) -> set[str]:
     return set(draft.added) | (set(carried) - draft.dropped)
 
 
-def _agents_off(draft: dp.Draft | None, settings: Mapping[str, Any], day: date) -> set[int]:
-    """Менеджеры, чьи заказы дня day не везём (№98, dp.day_agents_off): сегодня и дальше по Еревану — только правило
-    настроек, прошедший день — выбор его плана."""
-    return dp.day_agents_off(draft, settings, day, _same_day_now().date())
-
-
 def _active_orders(deliver: list[dp.DispatchOrder], backlog: list[dp.DispatchOrder],
                    draft: dp.Draft | None, carried: Collection[str], settings: Mapping[str, Any],
-                   today: Sequence[dp.DispatchOrder] = (), *, day: date) -> list[dp.DispatchOrder]:
-    """Заказы в развозе дня day: заказы дня без «не везём сегодня» + заказы прошлых дней в развозе (_backlog_in) + новые
-    заказы дня today, взятые логистом в развоз сегодня (№72, draft.same_day); заказы снятых менеджеров (_agents_off: сегодня
-    и дальше — правило настроек, №98; прошедший день — фильтр «Մենեջերներ» его плана, без плана — правило, №69) — ни те,
-    ни другие. Кроме заказа прошлых дней, который логист сам взял «Տանել այսօր» (dp.backlog_delivered, владелец 08.10):
-    явный выбор сильнее фильтра."""
+                   today: Sequence[dp.DispatchOrder] = ()) -> list[dp.DispatchOrder]:
+    """Заказы в развозе: заказы дня без «не везём сегодня» + заказы прошлых дней в развозе (_backlog_in) + новые заказы
+    дня today, взятые логистом в развоз сегодня (№72, draft.same_day); заказы менеджеров, снятых фильтром «Մենեջերներ»
+    (dp.agents_off_of: без черновика — правило настроек, №69), — ни те, ни другие. Кроме заказа прошлых дней, который
+    логист сам взял «Տանել այսօր» (dp.backlog_delivered, владелец 08.10): явный выбор сильнее фильтра."""
     excluded = draft.excluded if draft is not None else set()
-    off = _agents_off(draft, settings, day)
+    off = dp.agents_off_of(draft, settings)
     inside = _backlog_in(draft, carried)
     same = draft.same_day if draft is not None else set()
     return [o for o in deliver if o.isn not in excluded and o.agent_id not in off] \
@@ -1528,18 +1522,26 @@ def _carried(state: RoutesState, day: date, workdays: Sequence[int], backlog: li
              holidays: Collection[date] = (), later: Collection[str] = (), auto: Collection[str] = ()) -> set[str]:
     """Заказы, которые логист перенёс на этот день («Везти завтра», №25) в планах с прошлого рабочего дня
     по вчера (и из нерабочего дня между ними), «Երբ տանել» на этот день (later, _later_due) и недовезённое вчера (auto,
-    №98: _auto_carried), которые ещё не отгружены. Битый черновик — без переносов."""
+    №98: _day_auto), которые ещё не отгружены. Битый черновик — без переносов."""
     return (_deferred_here(state, day, workdays, holidays) | set(later) | set(auto)) & {o.isn for o in backlog}
 
 
+def _day_auto(state: RoutesState, day: date, settings: Mapping[str, Any], draft: dp.Draft | None) -> set[str]:
+    """Недовезённое вчера дня day (№98): снимок плана дня (Draft.auto_carried — с чем план сделан и отправлен) и, для дня
+    сегодня и дальше по Еревану, ещё не вошедшее в него (_auto_carried — на странице «новые после сборки», в план — сборкой
+    или правкой и «Ուղարկել»). Прошедший день — только снимок: история плана не пересчитывается."""
+    own = set(draft.auto_carried) if draft is not None else set()
+    return own if day < _same_day_now().date() else own | _auto_carried(state, day, settings)
+
+
 def _auto_carried(state: RoutesState, day: date, settings: Mapping[str, Any]) -> set[str]:
-    """Недовезённое вчера (№98, dp.auto_carried; как courier.routes_link) — для дня сегодня и дальше по Еревану (прошедший
-    день — как был: история плана не меняется): отправленные водителям планы с прошлого рабочего дня по вчера (_sent_plan)
-    и факт терминалов «Առաքիչ» тех дней (state.live_facts). Раздела «Առաքիչ» нет, план или факт не прочитан — без переноса
-    (в журнал): довезли ли — неизвестно, заказ виден в «Նախորդ օրերից», решит логист."""
-    today = _same_day_now().date()
-    if state.live_facts is None or day < today:
+    """Недовезённое вчера по факту (№98, dp.auto_carried): отправленные водителям планы с прошлого рабочего дня по вчера
+    (_sent_plan) и факт терминалов «Առաքիչ» тех дней (state.live_facts); день кончился — раньше сегодня по Еревану (сегодняшний
+    — машина закрыла день). Раздела «Առաքիչ» нет, план или факт не прочитан — без переноса (в журнал): довезли ли —
+    неизвестно, заказ виден в «Նախորդ օրերից», решит логист."""
+    if state.live_facts is None:
         return set()
+    today = _same_day_now().date()
     workdays, holidays = settings['workdays'], dp.holidays_of(settings)
     days: list[tuple[dp.Draft | None, Mapping[str, Any], bool]] = []
     d = dp.previous_workday(day, workdays, holidays)
@@ -1554,10 +1556,17 @@ def _auto_carried(state: RoutesState, day: date, settings: Mapping[str, Any]) ->
     return dp.auto_carried(days)
 
 
-def _order_age(day: date, settings: Mapping[str, Any]) -> Callable[[dp.DispatchOrder], int]:
-    """Сколько рабочих дней заказ ждёт к day (№98, dp.late_days) — приоритет точки при сборке (dp.build_stops)."""
+def _order_age(day: date, settings: Mapping[str, Any], auto: Collection[str] = ()) -> Callable[[dp.DispatchOrder], int]:
+    """Сколько рабочих дней заказ ждёт к day (№98, dp.late_days; перенесённый сам — хотя бы 1: и взятый в развоз дня его
+    приёма, №72) — приоритет точки при сборке (dp.build_stops) и плашка «Երեկվանից» / «N օր»."""
     workdays, holidays = settings['workdays'], dp.holidays_of(settings)
-    return lambda o: dp.late_days(o, day, workdays, holidays)
+    return lambda o: max(dp.late_days(o, day, workdays, holidays), 1 if o.isn in auto else 0)
+
+
+def _auto_snapshot(dd: _DispatchDay) -> dict[str, int]:
+    """Снимок недовезённого вчера для плана дня (№98, Draft.auto_carried): fISN → клиент. Пишут сборка, «Կիրառել
+    կարգավորումները», утверждение и отправка; отправленный — терминалам (courier.routes_link) и следующему дню."""
+    return {o.isn: o.customer_id for o in (*dd.deliver, *dd.backlog) if o.isn in dd.auto}
 
 
 def _held(state: RoutesState, day: date, settings: Mapping[str, Any], draft: dp.Draft | None,
@@ -1649,9 +1658,8 @@ def _freshness(day: date, bundle: Bundle, data: dp.DispatchData, deliver: list[d
         built = draft.built_orders
         if built is not None and ruled_out:
             built = {k: v for k, v in built.items() if k not in set(ruled_out)}
-        # заказы снятых менеджеров (№98: сегодня и дальше — правило настроек) — не «новые»: их сегодня не везём
-        off = _agents_off(draft, s, day)
-        changes = dp.since_build(built, [o for o in (*deliver, *moved_in) if o.agent_id not in off],
+        # заказы менеджеров, снятых фильтром, — не «новые»: их сегодня не везём
+        changes = dp.since_build(built, [o for o in (*deliver, *moved_in) if o.agent_id not in draft.agents_off],
                                  [*deliver, *(o for o in backlog if o.isn in inside)], draft.excluded)
     return {
         'orders_still_coming': dp.orders_still_coming(day, s['workdays'], _clock(), s['dispatch_ready_time'],
@@ -1675,7 +1683,7 @@ def _load_day(state: RoutesState, bundle: Bundle, day: date, refresh: bool = Fal
     rule = dp.fleet_rule_of(draft, bundle.settings)
     later = _later_scan(state, day, bundle.settings['workdays'], dp.holidays_of(bundle.settings))
     due = _later_due(later, day)
-    auto = _auto_carried(state, day, bundle.settings)   # №98: недовезённое вчера — само в развоз
+    auto = _day_auto(state, day, bundle.settings, draft)   # №98: недовезённое вчера — само в развоз
     since, until, data, sel = _day_orders(state, bundle, day, refresh, rule, later,
                                           _held(state, day, bundle.settings, draft, {*due, *auto}), auto)
     deliver, backlog = sel.main, sel.backlog
@@ -1703,30 +1711,30 @@ def _load_day(state: RoutesState, bundle: Bundle, day: date, refresh: bool = Fal
             coords[cid] = evaluate.visit_coord(snap, cid, 0, bundle.geo_overrides, bundle.driver_points)
         return coords[cid]
 
-    stops = dp.build_stops(_active_orders(deliver, backlog, draft, carried, bundle.settings, today, day=day), coord,
-                           _order_age(day, bundle.settings))
+    stops = dp.build_stops(_active_orders(deliver, backlog, draft, carried, bundle.settings, today), coord,
+                           _order_age(day, bundle.settings, auto))
     ready = _ready_trucks(snap, bundle)
     ctx = _dispatch_ctx(state, snap, bundle, day, ready, [s.point for s in stops if s.point is not None],
                         {s.customer_id: s.point for s in stops if s.point is not None})
     return _DispatchDay(day, since, until, data, deliver, backlog, sel.shipped_before, sel.self_delivery, draft,
                         rev or 0, stops, ctx, ready, snap, bundle, carried, today, same_data, sel.same_day_taken,
                         sel.same_day_unread, other_vehicle=sel.other_vehicle, customers_off=sel.customers_off,
-                        later=later, auto=carried & auto)
+                        later=later, auto=auto & {o.isn for o in (*deliver, *backlog)})
 
 
 def _day_stops(dd: _DispatchDay, draft: dp.Draft) -> list[dp.Stop]:
     """Точки развоза дня для черновика draft (его «не везём сегодня» и добавленные заказы)."""
-    return dp.build_stops(_active_orders(dd.deliver, dd.backlog, draft, dd.carried, dd.bundle.settings, dd.same_day,
-                                         day=dd.day),
+    return dp.build_stops(_active_orders(dd.deliver, dd.backlog, draft, dd.carried, dd.bundle.settings, dd.same_day),
                           lambda cid: evaluate.visit_coord(dd.snap, cid, 0, dd.bundle.geo_overrides,
-                                                           dd.bundle.driver_points), _order_age(dd.day, dd.bundle.settings))
+                                                           dd.bundle.driver_points),
+                          _order_age(dd.day, dd.bundle.settings, dd.auto))
 
 
 def _stop_info(dd: _DispatchDay) -> Callable[[dp.Stop], dict[str, Any]]:
     agents = dd.snap.agents
     windows = dd.bundle.windows_on(dd.day)   # окно, которое действует в этот день («Մինչև ժամը» дня — вместо постоянного)
     until = dd.bundle.day_until.get(dd.day, {})
-    age = _order_age(dd.day, dd.bundle.settings)
+    age = _order_age(dd.day, dd.bundle.settings, dd.auto)
 
     def info(s: dp.Stop) -> dict[str, Any]:
         code, name = dd.data.customers.get(s.customer_id) or (
@@ -1742,7 +1750,7 @@ def _stop_info(dd: _DispatchDay) -> Callable[[dp.Stop], dict[str, Any]]:
             # №98: недовезённое вчера, перенесённое само, — сколько рабочих дней ждёт (плашка «Երեկվանից» / «N օր»)
             'orders': [{'isn': o.isn, 'doc_num': o.doc_num, 'kg': round(o.kg), 'revenue': round(o.revenue),
                         'order_date': o.order_date.isoformat(),
-                        **({'carried_days': max(1, age(o))} if o.isn in dd.auto else {})} for o in s.orders],
+                        **({'carried_days': age(o)} if o.isn in dd.auto else {})} for o in s.orders],
             'window': windows[s.customer_id].to_json() if s.customer_id in windows else None,
             'vehicle_access': dd.bundle.vehicle_access[s.customer_id].to_json()
                               if s.customer_id in dd.bundle.vehicle_access else None,
@@ -1790,9 +1798,9 @@ def _dispatch_body(dd: _DispatchDay) -> dict[str, Any]:
                        'wear_source': dd.bundle.wear_source(code)})
     added = _backlog_in(draft, dd.carried)
     no_coords = [s for s in dd.stops if s.point is None]
-    active = _active_orders(dd.deliver, dd.backlog, draft, dd.carried, s, dd.same_day, day=dd.day)
+    active = _active_orders(dd.deliver, dd.backlog, draft, dd.carried, s, dd.same_day)
     excl = [o for o in dd.deliver if o.isn in excluded]
-    off = _agents_off(draft, s, dd.day)
+    off = dp.agents_off_of(draft, s)
     # №98: сегодня и дальше менеджеров снимает только правило настроек — список на странице только для сведения
     agents_rule = dd.day >= _same_day_now().date()
     # фильтр «Մենեջերներ»: менеджеры заказов развоза дня (заказы дня без «не везём сегодня», прошлых дней в развозе и
@@ -1828,10 +1836,11 @@ def _dispatch_body(dd: _DispatchDay) -> dict[str, Any]:
     rule = dp.fleet_rule_of(draft, s)
     place = dp.place_of(dd.data.customers, dd.data.addresses)
     differ: dict[str, bool] = {}
-    # прошедшему дню «Կիրառել կարգավորումները» не предлагаем — сервер его отклонит (PAST_DAY_SETTINGS); менеджеры дня —
-    # уже правило настроек (№98), выбор плана не действует — не повод
+    # прошедшему дню «Կիրառել կարգավորումները» не предлагаем — сервер его отклонит (PAST_DAY_SETTINGS); №98: правило
+    # менеджеров поменяли — в собранный день оно входит только так (с проверкой начатых и загруженных рейсов)
     if draft is not None and agents_rule:
-        differ = {k: v for k, v in (('fleet', not rule.same_as(dp.FleetRule.from_settings(s))),) if v}
+        differ = {k: v for k, v in (('agents', draft.agents_off != set(s['dispatch_agents_off'])),
+                                    ('fleet', not rule.same_as(dp.FleetRule.from_settings(s)))) if v}
 
     def order_json(o: dp.DispatchOrder) -> dict[str, Any]:
         code, name = dd.data.customers.get(o.customer_id) or ('', '')
@@ -1987,10 +1996,10 @@ SAME_DAY_MAX_ORDERS = 500   # заказов в одном запросе «Առ
 
 
 def _same_day_open(orders: Sequence[dp.DispatchOrder], draft: dp.Draft | None,
-                   settings: Mapping[str, Any], day: date) -> list[dp.DispatchOrder]:
-    """Новые заказы дня day, которые ещё решать: не взятые сегодня, не «не везём сегодня», не снятых менеджеров
-    (_agents_off: сегодня — правило настроек, №98)."""
-    off = _agents_off(draft, settings, day)
+                   settings: Mapping[str, Any]) -> list[dp.DispatchOrder]:
+    """Новые заказы дня, которые ещё решать: не взятые сегодня, не «не везём сегодня», не менеджеров, снятых фильтром
+    (dp.agents_off_of: у дня без плана — правило настроек, №69)."""
+    off = dp.agents_off_of(draft, settings)
     if draft is None:
         return [o for o in orders if o.agent_id not in off]
     return [o for o in orders if o.isn not in draft.same_day and o.isn not in draft.excluded and o.agent_id not in off]
@@ -2034,7 +2043,7 @@ def _same_day_json(dd: _DispatchDay) -> dict[str, Any]:
     draft = dd.draft
     now = _same_day_now()
     is_today = dd.day == now.date()
-    open_ = _same_day_open(dd.same_day, draft, dd.bundle.settings, dd.day) if is_today else []
+    open_ = _same_day_open(dd.same_day, draft, dd.bundle.settings) if is_today else []
     taken = [o for o in dd.same_day if draft is not None and o.isn in draft.same_day]
     trucks: dict[int, set[str]] = {}
     for t in (draft.trips if draft is not None else ()):
@@ -2079,7 +2088,7 @@ def _same_day_pick(state: RoutesState, bundle: Bundle, dd: _DispatchDay, raw: An
             or not all(isinstance(x, str) and dp.ISN_RE.match(x.upper()) for x in raw):
         raise dp.DispatchError('Պատվերների ցուցակը չընդունվեց — թարմացրեք էջը')
     isns = {x.upper() for x in raw}
-    picked = [o for o in _same_day_open(dd.same_day, dd.draft, bundle.settings, dd.day) if o.isn in isns]
+    picked = [o for o in _same_day_open(dd.same_day, dd.draft, bundle.settings) if o.isn in isns]
     if len(picked) != len(isns):
         raise dp.DispatchError('Պատվերներից մեկն այլևս նոր չէ կամ արդեն վերցված է — թարմացրեք էջը')
     def load(take: Collection[str]) -> _DispatchDay:
@@ -2143,6 +2152,8 @@ def _approve_edit(dd: _DispatchDay, payload: Mapping[str, Any]) -> dp.Draft:
     api_dispatch_edit последним шагом, dp.send): прошедший день — DispatchError."""
     if dd.day < _same_day_now().date():
         raise dp.DispatchError(PAST_DAY_APPROVE)
+    if payload.get('action') in ('approve', 'send'):   # №98: водителям — и недовезённое вчера, вошедшее в план
+        dd.draft.auto_carried = _auto_snapshot(dd)
     if payload.get('action') == 'send':
         if dd.draft.released is None:
             raise dp.DispatchError('Նախ հաստատեք օրվա պլանը')
@@ -2196,6 +2207,7 @@ def _apply_settings_edit(state: RoutesState, bundle: Bundle, dd: _DispatchDay) -
     if new.built_orders is not None:
         gone = {o.isn for o in dd.deliver} - {o.isn for o in after.deliver}
         new.built_orders = {k: v for k, v in new.built_orders.items() if k not in gone}
+    new.auto_carried = _auto_snapshot(after)   # №98: план — с недовезённым вчера, с которым его сделали
     return new
 
 
@@ -2731,7 +2743,7 @@ def api_dispatch_status() -> Any:
     rule = dp.fleet_rule_of(draft, bundle.settings)
     later = _later_scan(state, day, bundle.settings['workdays'], dp.holidays_of(bundle.settings))
     due = _later_due(later, day)
-    auto = _auto_carried(state, day, bundle.settings)   # №98: как _load_day
+    auto = _day_auto(state, day, bundle.settings, draft)   # №98: как _load_day
     _, _, data, sel = _day_orders(state, bundle, day, False, rule, later,
                                   _held(state, day, bundle.settings, draft, {*due, *auto}), auto)
     carried = _carried(state, day, bundle.settings['workdays'], sel.backlog, dp.holidays_of(bundle.settings), due, auto)
@@ -2747,8 +2759,8 @@ def api_dispatch_status() -> Any:
         if sd is not None:
             today = dp.same_day_candidates(sd.orders, day, rule, dp.place_of(sd.customers, sd.addresses))
             if day == _same_day_now().date():
-                same = {'same_day': _same_day_summary(_same_day_open(today, draft, bundle.settings, day))}
-    active = _active_orders(sel.main, sel.backlog, draft, carried, bundle.settings, today, day=day)
+                same = {'same_day': _same_day_summary(_same_day_open(today, draft, bundle.settings))}
+    active = _active_orders(sel.main, sel.backlog, draft, carried, bundle.settings, today)
     return jsonify({'success': True, 'day': day.isoformat(), 'rev': rev,
                     'orders': {'count': len(active), 'kg': round(sum(o.kg for o in active)),
                                'revenue': round(sum(o.revenue for o in active))},
@@ -2818,7 +2830,8 @@ def api_dispatch_build() -> Any:
     """«Собрать рейсы»: {"date", "trucks": [коды машин дня], "agents_off"?: [agent_id]}. Закреплённые рейсы и
     исключённые заказы прежнего черновика сохраняются, остальное раскладывается заново; agents_off — фильтр
     «Մենեջերներ» (чьи заказы не везём), без него — фильтр прежнего черновика; №98: только прошедшему дню — сегодня и дальше
-    снимает только правило настроек (поле проверяется, но не принимается). Машин в рейсах — не больше вышедших водителей
+    план собирается по правилу настроек и пишет его в план (поле проверяется, но не принимается); в план пишется и
+    недовезённое вчера (Draft.auto_carried). Машин в рейсах — не больше вышедших водителей
     (№77, dispatch.build_crewed): отмеченные машины без водителя сегодня — в unmanned."""
     payload, day, error = _dispatch_request()
     if error is not None:
@@ -2846,15 +2859,17 @@ def api_dispatch_build() -> Any:
     base = dd.draft if dd.draft is not None else dp.Draft(agents_off=dp.agents_off_of(None, bundle.settings),
                                                           fleet=dp.FleetRule.from_settings(bundle.settings).to_json())
     cargo = dp.loaded_cargo(base, dd.stops)   # №78: что уже в машинах — до смены фильтра менеджеров
-    if 'agents_off' in payload:
-        # фильтр «Մենեջերներ» до первой сборки живёт на странице — приходит со сборкой; точки дня — по нему. №98: сегодня и
-        # дальше менеджеров снимает только правило настроек — выбор страницы не принимается и не сохраняется
-        off = dp.parse_agents(payload['agents_off'])
-        if off is None:
-            return _bad_request({'agents_off': 'ожидался список менеджеров'})
-        if off != base.agents_off and day < _same_day_now().date():
-            base.agents_off = off
-            dd = _load_day(state, bundle, day, draft=base, rev=dd.rev)
+    off = dp.parse_agents(payload['agents_off']) if 'agents_off' in payload else None
+    if 'agents_off' in payload and off is None:
+        return _bad_request({'agents_off': 'ожидался список менеджеров'})
+    if day >= _same_day_now().date():
+        # №98: сегодня и дальше план собирается по правилу менеджеров настроек — оно и пишется в план; выбор страницы не
+        # принимается
+        off = set(bundle.settings['dispatch_agents_off'])
+    if off is not None and off != base.agents_off:
+        # точки дня — по фильтру: прошедшему дню — выбор страницы (приходит со сборкой), сегодня и дальше — правило
+        base.agents_off = off
+        dd = _load_day(state, bundle, day, draft=base, rev=dd.rev)
     started = time.perf_counter()
     # первая сборка дня: перенесённые сюда заказы прошлого дня — сразу в развозе; машин — не больше вышедших водителей (№77)
     timing: dict[str, Any] = {}
@@ -2865,6 +2880,7 @@ def api_dispatch_build() -> Any:
     # отметка сборки: все заказы дня (и исключённые — они не «новые») + добавленные заказы прошлых дней
     inside = _backlog_in(draft, dd.carried)
     draft.built_orders = dp.order_marks([*dd.deliver, *(o for o in dd.backlog if o.isn in inside)])
+    draft.auto_carried = _auto_snapshot(dd)   # №98: недовезённое вчера, с которым собран план
     draft.overtime = dp.runs_late(dd.ctx, dd.stops, draft)
     _capture_prediction(dd, draft)
     # сборка идёт секунды: черновик, изменённый тем временем в другой вкладке (утверждён — №80: выпущен на терминалы),
@@ -2939,7 +2955,9 @@ def api_dispatch_compare() -> Any:
         agents_off=dp.agents_off_of(None, bundle.settings), fleet=dp.FleetRule.from_settings(bundle.settings).to_json())
     if base.approved is not None:
         dp.unapprove(base)
-    if off is not None and off != base.agents_off and day < _same_day_now().date():   # как у сборки (№98)
+    if day >= _same_day_now().date():   # как у сборки (№98): сегодня и дальше — правило менеджеров настроек
+        off = set(bundle.settings['dispatch_agents_off'])
+    if off is not None and off != base.agents_off:   # точки дня — по фильтру, как у сборки
         base.agents_off = off
         dd = _load_day(state, bundle, day, draft=base, rev=dd.rev)
     if not _COMPARE_SLOTS.acquire(blocking=False):
@@ -3882,7 +3900,7 @@ def _missing_coordinates(state, snap, bundle):
                 draft = None
             selected = dp.to_deliver([o for o in data.orders if lo <= o.order_date <= hi], day, lo,
                                      dp.fleet_rule_of(draft, bundle.settings), place)
-            agents_off = _agents_off(draft, bundle.settings, day)
+            agents_off = dp.agents_off_of(draft, bundle.settings)
             ids.update(o.customer_id for o in selected.main if o.agent_id not in agents_off)
         day += timedelta(days=1)
     rows = []

@@ -1609,69 +1609,94 @@ def _polish_orders(trips: list[Trip], stops: Sequence[_Stop], d: Matrix, m: Matr
 
 def _prioritize(trips: list[Trip], stops: Sequence[_Stop], d: Matrix, m: Matrix, trucks: Sequence[FleetTruck],
                 tn: TruckNorms, used: Mapping[str, float] | None, fixed: Sequence[tuple[str, Sequence[int], float]] | None,
-                fed: Collection[str], load_cap: float | None) -> list[Trip]:
-    """Старшие заказы вне рейсов — вместо младших в рейсах (№98, _Stop.priority: сколько рабочих дней ждёт заказ). Для
-    каждого ждущего старшего заказа, от самого старшего: в рейсе (не закреплённом, не за пределами дня) младший заказ одной
-    поездки заменяется им — на место, где рейс короче всего; рейс проверяется как у сборки: допуск машин и центр, отдельный
-    рейс (№78), предел загрузки (_load_limit), окна и конец дня всей машины (_days, _late), закреплённые рейсы выезжают не
-    позже. Из подходящих — замена самого младшего, при равных — с меньшим приростом км. Снятый младший — вне рейсов
-    (причина — время). Решатель PyVRP так не умеет: огромный приз необязательного заказа (vrp.PRIZE) сильнее штрафа за
-    опоздание — поиск уходит в недопустимые решения, а принимаются только допустимые. Ждущих старших нет — рейсы те же."""
+                fed: Collection[str], load_cap: float | None) -> tuple[list[Trip], set[int]]:
+    """Старшие заказы вне рейсов — вместо младших в рейсах (№98, _Stop.priority: сколько рабочих дней ждёт заказ):
+    (рейсы, уступившие — младшие, которые остались вне рейсов). Ждущие старшие — по очереди от самого старшего. Варианты:
+    встать в рейс (не закреплённый, не за пределами дня) без снятий или новым рейсом машины в конце её дня; снять в рейсе
+    младшие заказы одной поездки — один или несколько, от самых младших и тяжёлых, пока старший не поместится. Место в
+    рейсе — где рейс короче всего. Каждый вариант проверяется как у сборки: допуск машин и центр, отдельный рейс (№78),
+    предел загрузки (_load_limit), окна и конец дня всей машины (_days, _late), закреплённые рейсы выезжают не позже. Из
+    подходящих — без снятий, затем где снятые младше, затем их меньше, затем прирост км меньше. Снятый, который сам ждёт
+    (приоритет > 0), снова в очереди — он младше поставленного, поэтому очередь кончается. Решатель PyVRP так не умеет:
+    огромный приз необязательного заказа (vrp.PRIZE) сильнее штрафа за опоздание — поиск уходит в недопустимые решения, а
+    принимаются только допустимые. Ждущих старших нет — рейсы те же."""
     placed = Counter(i for t in trips for i in t.items)
-    waiting = sorted((i for i, s in enumerate(stops) if s.priority > 0 and i not in placed),
-                     key=lambda i: (-stops[i].priority, i))
-    if not waiting or not trips:
-        return trips
+    queue = sorted((i for i, s in enumerate(stops) if s.priority > 0 and i not in placed),
+                   key=lambda i: (-stops[i].priority, i))
+    if not queue:
+        return trips, set()
     by_code = {t.car_code: t for t in trucks}
     start0 = {c: float((used or {}).get(c, 0.0)) for c in by_code}
     pinned = {(code, tuple(idx)) for code, idx, _ in (fixed or ())}
     out = list(trips)
-    for w in waiting:
+    displaced: set[int] = set()
+    for _ in range(4 * len(stops) + 4):   # предел — защита: каждый снятый младше поставленного, очередь конечна
+        if not queue:
+            break
+        w = queue.pop(0)
         vs = _shared(out, stops, tn)
         ends: dict[str, float] = {}
         base = _days(out, vs, m, start0, tn, fed, ends)
-        best: tuple[tuple[int, float], int, list[int], list[tuple[int, float, float, float]]] | None = None
-        for k, t in enumerate(out):
-            truck = by_code.get(t.truck)
-            rows0 = base.get(t.truck)
-            if truck is None or t.extra or (t.truck, t.items) in pinned or rows0 is None \
-                    or _late(rows0, tn, ends.get(t.truck, 0.0)):
+        # (ключ, рейс — номер в out или None: новый рейс, машина, порядок, снятые, строки дня машины: (номер в out, …))
+        best: tuple[tuple[int, int, float], int | None, str, list[int], list[int], list[tuple[int, float, float, float]]]             | None = None
+        for code in sorted(by_code):
+            truck = by_code[code]
+            mine = [n for n, x in enumerate(out) if x.truck == code]
+            rows0 = base.get(code, [] if not mine else None)
+            if rows0 is None or _late(rows0, tn, ends.get(code, 0.0)):
                 continue
-            mine = [n for n, x in enumerate(out) if x.truck == t.truck]
             dep0 = {n: dep for n, dep, _, _ in rows0}
-            for u in t.items:
-                if stops[u].priority >= stops[w].priority or placed[u] != 1:
+            # варианты: (рейс или None — новый, снятые, порядок без снятых)
+            options: list[tuple[int | None, list[int], list[int]]] = [(None, [], [])]
+            for k in mine:
+                t = out[k]
+                if t.extra or (t.truck, t.items) in pinned:
                     continue
-                rest = [i for i in t.items if i != u]
+                younger = sorted((u for u in t.items if stops[u].priority < stops[w].priority and placed[u] == 1),
+                                 key=lambda u: (stops[u].priority, -vs[u].kg, u))
+                options += [(k, [], list(t.items))] + [(k, [u], [i for i in t.items if i != u]) for u in younger]                     + [(k, younger[:n], [i for i in t.items if i not in younger[:n]]) for n in range(2, len(younger) + 1)]
+            for k, gone, rest in options:
                 for pos in range(len(rest) + 1):
                     seq = [*rest[:pos], w, *rest[pos:]]
-                    if not _eligible(seq, vs, [truck]) or (len(seq) > 1 and any(vs[i].solo for i in seq)) \
-                            or math.fsum(vs[i].kg for i in seq) > _load_limit(seq, vs, truck, trucks, load_cap) + _EPS:
+                    if not _eligible(seq, vs, [truck]) or (len(seq) > 1 and any(vs[i].solo for i in seq))                             or math.fsum(vs[i].kg for i in seq) > _load_limit(seq, vs, truck, trucks, load_cap) + _EPS:
                         continue
-                    key = (stops[u].priority, _closed(seq, vs, d) - _closed(list(t.items), vs, d))
+                    was = _closed(list(out[k].items), vs, d) if k is not None else 0.0
+                    key = (max((stops[u].priority for u in gone), default=-1), len(gone), _closed(seq, vs, d) - was)
                     if best is not None and key >= best[0]:
                         continue
-                    day = [replace(out[n], items=tuple(seq)) if n == k else out[n] for n in mine]
+                    if k is None:
+                        day = [*(out[n] for n in mine), Trip(code, 1, vs[w].kg, vs[w].revenue, 0.0, 0.0,
+                                                             truck.capacity_kg, 0.0, False, (w,))]
+                        where = [*mine, len(out)]
+                    else:
+                        day = [replace(out[n], items=tuple(seq)) if n == k else out[n] for n in mine]
+                        where = mine
                     got: dict[str, float] = {}
-                    rows = _days(day, vs, m, {t.truck: start0[t.truck]}, tn, fed, got).get(t.truck)
-                    if rows is None or _late(rows, tn, got.get(t.truck, 0.0)) or any(
-                            (out[mine[j]].truck, out[mine[j]].items) in pinned and dep > dep0[mine[j]] + _EPS
-                            for j, dep, _, _ in rows):
+                    rows = _days(day, vs, m, {code: start0[code]}, tn, fed, got).get(code)
+                    if rows is None or _late(rows, tn, got.get(code, 0.0)) or any(
+                            (out[where[j]].truck, out[where[j]].items) in pinned and dep > dep0[where[j]] + _EPS
+                            for j, dep, _, _ in rows if where[j] < len(out)):
                         continue
-                    best = (key, k, seq, [(mine[j], *r) for j, *r in rows])
+                    best = (key, k, code, seq, gone, [(where[j], *r) for j, *r in rows])
         if best is None:
             continue
-        _, k, seq, rows = best
-        t, truck = out[k], by_code[out[k].truck]
+        _, k, code, seq, gone, rows = best
+        truck = by_code[code]
         cost = _sequence_cost(seq, vs, d, truck)
-        placed.subtract(t.items)
-        out[k] = Trip(t.truck, len(seq), math.fsum(vs[i].kg for i in seq), math.fsum(vs[i].revenue for i in seq),
-                      _closed(seq, vs, d), t.minutes, truck.capacity_kg, cost.liters, False, tuple(seq), cost.wear_amd,
-                      cost.payload_tonne_km)
+        trip = Trip(code, len(seq), math.fsum(vs[i].kg for i in seq), math.fsum(vs[i].revenue for i in seq),
+                    _closed(seq, vs, d), 0.0, truck.capacity_kg, cost.liters, False, tuple(seq), cost.wear_amd,
+                    cost.payload_tonne_km)
+        if k is None:
+            out.append(trip)
+        else:
+            placed.subtract(out[k].items)
+            out[k] = trip
         placed.update(seq)
         for n, _, minutes, _ in rows:   # выезд рейсов машины после замены — другой: минуты по её дню
             out[n] = replace(out[n], minutes=minutes)
-    return out
+        displaced.update(gone)
+        queue = sorted({*queue, *(u for u in gone if stops[u].priority > 0)}, key=lambda i: (-stops[i].priority, i))
+    return out, {u for u in displaced if placed[u] <= 0}
 
 
 def _better(new: Sequence[Trip], old: Sequence[Trip], tn: TruckNorms | None = None,
@@ -1911,7 +1936,7 @@ def route_day(points: Sequence[Point], kgs: Sequence[float], revenues: Sequence[
     снимается целиком (полдоставки не бывает), и рейсы собираются заново без него — его время
     достаётся другим заказам. windows[i] — окно приёма заказа i, center[i] — он в малом центре
     (только план развоза); allowed_trucks[i] — допустимые коды машин, None — без ограничения, пусто — никто.
-    reasons — причины неназначенных заказов: window | center | vehicle | time; busy, departs, fixed
+    reasons — причины неназначенных заказов: window | center | vehicle | time | yield (№98: уступил старшему); busy, departs, fixed
     (номера заказов закреплённых рейсов — в points) — как у plan_trips. Сборка плана развоза (overflow=False, без busy
     и departs): balance — выровнять загрузку рейсов (_balance, ответ №44); solver — рейсы решателем PyVRP поверх
     сборки (_solver, ответ №45; iterations — итераций поиска, меньше — быстрая проба набора машин, №77), берутся, если
@@ -1992,7 +2017,8 @@ def route_day(points: Sequence[Point], kgs: Sequence[float], revenues: Sequence[
                 best = alt
         trips = best
     if priority is not None and any(priority):   # №98: старшие заказы — в рейсы вместо младших
-        trips = _prioritize(trips, stops, d, m, trucks, tn, used, fixed, fed, load_cap)
+        trips, gave = _prioritize(trips, stops, d, m, trucks, tn, used, fixed, fed, load_cap)
+        why.update({i: 'yield' for i in gave})   # уступил место заказу, который ждёт дольше
     if reasons is not None:
         placed = {i for t in trips for i in t.items}
         reasons.update({i: why.get(i, 'time') for i in range(len(stops)) if i not in placed})

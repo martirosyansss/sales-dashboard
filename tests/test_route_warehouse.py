@@ -469,10 +469,8 @@ def test_agents_filter_that_drops_loaded_stop_needs_confirmation(client, monkeyp
 
 def test_apply_settings_and_same_day_paths_check_loaded_cargo(client, monkeypatch):
     state, d, tr = _loaded_day(client, monkeypatch)
-    # настройки дня: клиенты загруженного рейса — «машины не везут» (№74) — «Կիրառել կարգավորումները» снимет его точки
-    # (менеджеров правила, №98, день берёт и без «Կիրառել»)
-    off = sorted({s['customer_id'] for s in tr['stops']})
-    state.store.save(st.Changes({**state.store.load().settings, 'dispatch_customers_off': off}, False, None, (), ()),
+    # настройки дня: менеджеры 1 и 2 сняты правилом — «Կիրառել կարգավորումները» снимет точки загруженного рейса
+    state.store.save(st.Changes({**state.store.load().settings, 'dispatch_agents_off': [1, 2]}, False, None, (), ()),
                      'qa')
     before = state.store.load_dispatch(DAY)
     r = _edit(client, d, action='apply_settings')
@@ -527,7 +525,14 @@ def test_build_with_new_manager_filter_dropping_loaded_stop_needs_confirmation(c
     d = _edit(client, d, action='unapprove').get_json()
     before = state.store.load_dispatch(DAY)
     body = {'date': DAY, 'trucks': ['CAR1', 'CAR2'], 'agents_off': [1, 2]}
-    _past_day(monkeypatch)
+    # №98: сегодня сборка пишет в план правило менеджеров настроек — снимет точки загруженного рейса: тоже с вопросом
+    rule = state.store.load().settings
+    state.store.save(st.Changes({**rule, 'dispatch_agents_off': [1, 2]}, False, None, (), ()), 'qa')
+    r = client.post('/api/routes/dispatch/build', json={'date': DAY, 'trucks': ['CAR1', 'CAR2']})
+    assert r.status_code == 400 and r.get_json()['loaded_confirm'] is True
+    assert state.store.load_dispatch(DAY) == before
+    state.store.save(st.Changes({**rule, 'dispatch_agents_off': []}, False, None, (), ()), 'qa')
+    _past_day(monkeypatch)   # прошедший день — фильтр страницы, как раньше
     r = client.post('/api/routes/dispatch/build', json=body)
     assert r.status_code == 400 and r.get_json()['loaded_confirm'] is True
     assert state.store.load_dispatch(DAY) == before

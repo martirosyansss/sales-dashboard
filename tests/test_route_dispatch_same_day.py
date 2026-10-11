@@ -268,10 +268,12 @@ def test_page_lists_new_orders_of_today_with_time_and_manager_filter(client, mon
     assert rows[999]['no_coords'] is True and rows[999]['created'] is None and rows[104]['agent_code'] == 'A002'
     assert rows[104]['created'] == '30.09 18:05'                                # заведён накануне — с датой
     assert 103 not in _plan_stops(d) and d['orders']['count'] == 3                # в плане их нет, пока логист не взял
-    # правило настроек (№98: сегодня менеджеров снимает только оно): заказы менеджера 2 — ни в развозе, ни в новых заказах
+    # правило настроек (№98: сегодня менеджеров снимает только оно — сборка пишет его в план): заказы менеджера 2 — ни в
+    # развозе, ни в новых заказах
     r = client.post('/api/routes/settings', json={'settings': {'dispatch_agents_off': [2]}})
     assert r.status_code == 200, r.get_json()
-    d = client.get('/api/routes/dispatch?date=' + DAY).get_json()
+    client.post('/api/routes/dispatch/reset', json={'date': DAY})
+    d = _build(client)
     assert {o['customer_id'] for o in d['same_day']['orders']} == {103, 999}
     s = client.get('/api/routes/dispatch/status?date=' + DAY).get_json()
     assert {k: s['same_day'][k] for k in ('count', 'kg', 'revenue')} == {'count': 2, 'kg': 290, 'revenue': 17000}

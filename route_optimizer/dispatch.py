@@ -85,11 +85,14 @@
   кроме закреплённых логистом, загруженных и уже грузящихся — у них только пометка window_miss; не успеть и так —
   window_miss и подсказка машины, которая успела бы (_until_hint).
 - Все заказы дня (ответ владельца №98, «как у больших компаний», вид экрана прежний): сегодня и дальше по Еревану
-  менеджеров снимает только правило настроек dispatch_agents_off (day_agents_off) — выбор дня (Draft.agents_off) не действует
-  и правкой не меняется (views), прошедший день — как был. Недовезённое вчера (auto_carried): заказ отправленного плана
-  прошлого рабочего дня, чью точку терминал не закрыл, сам входит в развоз следующего — как «Վաղը» (views._carried,
-  courier.routes_link), на странице с плашкой «Երեկվանից»; не довезли и там — дальше (окно ERP — BACKLOG_MAX_WORKDAYS).
-  Не всё помещается — сборка оставляет вне рейсов сначала новые заказы (Stop.priority — late_days, fleet.route_day).
+  менеджеров снимает только правило настроек dispatch_agents_off — сборка и «Կիրառել կարգավորումները» пишут его в план
+  (Draft.agents_off — правило, с которым план сделан), правка «agents» не принимается (views); правило поменяли — страница
+  предлагает «Կիրառել» (как №74), само оно в собранный день не входит. Прошедший день — как был. Недовезённое вчера
+  (auto_carried): заказ отправленного плана прошлого рабочего дня, не довезённый по терминалу, сам входит в развоз
+  следующего — как «Վաղը» (views._carried); перенесённое пишется в план (Draft.auto_carried — снимок: сборка, «Կիրառել»,
+  утверждение, отправка), терминал берёт его только из отправленного плана (courier.routes_link, №81), следующий день по
+  снимку продолжает цепочку (окно ERP — BACKLOG_MAX_WORKDAYS). На странице — плашка «Երեկվանից». Не всё помещается —
+  сборка оставляет вне рейсов сначала новые заказы (Stop.priority, fleet._prioritize); уступивший — Draft.yielded.
 - Запас до срока (ответ владельца №93, настройка until_buffer_min): у окна с концом сборка, перестановка под срок и
   подсказка машины целятся в конец окна минус запас (deadline_windows: DayContext.windows — с запасом, until_real —
   настоящие концы). Не вышло с запасом — по настоящему сроку: сборка пересобирает с ним магазины, ушедшие в no_window
@@ -225,13 +228,6 @@ def agents_off_of(draft: Draft | None, settings: Mapping[str, Any]) -> set[int]:
     return set(draft.agents_off) if draft is not None else set(settings.get('dispatch_agents_off') or ())
 
 
-def day_agents_off(draft: Draft | None, settings: Mapping[str, Any], day: date, today: date) -> set[int]:
-    """Менеджеры, чьи заказы дня day не везём (№98, «все заказы дня»): сегодня и дальше (today — дата по Еревану) — только
-    правило настроек dispatch_agents_off, выбор дня (Draft.agents_off) не действует (в черновике остаётся — история);
-    прошедший день — как был (agents_off_of): история плана не меняется. Одно правило для страницы и терминалов."""
-    return agents_off_of(None if day >= today else draft, settings)
-
-
 def backlog_delivered(o: DispatchOrder, inside: Collection[str], added: Collection[str], off: Collection[int]) -> bool:
     """Заказ прошлых дней везём сегодня: он в развозе дня (inside — добавлен или перенесён сюда, views._backlog_in) и его
     менеджер не снят фильтром «Մենեջերներ» (off) — или логист сам взял его «Տանել այսօր» (added; владелец 08.10: явный
@@ -316,37 +312,48 @@ STOP_CLOSED = frozenset({'full', 'partial', 'refused', 'covered'})
 
 
 def auto_carried(days: Sequence[tuple[Draft | None, Mapping[str, Any], bool]]) -> set[str]:
-    """Недовезённое вчера (№98, B): заказы, которые сами входят в развоз следующего рабочего дня, как «Վաղը» (views._carried,
-    courier.routes_link). days — дни с прошлого рабочего по вчера (и нерабочие между ними): (отправленный водителям план
-    дня — Draft.for_drivers, факт терминалов дня — live.LiveFacts.fleet, день кончился — раньше сегодня по Еревану).
+    """Недовезённое вчера (№98, B): заказы, которые сами входят в развоз следующего рабочего дня, как «Վաղը» (views._carried;
+    терминал берёт их только из отправленного плана — Draft.auto_carried). days — дни с прошлого рабочего по вчера (и
+    нерабочие между ними): (отправленный водителям план дня — Draft.for_drivers, факт терминалов дня — live.LiveFacts.fleet,
+    день кончился — раньше сегодня по Еревану).
 
-    Заказ переносится, если его точка O:<fISN> была на терминале машины (её туда отдал отправленный план — pick_orders: с
-    фильтрами, исключениями и переносами того дня, поэтому цепочка «не довезли и там» идёт сама) и водитель её не закрыл
-    (STOP_CLOSED), день машины кончился (день прошёл или она закрыла день — closed_at), план выпущен (№80), магазин в его
-    рейсах и логист того дня заказ не убирал: «Այսօր չենք տանում» (excluded), «Վաղը» (deferred — его и так берёт
-    следующий день), «Երբ տանել» (later), «Չտանել» (dismissed), убран перенесённый (dropped). Закрыта точка заказа хоть в
-    одном из дней (довезли в выходной) — не переносится. Нет точки на терминале (терминала нет, водитель не обновлял день) —
-    не переносится: довезли ли — неизвестно, заказ виден в «Նախորդ օրերից», решит логист. Отгружен ли заказ (накладная) и
-    не старше ли он окна ERP (BACKLOG_MAX_WORKDAYS) — сверяет вызывающий: перенос — только среди «не отгружены с прошлых
-    дней» дня."""
+    Заказ — в развозе отправленного плана (выпущен, №80), не довезён и логист того дня его не убирал: «Այսօր չենք տանում»
+    (excluded), «Վաղը» (deferred — его и так берёт следующий день), «Երբ տանել» (later), «Չտանել» (dismissed), убран
+    перенесённый (dropped). Закрыта точка заказа водителем (STOP_CLOSED) хоть в одном из дней (довезли в выходной) — не
+    переносится. В развозе плана:
+    - перенесённый в него сам (снимок Draft.auto_carried — следующий шаг цепочки): магазина нет в рейсах (не поместился) —
+      не довезён; есть — когда день его машин кончился (день прошёл или машина закрыла день — closed_at), точки нет на
+      терминале — тоже не довезён (он был в развозе плана);
+    - прочие (первый шаг — снимка нет): только по терминалу — точка O:<fISN> была у машины (её туда отдал отправленный
+      план, pick_orders), день машины кончился, водитель её не закрыл, магазин в рейсах. Точки нет (терминала нет, водитель
+      не обновлял день) — не переносится: довезли ли — неизвестно, заказ виден в «Նախորդ օրերից», решит логист.
+    Отгружен ли заказ (накладная — офис уже решил, такой не переносится) и не старше ли он окна ERP (BACKLOG_MAX_WORKDAYS) —
+    сверяет вызывающий: перенос — только среди заказов дня, ещё не отгруженных."""
     open_: set[str] = set()
     closed: set[str] = set()
     for plan, fleet, over in days:
-        sent = plan is not None and plan.released is not None
-        customers = {c for t in plan.trips for c in t.stops} if sent else set()
-        kept = plan.excluded | plan.deferred | plan.dismissed | plan.dropped | set(plan.later) if sent else set()
-        for row in fleet.values():
-            if not isinstance(row, Mapping):
-                continue
-            done = over or bool(row.get('closed_at'))
+        rows = {car: row for car, row in fleet.items() if isinstance(row, Mapping)}
+        points: list[tuple[str, str, Any]] = []   # открытые точки O: — (fISN, машина, клиент)
+        for car, row in rows.items():
             for s in row.get('stops') or ():
                 sid = s.get('stop_id') if isinstance(s, Mapping) else None
                 if not isinstance(sid, str) or not sid.startswith('O:') or not ISN_RE.match(sid[2:]):
                     continue
                 if s.get('status') in STOP_CLOSED:
                     closed.add(sid[2:])
-                elif sent and done and s.get('customer_id') in customers and sid[2:] not in kept:
-                    open_.add(sid[2:])
+                else:
+                    points.append((sid[2:], car, s.get('customer_id')))
+        if plan is None or plan.released is None:
+            continue
+        trucks: dict[int, set[str]] = {}
+        for t in plan.trips:
+            for c in t.stops:
+                trucks.setdefault(c, set()).add(t.truck)
+        kept = plan.excluded | plan.deferred | plan.dismissed | plan.dropped | set(plan.later)
+        shut = {car for car, row in rows.items() if row.get('closed_at')}   # машины, закрывшие день
+        open_ |= {isn for isn, car, cid in points if (over or car in shut) and cid in trucks and isn not in kept}
+        open_ |= {isn for isn, cid in plan.auto_carried.items()
+                  if isn not in kept and (over or trucks.get(cid, set()) <= shut)}
     return open_ - closed
 
 
@@ -846,6 +853,13 @@ class Draft:
     # «Երբ տանել» (владелец 08.10): заказы магазина, который сегодня не принимает, — fISN → (день доставки, дата заказа);
     # тот день сам берёт их в развоз как перенесённые (later_carried). Дата заказа — чтобы тот день прочёл их из ERP
     later: dict[str, tuple[date, date]] = field(default_factory=dict)
+    # недовезённое вчера (№98, auto_carried), перенесённое в этот день сам, — снимок (fISN → клиент): пишут сборка,
+    # «Կիրառել կարգավորումները», утверждение и отправка (views); терминал берёт его только из отправленного плана, следующий
+    # день по нему продолжает цепочку
+    auto_carried: dict[str, int] = field(default_factory=dict)
+    # клиенты сборки, уступившие место заказам, которые ждут дольше (№98, fleet._prioritize): они и в no_room — причина на
+    # странице «Զիջեց ավելի հին պատվերին»
+    yielded: set[int] = field(default_factory=set)
 
     def to_json(self) -> dict[str, Any]:
         built = None if self.built_orders is None else {
@@ -874,7 +888,9 @@ class Draft:
                 **({'solo_spare': dict(self.solo_spare)} if self.solo_spare is not None else {}),
                 **({'dismissed': sorted(self.dismissed)} if self.dismissed else {}),
                 **({'later': {k: [to.isoformat(), od.isoformat()] for k, (to, od) in sorted(self.later.items())}}
-                   if self.later else {})}
+                   if self.later else {}),
+                **({'auto_carried': dict(sorted(self.auto_carried.items()))} if self.auto_carried else {}),
+                **({'yielded': sorted(self.yielded)} if self.yielded else {})}
 
     @classmethod
     def from_json(cls, raw: Any, *, snapshot: bool = False) -> Draft:
@@ -925,7 +941,8 @@ class Draft:
                    absent=sorted({x for x in (raw.get('absent') or [])[:MAX_TRIPS] if isinstance(x, str) and x})
                    if isinstance(raw.get('absent'), list) else [],
                    solo_spare=raw.get('solo_spare') if isinstance(raw.get('solo_spare'), dict) else None,
-                   dismissed=isns('dismissed'), later=_later(raw.get('later')))
+                   dismissed=isns('dismissed'), later=_later(raw.get('later')), auto_carried=_auto(raw.get('auto_carried')),
+                   yielded=cids('yielded'))
         if released is not None and not snapshot:
             draft.sent = _sent(raw.get('sent'))
             if draft.sent is None:   # выпущен до №81 (или снимок битый): водители видят сам черновик — он и отправлен
@@ -975,6 +992,13 @@ def _later(raw: Any) -> dict[str, tuple[date, date]]:
         except ValueError:
             continue
     return out
+
+
+def _auto(raw: Any) -> dict[str, int]:
+    """Снимок недовезённого вчера из черновика (№98): fISN → клиент; битые строки — мимо."""
+    if not isinstance(raw, dict):
+        return {}
+    return {k: v for k, v in list(raw.items())[:MAX_BUILT_ORDERS] if isinstance(k, str) and ISN_RE.match(k) and _is_int(v)}
 
 
 def _approved(raw: Any) -> dict[str, Any] | None:
@@ -1389,7 +1413,7 @@ def build(ctx: DayContext, stops: Sequence[Stop], old: Draft | None, trucks: Seq
     draft = Draft(trucks=sorted(codes), excluded=set(old.excluded), added=set(old.added), next_id=old.next_id,
                   built_at=now, deferred=set(old.deferred), dropped=set(old.dropped), agents_off=set(old.agents_off),
                   same_day=set(old.same_day), same_day_trips=set(old.same_day_trips), dismissed=set(old.dismissed),
-                  later=dict(old.later),
+                  later=dict(old.later), auto_carried=dict(old.auto_carried),
                   released=dict(old.released) if old.released is not None else None,   # №80: пересборка не прячет день
                   sent=old.sent,   # №81: пересборка — правка: водители видят прежний снимок до отправки
                   fleet=dict(old.fleet) if old.fleet is not None else None)
@@ -1436,6 +1460,8 @@ def build(ctx: DayContext, stops: Sequence[Stop], old: Draft | None, trucks: Seq
             if s.customer_id not in placed:
                 {'window': draft.no_window, 'center': draft.no_center, 'vehicle': draft.no_vehicle}.get(
                     reasons.get(i), draft.no_room).add(s.customer_id)
+                if reasons.get(i) == 'yield':   # №98: уступил место заказу, который ждёт дольше
+                    draft.yielded.add(s.customer_id)
     # №93: с запасом до срока магазин не поместился, а к настоящему сроку машина успела бы — сборка заново с ним
     tight = {c for c in draft.no_window & set(ctx.until_real) if _reachable(ctx, routable, c, sorted(codes))}
     if tight:
@@ -2968,7 +2994,8 @@ def _drivers_key(plan: Draft) -> tuple[dict[str, list[int]], tuple[Any, ...]]:
         order.extend(c for c in t.stops if c not in order)
     trucks = {c: v for c, v in trucks.items() if v}
     return trucks, (sorted(plan.excluded), sorted(plan.added), sorted(plan.dropped), sorted(plan.agents_off),
-                    sorted(plan.same_day), FleetRule.from_json(plan.fleet).to_json(), sorted(plan.later.items()))
+                    sorted(plan.same_day), FleetRule.from_json(plan.fleet).to_json(), sorted(plan.later.items()),
+                    sorted(plan.auto_carried))   # №98: перенесённое само — тоже отбор заказов терминала
 
 
 def unsent(draft: Draft) -> dict[str, Any] | None:
@@ -3385,6 +3412,8 @@ def plan_view(ctx: DayContext, stops: Sequence[Stop], draft: Draft,
     missing_coords = [s for s in stops if s.point is None]
     assigned_kg = math.fsum(s.kg for s in stops if s.customer_id in in_trips)
     unassigned = [info(s) | {'kg': round(s.kg), 'no_room': s.customer_id in draft.no_room,
+                             # №98: уступил место заказу, который ждёт дольше
+                             **({'yielded': True} if s.customer_id in draft.yielded & draft.no_room else {}),
                              'no_window': s.customer_id in draft.no_window,
                              'no_center': s.customer_id in draft.no_center, 'center': _central(ctx, s),
                              'no_vehicle': s.customer_id in ctx.vehicle_access and not any(

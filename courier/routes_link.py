@@ -18,9 +18,10 @@ RoadProvider.get); запись — только экипаж машины из 
 до срока (настройка until_buffer_min), плановый выезд рейсов машин (прогноз сборки) и дорожную модель «Развоза» для матрицы
 рейса (route_optimizer.views.trip_road — вызывается только при сборке /day).
 
-«Все заказы дня» (ответ владельца №98): сегодня и дальше по Еревану менеджеров снимает только правило настроек
-(dp.day_agents_off — выбор дня в плане не действует), недовезённое вчера (точка O: терминала не закрыта, dp.auto_carried)
-само входит в перенесённые — как на странице «Развоза» (views._agents_off, views._auto_carried).
+Недовезённое вчера (ответ владельца №98): терминал берёт его только из отправленного плана дня (Draft.auto_carried —
+снимок, который пишут сборка, «Կիրառել կարգավորումները», утверждение и отправка, route_optimizer.views): как перенесённые
+«Վաղը», а взятые в развоз дня их приёма (№72) — снова заказы дня. Без отправки новый перенос до водителя не доходит; вид не
+зависит от часов и факта терминалов.
 """
 from __future__ import annotations
 
@@ -36,8 +37,6 @@ from route_optimizer.geo import Point, haversine_km
 from route_optimizer.store import CREW_BY_APK, Bundle, check_driver_name
 from route_optimizer.store import StoreError as RoutesStoreError
 from route_optimizer.tsp import Distance
-
-from . import clock
 
 logger = logging.getLogger(__name__)
 
@@ -60,12 +59,12 @@ class RoutesView:
     trips: tuple[tuple[str, tuple[int, ...]], ...] = ()    # (машина, клиенты по порядку) в порядке черновика
     excluded: frozenset[str] = frozenset()                 # заказы «не везём сегодня»
     added: frozenset[str] = frozenset()                    # заказы прошлых дней, добавленные логистом
-    carried: frozenset[str] = frozenset()                  # «Везти завтра» прошлых дней и «Երբ տանել» на дату
+    carried: frozenset[str] = frozenset()                  # «Везти завтра» прошлых дней, «Երբ տանել» на дату, №98 — снимок
     carried_since: date | None = None                      # самая ранняя дата заказа «Երբ տանել» на дату (orders_window)
     dropped: frozenset[str] = frozenset()                  # перенесённые сюда, но убранные логистом
     agents_off: frozenset[int] = frozenset()               # менеджеры, чьи заказы не везём (фильтр «Մենեջերներ»)
     same_day: frozenset[str] = frozenset()                 # заказы с датой дня, взятые в его развоз (№72)
-    taken: frozenset[str] = frozenset()                    # взятые в развоз дня их приёма в прошлые дни — не везём
+    taken: frozenset[str] = frozenset()                    # взятые в развоз дня их приёма в прошлые дни — не везём (кроме №98)
     seen: dp.PlanSeen = dp.PlanSeen()                      # что видел план прошлого рабочего дня (№79)
     fleet: dp.FleetRule = dp.NO_RULE                       # чьи заказы везут машины — правило настроек «Развоза» (№74)
     roads: Any = None                                      # RoadDistances | None
@@ -127,7 +126,7 @@ def routes_view(state: Any, day: date) -> RoutesView:
                       agent_phones=phones, **timing)
     load = _plans(state)
     later = _later(load, day, workdays, holidays)
-    carried = _carried(state, day, workdays, holidays, load) | set(later) | _auto(state, day, workdays, holidays, load)
+    carried = _carried(state, day, workdays, holidays, load) | set(later)
     carried_since = min(later.values(), default=None)
     taken = _taken(state, day, workdays, holidays, load)
     seen = dp.PlanSeen.of(load(dp.previous_workday(day, workdays, holidays)))   # №81
@@ -140,14 +139,14 @@ def routes_view(state: Any, day: date) -> RoutesView:
     # водителям — отправленный план (№81, Draft.for_drivers), не черновик с неотправленными правками; правило №74 — то, с
     # которым день собран: заказы рейсов не пропадут
     draft = dp.Draft.from_json(stored[0]).for_drivers()
+    auto = set(draft.auto_carried)   # №98: недовезённое вчера — из отправленного снимка
     return RoutesView(depot=bundle.depot, geo_overrides=base.geo_overrides, workdays=workdays, holidays=holidays,
                       plan_exists=bool(draft.trips), released=bool(draft.trips) and draft.released is not None,
                       trips=tuple((t.truck, tuple(t.stops)) for t in draft.trips),
                       excluded=frozenset(draft.excluded), added=frozenset(draft.added),
-                      carried=frozenset(carried), carried_since=carried_since, dropped=frozenset(draft.dropped),
-                      agents_off=frozenset(dp.day_agents_off(draft, bundle.settings, day, clock.today())),   # №98
-                      same_day=frozenset(draft.same_day),
-                      taken=frozenset(taken), fleet=dp.fleet_rule_of(draft, bundle.settings), roads=roads, seen=seen,
+                      carried=frozenset(carried | auto), carried_since=carried_since, dropped=frozenset(draft.dropped),
+                      agents_off=frozenset(dp.agents_off_of(draft, bundle.settings)), same_day=frozenset(draft.same_day),
+                      taken=frozenset(taken - auto), fleet=dp.fleet_rule_of(draft, bundle.settings), roads=roads, seen=seen,
                       departs=_departs(draft), agent_phones=phones, **timing)
 
 
@@ -277,31 +276,6 @@ def _carried(state: Any, day: date, workdays: Sequence[int],
             out |= plan.deferred
         d += timedelta(days=1)
     return out
-
-
-def _auto(state: Any, day: date, workdays: Sequence[int], holidays: Collection[date],
-          load: Callable[[date], dp.Draft | None]) -> set[str]:
-    """Недовезённое вчера (№98, dp.auto_carried; как views._auto_carried «Маршрутов»): сегодня и дальше по Еревану —
-    отправленные планы с прошлого рабочего дня по вчера (load; не прочитан — RoutesStoreError наружу, №80, как «Վաղը») и
-    факт терминалов тех дней (state.live_facts — подключает app_v2). Факта нет или он не прочитан — без переноса (в
-    журнал): довезли ли — неизвестно."""
-    facts = getattr(state, 'live_facts', None)
-    today = clock.today()
-    if facts is None or day < today:
-        return set()
-    days: list[tuple[dp.Draft | None, Mapping[str, Any], bool]] = []
-    d = dp.previous_workday(day, workdays, holidays)
-    while d < day:
-        plan = load(d)
-        try:
-            fleet = facts.fleet(d.isoformat())
-        except Exception:   # факт терминалов — дополнение: без него вид как раньше
-            logger.warning('[Courier] Факт терминалов на %s не прочитан — недовезённое не перенесено на %s', d, day,
-                           exc_info=True)
-            return set()
-        days.append((plan, fleet, d < today))
-        d += timedelta(days=1)
-    return dp.auto_carried(days)
 
 
 def _later(load: Callable[[date], dp.Draft | None], day: date, workdays: Sequence[int],

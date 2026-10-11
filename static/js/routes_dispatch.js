@@ -3745,6 +3745,8 @@
             tag('b-warn', late === 1 ? 'Երեկվանից' : late + NB + 'օր', 'fa-clock-rotate-left');
             tags.lastChild.title = 'նախորդ օրը չի առաքվել՝ ինքնաբերաբար տեղափոխվել է այս օր';
         }
+        // №98: сборка сняла его ради заказа, который ждёт дольше
+        if (stop.yielded) tag('b-warn', 'Զիջեց ավելի հին պատվերին', 'fa-arrow-turn-down');
         if (tags.children.length) main.appendChild(tags);
         const kg = document.createElement('span');
         kg.className = 'dp-stop-kg';
@@ -5097,7 +5099,7 @@
         plan.unassigned.forEach(s => {
             if (s.lat === null || state.mapFocus) return;
             bounds.push([s.lat, s.lon]);
-            const why = s.no_room ? 'Չտեղավորվեց մինչև ' + state.data.work_end + '-ը՝ ' : s.no_window ? 'Չենք հասցնում ընդունման ժամին՝ '
+            const why = s.yielded ? 'Զիջեց ավելի հին պատվերին՝ ' : s.no_room ? 'Չտեղավորվեց մինչև ' + state.data.work_end + '-ը՝ ' : s.no_window ? 'Չենք հասցնում ընդունման ժամին՝ '
                 : s.no_vehicle ? 'Խանութը սպասարկող մեքենա չկա՝ ' : s.no_center ? 'Կենտրոն, այսօր չկա թույլատրված մեքենա՝ ' : 'Դեռ երթում չէ՝ ';
             L.circleMarker([s.lat, s.lon], { radius: 7, color: s.no_room || s.no_window || s.no_center || s.no_vehicle ? '#ff6b79' : '#ffb547', weight: 3, fillColor: '#0c0f14', fillOpacity: 1 })
                 .bindTooltip(esc(why) + esc(s.name || s.code)).addTo(state.layers);
@@ -5854,7 +5856,7 @@
         const pending = [['Կոդ', 'Խանութ', 'Հասցե', 'Բեռ, կգ', 'Պատճառ']];
         (d.stops_no_coords || []).forEach(s => pending.push([s.code, s.name, s.address, s.kg, 'Տեղը քարտեզում նշված չէ']));
         plan.unassigned.forEach(s => pending.push([s.code, s.name, s.address, s.kg,
-            s.no_vehicle ? 'Խանութը սպասարկող մեքենա չկա' : s.no_window ? 'Ընդունման ժամին չենք հասնում' : s.no_center ? 'Կենտրոն մտնելու մեքենա չկա' : 'Սմենայում չի տեղավորվում']));
+            s.yielded ? 'Զիջեց ավելի հին պատվերին' : s.no_vehicle ? 'Խանութը սպասարկող մեքենա չկա' : s.no_window ? 'Ընդունման ժամին չենք հասնում' : s.no_center ? 'Կենտրոն մտնելու մեքենա չկա' : 'Սմենայում չի տեղավորվում']));
         if (pending.length > 1) XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(pending), 'Երթերում չկան');
         XLSX.writeFile(wb, 'araqum_' + d.day + '.xlsx');
         announce('Excel ֆայլը ներբեռնված է');
