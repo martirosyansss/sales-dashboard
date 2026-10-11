@@ -285,16 +285,16 @@ def _carried(state: Any, day: date, workdays: Sequence[int],
 def _released(state: Any, day: date, auto: Mapping[str, tuple[int, date]], workdays: Sequence[int],
               holidays: Collection[date]) -> set[str]:
     """Перенесённые сами (№98), чью точку водитель всё же закрыл в днях цепочки (dp.closed_points, dp.carry_since — как
-    views._released): сегодня и дальше по Еревану, при факте терминалов (state.live_facts — подключает app_v2); прошедший
-    день — ничего (история). День, чей факт не прочитан, — без него (в журнал)."""
-    facts = getattr(state, 'live_facts', None)
-    if facts is None or not auto or day < clock.today():
+    views._released, тот же кэш дней views.closed_points): сегодня и дальше по Еревану, при факте терминалов (state.live_facts —
+    подключает app_v2); прошедший день — ничего (история). День, чей факт не прочитан, — без него (в журнал)."""
+    if getattr(state, 'live_facts', None) is None or not auto or day < clock.today():
         return set()
+    from route_optimizer.views import closed_points   # раздел подключён — его модуль уже загружен; кэш дней — в нём
     out: set[str] = set()
     d = dp.carry_since(auto, day, workdays, holidays)
     while d < day:
         try:
-            out |= dp.closed_points(facts.fleet(d.isoformat()))
+            out |= closed_points(state, d)
         except Exception:   # факт терминалов — дополнение: без него снимок как есть
             logger.warning('[Courier] Факт терминалов на %s не прочитан — поздняя доставка не учтена для %s', d, day,
                            exc_info=True)

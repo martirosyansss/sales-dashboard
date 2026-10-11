@@ -211,6 +211,8 @@ class RoutesState:
     live_tracks: _LiveTracks = field(default_factory=lambda: _LiveTracks())   # линии треков, привязанные к дорогам (08.10)
     live_cards: dict[date, tuple[Any, float, Any, datetime, dict[str, dict[str, Any]]]] = field(default_factory=dict)
     live_lock: threading.Lock = field(default_factory=threading.Lock)   # только словари кэша: расчёт под ним не идёт
+    # закрытые точки заказов прошедших дней (№98, closed_points; под live_lock): день → (до какого момента, fISN), LRU
+    closed_cache: OrderedDict[date, tuple[float, frozenset[str]]] = field(default_factory=OrderedDict)
     live_flight: dict[date, threading.Lock] = field(default_factory=dict)   # пересчёт флота — один на день
     # следование плановой линии машино-дней для «Վարորդներ» (scorecard «Երթուղի», 08.10) — считает фон (_ScoreRoutes)
     score_routes: _ScoreRoutes = field(default_factory=lambda: _ScoreRoutes())
@@ -1560,7 +1562,7 @@ def _released(state: RoutesState, day: date, settings: Mapping[str, Any], draft:
     d = dp.carry_since(auto, day, workdays, holidays)
     while d < day:
         try:
-            out |= dp.closed_points(state.live_facts.fleet(d.isoformat()))
+            out |= closed_points(state, d)
         except Exception:   # факт терминалов — дополнение: без него день как раньше
             logger.warning('[Routes] Факт терминалов на %s не прочитан — поздняя доставка не учтена для %s', d, day,
                            exc_info=True)
@@ -1588,6 +1590,37 @@ def _auto_carried(state: RoutesState, day: date, settings: Mapping[str, Any]) ->
             return set()
         d += timedelta(days=1)
     return dp.auto_carried(days)
+
+
+CLOSED_CACHE_DAYS = 25    # дней с закрытыми точками в памяти (closed_points) — LRU по последнему чтению
+CLOSED_TTL_S = 600.0      # прошедший день — пересчёт не чаще (поздние пачки APK доезжают), как courier.live.TTL_PAST_S
+
+
+def closed_points(state: Any, d: date) -> set[str]:
+    """Заказы (fISN) с закрытыми точками O: в факте терминалов дня d (№98, dp.closed_points) — для поздней доставки
+    (_released, courier.routes_link). Факт дня (courier.live.LiveSource.fleet: события и треки) держит в памяти лишь
+    несколько дней, а окно цепочки длиннее — поэтому здесь своё: только множество fISN прошедшего дня, на CLOSED_TTL_S, не
+    больше CLOSED_CACHE_DAYS дней (вытесняется давно не читанный); сегодняшний — без кэша (идёт день). Раздела «Առաքիչ»
+    нет — пусто; сбой факта — наружу (вызывающий пропускает день)."""
+    facts = getattr(state, 'live_facts', None)
+    if facts is None:
+        return set()
+    cache: OrderedDict[date, tuple[float, frozenset[str]]] | None = getattr(state, 'closed_cache', None)
+    past = cache is not None and d < _same_day_now().date()
+    if past:
+        with state.live_lock:
+            hit = cache.get(d)
+            if hit is not None and _monotonic() < hit[0]:
+                cache.move_to_end(d)
+                return set(hit[1])
+    out = dp.closed_points(facts.fleet(d.isoformat()))   # расчёт — не под замком
+    if past:
+        with state.live_lock:
+            cache[d] = (_monotonic() + CLOSED_TTL_S, frozenset(out))
+            cache.move_to_end(d)
+            while len(cache) > CLOSED_CACHE_DAYS:
+                cache.popitem(last=False)
+    return out
 
 
 def _order_age(day: date, settings: Mapping[str, Any], auto: Collection[str] = ()) -> Callable[[dp.DispatchOrder], int]:

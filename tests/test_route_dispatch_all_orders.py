@@ -546,6 +546,8 @@ def test_late_delivery_releases_carry_on_page_and_terminal(client, monkeypatch):
     truck = _truck_of(d, 101)
     assert [o.isn for o in rl.pick_orders(ORDERS, FRI, rl.routes_view(_state(client), FRI), truck)] == [_isn(1)]
     facts.days[THU.isoformat()]['CAR1']['stops'][0]['status'] = 'full'   # поздняя пачка: довезли 01.10
+    real = views._monotonic   # закрытые точки прошедшего дня в памяти CLOSED_TTL_S (как факт courier.live) — прошли
+    monkeypatch.setattr(views, '_monotonic', lambda: real() + views.CLOSED_TTL_S + 1)
     page = _get(client, FRI)
     assert _isn(1) not in _stop_orders(page['plan']) and not _row(page['backlog'], 1)['carried']
     assert rl.pick_orders(ORDERS, FRI, rl.routes_view(_state(client), FRI), truck) == []
@@ -571,3 +573,44 @@ def test_chain_needs_terminal_points_of_store_trucks(client, monkeypatch):
     assert not _row(_get(client, SAT)['backlog'], 1)['carried']
     facts.stop(FRI, _truck_of(d, 101), 9, 101, 'full')               # точки у машины были (другой заказ) — переносится
     assert _row(_get(client, SAT)['backlog'], 1)['carried']
+
+
+class _CountingFacts(Facts):
+    """Факт терминалов, который считает чтения дня (LiveSource.fleet — дорогой расчёт: события и треки)."""
+
+    def __init__(self):
+        super().__init__()
+        self.calls = {}
+
+    def fleet(self, day):
+        self.calls[day] = self.calls.get(day, 0) + 1
+        return super().fleet(day)
+
+
+def test_closed_points_of_past_days_are_computed_once(client, monkeypatch):
+    """Финальное ревью: окно цепочки (12 дней) длиннее памяти факта терминалов (courier.live.CACHE_DAYS) — закрытые точки
+    прошедшего дня считаются один раз на CLOSED_TTL_S и для страницы, и для терминала; сегодня — без кэша; дней в памяти
+    не больше CLOSED_CACHE_DAYS."""
+    _dispatch_setup(client, ORDERS)
+    day = date(2026, 10, 14)
+    _now(monkeypatch, datetime(2026, 10, 14, 9, 0))
+    state = _state(client)
+    facts = _CountingFacts()
+    state.live_facts = facts
+    facts.stop(SAT, 'CAR1', 1, 101, 'full')
+    draft = dp.Draft(auto_carried={_isn(1): (101, FRI)})
+    settings = state.store.load().settings
+    for _ in range(3):
+        assert views._released(state, day, settings, draft) == {_isn(1)}
+        assert rl._released(state, day, draft.auto_carried, SIX, frozenset()) == {_isn(1)}
+    assert len(facts.calls) == 12 and set(facts.calls.values()) == {1}   # 02.10–13.10 — по разу
+    views.closed_points(state, day)
+    views.closed_points(state, day)
+    assert facts.calls[day.isoformat()] == 2                             # сегодня — каждый раз
+    real = views._monotonic
+    monkeypatch.setattr(views, '_monotonic', lambda: real() + views.CLOSED_TTL_S + 1)
+    assert views.closed_points(state, SAT) == {_isn(1)} and facts.calls[SAT.isoformat()] == 2   # срок вышел — заново
+    for i in range(1, 31):
+        views.closed_points(state, day - timedelta(days=i))
+    # не больше CLOSED_CACHE_DAYS: остались последние прочитанные (14.09–08.10), давно не читанные вытеснены
+    assert list(state.closed_cache) == [day - timedelta(days=i) for i in range(6, 31)]
