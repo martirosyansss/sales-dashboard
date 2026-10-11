@@ -6,7 +6,8 @@
 из tests/routes_dispatch_browser_check.py (клиент 999 без точки); ответу /api/routes/dispatch подставлен адрес 999,
 чтобы проверить поиск на Яндекс Картах. Порт 8777 на 127.0.0.1.
 
-A раздел виден, в заголовке «1 խանութ · 50 կգ»; таблица: шапка из трёх колонок ровно над ячейками, одна строка —
+A раздел виден, в заголовке «1 խանութ · 50 կգ»; в узкой колонке шага 2 (1440, №99) — без шапки; шаг во всю ширину
+  (1060) — шапка из трёх колонок ровно над ячейками; одна строка —
   имя, код, адрес | вес, сумма | иконка Yandex (поиск адреса в новой вкладке) и «Նշել քարտեզում»;
   старых инструкции и встроенной карты нет;
 B «Նշել քարտեզում» → диалог «Խանութի տեղը»: заголовок с именем, ссылка «Գտնել հասցեն Yandex քարտեզում» с адресом,
@@ -86,7 +87,12 @@ def main() -> int:
             text = row.inner_text()
             check(rows.count() == 1 and ADDRESS in text and '50' in text and 'դրամ' in text,
                   'A one row with address, kg and sum: ' + text.replace('\n', ' | '))
-            check(page.locator('#dpNoCoords .dp-nc-hd').is_visible(), 'A table header visible on desktop')
+            # №99: шаг 2 — узкая правая колонка (1.75fr / 1fr): таблица в ней компактная, без шапки; шапка — когда шаг во всю
+            # ширину (уже 1100 px шаги — одной колонкой)
+            check(not page.locator('#dpNoCoords .dp-nc-hd').is_visible(), 'A narrow step 2 column at 1440: compact rows, no header')
+            page.set_viewport_size({'width': 1060, 'height': 950})
+            page.wait_for_timeout(300)
+            check(page.locator('#dpNoCoords .dp-nc-hd').is_visible(), 'A step 2 full width (1060): table header visible')
             ya = row.locator('a.rt-btn')
             href = ya.get_attribute('href') or ''
             check(ya.count() == 1 and href.startswith('https://yandex.com/maps/?ll=44.5126%2C40.1811&z=12&text=') and ya.get_attribute('target') == '_blank'
@@ -96,6 +102,8 @@ def main() -> int:
             hd = page.evaluate("() => [...document.querySelectorAll('#dpNoCoords .dp-nc-hd span')].map(s => Math.round(s.getBoundingClientRect().left))")
             cells = page.evaluate("() => [...document.querySelectorAll('#dpNoCoordsList .dp-nc-row > div')].map(s => Math.round(s.getBoundingClientRect().left))")
             check(len(hd) == 3 and hd == cells, f'A header columns aligned with row cells: {hd} vs {cells}')
+            page.set_viewport_size({'width': 1440, 'height': 950})
+            page.wait_for_timeout(300)
 
             # B
             row.locator('button', has_text='Նշել քարտեզում').click()

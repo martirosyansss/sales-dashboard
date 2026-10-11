@@ -6,11 +6,11 @@
 Приложение — то же, что в tests/routes_dispatch_browser_check.py (настоящие шаблон, статика и blueprint, поддельная ERP,
 синтетический день, временная база); водители: CAR1 — Արամ, CAR2 — Կարեն. Порт 8771 на 127.0.0.1.
 
-A в шаге 1 — «Վարորդներ»: две отмеченные плитки (имя и машина), «եկել է՝ 2 / 2»; после сборки в карточке CAR1 —
-  «վարորդ՝ Արամ»;
+A в шаге 1 (таблица «Մեքենաներ և վարորդներ», №99) — у CAR1 и CAR2 водители «եկել է», в статусе «եկել են բոլոր 2
+  վարորդները», «աշխատում է՝ 2 / 2»; после сборки в карточке CAR1 — «վարորդ՝ Արամ»;
 B сняли отметку Արամ → диалог «Վարորդը չի եկել», по умолчанию «Միայն …ն»; «Չեղարկել» — отметка вернулась, ничего не
   записано;
-C снова сняли → «Մինչև» и дата → сохранено: плитка «չի աշխատում մինչև …», «եկել է՝ 1 / 2», подсказка «Վարորդները փոխվել են»
+C снова сняли → «Մինչև» и дата → сохранено: в строке «մինչև 03.10», «աշխատում է՝ 1 / 2», подсказка «Վարորդները փոխվել են»
   с кнопкой пересборки;
 D пересборка: магазины только в центре, куда въезжает лишь CAR1, — Կարեն ведёт CAR1 «(փոխարինում)», CAR2 — серая
   карточка с причиной, в шаге 1 у CAR2 «վարորդը նստել է այլ մեքենա», в подсказке «Առանց վարորդի…»;
@@ -79,19 +79,22 @@ def main() -> int:
                 page.route(pat, lambda r: r.fulfill(status=200, content_type='image/png', body=base.TILE_PNG))
             page.goto(f'{BASE}/routes/dispatch?date={DAY}')
             page.wait_for_selector('#dpBody', state='visible', timeout=30000)
-            tiles = page.locator('#dpCrewList .dp-driver')
+            tiles = page.locator('#dpFleetRows tr:has(input.dp-prescb)')
 
-            def tile(name):
+            def tile(name):              # строка машины этого водителя в таблице шага 1 (№99)
                 return tiles.filter(has_text=name)
+
+            def came(name):              # переключатель «եկել է» (водитель вышел)
+                return tile(name).locator('input.dp-prescb')
 
             def open_step1():               # после сборки шаг 1 свёрнут; раскрытый — остаётся раскрытым
                 if page.get_attribute('#dpStep1Tog', 'aria-expanded') == 'false':
                     page.click('#dpStep1Tog')
 
             # A
-            check(page.is_visible('#dpCrew') and tiles.count() == 2 and tile('Արամ').locator('input').is_checked()
-                  and tile('Կարեն').locator('input').is_checked() and 'CAR1' in tile('Արամ').inner_text()
-                  and page.inner_text('#dpCrewCount') == 'եկել է՝ 2 / 2', 'A drivers of the day listed, all checked, 2 / 2')
+            check(tiles.count() == 2 and came('Արամ').is_checked() and came('Կարեն').is_checked() and 'CAR1' in tile('Արամ').inner_text()
+                  and 'եկել են բոլոր 2 վարորդները' in page.inner_text('#dpTodo')
+                  and page.inner_text('#dpTrucksCount').endswith('2 / 2'), 'A drivers of the day in the table, both came, 2 / 2')
             page.wait_for_function("() => !document.getElementById('dpBuild').disabled", timeout=15000)
             page.click('#dpBuild')
             page.wait_for_selector('#dpTruckCards .dp-tcard', timeout=60000)
@@ -100,26 +103,26 @@ def main() -> int:
 
             # B
             open_step1()
-            tile('Արամ').locator('input').uncheck()
+            came('Արամ').uncheck()
             page.wait_for_selector('#dpAbsentDlg[open]', timeout=5000)
             check(page.is_checked('#dpAbsentOne') and page.inner_text('#dpAbsentOneT').startswith('Միայն')
                   and 'Արամ' in page.inner_text('#dpAbsentLead'), 'B dialog: «only this day» by default, driver named')
             page.click('#dpAbsentCancel')
             page.wait_for_function("() => !document.getElementById('dpAbsentDlg').open", timeout=5000)
             server_crew = page.request.get(f'{BASE}/api/routes/dispatch', params={'date': DAY}).json()['crew']
-            check(tile('Արամ').locator('input').is_checked() and not server_crew['drivers'][0]['absent'],
+            check(came('Արամ').is_checked() and not server_crew['drivers'][0]['absent'],
                   'B cancel: tick back, nothing saved')
 
             # C
-            tile('Արամ').locator('input').uncheck()
+            came('Արամ').uncheck()
             page.wait_for_selector('#dpAbsentDlg[open]', timeout=5000)
             page.fill('#dpAbsentUntil', UNTIL)
             check(page.is_checked('#dpAbsentLong'), 'C typing a date picks «until»')
             page.click('#dpAbsentSave')
             page.wait_for_function("() => !document.getElementById('dpAbsentDlg').open", timeout=10000)
             page.wait_for_function("() => /Վարորդները փոխվել են/.test(document.getElementById('dpTodo').textContent)", timeout=10000)
-            check('չի աշխատում մինչև 03.10.2026' in tile('Արամ').inner_text() and not tile('Արամ').locator('input').is_checked()
-                  and page.inner_text('#dpCrewCount') == 'եկել է՝ 1 / 2', 'C saved until 03.10: tile text, 1 / 2')
+            check('մինչև 03.10' in tile('Արամ').inner_text() and not came('Արամ').is_checked()
+                  and page.text_content('#dpTrucksCount').endswith('1 / 2'), 'C saved until 03.10: row text, 1 / 2')
             got = page.request.get(f'{BASE}/api/routes/dispatch', params={'date': '2026-10-02'}).json()['crew']['drivers'][0]
             check(got['absent'] and got['until'] == UNTIL, 'C the next day he is absent too')
 
@@ -132,7 +135,7 @@ def main() -> int:
             check(idle.count() == 1 and idle.first.get_attribute('data-truck') == 'CAR2'
                   and 'Կարեն' in idle.inner_text() and 'նստել է' in idle.inner_text(), f'D CAR2 greyed with reason: {idle.inner_text()!r}')
             open_step1()
-            step = page.locator('#dpTrucks .dp-truck', has_text='CAR2').inner_text()
+            step = page.locator('#dpFleetRows tr', has_text='CAR2').inner_text()
             todo = page.inner_text('#dpTodo')
             check('վարորդը նստել է այլ մեքենա' in step and 'Առանց վարորդի 1 հոկտեմբերին դուրս չեն գալիս՝ FORD · CAR2' in todo
                   and 'Վարորդները փոխվել են' not in todo, 'D step 1 and the hint name CAR2')
@@ -149,13 +152,13 @@ def main() -> int:
 
             # F
             open_step1()
-            tile('Արամ').locator('input').check()
+            came('Արամ').check()
             page.wait_for_function("() => /Վարորդները փոխվել են/.test(document.getElementById('dpTodo').textContent)", timeout=10000)
             page.locator('#dpTodo button', has_text='Վերակազմել երթերը').click()
             page.wait_for_function("() => !document.querySelector('#dpTruckCards .dp-tcard.is-unmanned')"
                                    " && /Արամ/.test((document.querySelector('#dpTruckCards .dp-tcard[data-truck=\"CAR1\"] .dp-tdriver') || {}).textContent || '')",
                                    timeout=60000)
-            check(tile('Արամ').locator('input').is_checked() and 'Վարորդները փոխվել են' not in page.inner_text('#dpTodo'),
+            check(came('Արամ').is_checked() and 'Վարորդները փոխվել են' not in page.inner_text('#dpTodo'),
                   'F back: no greyed card, CAR1 with Արամ again')
 
             # N

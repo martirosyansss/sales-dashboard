@@ -14,26 +14,19 @@
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=25">
 <!-- Страница на армянском (ответ владельца №31). Редизайн: тёмная спокойная тема (ответ владельца №51), свои стили поверх routes.css -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=77">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=78">
 {% endblock %}
 
 {% block content %}
 <div class="rt-page" id="rtDispatch" lang="hy">
 
-    <!-- ШАПКА: какой день развозим, листать дни -->
+    <!-- ШАПКА — одна панель дня (владелец №99, как панель рабочего экрана): день, листать дни, обновить заказы, откуда они;
+         справа до сборки — AI, помощь и «Կազմել երթերը» (#dpRun переносит layoutWs() в #dpSetActs), после — действия рабочего экрана -->
     <header class="dp-mast">
-        <div class="dp-mast-top">
-            <p class="dp-kicker"><i class="fas fa-truck-fast" aria-hidden="true"></i>Առաքում<span class="dp-kicker-sub">երթերի կազմում վարորդների համար</span></p>
-        </div>
-
         <div class="dp-dayboard">
-            <div class="dp-cal" aria-hidden="true">
-                <span class="dp-cal-wd" id="dpCalWd">—</span>
-                <span class="dp-cal-day" id="dpCalDay">–</span>
-                <span class="dp-cal-mon" id="dpCalMon"></span>
-            </div>
             <div class="dp-day-main">
-                <h1 class="rt-title" id="dpTitle">Վաղը</h1>
+                <h1 class="rt-title" id="dpTitle" data-short="Վաղը">Վաղը</h1>
+                <span class="dp-day-wd" id="dpDayWd" aria-hidden="true"></span>
                 <p class="dp-datenote"><span id="dpDateNote"></span>
                     <button type="button" id="dpRefresh" class="rt-linkbtn" title="Կրկին կարդալ պատվերները ERP-ից">
                         <i class="fas fa-rotate" aria-hidden="true"></i> Թարմացնել պատվերները</button></p>
@@ -48,6 +41,11 @@
                     <button type="button" id="dpDayNext" class="dp-segbtn" aria-label="Հաջորդ օր" title="Հաջորդ օր"><i class="fas fa-chevron-right" aria-hidden="true"></i></button>
                 </div>
                 <button type="button" id="dpTomorrow" class="rt-linkbtn">Վերադառնալ վաղվան</button>
+            </div>
+            <!-- без рабочего экрана: AI (до сборки — вместо плавающей кнопки), помощь; до сборки сюда же переезжает #dpRun -->
+            <div class="dp-setacts" id="dpSetActs">
+                <button type="button" id="dpSetAi" class="rt-btn rt-btn-ghost" aria-controls="dpAi" hidden><i class="fas fa-wand-magic-sparkles" aria-hidden="true"></i><span>AI</span></button>
+                <button type="button" id="dpHelpBtn" class="rt-btn rt-btn-ghost" aria-expanded="false" aria-controls="dpHelp"><i class="fas fa-circle-question" aria-hidden="true"></i><span>Օգնություն</span></button>
             </div>
             <!-- №82 (вариант А, как Routific): на широком экране с рейсами — действия дня в шапке; узлы переносит layoutWs() -->
             <div class="dp-wsacts" id="dpWsActs" hidden>
@@ -69,22 +67,21 @@
             </div>
         </div>
 
-        <details class="dp-help">
-            <summary><i class="fas fa-circle-question" aria-hidden="true"></i>Ինչպե՞ս օգտվել այս էջից</summary>
+        <section class="dp-help" id="dpHelp" aria-label="Ինչպե՞ս օգտվել այս էջից" hidden>
             <div class="dp-help-body">
                 <p class="dp-help-lead">Ծրագիրը բաշխում է պատվերները մեքենաների միջև այնպես, որ ճանապարհը լինի ամենակարճը։
                     Դուք ստուգում եք և տպում թերթիկները վարորդների համար։ ERP-ում ոչինչ չի փոխվում։</p>
                 <ol>
                     <li><b>Մեքենաներ։</b> Հանեք նշումը այն մեքենաներից, որոնք այսօր դուրս չեն գալիս։</li>
-                    <li><b>Վարորդներ։</b> Հանեք նշումը այն վարորդից, որը չի եկել (միայն այդ օրը կամ մինչև որոշ օր)։ Ծրագիրը կընտրի այնքան մեքենա, որքան վարորդ կա, և ազատ վարորդներին կնստեցնի չեկածների մեքենաներին։</li>
+                    <li><b>Վարորդներ։</b> Եթե վարորդը չի եկել, նրա տողում սեղմեք «եկել է» և նշեք՝ միայն այդ օրը, թե մինչև որոշ օր։ Ծրագիրը կընտրի այնքան մեքենա, որքան վարորդ կա, և ազատ վարորդներին կնստեցնի չեկածների մեքենաներին։</li>
                     <li><b>Պատվերներ։</b> Եթե կան դեղին նշումներ (օրինակ՝ խանութի տեղը քարտեզում չկա), ուղղեք դրանք։</li>
-                    <li><b>Կազմել երթերը։</b> Սեղմեք կանաչ կոճակը՝ ծրագիրը կբաշխի պատվերները մեքենաներով։</li>
+                    <li><b>Կազմել երթերը։</b> Սեղմեք «Կազմել երթերը» վերևում՝ ծրագիրը կբաշխի պատվերները մեքենաներով։</li>
                     <li><b>Տպել։</b> Սեղմեք «Տպել վարորդների համար»՝ յուրաքանչյուր մեքենայի համար կտպվի առանձին թերթ։</li>
                     <li><b>Բեռնագիր։</b> Մեքենայի քարտում սեղմեք «Բեռնագիր»՝ տպելու համար, կամ «Excel»՝ ֆայլը ներբեռնելու համար։ Յուրաքանչյուր երթի համար՝ ինչ բեռնել պահեստից։ Վարորդին (և առաքիչին, եթե երկու հոգով են) նշեք «Վարորդ» կոճակով՝ նրանք կգրվեն բեռնագրում (փոխարինում՝ «Միայն այս օրը»)։</li>
                 </ol>
                 <p>Եթե ինչ-որ բան պետք է փոխել, երթի մոտ սեղմեք «Փոփոխել»։ Ձեր փոփոխությունները պահպանվում են։</p>
             </div>
-        </details>
+        </section>
     </header>
 
     <div id="dpStatus" class="rt-sr-only" role="status" aria-live="polite"></div>
@@ -146,30 +143,41 @@
 
         <!-- ПОДГОТОВКА: шаг 1 (машины) и шаг 2 (заказы) рядом; после сборки — свёрнуты в строку -->
         <div class="dp-prep">
-            <section class="dp-step" id="dpStep1" aria-labelledby="dpStep1Title">
+            <!-- Шаг 1 (владелец №99): одна таблица — машина, её водитель и «сегодня»; строки рисует renderTrucks() -->
+            <section class="dp-step dp-fleet" id="dpStep1" aria-labelledby="dpStep1Title">
                 <div class="dp-step-head">
                     <span class="dp-step-no" aria-hidden="true">1</span>
                     <div class="dp-step-hgroup">
-                        <h2 class="dp-step-title" id="dpStep1Title"><span class="rt-sr-only">Քայլ 1. </span>Ո՞ր մեքենաներն են աշխատում</h2>
+                        <h2 class="dp-step-title" id="dpStep1Title"><span class="rt-sr-only">Քայլ 1. </span>Մեքենաներ և վարորդներ</h2>
                         <p class="dp-step-sum" id="dpStep1Sum"></p>
                     </div>
-                    <span class="dp-chip" id="dpTrucksCount"></span>
+                    <span class="dp-step-n" id="dpTrucksCount"></span>
+                    <div class="dp-seg" id="dpFleetSeg" role="group" aria-label="Ցույց տալ մեքենաները">
+                        <button type="button" data-f="all" aria-pressed="true">Բոլորը</button>
+                        <button type="button" data-f="ready" aria-pressed="false" title="Դուրս կգան վարորդով">Պատրաստ</button>
+                        <button type="button" data-f="bad" aria-pressed="false" title="Վարորդ չկա, չի եկել կամ մեքենայի տվյալները թերի են">Խնդիր</button>
+                    </div>
                     <button type="button" class="dp-step-tog" id="dpStep1Tog" aria-expanded="true" aria-controls="dpStep1Body" aria-describedby="dpStep1Title" hidden>
                         <span>Բացել</span><i class="fas fa-chevron-down" aria-hidden="true"></i></button>
                 </div>
                 <div class="dp-step-body" id="dpStep1Body">
-                    <p class="dp-steplead">Հանեք նշումը, եթե մեքենան այսօր դուրս չի գալիս։</p>
-                    <fieldset class="dp-trucks" id="dpTrucks">
-                        <legend class="rt-sr-only">Աշխատող մեքենաները</legend>
-                    </fieldset>
-                    <!-- Водители дня (ответ владельца №77): по умолчанию все вышли; сняли отметку — сборка возьмёт столько машин,
-                         сколько водителей, свободных посадит на машины невышедших -->
-                    <fieldset class="dp-crew" id="dpCrew" hidden>
-                        <legend class="dp-crew-t">Վարորդներ <span class="dp-chip" id="dpCrewCount"></span></legend>
-                        <p class="dp-steplead">Հանեք նշումը, եթե վարորդը չի եկել․ ծրագիրը կընտրի այնքան մեքենա, որքան վարորդ կա։</p>
-                        <div class="dp-trucks dp-crew-list" id="dpCrewList"></div>
-                    </fieldset>
-                    <p class="dp-note">Մեքենայի բեռնատարողությունը փոխվում է <a href="/routes/settings#trucks">կարգավորումներում</a>։</p>
+                    <table class="dp-fleet-t" id="dpTrucks">
+                        <caption class="rt-sr-only">Մեքենաներ, վարորդներ և ով է այսօր աշխատում։ Հանեք նշումը, եթե մեքենան այսօր դուրս չի գալիս։</caption>
+                        <thead><tr>
+                            <th scope="col" class="dp-fl-ck"><span class="rt-sr-only">Աշխատում է</span></th>
+                            <th scope="col">Մեքենա</th>
+                            <th scope="col" class="dp-h-m">Տանում է</th>
+                            <th scope="col">Վարորդ</th>
+                            <th scope="col">Այսօր</th>
+                        </tr></thead>
+                        <tbody id="dpFleetRows"></tbody>
+                    </table>
+                    <p class="dp-fl-none" id="dpFleetNone" hidden>Այս ցուցակում մեքենա չկա։</p>
+                    <div class="dp-fleet-foot">
+                        <!-- водители машин, которых нет в списке (машина выключена в настройках) -->
+                        <ul class="dp-fl-lost" id="dpFleetLost" aria-label="Վարորդներ, որոնց մեքենան ցուցակում չէ" hidden></ul>
+                        <p class="dp-note">Հանեք մեքենայի նշումը, եթե այն այսօր դուրս չի գալիս։ Բեռնատարողությունը փոխվում է <a href="/routes/settings#trucks">կարգավորումներում</a>։</p>
+                    </div>
                 </div>
             </section>
 
@@ -180,12 +188,16 @@
                         <h2 class="dp-step-title" id="dpStep2Title"><span class="rt-sr-only">Քայլ 2. </span>Պատվերներ</h2>
                         <p class="dp-step-sum" id="dpStep2Sum"></p>
                     </div>
+                    <span class="dp-step-n" id="dpStep2When"></span>
                     <button type="button" class="dp-step-tog" id="dpStep2Tog" aria-expanded="true" aria-controls="dpStep2Body" aria-describedby="dpStep2Title" hidden>
                         <span>Բացել</span><i class="fas fa-chevron-down" aria-hidden="true"></i></button>
                 </div>
                 <div class="dp-step-body" id="dpStep2Body">
                     <div class="dp-stats" id="dpOrderStats"></div>
-                    <p class="dp-steplead" id="dpOrdersEmpty" hidden>Այս օրվա համար պատվերներ դեռ չկան։</p>
+                    <div class="dp-empty" id="dpOrdersEmpty" hidden>
+                        <span class="dp-empty-ic" aria-hidden="true"><i class="fas fa-box-open"></i></span>
+                        <div><b>Այս օրվա համար պատվերներ դեռ չկան</b><p id="dpOrdersEmptyText"></p></div>
+                    </div>
                     <ul class="dp-attn" id="dpAttn" aria-label="Ինչին ուշադրություն դարձնել"></ul>
                     <p class="dp-note" id="dpOrdersInfo"></p>
                     <!-- день с планом выбран не по нынешним настройкам (№69, №74): применить их одной кнопкой -->
@@ -274,9 +286,9 @@
             </section>
         </div>
 
-        <!-- Главная кнопка сборки — всегда под рукой, и когда шаги свёрнуты -->
+        <!-- Главная кнопка сборки — всегда под рукой: до сборки — в панели дня (№99), после — под шагами (layoutWs) -->
         <div class="dp-run" id="dpRun">
-            <button type="button" id="dpBuild" class="rt-btn rt-btn-primary rt-btn-lg">
+            <button type="button" id="dpBuild" class="rt-btn rt-btn-primary rt-btn-lg" aria-describedby="dpBuildNote">
                 <i class="fas fa-truck-fast" aria-hidden="true"></i><span id="dpBuildText">Կազմել երթերը</span></button>
             <span class="dp-note" id="dpBuildNote">Մոտ 5 վայրկյան։</span>
             <button type="button" id="dpReset" class="rt-linkbtn dp-reset" hidden><i class="fas fa-eraser" aria-hidden="true"></i> Ջնջել երթերը և սկսել նորից</button>
@@ -640,6 +652,6 @@
         integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=2" data-yandex-key="{{ yandex_tiles_key }}"></script>
 <!-- панель «Հարցրու AI-ին» — до страницы: init подключает её (RoutesDispatchAI.attach) -->
-<script src="{{ url_for('static', filename='js/routes_dispatch_ai.js') }}?v=3"></script>
-<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=120"></script>
+<script src="{{ url_for('static', filename='js/routes_dispatch_ai.js') }}?v=4"></script>
+<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=121"></script>
 {% endblock %}
