@@ -2220,7 +2220,7 @@
         map.on('mouseout blur', () => map.scrollWheelZoom.disable());
         state.map = map;
         state.layers = { points: L.layerGroup().addTo(map), route: L.layerGroup().addTo(map), base: L.layerGroup().addTo(map) };
-        // тема ☀/☾ сменилась (routes_side.js): обводки и линии — из новых токенов, вид карты тот же
+        // тема ☀/☾ сменилась (routes_top.js): обводки и линии — из новых токенов, вид карты тот же
         document.addEventListener('rt-theme-change', () => { if (state.result) drawMap(true); });
     }
     const mapOpen = () => $('roMapBox').open;

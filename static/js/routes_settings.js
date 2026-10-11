@@ -1113,7 +1113,7 @@
     };
     // Цвет карты из токенов темы: Leaflet пишет цвет в SVG-атрибут, var() туда не передать — берём значение
     const themeColor = (name) => getComputedStyle(document.querySelector('.rt-page')).getPropertyValue(name).trim();
-    // тема ☀/☾ сменилась (routes_side.js) — границы перекрашиваются, вид карты тот же
+    // тема ☀/☾ сменилась (routes_top.js) — границы перекрашиваются, вид карты тот же
     document.addEventListener('rt-theme-change', () => Object.keys(ZONES).forEach(z => { if (state.zones[z].map) drawZone(z, false); }));
     const zoneValue = (z) => state.zones[z].pts.map(([a, b]) => [round(a, 6), round(b, 6)]);
 

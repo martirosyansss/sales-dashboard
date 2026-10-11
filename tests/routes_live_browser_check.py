@@ -652,7 +652,7 @@ def alarm2_checks(browser, base, cars, check, clear_acks, errors) -> None:
     clear_acks()
 
     # раскладка: страница — контейнер lvpage (три колонки — от 1241 px ширины самой страницы). Администратор — слева меню
-    # «Маршрутов»: 1366 и 1440 — две колонки, карточка под картой; «Гараж» — без меню: три колонки. Машина не выбрана — карта
+    # «Маршрутов» (Tesla+, 11.10): меню слева больше нет — у всех ролей верхняя панель раздела и ширина «Гаража»: три колонки. Машина не выбрана — карта
     # до правого края раскладки (в три колонки — и на месте карточки); выбрана — в три колонки карточка справа и карта уже,
     # в две — карточка под картой, ширина карты та же; Leaflet пересчитал размер — выбранная машина посередине карты
     def boxes(p):
@@ -661,12 +661,12 @@ def alarm2_checks(browser, base, cars, check, clear_acks, errors) -> None:
             return { layR: l.right, mapR: m.right, mapW: m.width, mapB: m.bottom, cardL: c.left, cardT: c.top, cardW: c.width,
                      cols: getComputedStyle(document.querySelector('.lv-layout')).gridTemplateColumns.split(' ').length }; }""")
     for width, role in ((1366, 'admin'), (1440, 'admin'), (1366, 'garage'), (1440, 'garage')):
-        name = f'{width} px, {"меню слева" if role == "admin" else "«Гараж» без меню"}'
+        name = f'{width} px, {"администратор" if role == "admin" else "«Гараж»"}, верхняя панель'
         p = open_page(role, viewport={'width': width, 'height': 900})
-        menu = p.locator('#rtShell').count() == 1
+        menu = p.locator('#rtTop').count() == 1
         free = boxes(p)
-        three = role == 'garage'
-        check(menu == (role == 'admin') and free['cols'] == (3 if three else 2) and not p.is_visible('#lvCard')
+        three = True
+        check(menu and free['cols'] == (3 if three else 2) and not p.is_visible('#lvCard')
               and abs(free['mapR'] - free['layR']) <= 1, f'круг 2, {name}: без выбора карта до правого края ({free})')
         if (width, role) == (1440, 'garage'):
             p.screenshot(path=str(SHOTS / 'live_alarm2_wide_noselect.png'))

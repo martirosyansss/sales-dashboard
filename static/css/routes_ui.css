@@ -1,0 +1,88 @@
+/* «Маршруты» — общие компоненты стиля Tesla+ для новых раскладок страниц (DESIGN.md, mockups/Garage.dc.html).
+   Только токены --rt-* из routes.css (обе темы ☀/☾), без литералов цвета. Подключается после routes.css.
+   Имена .rt-panel / .rt-btn / .rt-chip / .rt-seg / .rt-kpi / .rt-table уже заняты старыми страницами (routes.css), поэтому
+   новый вид — модификаторами и элементами (BEM): старые страницы не меняются, новые раскладки берут модификатор.
+     .rt-panel (routes.css: surface, радиус 18, тень) + .rt-panel--flat (без рамки) + .rt-panel__head / __title
+     .rt-pagehead (__title 26/600, __sub серый, __actions справа, переносится)
+     .rt-seg--tabs (контейнер chip-«таблетка», внутри button role="tab"; выбранная — surface и лёгкая тень)
+     .rt-btn--primary (акцент, «таблетка» 44 px) · .rt-btn--secondary (chip, 40 px, радиус 12) · .rt-btn--ghost
+     .rt-chip--warn / --risk / --ok / --accent / --neutral (мягкие «таблетки» статуса)
+     .rt-kpi--card (__cap 12.5 серый, __num 34/300 + __unit, __note 12 — цвет только со смыслом: .is-warn/.is-risk/.is-ok)
+     .rt-table--lined (строки через 1px line, .num справа, tfoot 600, tr.is-problem — risk-soft, .rt-status — «таблетка»)
+     .rt-bar (дорожка 4 px) > .rt-bar__fill (+ .rt-bar--warn / --risk / --ok)  */
+
+/* панель */
+.rt-panel--flat { border-color: transparent; }
+.rt-panel__head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px; padding: 16px 20px 10px; }
+.rt-page .rt-panel__title { margin: 0; font-size: 15px; font-weight: 600; }
+
+/* шапка страницы: H1, подпись, действия справа */
+.rt-pagehead { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 12px; padding: 4px 4px 0; margin-bottom: 16px; }
+.rt-page .rt-pagehead__title { margin: 0; font-size: 26px; font-weight: 600; letter-spacing: -.3px; line-height: 1.2; }
+.rt-pagehead__sub { margin: 2px 0 0; color: var(--rt-fg-dim); font-size: 12.5px; }
+.rt-pagehead__actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+
+/* сегменты-вкладки */
+.rt-seg--tabs { display: inline-flex; flex-wrap: wrap; gap: 0; padding: 3px; border: 0; border-radius: 999px; background: var(--rt-chip); }
+.rt-seg--tabs > button {
+    height: 34px; padding: 0 14px; border: 0; border-radius: 999px; background: transparent; color: var(--rt-fg-dim);
+    font: 400 13.5px var(--rt-font); white-space: nowrap; cursor: pointer; transition: background .15s, color .15s;
+}
+.rt-seg--tabs > button:hover { color: var(--rt-fg); }
+.rt-seg--tabs > button[aria-selected="true"], .rt-seg--tabs > button[aria-pressed="true"] {
+    background: var(--rt-panel); color: var(--rt-fg); font-weight: 600; box-shadow: 0 1px 3px var(--rt-shadow-c);
+}
+.rt-seg--tabs > button:focus-visible { outline: 2px solid var(--rt-acc); outline-offset: 1px; }
+
+/* кнопки */
+.rt-btn.rt-btn--primary { height: 44px; padding: 0 22px; border: 0; border-radius: 999px; background: var(--rt-acc-fill); color: var(--rt-acc-ink); font-size: 14.5px; font-weight: 600; }
+.rt-btn.rt-btn--primary:hover { background: var(--rt-acc-fill-hover); color: var(--rt-acc-ink); }
+.rt-btn.rt-btn--secondary { height: 40px; padding: 0 16px; border: 0; border-radius: var(--rt-radius-sm); background: var(--rt-chip); color: var(--rt-fg); font-weight: 500; }
+.rt-btn.rt-btn--secondary:hover { background: var(--rt-line); color: var(--rt-fg); }
+.rt-btn.rt-btn--ghost { height: 40px; padding: 0 12px; border: 0; border-radius: var(--rt-radius-sm); background: transparent; color: var(--rt-acc); font-weight: 500; }
+.rt-btn.rt-btn--ghost:hover { background: var(--rt-acc-glow); color: var(--rt-acc); }
+.rt-page a.rt-btn--primary, .rt-page a.rt-btn--primary:hover { color: var(--rt-acc-ink); }
+
+/* мягкие «таблетки» статуса */
+:is(.rt-chip--warn, .rt-chip--risk, .rt-chip--ok, .rt-chip--accent, .rt-chip--neutral) {
+    display: inline-flex; align-items: center; gap: 6px; height: auto; min-height: 0; padding: 3px 10px; border: 0; border-radius: 999px;
+    font-size: 12px; font-weight: 500; line-height: 1.4; white-space: nowrap;
+}
+.rt-chip--warn { background: var(--rt-warn-bg); color: var(--rt-warn); }
+.rt-chip--risk { background: var(--rt-danger-bg); color: var(--rt-danger); }
+.rt-chip--ok { background: var(--rt-ok-bg); color: var(--rt-ok); }
+.rt-chip--accent { background: var(--rt-acc-glow); color: var(--rt-acc); }
+.rt-chip--neutral { background: var(--rt-chip); color: var(--rt-fg-dim); }
+
+/* KPI-карточка: подпись, большое тонкое число с единицей, заметка */
+.rt-kpi.rt-kpi--card { gap: 4px; padding: 16px 20px; border: 0; box-shadow: var(--rt-shadow); }
+.rt-kpi__cap { color: var(--rt-fg-dim); font-size: 12.5px; }
+.rt-kpi__val { display: flex; align-items: baseline; gap: 6px; }
+.rt-kpi__num { font-size: 34px; font-weight: 300; letter-spacing: -.8px; line-height: 1.1; color: var(--rt-fg); font-variant-numeric: tabular-nums; }
+.rt-kpi__unit { color: var(--rt-fg-dim); font-size: 13px; }
+.rt-kpi__note { color: var(--rt-fg-dim); font-size: 12px; }
+.rt-kpi__note.is-warn { color: var(--rt-warn); }
+.rt-kpi__note.is-risk { color: var(--rt-danger); }
+.rt-kpi__note.is-ok { color: var(--rt-ok); }
+
+/* таблица: строки через 1px line, числа справа, итог в tfoot */
+.rt-table.rt-table--lined { border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.rt-table--lined thead th { padding: 8px; background: transparent; border: 0; color: var(--rt-fg-dim); font-size: 12px; font-weight: 500; text-align: left; }
+.rt-table--lined tbody td, .rt-table--lined tfoot td { padding: 11px 8px; border: 0; border-top: 1px solid var(--rt-line); vertical-align: middle; }
+.rt-table--lined tbody tr:last-child td { border-bottom: 0; }
+.rt-table--lined :is(th, td):first-child { padding-left: 20px; }
+.rt-table--lined :is(th, td):last-child { padding-right: 20px; }
+.rt-table--lined .num { text-align: right; white-space: nowrap; }
+.rt-table--lined tfoot td { font-weight: 600; padding-bottom: 14px; }
+.rt-table--lined tr.is-problem td { background: var(--rt-danger-bg); }
+.rt-status { display: inline-block; padding: 3px 10px; border-radius: 999px; background: var(--rt-chip); color: var(--rt-fg-dim); font-size: 12px; font-weight: 500; white-space: nowrap; }
+.rt-status.is-warn { background: var(--rt-warn-bg); color: var(--rt-warn); }
+.rt-status.is-risk { background: var(--rt-danger-bg); color: var(--rt-danger); }
+.rt-status.is-ok { background: var(--rt-ok-bg); color: var(--rt-ok); }
+
+/* полоса-индикатор 4 px */
+.rt-bar { display: block; height: 4px; border-radius: 4px; background: var(--rt-line); overflow: hidden; }
+.rt-bar__fill { display: block; height: 100%; border-radius: inherit; background: var(--rt-acc-fill); }
+.rt-bar--warn > .rt-bar__fill { background: var(--rt-warn); }
+.rt-bar--risk > .rt-bar__fill { background: var(--rt-danger); }
+.rt-bar--ok > .rt-bar__fill { background: var(--rt-ok); }

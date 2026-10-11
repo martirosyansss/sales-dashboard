@@ -367,7 +367,8 @@ def test_public_allowlist_covers_norm_and_basemap_only():
         '/static/css/routes_live.css', '/static/js/routes_live.js',    # карта машин «Մեքենաները առցանց» (№76)
         '/static/img/yandex_maps_logo_ru.svg',                          # её подложка — Яндекс, логотип обязателен
         '/static/css/routes_warehouse.css', '/static/js/routes_warehouse.js',    # склад «Պահեստ» (№78)
-        '/static/css/routes_drivers.css', '/static/js/routes_drivers.js'))       # «Վարորդներ» гаражу (№87)
+        '/static/css/routes_drivers.css', '/static/js/routes_drivers.js',        # «Վարորդներ» гаражу (№87)
+        '/static/css/routes_ui.css', '/static/js/routes_top.js'))                # Tesla+: компоненты и верхняя панель раздела
 
 
 def test_garage_page_tab_and_basemap_without_yandex_key(dashboard, monkeypatch):
@@ -380,8 +381,8 @@ def test_garage_page_tab_and_basemap_without_yandex_key(dashboard, monkeypatch):
     assert 'aria-hidden="true"></i>Նորմ և փաստ</button>' in html and 'Նորմա' not in html   # глоссарий: норма — նորմ
     assert html.count('Օրեր GPS-ով') == 1                               # заголовок столбца (подпись карточки — в JS)
     leaflet = html.index('leaflet@1.9.4/dist/leaflet.js')
-    basemap = html.index('js/routes_basemap.js?v=3" data-yandex-key=""')
-    assert leaflet < basemap < html.index('js/routes_garage.js?v=13')
+    basemap = html.index('js/routes_basemap.js?v=4" data-yandex-key=""')
+    assert leaflet < basemap < html.index('js/routes_garage.js?v=14')
     js = (ROOT / 'static' / 'js' / 'routes_garage.js').read_text(encoding='utf-8')
     assert "'/api/routes/garage/norm'" in js and "'/api/routes/garage/day?date='" in js
     assert '/api/routes/learning' not in js and 'road-lines' not in js

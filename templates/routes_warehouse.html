@@ -1,4 +1,5 @@
-{% extends "base_v2.html" %}
+{% extends "routes_base.html" %}
+{% set rt_nav = '/routes/warehouse' %}
 
 {# «Պահեստ» (ответ владельца №78): склад с телефона отмечает погрузку рейсов утверждённого плана; снаружи (роль «Склад»,
    araqich.orix.am) — без названия программы, как страница входа #}
@@ -10,12 +11,12 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400..700&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+Armenian:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=26">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_warehouse.css') }}?v=6">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=27">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_ui.css') }}?v=1">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_warehouse.css') }}?v=7">
 {% endblock %}
 
 {% block content %}
-{% include "_routes_theme.html" %}
 <div class="rt-page" id="whPage" lang="hy">
     <header class="rt-head">
         <h1 class="rt-title">Պահեստ</h1>

@@ -196,7 +196,7 @@ def test_dispatch_page_assets_tight_and_setting():
     assert "routes_dispatch.js') }}?v=120" in (ROOT / 'templates' / 'routes_dispatch.html').read_text(encoding='utf-8')
     settings = (ROOT / 'static' / 'js' / 'routes_settings.js').read_text(encoding='utf-8')
     assert "key: 'until_buffer_min', label: 'Ժամկետի պաշար, րոպե'" in settings
-    assert "routes_settings.js') }}?v=45" in (ROOT / 'templates' / 'routes_settings.html').read_text(encoding='utf-8')
+    assert "routes_settings.js') }}?v=46" in (ROOT / 'templates' / 'routes_settings.html').read_text(encoding='utf-8')
 
 
 # ============================== /day: срок, рейсы и матрица ==============================
@@ -560,7 +560,7 @@ def test_live_page_violet_info_for_until():
     js = (ROOT / 'static' / 'js' / 'routes_live.js').read_text(encoding='utf-8')
     assert "REORDER_TITLE = 'Վարորդը փոխեց հերթը՝ ժամկետի պատճառով'" in js
     assert "out.push(one('reorder', 3, REORDER_TITLE" in js and "r.reason === 'until'" in js
-    assert "routes_live.js') }}?v=24" in (ROOT / 'templates' / 'routes_live.html').read_text(encoding='utf-8')
+    assert "routes_live.js') }}?v=25" in (ROOT / 'templates' / 'routes_live.html').read_text(encoding='utf-8')
 
 
 # ============================== «Վարորդներ»: порядок со сменами ==============================

@@ -607,8 +607,8 @@ def test_learning_page_renders_and_linked():
     with app_v2.app.test_request_context('/routes/learning'):
         html = render_template('routes_learning.html', is_admin=True)   # меню раздела — администратору
     assert 'Ուսուցում և փաստ' in html and 'js/routes_learning.js' in html and 'href="/routes/learning" aria-current="page">' in html
-    # меню раздела — одно на все страницы (templates/_routes_side.html через routes_base.html)
-    assert '/routes/learning' in (ROOT / 'templates' / '_routes_side.html').read_text(encoding='utf-8')
+    # меню раздела — одно на все страницы (templates/_routes_top.html через routes_base.html)
+    assert '/routes/learning' in (ROOT / 'templates' / '_routes_top.html').read_text(encoding='utf-8')
     for name in ('routes_overview.html', 'routes_optimize.html', 'routes_settings.html', 'routes_dispatch.html'):
         assert (ROOT / 'templates' / name).read_text(encoding='utf-8').startswith('{% extends "routes_base.html" %}'), name
 

@@ -356,7 +356,7 @@ def test_api_scorecard_for_admin(client, sc_app):
     html = page.get_data(as_text=True)
     assert page.status_code == 200 and 'js/routes_drivers.js?v=7' in html and 'css/routes_drivers.css?v=3' in html
     assert 'data-key="cash"' in html and 'data-cash="1"' in html
-    assert '<a class="rt-secnav-link" href="/routes/drivers" aria-current="page">' in html and '<span class="rt-secnav-t">Վարորդներ</span>' in html
+    assert '<a class="rt-top-item" href="/routes/drivers" aria-current="page">' in html and '<span class="rt-top-lbl">Վարորդներ</span>' in html
 
 
 def test_api_scorecard_period_validation(client, sc_app):
@@ -647,7 +647,7 @@ def test_learning_api_eta_tile(client, sc_app):
     assert e['median_abs_min'] == pytest.approx(22.5, abs=2.5) and e['within_pct'] == 50.0   # (≈5 + ≈40) / 2
     html = (ROOT / 'templates' / 'routes_learning.html').read_text(encoding='utf-8')
     js = (ROOT / 'static' / 'js' / 'routes_learning.js').read_text(encoding='utf-8')
-    assert 'id="lrEta"' in html and "routes_learning.js') }}?v=19" in html and 'renderEta(d.eta)' in js
+    assert 'id="lrEta"' in html and "routes_learning.js') }}?v=20" in html and 'renderEta(d.eta)' in js
 
 
 # ============================== доступ ==============================

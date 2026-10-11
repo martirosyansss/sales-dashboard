@@ -1,0 +1,160 @@
+{#- Верхняя панель раздела «Маршруты» (Tesla+, решение владельца 11.10, вариант A «группы»: mockups/Nav.dc.html) — одна на
+    все страницы раздела (routes_base.html), вместо меню слева (№92) и тёмной шапки дашборда. Слева направо: ⋮⋮⋮ разделы
+    Sales Dashboard, «Երթուղիներ», группы-выпадашки (страница: (адрес, иконка Font Awesome, подпись, подсказка)), справа —
+    ⚙ настройки, тема ☀/☾, пользователь. Уже 900 px — группы в одной кнопке «☰ <страница>» с листом на всю ширину.
+    Роли: администратор — все группы; «Гараж» — плоско свои три страницы, «Склад» — свою (сервер пускает только их:
+    app_v2._garage_path_allowed / _warehouse_path_allowed); пользователь территории сюда не попадает (default-deny).
+    Поведение — static/js/routes_top.js. -#}
+{%- set rt_top_groups = [
+    ('Պլանավորում', [
+        ('/routes', 'fa-gauge-high', 'Ակնարկ', 'Ընթացիկ երթուղիներ'),
+        ('/routes/optimize', 'fa-wand-magic-sparkles', 'Օպտիմալացում', 'Այցերի օրեր և հաճախություն'),
+        ('/routes/learning', 'fa-graduation-cap', 'Ուսուցում', 'Ծրագիրը սովորում է փաստից'),
+    ]),
+    ('Առաքում', [
+        ('/routes/dispatch', 'fa-truck-ramp-box', 'Առաքում', 'Օրվա երթերը և բեռնագիր'),
+        ('/routes/live', 'fa-satellite-dish', 'Մեքենաները առցանց', 'Քարտեզ, շեղումներ, ահազանգեր'),
+    ]),
+    ('Թիմ', [
+        ('/routes/drivers', 'fa-id-card', 'Վարորդներ', 'Միավոր և ցուցանիշներ'),
+        ('/routes/araqich', 'fa-people-carry-box', 'Առաքիչների KPI', 'Գնահատական և պլան'),
+        ('/routes/garage', 'fa-warehouse', 'Ավտոտնակ', 'Վերանորոգում, վազք, նորմ'),
+    ]),
+    ('Ֆինանսներ', [
+        ('/routes/pay', 'fa-money-check-dollar', 'Աշխատավարձ', 'Առաքիչների վարձը ըստ ամսի'),
+        ('/routes/cost', 'fa-scale-balanced', 'Առաքման արժեք', 'Ծախսը ըստ խանութի'),
+    ]),
+] -%}
+{%- set rt_top_settings = ('/routes/settings', 'fa-gear', 'Կարգավորումներ', 'Մեքենաներ, նորմեր, կանոններ') -%}
+{%- set rt_top_all = rt_top_groups | map(attribute=1) | sum(start=[]) -%}
+{%- if is_admin -%}
+    {%- set rt_top_flat = none -%}
+{%- elif is_garage -%}
+    {#- «Гараж»: журнал (его домашняя страница), карта машин, водители — app_v2._garage_path_allowed #}
+    {%- set rt_ns = namespace(flat=[]) -%}
+    {%- for u in ['/routes/garage', '/routes/live', '/routes/drivers'] -%}
+        {%- set rt_ns.flat = rt_ns.flat + (rt_top_all | selectattr(0, 'equalto', u) | list) -%}
+    {%- endfor -%}
+    {%- set rt_top_flat = rt_ns.flat -%}
+{%- elif is_public_role -%}
+    {%- set rt_top_flat = [('/routes/warehouse', 'fa-boxes-packing', 'Պահեստ', 'Բեռնման նշումներ')] -%}
+{%- else -%}
+    {%- set rt_top_flat = [] -%}
+{%- endif -%}
+{%- set rt_top_wh = ('/routes/warehouse', 'fa-boxes-packing', 'Պահեստ', 'Բեռնման նշումներ') -%}
+{%- set rt_top_here = (rt_top_all + [rt_top_settings, rt_top_wh]) | selectattr(0, 'equalto', rt_nav) | map(attribute=2) | first | default('Երթուղիներ') -%}
+{%- set rt_user = (current_user.display_name if current_user and current_user.display_name else current_username) or '' -%}
+{%- macro rt_top_item(item) -%}
+<li><a class="rt-top-item" href="{{ item[0] }}"{% if item[0] == rt_nav %} aria-current="page"{% endif %}>
+    <span class="rt-top-ico" aria-hidden="true"><i class="fas {{ item[1] }}"></i></span>
+    <span class="rt-top-txt"><span class="rt-top-lbl">{{ item[2] }}</span><span class="rt-top-hint">{{ item[3] }}</span></span></a></li>
+{%- endmacro -%}
+<header class="rt-page rt-top" id="rtTop" lang="hy">
+    {%- if not is_public_role %}
+    {#- разделы Sales Dashboard — те же адреса и права, что у шапки дашборда (base_v2.html, _site_nav.html) #}
+    <div class="rt-top-pop">
+        <button type="button" class="rt-top-iconbtn" id="rtTopApps" data-rt-pop aria-expanded="false" aria-controls="rtTopAppsPanel"
+                aria-label="Sales Dashboard-ի բաժինները" title="Sales Dashboard-ի բաժինները">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="5" r="2"/><circle cx="12" cy="5" r="2"/><circle cx="19" cy="5" r="2"/><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/><circle cx="5" cy="19" r="2"/><circle cx="12" cy="19" r="2"/><circle cx="19" cy="19" r="2"/></svg>
+        </button>
+        <div class="rt-top-panel rt-top-apps" id="rtTopAppsPanel" hidden>
+            {%- if is_admin %}
+            {%- from "_site_nav.html" import nav_groups %}
+            <ul class="rt-top-list"><li><a class="rt-top-link" href="/"><i class="fas fa-gauge-high fa-fw" aria-hidden="true"></i>Dashboard</a></li>
+                <li><a class="rt-top-link" href="/settings"><i class="fas fa-gear fa-fw" aria-hidden="true"></i>Настройки</a></li></ul>
+            {%- for title, icon, items in nav_groups %}
+            <div class="rt-top-appgrp">
+                <p class="rt-top-cap" id="rtTopAppsG{{ loop.index }}">{{ title }}</p>
+                <ul class="rt-top-list" aria-labelledby="rtTopAppsG{{ loop.index }}">
+                    {%- for item in items %}
+                    <li><a class="rt-top-link" href="{{ item[0] }}"><i class="fas {{ item[1] }} fa-fw" aria-hidden="true"></i>{{ item[2] }}</a></li>
+                    {%- endfor %}
+                </ul>
+            </div>
+            {%- endfor %}
+            {%- else %}
+            <ul class="rt-top-list">
+                <li><a class="rt-top-link" href="/customers-grid"><i class="fas fa-table fa-fw" aria-hidden="true"></i>Клиенты Grid</a></li>
+                <li><a class="rt-top-link" href="/areas"><i class="fas fa-map-location-dot fa-fw" aria-hidden="true"></i>Территории</a></li>
+            </ul>
+            {%- endif %}
+        </div>
+    </div>
+    {%- endif %}
+    <span class="rt-top-brand"><span class="rt-top-logo" aria-hidden="true">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3c3.5 4.2 6 7.6 6 10.6A6 6 0 0 1 6 13.6C6 10.6 8.5 7.2 12 3z"/></svg></span>
+        <span class="rt-top-name">Երթուղիներ</span></span>
+    <nav class="rt-top-nav" aria-label="Երթուղիների բաժիններ">
+        {%- if rt_top_flat is none %}
+        {%- for label, items in rt_top_groups %}
+        {%- set on = items | selectattr(0, 'equalto', rt_nav) | list | length > 0 %}
+        <div class="rt-top-pop">
+            <button type="button" class="rt-top-pill{% if on %} is-current{% endif %}" id="rtTopG{{ loop.index }}" data-rt-pop
+                    aria-expanded="false" aria-controls="rtTopG{{ loop.index }}Panel">{{ label }}<svg class="rt-top-caret" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></button>
+            <div class="rt-top-panel" id="rtTopG{{ loop.index }}Panel" hidden>
+                <ul class="rt-top-list" aria-label="{{ label }}">
+                    {%- for item in items %}
+                    {{ rt_top_item(item) }}
+                    {%- endfor %}
+                </ul>
+            </div>
+        </div>
+        {%- endfor %}
+        {%- else %}
+        {%- for item in rt_top_flat %}
+        <a class="rt-top-pill" href="{{ item[0] }}"{% if item[0] == rt_nav %} aria-current="page"{% endif %}>{{ item[2] }}</a>
+        {%- endfor %}
+        {%- endif %}
+    </nav>
+    {%- if rt_top_flat is none or rt_top_flat | length > 1 %}
+    <button type="button" class="rt-top-menu" id="rtTopMenu" data-rt-pop aria-expanded="false" aria-controls="rtTopSheet">
+        <i class="fas fa-bars" aria-hidden="true"></i><span class="rt-top-menu-v">{{ rt_top_here }}</span>
+        <svg class="rt-top-caret" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></button>
+    {%- endif %}
+    <div class="rt-top-end">
+        {%- if is_admin %}
+        <a class="rt-top-iconbtn" href="{{ rt_top_settings[0] }}" aria-label="Կարգավորումներ" title="Կարգավորումներ"{% if rt_nav == rt_top_settings[0] %} aria-current="page"{% endif %}><i class="fas fa-gear" aria-hidden="true"></i></a>
+        {%- endif %}
+        {#- тема ☀/☾ (Tesla+): выбор — в этом браузере (routes_top.js), до отрисовки ставит _routes_theme.html #}
+        <div class="rt-theme" role="group" aria-label="Թեմա">
+            <button type="button" class="rt-theme-btn" data-rt-theme-set="light" aria-pressed="false" aria-label="Լույս թեմա" title="Լույս թեմա"><i class="fas fa-sun" aria-hidden="true"></i></button>
+            <button type="button" class="rt-theme-btn" data-rt-theme-set="dark" aria-pressed="true" aria-label="Մութ թեմա" title="Մութ թեմա"><i class="fas fa-moon" aria-hidden="true"></i></button>
+        </div>
+        <div class="rt-top-pop">
+            <button type="button" class="rt-top-user" id="rtTopUser" data-rt-pop aria-expanded="false" aria-controls="rtTopUserPanel"
+                    aria-label="Օգտատեր՝ {{ rt_user }}" title="{{ rt_user }}">{{ (rt_user[:1] or '?') | upper }}</button>
+            <div class="rt-top-panel rt-top-userpanel" id="rtTopUserPanel" hidden>
+                <p class="rt-top-who"><b>{{ rt_user or 'Гость' }}</b>
+                    <span>{% if is_admin %}Администратор{% elif is_garage %}Ավտոտնակ{% elif is_public_role %}Պահեստ{% else %}Территории: {{ (current_user.areas | join(', ')) if current_user and current_user.areas else '—' }}{% endif %}</span></p>
+                <form method="post" action="{{ url_for('logout') }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() if csrf_token is defined else '' }}">
+                    <button class="rt-top-link rt-top-logout" type="submit"><i class="fas fa-right-from-bracket fa-fw" aria-hidden="true"></i>Ելք</button>
+                </form>
+            </div>
+        </div>
+    </div>
+    {%- if rt_top_flat is none or rt_top_flat | length > 1 %}
+    {#- узкий экран: все страницы одним листом #}
+    <div class="rt-top-panel rt-top-sheet" id="rtTopSheet" hidden>
+        {%- if rt_top_flat is none %}
+        {%- for label, items in rt_top_groups %}
+        <div class="rt-top-sheetgrp">
+            <p class="rt-top-cap" id="rtTopSheetG{{ loop.index }}">{{ label }}</p>
+            <ul class="rt-top-list" aria-labelledby="rtTopSheetG{{ loop.index }}">
+                {%- for item in items %}
+                {{ rt_top_item(item) }}
+                {%- endfor %}
+            </ul>
+        </div>
+        {%- endfor %}
+        <div class="rt-top-sheetgrp"><ul class="rt-top-list">{{ rt_top_item(rt_top_settings) }}</ul></div>
+        {%- else %}
+        <ul class="rt-top-list">
+            {%- for item in rt_top_flat %}
+            {{ rt_top_item(item) }}
+            {%- endfor %}
+        </ul>
+        {%- endif %}
+    </div>
+    {%- endif %}
+</header>

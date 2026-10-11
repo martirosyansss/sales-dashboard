@@ -1,6 +1,5 @@
 /* «Պահեստ» /routes/warehouse — склад отмечает погрузку рейсов с телефона (ответ владельца №78).
-   Поверх routes.css: те же токены (--rt-*), только классы этой страницы (.wh-*) и шапка ролей из интернета (.gj-nav,
-   base_v2.html — как у «Ավտոտնակ»). Телефон (360–430 px): кнопки ≥ 48 px, карточки машин во всю ширину. Новых файлов
+   Поверх routes.css: те же токены (--rt-*), только классы этой страницы (.wh-*) (шапка — общая панель раздела, _routes_top.html). Телефон (360–430 px): кнопки ≥ 48 px, карточки машин во всю ширину. Новых файлов
    статики сверх этих двух нет: снаружи открыт только их список (app_v2._PUBLIC_STATIC, deploy/COURIER_TUNNEL.md). */
 
 #whPage {
@@ -10,24 +9,6 @@
 #whPage .rt-title { font-size: clamp(1.5rem, 1.1rem + 1.6vw, 2.125rem); }
 main:has(> #whPage) { padding-top: 12px !important; }
 
-/* Шапка ролей из интернета (base_v2.html, .gj-nav): кто вошёл и «Ելք» — как у «Ավտոտնակ». Цвета-литералы намеренно:
-   шапка вне .rt-page (токены --rt-* до неё не доходят), на тёмной полосе .navbar дашборда — тёмной в обеих темах */
-.gj-nav { padding: 6px max(12px, env(safe-area-inset-right, 0px)) 6px max(12px, env(safe-area-inset-left, 0px)); backdrop-filter: none; }
-.gj-nav > .container-fluid { flex-wrap: nowrap; gap: 12px; padding: 0; }
-.gj-nav form { margin: 0; flex: 0 0 auto; }
-.gj-nav-user {
-    display: inline-flex; align-items: center; gap: 9px; min-width: 0;
-    color: #e8edf4; font: 600 1rem/1.3 'Google Sans', 'Noto Sans Armenian', system-ui, sans-serif;
-}
-.gj-nav-user > i { color: #38bdf8; font-size: 1.25rem; }
-.gj-nav-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.gj-logout {
-    display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 16px; border-radius: 999px;
-    border: 1px solid #283140; background: #1e2530; color: #e8edf4; cursor: pointer;
-    font: 600 .9375rem 'Google Sans', 'Noto Sans Armenian', system-ui, sans-serif;
-}
-.gj-logout:hover { color: #38bdf8; border-color: #2287b8; }
-.gj-logout:focus-visible { outline: 2px solid #38bdf8; outline-offset: 2px; }
 
 /* Выбор дня: сегодня / следующий рабочий — прилипает к верху */
 .wh-days {

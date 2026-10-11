@@ -219,6 +219,7 @@ curl.exe -i https://araqich.orix.am/api/courier/v1/ping
 | `/routes/warehouse` | GET | склад «Պահեստ» (№78): отметки «Բեռնված է» по утверждённому плану (сессия роли «Склад»; без входа — на `/login`) |
 | `/api/routes/warehouse`, `/api/routes/warehouse/…` | GET, POST | API склада (POST — с CSRF, как в офисе); Բեռնագիր машины — `/api/routes/warehouse/waybill`, лист рисует общий `base.js` — новых правил не нужно |
 | `/static/css/routes_warehouse.css`, `/static/js/routes_warehouse.js` | GET | статика страницы склада (прочая — общая с журналом: tokens, base, routes) |
+| `/static/css/routes_ui.css`, `/static/js/routes_top.js` | GET | Tesla+ (11.10): общие компоненты и верхняя панель раздела — на всех страницах ролей «Гараж» и «Склад» |
 | `/api/courier/v1/…` | как раньше | API терминалов |
 
 Всё остальное снаружи — 404: в приложении (`app_v2.py`: `_public_path_allowed`, `_PUBLIC_STATIC`), в nginx и в
@@ -384,6 +385,9 @@ curl.exe -i https://araqich.orix.am/api/courier/v1/ping
    location ^~ /api/routes/warehouse/       { include snippets/araqich-garage-public.conf; }
    location = /static/css/routes_warehouse.css { include snippets/araqich-garage-public.conf; }
    location = /static/js/routes_warehouse.js   { include snippets/araqich-garage-public.conf; }
+   # Tesla+ (11.10): верхняя панель раздела и общие компоненты — на всех страницах «Гаража» и «Склада»
+   location = /static/css/routes_ui.css     { include snippets/araqich-garage-public.conf; }
+   location = /static/js/routes_top.js      { include snippets/araqich-garage-public.conf; }
 
    # Не от туннеля или без заголовка Cloudflare (офис по старой ссылке http://192.168.1.24:5000/login, прочие
    # процессы на 192.168.1.11, curl на CT115 без заголовка) — ровно как location /.
@@ -405,7 +409,7 @@ curl.exe -i https://araqich.orix.am/api/courier/v1/ping
        path: '^/api/routes/((garage|live|warehouse)(/[a-z0-9_-]+)*|drivers/scorecard)$'
        service: <как у правила ^/api/courier/v1/>
      - hostname: araqich.orix.am
-       path: '^/static/(css/(tokens|base|routes|routes_garage|routes_live|routes_warehouse|routes_drivers)\.css|js/(base|routes_garage|routes_basemap|routes_live|routes_warehouse|routes_drivers)\.js|img/yandex_maps_logo_ru\.svg)$'
+       path: '^/static/(css/(tokens|base|routes|routes_ui|routes_garage|routes_live|routes_warehouse|routes_drivers)\.css|js/(base|routes_top|routes_garage|routes_basemap|routes_live|routes_warehouse|routes_drivers)\.js|img/yandex_maps_logo_ru\.svg)$'
        service: <как у правила ^/api/courier/v1/>
    ```
    Проверка и перезапуск: `cloudflared tunnel --config <config.yml> ingress validate`;

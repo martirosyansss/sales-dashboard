@@ -74,7 +74,7 @@
     // точка, где машина была по GPS и уехала, а водитель не отметил (s.unmarked), — свой цвет
     const storeOf = (s) => STORE[s.unmarked ? 'unmarked' : s.status] || STORE.pending;
     // Цвета карты — из токенов темы: Leaflet пишет цвет в SVG-атрибут, var() туда не передать — берём значение.
-    // paint({ color: '--rt-…' }) — стиль слоя и options.rtStyle: при смене темы ☀/☾ (routes_side.js) слой перекрашивается
+    // paint({ color: '--rt-…' }) — стиль слоя и options.rtStyle: при смене темы ☀/☾ (routes_top.js) слой перекрашивается
     const tc = (name) => getComputedStyle(document.querySelector('.rt-page')).getPropertyValue(name).trim();
     const paint = (tokens) => {
         const style = () => Object.fromEntries(Object.entries(tokens).map(([k, v]) => [k, tc(v)]));

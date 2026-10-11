@@ -784,7 +784,7 @@
         state.custLayer = L.layerGroup().addTo(map);
         state.routeLayer = L.layerGroup().addTo(map);
         state.baseLayer = L.layerGroup().addTo(map);
-        // тема ☀/☾ сменилась (routes_side.js): обводки и линии — из новых токенов, вид карты тот же
+        // тема ☀/☾ сменилась (routes_top.js): обводки и линии — из новых токенов, вид карты тот же
         document.addEventListener('rt-theme-change', () => { if (state.data) renderMap(true); });
     }
 

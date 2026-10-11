@@ -1,0 +1,32 @@
+{#- Разделы шапки Sales Dashboard — одно место: шапка base_v2.html и кнопка «Sales Dashboard-ի բաժինները» в верхней
+    панели «Маршрутов» (_routes_top.html). Пункт: (адрес, иконка, подпись, совпадение по префиксу). -#}
+    {%- set nav_groups = [
+        ('Продажи', 'fa-chart-column', [
+            ('/managers', 'fa-users', 'Менеджеры', False),
+            ('/managers-kpi', 'fa-ranking-star', 'KPI менеджеров', False),
+            ('/quantity', 'fa-boxes-stacked', 'Количество', False),
+            ('/groups', 'fa-layer-group', 'Группы', False),
+            ('/distributors', 'fa-building', 'Дистрибьюторы', False),
+            ('/plans', 'fa-bullseye', 'Планы', False),
+        ]),
+        ('Клиенты', 'fa-store', [
+            ('/customers', 'fa-store', 'Клиенты и долги', False),
+            ('/customers-grid', 'fa-table', 'Клиенты Grid', False),
+            ('/customer-cards', 'fa-address-card', 'Карточки клиентов', False),
+            ('/areas', 'fa-map-location-dot', 'Территории', False),
+        ]),
+        ('Логистика', 'fa-truck-fast', [
+            ('/production', 'fa-industry', 'Склад', True),
+            ('/routes', 'fa-route', 'Маршруты', True),
+            ('/routes/live', 'fa-satellite-dish', 'Մեքենաները առցանց', False),
+            ('/courier', 'fa-truck', 'Առաքիչ', False),
+            ('/courier/money', 'fa-coins', 'Վարորդների գումարը', False),
+            ('/courier/invoice', 'fa-file-invoice', 'Ապրանքագիր', False),
+            ('/courier/tare', 'fa-box-open', 'Տարա', False),
+        ]),
+        ('Инструменты', 'fa-toolbox', [
+            ('/reports', 'fa-file-lines', 'Отчеты', False),
+            ('/dashboard-builder', 'fa-puzzle-piece', 'Конструктор', False),
+            ('/ai-assistant', 'fa-robot', 'AI Помощник', False),
+        ]),
+    ] -%}

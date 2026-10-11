@@ -108,11 +108,12 @@ def test_template_select_other_note_versions_and_no_new_static():
     assert 'id="gjWhatOther" class="rt-input" type="text" maxlength="120"' in HTML
     assert '<span id="gjSpreadWhy" class="gj-suggest" hidden></span>' in HTML
     assert 'placeholder="Մանրամասներ՝ օրինակ՝ առջևի, ձախ, որտեղ են վերանորոգել, կտրոնի համար"' in HTML
-    assert "routes_garage.css') }}?v=10" in HTML and "routes_garage.js') }}?v=13" in HTML
+    assert "routes_garage.css') }}?v=11" in HTML and "routes_garage.js') }}?v=14" in HTML
     assert '.gj-what-other { margin-top: 8px; }' in CSS
     # вход из интернета пропускает ровно эту статику (app_v2._PUBLIC_STATIC); routes_basemap.js — карта дня «Նորմ և
-    # փաստ» (04.10), в списке открытых снаружи вместе с ним
-    assert re.findall(r"filename='((?:css|js)/[^']+)'", HTML) == ['css/routes.css', 'css/routes_garage.css',
+    # փաստ» (04.10), в списке открытых снаружи вместе с ним; routes_ui.css — общие компоненты Tesla+ (11.10, тоже в списке;
+    # верхнюю панель routes_top.js подключает routes_base.html)
+    assert re.findall(r"filename='((?:css|js)/[^']+)'", HTML) == ['css/routes.css', 'css/routes_ui.css', 'css/routes_garage.css',
                                                                    'js/routes_basemap.js', 'js/routes_garage.js']
     text = [ln for ln in JS[JS.index('const OTHER'):JS.index('function syncOdoHint')].splitlines()
             if not ln.strip().startswith('//')]

@@ -729,7 +729,7 @@
         map.layers = L.layerGroup().addTo(map.obj);
     }
     // Цвета карты — из токенов темы (routes.css): Leaflet рисует на canvas, var() туда не передать — берём значение;
-    // у слоя в options.rtStyle — как его покрасить, при смене темы ☀/☾ (routes_side.js) слои перекрашиваются
+    // у слоя в options.rtStyle — как его покрасить, при смене темы ☀/☾ (routes_top.js) слои перекрашиваются
     const themeColor = (name) => getComputedStyle(document.querySelector('.rt-page')).getPropertyValue(name).trim();
     const PLAN_STYLE = () => ({ color: themeColor('--rt-fg-mute') });
     const TRACK_STYLE = () => ({ color: themeColor('--rt-route-1') });

@@ -14,25 +14,6 @@
 /* не под прилипшими вкладками: карточка при переходе к ней, поле при фокусе (ошибка проверки, «Далее» на клавиатуре) */
 #gjPage .rt-card, #gjPage .rt-input, #gjPage .rt-select { scroll-margin-top: calc(var(--gj-top, 0px) + 84px); }
 
-/* Шапка роли «Гараж» (base_v2.html, .gj-nav): кто вошёл и «Ելք» — без меню и без названия программы.
-   Цвета-литералы намеренно: шапка лежит вне .rt-page (токены --rt-* до неё не доходят) на тёмной полосе .navbar
-   дашборда (base.css), которая тёмная в обеих темах ☀/☾ «Маршрутов» */
-.gj-nav { padding: 6px max(12px, env(safe-area-inset-right, 0px)) 6px max(12px, env(safe-area-inset-left, 0px)); backdrop-filter: none; }
-.gj-nav > .container-fluid { flex-wrap: nowrap; gap: 12px; padding: 0; }
-.gj-nav form { margin: 0; flex: 0 0 auto; }
-.gj-nav-user {
-    display: inline-flex; align-items: center; gap: 9px; min-width: 0;
-    color: #e8edf4; font: 600 1rem/1.3 'Google Sans', 'Noto Sans Armenian', system-ui, sans-serif;
-}
-.gj-nav-user > i { color: #38bdf8; font-size: 1.25rem; }
-.gj-nav-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.gj-logout {
-    display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 16px; border-radius: 999px;
-    border: 1px solid #283140; background: #1e2530; color: #e8edf4; cursor: pointer;
-    font: 600 .9375rem 'Google Sans', 'Noto Sans Armenian', system-ui, sans-serif;
-}
-.gj-logout:hover { color: #38bdf8; border-color: #2287b8; }
-.gj-logout:focus-visible { outline: 2px solid #38bdf8; outline-offset: 2px; }
 main:has(> #gjPage) { padding-top: 12px !important; }   /* py-4 дашборда — на телефоне лишний экранный отступ */
 
 /* Пояснения «Ինչպե՞ս …»: на ПК раскрыты всегда (кнопки нет), на телефоне свёрнуты (routes_garage.js syncHelp) */

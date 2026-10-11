@@ -81,6 +81,8 @@
     {% block extra_css %}{% endblock %}
 </head>
 <body>
+    {#- site_navbar / site_footer — страницы «Маршрутов» (routes_base.html) рисуют свою верхнюю панель вместо них -#}
+    {% block site_navbar %}
     {% if is_public_role %}
     <!-- Роли «Гараж» (№53) и «Склад» (№78): только своя страница, с телефона — короткая шапка без меню: кто вошёл и выход -->
     <header class="navbar navbar-dark gj-nav">
@@ -100,36 +102,7 @@
         если открыта любая его страница. -#}
     {%- set p = request.path -%}
     {%- macro is_on(item) -%}{{ 'on' if (p.startswith(item[0]) if item[3] else p == item[0]) }}{%- endmacro -%}
-    {%- set nav_groups = [
-        ('Продажи', 'fa-chart-column', [
-            ('/managers', 'fa-users', 'Менеджеры', False),
-            ('/managers-kpi', 'fa-ranking-star', 'KPI менеджеров', False),
-            ('/quantity', 'fa-boxes-stacked', 'Количество', False),
-            ('/groups', 'fa-layer-group', 'Группы', False),
-            ('/distributors', 'fa-building', 'Дистрибьюторы', False),
-            ('/plans', 'fa-bullseye', 'Планы', False),
-        ]),
-        ('Клиенты', 'fa-store', [
-            ('/customers', 'fa-store', 'Клиенты и долги', False),
-            ('/customers-grid', 'fa-table', 'Клиенты Grid', False),
-            ('/customer-cards', 'fa-address-card', 'Карточки клиентов', False),
-            ('/areas', 'fa-map-location-dot', 'Территории', False),
-        ]),
-        ('Логистика', 'fa-truck-fast', [
-            ('/production', 'fa-industry', 'Склад', True),
-            ('/routes', 'fa-route', 'Маршруты', True),
-            ('/routes/live', 'fa-satellite-dish', 'Մեքենաները առցանց', False),
-            ('/courier', 'fa-truck', 'Առաքիչ', False),
-            ('/courier/money', 'fa-coins', 'Վարորդների գումարը', False),
-            ('/courier/invoice', 'fa-file-invoice', 'Ապրանքագիր', False),
-            ('/courier/tare', 'fa-box-open', 'Տարա', False),
-        ]),
-        ('Инструменты', 'fa-toolbox', [
-            ('/reports', 'fa-file-lines', 'Отчеты', False),
-            ('/dashboard-builder', 'fa-puzzle-piece', 'Конструктор', False),
-            ('/ai-assistant', 'fa-robot', 'AI Помощник', False),
-        ]),
-    ] -%}
+    {%- from "_site_nav.html" import nav_groups -%}
     <nav class="navbar navbar-expand-xl navbar-dark sticky-top app-nav">
         <div class="container-fluid">
             <a class="navbar-brand" href="/">
@@ -221,12 +194,14 @@
         </div>
     </nav>
     {% endif %}
+    {% endblock %}
 
     <main class="container-fluid py-4">
-        {#- page — обёртка вокруг content: «Маршруты» (routes_base.html) рисуют вокруг страницы меню раздела слева -#}
+        {#- page — обёртка вокруг content: «Маршруты» (routes_base.html) рисуют над страницей свою верхнюю панель -#}
         {% block page %}{% block content %}{% endblock %}{% endblock %}
     </main>
 
+    {% block site_footer %}
     {% if not is_public_role %}
     <footer class="text-center py-3 mt-5" style="border-top: 1px solid var(--border-color);">
         <div class="container">
@@ -237,6 +212,7 @@
         </div>
     </footer>
     {% endif %}
+    {% endblock %}
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js" integrity="sha384-geWF76RCwLtnZ8qwWowPQNguL3RmwHVBC9FhGdlKrxdiJJigb/j/68SIy3Te4Bkz" crossorigin="anonymous"></script>
     
