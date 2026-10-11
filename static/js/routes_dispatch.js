@@ -661,6 +661,7 @@
             try { await reloadQuiet(); } catch (e) { return; }
             if (picked && state.day === day) {
                 $('dpTrucks').querySelectorAll('input.dp-tkpick:not(:disabled)').forEach(cb => { cb.checked = picked.includes(cb.value); syncFleetRow(cb.closest('tr')); });
+                applyFleetFilter();
                 renderTruckCount();
                 renderFresh();
             }
@@ -1511,6 +1512,7 @@
             cb.setAttribute('aria-label', 'Աշխատում է՝ ' + truckLabel(t));
             cb.addEventListener('change', () => {
                 syncFleetRow(tr);
+                applyFleetFilter();       // строка, которая больше не подходит фильтру, уходит; пустой фильтр — подпись
                 renderTruckCount();
                 renderFresh();
                 if (state.data.plan) renderUnassigned(state.data.plan);
@@ -3402,6 +3404,8 @@
         const cb = [...$('dpTrucks').querySelectorAll('input.dp-tkpick')].find(x => x.value === code);
         if (!cb || cb.disabled) { showActionError(new Error('Մեքենան՝ ' + truckLabel(truckBy(code)) + ', 1-ին քայլում նշել հնարավոր չէ — թարմացրեք էջը։')); return; }
         cb.checked = true;
+        syncFleetRow(cb.closest('tr'));
+        applyFleetFilter();
         renderTruckCount();
         build();
     }
@@ -5740,6 +5744,7 @@
         const was = selectedTrucks(), want = new Set(v.trucks);
         const tick = (on) => {   // галочки — заново из DOM: после ошибки сборки render() пересоздаёт их
             $('dpTrucks').querySelectorAll('input.dp-tkpick').forEach(cb => { if (!cb.disabled) { cb.checked = on.has(cb.value); syncFleetRow(cb.closest('tr')); } });
+            applyFleetFilter();
             renderTruckCount();
             renderFresh();
         };

@@ -25,6 +25,8 @@ C таблица «Մեքենաներ և վարորդներ»: 12 строк (11
   сняли все — «0 / 11» и «կարող է դուրս գալ 0»;
 D тексты: «Երթերը կազմված են» нигде нет, пока плана нет; про менеджеров — «Կարգավորումների կանոնով», без
   «Նշեք գոնե մեկ մենեջեր» и «Տանում ենք միայն 0»;
+  в открытом «Խնդիր» снятая проблемная машина сразу уходит из него (строк = чипов), в «Պատրաստ» без строк — подпись;
+G числа шага 2 (заказ дня на 12 345 կգ и 1 250 000 ֏) при 1366×768 и 1920×1080: каждое — в своей ячейке и в карточке;
 F водитель машины с неполными данными — в подвале («մեքենայի տվյալները թերի են») с «եկել է»: снять — диалог;
 E 1366×768, 1920×1080, 390×860: нет горизонтальной прокрутки, фон страницы тёмный до низа документа;
 ошибки страницы (pageerror) и консоли — провал (кроме сетевых для внешних ресурсов).
@@ -54,6 +56,7 @@ from test_route_optimizer import _dispatch_setup, _dorder, make_snapshot  # noqa
 
 PORT = 8795
 BASE = f'http://127.0.0.1:{PORT}'
+BIG_BASE = f'http://127.0.0.1:{PORT + 1}'
 DAY = '2026-10-01'
 NOW = datetime(2026, 9, 30, 18, 0)
 # машина → (марка ERP, кг, въезд в центр)
@@ -70,10 +73,12 @@ DRIVERS = {'Հարությունյան Արմեն': ('333DN33', None, 'apk:7'), 
            'Իսկանդարյան Կորյուն': ('991AT61', '2026-10-05', 'erp:auto'),
            'Համբարձումյան Աղվան': (OFF_TRUCK, '2026-10-05', 'qa')}
 BACKLOG = 3
+BIG_KG, BIG_AMD = 12345.0, 1250000.0      # заказ дня «как у владельца»: суммы — миллионы
 
 
-def build(tmp: str):
-    """Стенд «как у владельца 13.10» (см. docstring); views._clock и _yerevan_now — накануне DAY."""
+def build(tmp: str, big: bool = False):
+    """Стенд «как у владельца 13.10» (см. docstring); views._clock и _yerevan_now — накануне DAY. big — ещё заказ дня
+    менеджера 1 на BIG_KG кг и BIG_AMD ֏ (числа шага 2 в узкой колонке, G)."""
     app = base.build_app(tmp, base.FakeClient())
     state = app.extensions['route_optimizer']
     snap = make_snapshot()
@@ -84,6 +89,8 @@ def build(tmp: str):
     state.crew_days_loader = None
     # заказ дня — только менеджера 2, снятого правилом настроек; прошлых дней — менеджера 1 («Նախորդ օրերից»)
     orders = [_dorder(1, 102, 40.0, agent=2)] + [_dorder(10 + i, 101, 120.0, day=date(2026, 9, 28 + i % 2)) for i in range(BACKLOG)]
+    if big:
+        orders.append(_dorder(2, 104, BIG_KG, rev=BIG_AMD))
     with app.test_request_context():
         class _C:
             application = app
@@ -118,12 +125,14 @@ def main() -> int:
     app = build(tempfile.mkdtemp(prefix='setup-check-'))
     server = make_server('127.0.0.1', PORT, app, threaded=True)
     threading.Thread(target=server.serve_forever, daemon=True).start()
+    big = make_server('127.0.0.1', PORT + 1, build(tempfile.mkdtemp(prefix='setup-check-big-'), big=True), threaded=True)
+    threading.Thread(target=big.serve_forever, daemon=True).start()
     errors = []
     try:
         with sync_playwright() as pw:
             browser = pw.chromium.launch()
 
-            def open_page(w, h, clock=False):
+            def open_page(w, h, clock=False, base_url=BASE):
                 ctx = browser.new_context(viewport={'width': w, 'height': h})
                 page = ctx.new_page()
                 if clock:
@@ -133,7 +142,7 @@ def main() -> int:
                         if m.type == 'error' and not base.is_ignorable(m) else None)
                 for pat in ('https://tiles.api-maps.yandex.ru/**', 'https://*.tile.openstreetmap.org/**'):
                     page.route(pat, lambda r: r.fulfill(status=200, content_type='image/png', body=base.TILE_PNG))
-                page.goto(f'{BASE}/routes/dispatch?date={DAY}')
+                page.goto(f'{base_url}/routes/dispatch?date={DAY}')
                 page.wait_for_selector('#dpBody', state='visible', timeout=30000)
                 page.wait_for_selector('#dpFleetRows tr', timeout=15000)
                 page.wait_for_timeout(300)
@@ -236,7 +245,21 @@ def main() -> int:
             check(bad.count() == 10 and bad.filter(has_text='940DE61').count() == 0 and car_chips() == 10
                   and page.inner_text('#dpTrucksCount').endswith('5 / 11'),
                   f'C spare truck unticked: not in «Խնդիր» ({bad.count()} rows = chips {car_chips()}), 5 / 11')
+            # в открытом «Խնդիր» сняли проблемную машину — строка уходит сразу, счёт строк = чипам
+            rows.filter(has_text='333NO33').locator('input.dp-tkpick').uncheck()
+            check(bad.filter(has_text='333NO33').count() == 0 and bad.count() == 9 and car_chips() == 9,
+                  f'C unticked inside «Խնդիր»: the row leaves the filter ({bad.count()} rows = chips {car_chips()})')
+            page.click('#dpFleetSeg [data-f="all"]')          # снятая строка в «Խնդիր» не видна — вернуть её из «Բոլորը»
+            rows.filter(has_text='333NO33').locator('input.dp-tkpick').check()
+            page.click('#dpFleetSeg [data-f="bad"]')
+            check(bad.filter(has_text='333NO33').count() == 1 and bad.count() == 10, 'C ticked again — back in «Խնդիր»')
+            # «Պատրաստ»: сняли единственную готовую машину — фильтр пуст, видна подпись
+            page.click('#dpFleetSeg [data-f="ready"]')
+            armen.locator('input.dp-tkpick').uncheck()
+            check(page.locator('#dpFleetRows tr:visible').count() == 0 and vis('#dpFleetNone'),
+                  'C «Պատրաստ»: the only ready truck unticked — no rows, empty note shown')
             page.click('#dpFleetSeg [data-f="all"]')
+            armen.locator('input.dp-tkpick').check()
             # его машину сняли — он свободен и сядет на машину невышедшего (dispatch.seating): по-прежнему 5
             armen.locator('input.dp-tkpick').uncheck()
             check('is-off' in (armen.get_attribute('class') or '') and page.inner_text('#dpTrucksCount').endswith('5 / 11'),
@@ -279,10 +302,21 @@ def main() -> int:
                 fits(pg, f'{w}×{h}')
                 pg.context.close()
 
+            # G числа шага 2 в узкой правой колонке: заказ на BIG_KG кг и BIG_AMD ֏ — ни одно число не шире своей ячейки и карточки
+            for w, h in ((1366, 768), (1920, 1080)):
+                pg = open_page(w, h, base_url=BIG_BASE)
+                pg.wait_for_function("() => /250/.test(document.getElementById('dpOrderStats').textContent)", timeout=15000)
+                over = pg.evaluate('''() => { const card = document.getElementById('dpStep2').getBoundingClientRect().right;
+                    return [...document.querySelectorAll('#dpOrderStats .dp-stat b')].map(b => [b.textContent,
+                        b.scrollWidth <= b.clientWidth && b.getBoundingClientRect().right <= card + 0.5]); }''')
+                check(len(over) == 4 and all(ok for _, ok in over), f'G {w}×{h}: step 2 numbers fit their cells and the card {over}')
+                pg.context.close()
+
             check(not errors, 'no pageerror / console errors' + ('' if not errors else ': ' + ' | '.join(errors[:5])))
             browser.close()
     finally:
         server.shutdown()
+        big.shutdown()
     print(f'\n{sum(results)}/{len(results)} OK')
     return 0 if all(results) else 1
 

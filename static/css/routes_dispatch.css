@@ -1700,13 +1700,22 @@ body:has(#rtDispatch) { background: #0e1116; }
 .dp-fl-lost li b { color: var(--rt-fg-dim); font-weight: 600; }
 
 /* шаг 2: четыре числа в ряд (моно, разделители), пустое состояние, блоки «что требует решения» */
+/* числа — по ширине самого шага (в узкой правой колонке 320–450 px «1 250 000 ֏» в четверть ширины не влезает):
+   узко — 2×2, от 680 px — в ряд; длинное значение переносится, а не вылезает за карточку */
+#dpStep2Body { container: dp-orders / inline-size; }
 #rtDispatch .dp-step:not(.dp-fleet) .dp-step-body > .dp-stats {
-    grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0; margin: 0 -20px; border-bottom: 1px solid var(--rt-line-soft);
+    grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0; margin: 0 -20px; border-bottom: 1px solid var(--rt-line-soft);
 }
-#rtDispatch .dp-step:not(.dp-fleet) .dp-stats .dp-stat { padding: 4px 16px 14px; border: 0; border-radius: 0; background: none; }
-#rtDispatch .dp-step:not(.dp-fleet) .dp-stats .dp-stat + .dp-stat { border-left: 1px solid var(--rt-line-soft); }
-#rtDispatch .dp-step:not(.dp-fleet) .dp-stats .dp-stat:first-child { padding-left: 20px; }
-#rtDispatch .dp-step:not(.dp-fleet) .dp-stats .dp-stat b { font: 600 1.25rem/1.15 var(--rt-mono); white-space: nowrap; letter-spacing: 0; }
+#rtDispatch .dp-step:not(.dp-fleet) .dp-stats .dp-stat { min-width: 0; padding: 4px 16px 14px; border: 0; border-radius: 0; background: none; }
+#rtDispatch .dp-step:not(.dp-fleet) .dp-stats .dp-stat:nth-child(odd) { padding-left: 20px; }
+#rtDispatch .dp-step:not(.dp-fleet) .dp-stats .dp-stat:nth-child(even) { border-left: 1px solid var(--rt-line-soft); }
+#rtDispatch .dp-step:not(.dp-fleet) .dp-stats .dp-stat:nth-child(n+3) { border-top: 1px solid var(--rt-line-soft); padding-top: 12px; }
+#rtDispatch .dp-step:not(.dp-fleet) .dp-stats .dp-stat b { font: 600 1.25rem/1.15 var(--rt-mono); white-space: normal; overflow-wrap: anywhere; letter-spacing: 0; }
+@container dp-orders (min-width: 680px) {
+    #rtDispatch .dp-step:not(.dp-fleet) .dp-step-body > .dp-stats { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    #rtDispatch .dp-step:not(.dp-fleet) .dp-stats .dp-stat:nth-child(n+3) { border-top: 0; padding-top: 4px; }
+    #rtDispatch .dp-step:not(.dp-fleet) .dp-stats .dp-stat:nth-child(3) { padding-left: 16px; border-left: 1px solid var(--rt-line-soft); }
+}
 #rtDispatch .dp-step:not(.dp-fleet) .dp-stats .dp-stat span { font-size: .75rem; }
 .dp-empty { display: grid; grid-template-columns: 40px minmax(0, 1fr); gap: 14px; padding: 18px 0; border-bottom: 1px solid var(--rt-line-soft); }
 .dp-empty[hidden] { display: none; }
@@ -1770,7 +1779,5 @@ body:has(#rtDispatch) { background: #0e1116; }
     .dp-seg { margin-left: 0; width: 100%; }
     .dp-seg button { flex: 1 1 0; }
     .dp-fleet-foot { padding: 4px 14px 14px; }
-    #rtDispatch .dp-step:not(.dp-fleet) .dp-step-body > .dp-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 0 -16px; }
-    #rtDispatch .dp-step:not(.dp-fleet) .dp-stats .dp-stat:nth-child(3) { border-left: 0; padding-left: 20px; }
-    #rtDispatch .dp-step:not(.dp-fleet) .dp-stats .dp-stat:nth-child(n+3) { border-top: 1px solid var(--rt-line-soft); padding-top: 12px; }
+    #rtDispatch .dp-step:not(.dp-fleet) .dp-step-body > .dp-stats { margin: 0 -16px; }
 }
