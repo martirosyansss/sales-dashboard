@@ -10,16 +10,22 @@ tests/routes_dispatch_browser_check.py (настоящие шаблон, ста�
 
 A одна панель дня: в ней #dpBuild, AI и помощь; «Ի՞նչ անել հիմա», строки «վարորդ նշված չէ» и «Կազմել երթերը» внизу
   страницы нет; плавающей кнопки AI нет (AI — в панели и открывает чат);
-B статус: заголовок «Այս օրվա համար պատվերներ դեռ չկան», вывод «կարող է դուրս գալ 1 մեքենա․ եկել է 7 վարորդից 1-ը»,
-  чипы с числами: BACKLOG заказов прошлых дней / 6 не работают / 5 без водителя / 1 неполная; клик по «նախորդ օրերից» —
-  окно «Նախորդ օրերից», по «առանց վարորդի» — диалог «Վարորդ» первой такой машины, по «չի աշխատում» — фильтр «Խնդիր»;
-C таблица «Մեքենաներ և վարորդներ»: 12 строк (11 + неполная последней строкой-ошибкой), счётчик «1 / 11», водитель вне
-  списка — в подвале; «Պատրաստ» — 1 строка, «Խնդիր» — 11 (сегмент); «եկել է» → диалог «Վարորդը չի եկել», «Չեղարկել» —
-  по-прежнему вышел; «մինչև …» → вернулся (2 / 11) и снова до даты (1 / 11); «+ Նշել վարորդ» → диалог «Վարորդ» этой
-  машины; сняли машину вышедшего водителя — он свободен и сядет на другую (по-прежнему 1 / 11, как dispatch.seating),
+B статус: заголовок «Այս օրվա համար պատվերներ դեռ չկան», вывод «Վաղը կարող է դուրս գալ 6 մեքենա՝ որից 5-ը առանց
+  նշված վարորդի․ եկել է 7 վարորդից 1-ը» — столько, сколько возьмёт сборка (dispatch.build_crewed: 1 со своим водителем
+  + 5 без водителя в «Վարորդ»; 5 машин невышедших — без свободного водителя); чипы с числами: BACKLOG заказов прошлых
+  дней / 5 отмеченных машин, чей водитель не работает / 5 без водителя / 1 неполная; клик по «նախորդ օրերից» — окно
+  «Նախորդ օրերից», по «առանց վարորդի» — диалог «Վարորդ» первой такой машины, по «չի աշխատում» — фильтр «Խնդիր»;
+  фокус на чипе переживает автообновление (через 5 минут, часы страницы подменены);
+C таблица «Մեքենաներ և վարորդներ»: 12 строк (11 + неполная последней строкой-ошибкой), счётчик «6 / 11», водитель вне
+  списка — в подвале; «Պատրաստ» — 1 строка, «Խնդիր» — 11 = сумма чипов машин (сегмент); «եկել է» → диалог «Վարորդը
+  չի եկել», «Չեղարկել» — по-прежнему вышел; «մինչև …» → вернулся (7 / 11), сообщение «…եկել է» после показа исчезает из
+  текста страницы (и в живом регионе), снова до даты (6 / 11); «+ Նշել վարորդ» → диалог «Վարորդ» этой машины; сняли
+  запасную машину без водителя — её нет в «Խնդիր», чип «առանց վարորդի» и «Խնդիր» уменьшились вместе (5 / 11 → 10 строк);
+  сняли машину вышедшего водителя — он свободен и сядет на машину невышедшего (по-прежнему 5 / 11, как dispatch.seating);
   сняли все — «0 / 11» и «կարող է դուրս գալ 0»;
 D тексты: «Երթերը կազմված են» нигде нет, пока плана нет; про менеджеров — «Կարգավորումների կանոնով», без
   «Նշեք գոնե մեկ մենեջեր» и «Տանում ենք միայն 0»;
+F водитель машины с неполными данными — в подвале («մեքենայի տվյալները թերի են») с «եկել է»: снять — диалог;
 E 1366×768, 1920×1080, 390×860: нет горизонтальной прокрутки, фон страницы тёмный до низа документа;
 ошибки страницы (pageerror) и консоли — провал (кроме сетевых для внешних ресурсов).
 """
@@ -117,9 +123,11 @@ def main() -> int:
         with sync_playwright() as pw:
             browser = pw.chromium.launch()
 
-            def open_page(w, h):
+            def open_page(w, h, clock=False):
                 ctx = browser.new_context(viewport={'width': w, 'height': h})
                 page = ctx.new_page()
+                if clock:
+                    page.clock.install()          # время страницы идёт само, но его можно промотать (автообновление)
                 page.on('pageerror', lambda e: errors.append(f'pageerror {w}: {e}'))
                 page.on('console', lambda m: errors.append(f'console {w}: ' + m.text)
                         if m.type == 'error' and not base.is_ignorable(m) else None)
@@ -131,7 +139,7 @@ def main() -> int:
                 page.wait_for_timeout(300)
                 return page
 
-            page = open_page(1366, 768)
+            page = open_page(1366, 768, clock=True)
             vis = page.is_visible
             body = lambda: page.inner_text('#rtDispatch')  # noqa: E731
 
@@ -150,17 +158,24 @@ def main() -> int:
 
             # B
             todo = page.inner_text('#dpTodo')
-            check('Այս օրվա համար պատվերներ դեռ չկան' in todo and 'կարող է դուրս գալ 1 մեքենա' in todo
-                  and 'եկել է 7 վարորդից 1-ը' in todo, f'B honest status: {todo!r}')
+            check('Այս օրվա համար պատվերներ դեռ չկան' in todo and 'Վաղը կարող է դուրս գալ 6 մեքենա՝ որից 5-ը առանց նշված վարորդի' in todo
+                  and 'եկել է 7 վարորդից 1-ը' in todo, f'B honest status — as many trucks as the build takes: {todo!r}')
             chips = {c.get_attribute('data-chip'): ' '.join(c.inner_text().split())
                      for c in page.locator('#dpTodo .dp-chipbtn').all()}
-            want = {'backlog': f'{BACKLOG} պատվեր նախորդ օրերից', 'absent': '6 վարորդ չի աշխատում',
+            want = {'backlog': f'{BACKLOG} պատվեր նախորդ օրերից', 'absent': '5 մեքենայի վարորդը չի աշխատում',
                     'nodriver': '5 մեքենա առանց վարորդի', 'broken': '1 մեքենայի տվյալները թերի են'}
             check(chips == want, f'B chips with numbers: {chips}')
             page.click('#dpTodo [data-chip="backlog"]')
             page.wait_for_selector('#dpBlDlg[open]', timeout=5000)
             check(page.locator('#dpBacklogList li[data-isn]').count() == BACKLOG, 'B backlog chip opens «Նախորդ օրերից»')
             page.click('#dpBlClose')
+            # автообновление раз в 5 минут перерисовывает статус — фокус клавиатуры остаётся на том же чипе
+            page.focus('#dpTodo [data-chip="backlog"]')
+            with page.expect_response(lambda r: '/api/routes/dispatch/status' in r.url, timeout=15000):
+                page.clock.fast_forward('06:00')
+            page.wait_for_timeout(300)
+            check(page.evaluate("document.activeElement && document.activeElement.dataset.chip") == 'backlog',
+                  'B focus stays on the chip after the 5-minute refresh redraws the status')
             page.click('#dpTodo [data-chip="nodriver"]')
             page.wait_for_selector('#dpDriverDlg[open]', timeout=5000)
             check('124AV61' in page.inner_text('#dpDriverLead'), 'B no-driver chip opens the driver dialog of the first such truck')
@@ -174,7 +189,7 @@ def main() -> int:
             rows = page.locator('#dpFleetRows tr')
             check(rows.count() == 12 and 'is-bad' in (rows.last.get_attribute('class') or '')
                   and 'կարգավորումներում' in rows.last.inner_text(), f'C 12 rows, broken truck last ({rows.count()})')
-            check(page.inner_text('#dpTrucksCount').replace(' ', ' ') == 'աշխատում է՝ 1 / 11', 'C counter 1 / 11: '
+            check(page.inner_text('#dpTrucksCount').replace(' ', ' ') == 'աշխատում է՝ 6 / 11', 'C counter 6 / 11 (as the build): '
                   + page.inner_text('#dpTrucksCount'))
             foot = page.inner_text('#dpFleetLost')
             check('Համբարձումյան Աղվան' in foot and OFF_TRUCK in foot, f'C driver of a truck not in the list — footer: {foot!r}')
@@ -194,21 +209,38 @@ def main() -> int:
             sergey = rows.filter(has_text='123AV61')
             check('մինչև 05.10' in sergey.inner_text(), 'C absent driver: «մինչև 05.10»')
             sergey.locator('.dp-pres input').check()
-            page.wait_for_function("() => document.getElementById('dpTrucksCount').textContent.includes('2 / 11')", timeout=10000)
-            check('եկել է' in rows.filter(has_text='123AV61').inner_text(), 'C «մինչև» → returned, counter 2 / 11')
+            page.wait_for_function("() => document.getElementById('dpTrucksCount').textContent.includes('7 / 11')", timeout=10000)
+            check('եկել է' in rows.filter(has_text='123AV61').inner_text(), 'C «մինչև» → returned, counter 7 / 11')
+            # сообщение «Sergey՝ եկել է։» показано и после скрытия не остаётся в тексте страницы (ни в живом регионе)
+            check('Sergey' in (page.text_content('#dpToast') or ''), 'C toast shown')
+            page.wait_for_function("() => !(document.getElementById('dpToast') || {}).textContent"
+                                   " && !document.getElementById('dpStatus').textContent", timeout=12000)
+            check('Sergey՝ եկել է' not in page.text_content('body'), 'C hidden message is gone from the page text')
             rows.filter(has_text='123AV61').locator('.dp-pres input').uncheck()
             page.wait_for_selector('#dpAbsentDlg[open]', timeout=5000)
             page.fill('#dpAbsentUntil', '2026-10-05')
             page.click('#dpAbsentSave')
-            page.wait_for_function("() => document.getElementById('dpTrucksCount').textContent.includes('1 / 11')", timeout=10000)
+            page.wait_for_function("() => document.getElementById('dpTrucksCount').textContent.includes('6 / 11')", timeout=10000)
             rows.filter(has_text='940DE61').locator('.dp-setdrv').click()
             page.wait_for_selector('#dpDriverDlg[open]', timeout=5000)
             check('940DE61' in page.inner_text('#dpDriverLead'), 'C «+ Նշել վարորդ» → driver dialog of that truck')
             page.click('#dpDriverCancel')
-            # его машину сняли — он свободен и сядет на машину невышедшего (dispatch.seating): по-прежнему 1
+            # запасную машину без водителя сняли — она не «Խնդիր»; чипы машин и фильтр считают одни и те же строки
+            rows.filter(has_text='940DE61').locator('input.dp-tkpick').uncheck()
+
+            def car_chips():
+                return sum(int(page.locator(f'#dpTodo [data-chip="{k}"] b').inner_text())
+                           for k in ('absent', 'nodriver', 'broken') if page.locator(f'#dpTodo [data-chip="{k}"]').count())
+            page.click('#dpFleetSeg [data-f="bad"]')
+            bad = page.locator('#dpFleetRows tr:visible')
+            check(bad.count() == 10 and bad.filter(has_text='940DE61').count() == 0 and car_chips() == 10
+                  and page.inner_text('#dpTrucksCount').endswith('5 / 11'),
+                  f'C spare truck unticked: not in «Խնդիր» ({bad.count()} rows = chips {car_chips()}), 5 / 11')
+            page.click('#dpFleetSeg [data-f="all"]')
+            # его машину сняли — он свободен и сядет на машину невышедшего (dispatch.seating): по-прежнему 5
             armen.locator('input.dp-tkpick').uncheck()
-            check('is-off' in (armen.get_attribute('class') or '') and page.inner_text('#dpTrucksCount').endswith('1 / 11'),
-                  'C own truck unticked — the driver is free for another truck, still 1 / 11')
+            check('is-off' in (armen.get_attribute('class') or '') and page.inner_text('#dpTrucksCount').endswith('5 / 11'),
+                  'C own truck unticked — the driver is free for another truck, still 5 / 11')
             picks = page.locator('#dpFleetRows input.dp-tkpick:checked')
             while picks.count():
                 picks.first.uncheck()
@@ -223,6 +255,17 @@ def main() -> int:
                   'D no «plan built» text without a plan')
             check('Կարգավորումների կանոնով' in text and 'Նշեք գոնե մեկ մենեջեր' not in page.text_content('body')
                   and 'Տանում ենք միայն 0' not in page.text_content('body'), 'D managers: rule of the settings, no «tick a manager»')
+
+            # F водитель машины с неполными данными — в подвале, «не вышел» ему отмечается там же
+            app.extensions['route_optimizer'].store.save_truck_driver(BROKEN, DAY, 'Վարդան Նոր', 'qa')
+            page.reload()
+            page.wait_for_selector('#dpFleetRows tr', timeout=30000)
+            lost = page.locator('#dpFleetLost li', has_text='Վարդան Նոր')
+            check(lost.count() == 1 and 'թերի' in lost.inner_text() and lost.locator('input.dp-prescb').is_checked(),
+                  'F driver of the incomplete truck — in the footer with «եկել է»')
+            lost.locator('input.dp-prescb').uncheck()
+            page.wait_for_selector('#dpAbsentDlg[open]', timeout=5000)
+            page.click('#dpAbsentCancel')
 
             # E
             def fits(pg, tag):

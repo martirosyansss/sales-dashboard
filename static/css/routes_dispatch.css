@@ -1579,10 +1579,6 @@ body.dp-ws-on .rt-shell { --rt-secnav-gap: 8px; }
    а светлый фон дашборда под ним был виден полосой */
 body:has(#rtDispatch) { background: #0e1116; }
 
-/* сообщение снизу: скрытое не остаётся в тексте страницы (копирование, поиск) — «Երթերը կազմված են» не висит после смены дня */
-.dp-toast { visibility: hidden; transition: opacity .2s, transform .2s, visibility 0s linear .2s; }
-.dp-toast.is-on { visibility: visible; transition: opacity .2s, transform .2s; }
-
 /* до сборки плавающей кнопки AI нет — AI в панели дня; помощь и AI на рабочем экране — в его шапке */
 #rtDispatch.is-setup .dp-ai-fab { display: none !important; }
 #rtDispatch.is-ws :is(.dp-setacts, .dp-day-wd, .dp-help) { display: none !important; }
@@ -1749,7 +1745,6 @@ body:has(#rtDispatch) { background: #0e1116; }
 
 @media (prefers-reduced-motion: reduce) {
     .dp-pres.is-came .dp-dot { animation: none; }
-    .dp-toast, .dp-toast.is-on { transition: none; }
 }
 @media (max-width: 1100px) {
     .dp-prep { grid-template-columns: minmax(0, 1fr); }

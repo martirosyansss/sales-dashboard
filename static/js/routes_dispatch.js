@@ -241,7 +241,7 @@
         // №99: озвучено — убрать, чтобы прошлое сообщение («Երթերը կազմված են…») не оставалось в тексте страницы
         announce.timer = setTimeout(() => { if (el.textContent === msg) el.textContent = ''; }, 6000);
     }
-    let toastTimer = null;
+    let toastTimer = null, toastClear = null;
     // act — кнопка в подсказке ({label, run}, «Չեղարկել» после перетаскивания рейса): подсказка держится дольше
     function toast(msg, act) {
         let el = $('dpToast');
@@ -261,13 +261,21 @@
             b.type = 'button';
             b.className = 'dp-toast-act';
             b.textContent = act.label;
-            b.addEventListener('click', () => { el.classList.remove('is-on'); act.run(); });
+            b.addEventListener('click', () => { hideToast(el); act.run(); });
             el.append(' ', b);
         }
         el.classList.add('is-on');
         clearTimeout(toastTimer);
-        toastTimer = setTimeout(() => { el.classList.remove('is-on'); const b = el.querySelector('.dp-toast-act'); if (b) b.remove(); }, act ? 9000 : 4200);
+        clearTimeout(toastClear);
+        toastTimer = setTimeout(() => hideToast(el), act ? 9000 : 4200);
         announce(msg);
+    }
+    // скрыть и после анимации убрать текст (№99): прошлое сообщение («Երթերը կազմված են…») не остаётся в странице —
+    // ни в копировании, ни в поиске, ни после смены дня
+    function hideToast(el) {
+        el.classList.remove('is-on');
+        clearTimeout(toastClear);
+        toastClear = setTimeout(() => { if (!el.classList.contains('is-on')) el.textContent = ''; }, 250);
     }
     function showActionError(err) {
         $('dpActionErrorText').textContent = err.message || String(err);
@@ -320,10 +328,7 @@
         const trips = new Set();
         if (data.plan) data.plan.trucks.forEach(t => t.trips.forEach(tr => trips.add(tr.id)));
         const hadPlan = !!(state.data && state.data.day === data.day && state.data.plan);
-        if (data.day !== state.day) {
-            state.mapFocus = null; state.stepsOpen.clear(); state.agentsPick = null; state.fleetFilter = 'all';
-            if ($('dpToast')) $('dpToast').classList.remove('is-on');   // №99: сообщение прежнего дня — не о этом дне
-        }
+        if (data.day !== state.day) { state.mapFocus = null; state.stepsOpen.clear(); state.agentsPick = null; state.fleetFilter = 'all'; }
         // рейсы дня появились: до трёх машин — все раскрыты, больше — первая (остальные по нажатию, день виден целиком)
         if (data.plan && !hadPlan) {
             const codes = data.plan.trucks.map(t => t.car_code);
@@ -372,8 +377,7 @@
         const rel = relDay(d.day);
         $('dpTitle').textContent = (rel ? rel + '՝ ' : '') + dayHuman(d.day, true);
         // №82: в шапке рабочего экрана — коротко «Այսօր · չրք, 7 հոկտ»
-        $('dpTitle').dataset.short = (rel ? rel + ' · ' : '') + (WD_SHORT[wdOf(d.day)] || '') + ', '
-            + (isDay(d.day) ? Number(d.day.slice(8, 10)) + ' ' + MONTH_SHORT[Number(d.day.slice(5, 7)) - 1] : '');
+        $('dpTitle').dataset.short = (rel ? rel + ' · ' : '') + dayShort(d.day);
         $('dpDayWd').textContent = WD_NAME[wdOf(d.day)] || '';     // №99: панель дня — «Վաղը · երք, 13 հոկ» и день недели
         document.title = 'Առաքում ' + dateRu(d.day) + ' — Sales Dashboard';
         $('dpDate').value = d.day;
@@ -440,6 +444,20 @@
         return was !== selectedTrucks().sort().join('|');
     }
     const SAFE_LINK = /^\/(?!\/)[^\s\\]*$/;
+    // Общие строки статуса дня — и для «Ի՞նչ անել հիմա», и для статуса до сборки (№99): заказы ещё идут; head — в начало
+    // (нерабочий, прошедший день), tail — в конец (план прошлого дня не прочитан); проблемы настроек — строки и ссылка
+    const comingText = (d) => (d.orders_still_coming ? 'Պատվերները դեռ ընդունվում են՝ մինչև ' + d.ready_time + '-ը։' : '');
+    function dayNotes(d) {
+        return {
+            head: [d.day_off ? 'Կարգավորումներում այս օրը նշված է որպես ոչ աշխատանքային․ սովորաբար այս օրը առաքում չկա։' : '',
+                d.is_past ? 'Սա անցած օր է՝ դիտելու և համեմատելու համար։' : ''].filter(Boolean),
+            tail: d.same_day_unread ? ['Ուշադրություն՝ նախորդ օրվա պլանը չկարդացվեց․ պատվերները, որոնք այդ օրը տարվել են նույն օրը, կարող են կրկին լինել այստեղ։ Ստուգեք ցուցակը։'] : [],
+        };
+    }
+    function problemsInfo(problems) {
+        const link = problems.find(p => typeof p.link === 'string' && SAFE_LINK.test(p.link));
+        return { lines: problems.map(p => (PROBLEM_HY[p.code] || serverText(p.text)) + '։'), link: link ? link.link : '/routes/settings' };
+    }
     function renderFresh() {
         const d = state.data, plan = d.plan, box = $('dpTodo');
         if (!plan) { renderSetup(box); return; }      // №99: до сборки — один честный статус и чипы проблем
@@ -447,16 +465,16 @@
         let tone = 'is-info', ico = 'fa-hand-point-right', title = '';
         const lines = [];
         let btns = [];
-        const coming = d.orders_still_coming ? 'Պատվերները դեռ ընդունվում են՝ մինչև ' + d.ready_time + '-ը։' : '';
+        const coming = comingText(d);
         const n = d.new_since_build, r = d.removed_since_build;
         const gone = r && r.count ? pl(r.count, 'պատվեր') + ' չեղարկվել կամ արդեն առաքվել է — երթերից դրանք հանված են։' : '';
         const problems = d.problems || [];
         if (problems.length) {
             tone = 'is-warn'; ico = 'fa-gear';
             title = 'Նախ լրացրեք կարգավորումները';
-            problems.forEach(p => lines.push((PROBLEM_HY[p.code] || serverText(p.text)) + '։'));
-            const link = problems.find(p => typeof p.link === 'string' && SAFE_LINK.test(p.link));
-            btns.push({ href: link ? link.link : '/routes/settings', text: 'Բացել կարգավորումները', ico: 'fa-gear' });
+            const pr = problemsInfo(problems);
+            lines.push(...pr.lines);
+            btns.push({ href: pr.link, text: 'Բացել կարգավորումները', ico: 'fa-gear' });
         } else if (!plan.summary.trips) {
             tone = 'is-warn'; ico = 'fa-inbox';
             title = 'Երթերում ոչ մի խանութ չկա';
@@ -528,9 +546,9 @@
         // №77: отмеченные машины, которые сегодня без водителя, — в рейсах их нет
         const idle = d.trucks.filter(t => t.unmanned && t.selected);
         if (idle.length) lines.push('Առանց վարորդի ' + dayHuman(d.day) + 'ն դուրս չեն գալիս՝ ' + idle.map(truckLabel).join(', ') + '։');
-        if (d.same_day_unread) lines.push('Ուշադրություն՝ նախորդ օրվա պլանը չկարդացվեց․ պատվերները, որոնք այդ օրը տարվել են նույն օրը, կարող են կրկին լինել այստեղ։ Ստուգեք ցուցակը։');
-        if (d.is_past) lines.unshift('Սա անցած օր է՝ դիտելու և համեմատելու համար։');
-        if (d.day_off) lines.unshift('Կարգավորումներում այս օրը նշված է որպես ոչ աշխատանքային․ սովորաբար այս օրը առաքում չկա։');
+        const dn = dayNotes(d);
+        lines.push(...dn.tail);
+        lines.unshift(...dn.head);
         box.className = 'dp-todo ' + tone;
         box.innerHTML = '<div class="dp-todo-ico" aria-hidden="true"><i class="fas ' + ico + '"></i></div>'
             + '<div class="dp-todo-body"><p class="dp-todo-k">Ի՞նչ անել հիմա</p><h2 class="dp-todo-t"></h2>'
@@ -557,29 +575,28 @@
     // такой машины (как «Նշել» строки #dpNoDriver), остальные — фильтр «Խնդիր» таблицы шага 1.
     function renderSetup(box) {
         const d = state.data, o = d.live_orders || d.orders, problems = d.problems || [];
-        const coming = d.orders_still_coming ? 'Պատվերները դեռ ընդունվում են՝ մինչև ' + d.ready_time + '-ը։' : '';
-        const fl = fleetState(), goText = pl(fl.canGo, 'մեքենա');
+        const coming = comingText(d), fl = fleetState(), goText = pl(fl.canGo, 'մեքենա');
         let title, lead;
-        const notes = [];
+        const dn = dayNotes(d), notes = [...dn.head];
         if (problems.length) {
             title = 'Նախ լրացրեք կարգավորումները';
-            lead = problems.map(p => (PROBLEM_HY[p.code] || serverText(p.text)) + '։').join(' ');
+            lead = problemsInfo(problems).lines.join(' ');
         } else {
             title = o.count ? 'Ստուգեք մեքենաները և սեղմեք «Կազմել երթերը»' : 'Այս օրվա համար պատվերներ դեռ չկան';
             const drivers = crewDrivers(), came = drivers.filter(x => !x.absent).length;
             lead = (o.count ? 'Ծրագիրը կբաշխի ' + pl(o.count, 'պատվեր') + ' (' + kgText(o.kg) + ')։ ' : '')
-                + 'Այսօր կարող է դուրս գալ ' + goText
+                + (relDay(d.day) || dayHuman(d.day) + 'ն') + ' կարող է դուրս գալ ' + goText
+                + (fl.noDriver.length && fl.canGo ? '՝ որից ' + fl.noDriver.length + '-ը առանց նշված վարորդի' : '')
                 + (!drivers.length ? '․ վարորդները դեռ նշված չեն' : came === drivers.length ? '․ եկել են բոլոր ' + drivers.length + ' վարորդները'
                     : '․ եկել է ' + drivers.length + ' վարորդից ' + came + '-ը') + '։';
             // машина без водителя в «Վարորդ» едет, как до №77 (dispatch.build_crewed) — сказать прямо
-            if (fl.noDriver.length && drivers.length) lead += ' Եվս ' + pl(fl.noDriver.length, 'մեքենայի') + ' վարորդը նշված չէ․ ծրագիրը կարող է '
-                + 'դրանք էլ դնել երթերում՝ նշեք վարորդին կամ հանեք մեքենայի նշումը։';
+            if (fl.noDriver.length && drivers.length) lead += ' Առանց վարորդի մեքենաները նույնպես կմտնեն երթերի մեջ՝ նշեք վարորդին կամ հանեք մեքենայի նշումը։';
             if (fl.backlog) lead += ' Նախորդ օրերից մնացել է ' + pl(fl.backlog, 'պատվեր') + '՝ որոշեք, տանե՞լ դրանք այսօր։';
             if (coming) notes.push(coming + (o.count ? ' Կարող եք կազմել հիմա և վերակազմել ' + d.ready_time + '-ից հետո։' : ' Էջն ինքն է թարմանում 5 րոպեն մեկ։'));
         }
-        if (d.same_day_unread) notes.push('Ուշադրություն՝ նախորդ օրվա պլանը չկարդացվեց․ պատվերները, որոնք այդ օրը տարվել են նույն օրը, կարող են կրկին լինել այստեղ։ Ստուգեք ցուցակը։');
-        if (d.is_past) notes.unshift('Սա անցած օր է՝ դիտելու և համեմատելու համար։');
-        if (d.day_off) notes.unshift('Կարգավորումներում այս օրը նշված է որպես ոչ աշխատանքային․ սովորաբար այս օրը առաքում չկա։');
+        notes.push(...dn.tail);
+        // перерисовка (автообновление раз в 5 минут, галочки) не теряет фокус клавиатуры на чипе
+        const had = box.contains(document.activeElement) && document.activeElement.dataset ? document.activeElement.dataset.chip : null;
         box.className = 'dp-todo is-setup';
         box.innerHTML = '<h2 class="dp-st-t"></h2><p class="dp-st-lead"></p><div class="dp-st-chips"></div>';
         box.querySelector('.dp-st-t').textContent = title;
@@ -603,15 +620,19 @@
             el.querySelector('span').textContent = text;
             chips.appendChild(el);
         };
-        if (problems.length) {
-            const link = problems.find(p => typeof p.link === 'string' && SAFE_LINK.test(p.link));
-            chip('settings', 'is-bad', null, 'Բացել կարգավորումները', null, link ? link.link : '/routes/settings');
-        }
+        if (problems.length) chip('settings', 'is-bad', null, 'Բացել կարգավորումները', null, problemsInfo(problems).link);
+        // чипы машин — по тому же правилу, что фильтр «Խնդիր» шага 1 (отмеченные машины с проблемой и неполные)
         if (fl.backlog) chip('backlog', 'is-warn', fl.backlog, 'պատվեր նախորդ օրերից', openBacklog);
-        if (fl.absent) chip('absent', 'is-warn', fl.absent, 'վարորդ չի աշխատում', () => showFleet('bad'));
-        if (fl.noDriver.length && !d.is_past) chip('nodriver', '', fl.noDriver.length, 'մեքենա առանց վարորդի', () => openDriver(noDriver()[0].car_code));
+        if (fl.away.length) chip('absent', 'is-warn', fl.away.length, 'մեքենայի վարորդը չի աշխատում', () => showFleet('bad'));
+        if (fl.noDriver.length && !d.is_past) chip('nodriver', '', fl.noDriver.length, 'մեքենա առանց վարորդի', () => {
+            const code = fleetState().noDriver[0].car_code;
+            if (!state.busy) state.driverFrom = code;     // после диалога — фокус на водителя этой строки шага 1
+            openDriver(code);
+        });
         if (fl.broken) chip('broken', 'is-bad', fl.broken, 'մեքենայի տվյալները թերի են', () => showFleet('bad'));
         chips.hidden = !chips.children.length;
+        const back = had && chips.querySelector('[data-chip="' + had + '"]');
+        if (back) back.focus({ preventScroll: true });
     }
 
     // Автообновление: раз в POLL_MS спрашиваем сервер о заказах дня (ERP только читается, по правилам кэша).
@@ -1558,7 +1579,7 @@
                 btn.textContent = '+ Նշել վարորդ';
             }
             btn.setAttribute('aria-label', (name ? 'Վարորդ՝ ' + name + '․ փոխել' : 'Նշել վարորդ') + ' — ' + truckLabel(t));
-            btn.addEventListener('click', () => { state.driverFrom = t.car_code; openDriver(t.car_code); });
+            btn.addEventListener('click', () => { if (!state.busy) state.driverFrom = t.car_code; openDriver(t.car_code); });
             td('dp-fl-drv').appendChild(btn);
             const today = td('dp-fl-today');
             if (x) today.appendChild(presence(x));
@@ -1578,9 +1599,10 @@
             syncFleetRow(tr);
             body.appendChild(tr);
         });
-        // водители машин, которых нет в списке (машина выключена в настройках), — в подвале
-        const listed = new Set(d.trucks.map(t => t.car_code));
-        const lost = crewDrivers().filter(x => !(Array.isArray(x.trucks) ? x.trucks : []).some(c => listed.has(c)));
+        // водители машин, которых нет в списке (машина выключена в настройках) или у которых данные неполные, — в подвале:
+        // «не вышел» им тоже нужно отмечать — сборка сажает свободных водителей на другие машины (dispatch.seating)
+        const listed = new Set(d.trucks.map(t => t.car_code)), ready = new Set(d.trucks.filter(t => t.ready).map(t => t.car_code));
+        const lost = crewDrivers().filter(x => !(Array.isArray(x.trucks) ? x.trucks : []).some(c => ready.has(c)));
         const foot = $('dpFleetLost');
         foot.textContent = '';
         lost.forEach(x => {
@@ -1588,7 +1610,8 @@
             const who = document.createElement('span');
             const b = document.createElement('b');
             b.textContent = x.name;
-            who.append(b, ' · ' + (Array.isArray(x.trucks) ? x.trucks.join(', ') : '') + ' — մեքենան ցուցակում չէ');
+            const codes = Array.isArray(x.trucks) ? x.trucks : [];
+            who.append(b, ' · ' + codes.join(', ') + (codes.some(c => listed.has(c)) ? ' — մեքենայի տվյալները թերի են' : ' — մեքենան ցուցակում չէ'));
             li.append(who, presence(x));
             foot.appendChild(li);
         });
@@ -1596,12 +1619,14 @@
         renderTruckCount();
         applyFleetFilter();
     }
-    // строка: снята, выйдет с водителем (ready) или есть что поправить (bad: нет водителя, не вышел, без водителя по плану)
+    // строка: снята, выйдет с водителем (ready) или есть что поправить (bad: отмечена, но нет водителя, он не вышел или по плану
+    // машина без водителя; неполные данные)
     function syncFleetRow(tr) {
         const cb = tr.querySelector('input.dp-tkpick'), t = truckBy(tr.dataset.truck);
         const on = !!cb && cb.checked;
         tr.classList.toggle('is-off', !on);
-        tr.dataset.f = !t.ready || tr.dataset.drv !== 'came' || (t.unmanned && t.selected) ? 'bad' : on ? 'ready' : '';
+        // снятая логистом машина (запасная) — ни «Պատրաստ», ни «Խնդիր»: как и чипы статуса, считаются только отмеченные
+        tr.dataset.f = !t.ready ? 'bad' : !on ? '' : tr.dataset.drv !== 'came' || (t.unmanned && t.selected) ? 'bad' : 'ready';
     }
     function applyFleetFilter() {
         const f = state.fleetFilter;
@@ -1616,22 +1641,23 @@
         applyFleetFilter();
         $('dpStep1').scrollIntoView({ behavior: calm() ? 'auto' : 'smooth', block: 'start' });
     }
-    // Сколько машин реально выйдет с водителем — как dispatch.seating: отмеченная машина, чей водитель вышел; машинам, чей
-    // водитель не вышел (или уже за рулём другой), — свободные водители (вышли, а их машины не отмечены). Машины без
-    // водителя в «Վարորդ» — отдельно (noDriver): сборка их тоже берёт (dispatch.build_crewed), но водителя у них нет.
+    // Сколько машин выйдет — ровно как dispatch.build_crewed: отмеченная машина, чей водитель вышел (человек ведёт одну
+    // машину — seating); машинам, чей водитель не вышел или уже за рулём другой, — свободные водители (вышли, а их машины
+    // не отмечены); отмеченная машина без водителя в «Վարորդ» едет, как до №77 (noDriver). away — отмеченные машины, чей
+    // водитель не вышел; noDriver и away — те же строки, что фильтр «Խնդիր».
     function fleetState() {
         const d = state.data, picked = selectedTrucks().sort();
         const absent = new Set(crewDrivers().filter(x => x.absent).map(x => x.name));
-        const used = new Set();
+        const used = new Set(), away = [], noDrv = [];
         let orphans = 0;
         picked.forEach(code => {
             const n = driverOf(code);
-            if (!n) return;
+            if (!n) { noDrv.push(truckBy(code)); return; }
+            if (absent.has(n)) away.push(truckBy(code));
             if (absent.has(n) || used.has(n)) orphans++; else used.add(n);
         });
         const free = crewDrivers().filter(x => !x.absent && !used.has(x.name)).length;
-        // водителей дня нет совсем — сборка идёт всеми отмеченными машинами, как до №77
-        return { canGo: crewDrivers().length ? used.size + Math.min(free, orphans) : picked.length, noDriver: noDriver(), absent: absent.size,
+        return { canGo: used.size + Math.min(free, orphans) + noDrv.length, noDriver: noDrv, away,
                  broken: d.trucks.filter(t => !t.ready).length, backlog: blTodo(d.backlog || []).length };
     }
     const UNMANNED_HY = { absent: 'առանց վարորդի', busy: 'վարորդը վարում է այլ մեքենա', moved: 'վարորդը նստել է այլ մեքենա' };
@@ -1639,9 +1665,9 @@
     function renderTruckCount() {
         const ready = state.data.trucks.filter(t => t.ready).length;
         const picked = selectedTrucks(), go = fleetState().canGo;
-        // №99: сколько реально выйдет с водителем из готовых машин; сколько отмечено — в подсказке
+        // №99: сколько машин выйдет по сборке (fleetState) из готовых; сколько отмечено — в подсказке
         $('dpTrucksCount').textContent = ready ? 'աշխատում է՝ ' + go + ' / ' + ready : '';
-        $('dpTrucksCount').title = ready ? 'Նշված է՝ ' + picked.length + ' / ' + ready + '․ դուրս կգա վարորդով՝ ' + go : '';
+        $('dpTrucksCount').title = ready ? 'Նշված է՝ ' + picked.length + ' / ' + ready + '․ ծրագիրը կօգտագործի՝ ' + go : '';
         // свёрнутый шаг 1 — одной строкой: цвета и число работающих машин
         const sum = $('dpStep1Sum');
         sum.textContent = '';
@@ -2919,7 +2945,7 @@
         // браузер возвращает фокус открывавшему элементу после события close — проверяем на следующем шаге
         setTimeout(() => {
             if (document.activeElement && document.activeElement !== document.body) return;
-            const b = $('dpBlChip');
+            const b = $('dpBlChip') || document.querySelector('#dpTodo [data-chip="backlog"]');
             if (b) b.focus();
         }, 0);
     }
@@ -5952,8 +5978,8 @@
         };
         $('dpWsClose').addEventListener('click', closeSide);
         $('dpWsSide').addEventListener('keydown', (e) => { if (e.key === 'Escape' && !e.target.closest('select')) closeSide(); });
-        $('dpWsAi').addEventListener('click', () => { const fab = $('dpAiOpen'); if (fab) fab.click(); });
-        $('dpSetAi').addEventListener('click', () => { const fab = $('dpAiOpen'); if (fab) fab.click(); });
+        // AI в шапке рабочего экрана и в панели дня до сборки (№99) — та же панель, что у плавающей кнопки
+        ['dpWsAi', 'dpSetAi'].forEach(id => $(id).addEventListener('click', () => { const fab = $('dpAiOpen'); if (fab) fab.click(); }));
         $('dpHelpBtn').addEventListener('click', () => {
             const open = $('dpHelp').hidden;
             $('dpHelp').hidden = !open;
