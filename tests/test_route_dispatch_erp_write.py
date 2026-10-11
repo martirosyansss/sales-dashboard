@@ -15,7 +15,7 @@ import sqlite3
 import sys
 from contextlib import closing
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -39,7 +39,8 @@ AGENTS = {1: Agent(1, 'A001', 'Менеджер 1', False), 2: Agent(2, 'A002', 
           3201: Agent(3201, 'B003/1', 'Գագիկ Սարգսյան', True),            # закрытый тёзка — не в счёт
           3300: Agent(3300, 'B004/1', 'Վարդան Մկրտչյան', False),
           3301: Agent(3301, 'B005/1', 'վարդան մկրտչյան', False),           # открытые тёзки
-          8: Agent(8, 'A008/6', 'Սամվել Սահակյան', False)}                 # менеджер (A…) — не առաքիչ
+          8: Agent(8, 'A008/6', 'Սամվել Սահակյան', False),                 # менеджер (A…) — не առաքիչ
+          3400: Agent(3400, 'B006/1', 'Կարեն Ավագյան', False)}
 CARS = {'333DO33': Car('333DO33', 'HOWO', False), '504 CQ 61': Car('504 CQ 61', 'FORD', False),
         'OLD1': Car('OLD1', 'старая', True), 'TOO-LONG-CODE': Car('TOO-LONG-CODE', 'длинный', False)}
 
@@ -238,13 +239,50 @@ def test_change_description_like_erp_and_comment():
     assert len(ew.log_comment('x' * 500)) == ew.COMMENT_MAX == 100 and len(ew.COMPNAME) <= 32
 
 
+def test_plan_ambiguous_driver_is_skipped():
+    """Водитель дня неоднозначен (ведёт две машины, посадка сборки устарела) — courier_ambiguous, не угадываем."""
+    orders = [_o(I1, 101), _o(I2, 102)]
+    got = {d.isn: d for d in ew.plan_assignments([('333DO33', [101]), ('MANUAL', [102])], orders, DRIVERS, AGENTS, CARS,
+                                                   {I1, I2}, ambiguous={'333DO33'})}
+    assert (got[I1].write, got[I1].reason) == (False, 'courier_ambiguous') and got[I2].write
+
+
+def test_body_sha_and_signature_survive_lone_surrogate():
+    text = body(1) + 'X:\ud800\r\n'
+    assert len(ew.body_sha(text)) == 64
+    ds = ew.plan_assignments([('333DO33', [101])], [_o(I1, 101, text=text)], DRIVERS, AGENTS, CARS, {I1})
+    assert ds[0].write and len(ew.signature(ds)) == 32
+
+
+def test_max_orders_env(monkeypatch):
+    monkeypatch.delenv(ew.MAX_ORDERS_ENV, raising=False)
+    assert ew.max_orders() == 1
+    for raw, want in (('5', 5), (' 3 ', 3), ('0', 1), ('-2', 1), ('x', 1), ('', 1)):
+        monkeypatch.setenv(ew.MAX_ORDERS_ENV, raw)
+        assert ew.max_orders() == want, raw
+
+
 # ============================== подделка транзакционной ERP ==============================
 
+def _sql_trim(v):
+    """LTRIM(RTRIM(ISNULL(x, ''))) SQL Server: только пробелы, не табуляция и не перевод строки."""
+    return (v or '').strip(' ')
+
+
+def _sql_eq(a, b):
+    """= SQL Server в столбце без учёта регистра (CI): регистр не важен, хвостовые пробелы не важны."""
+    return a.rstrip(' ').casefold() == b.rstrip(' ').casefold()
+
+
+T0 = datetime(2026, 10, 1, 9, 30, 15, 997000)
+
+
 class FakeErp:
-    """ORDERS / DOCUMENTS / DOCPARENTS / DOCUMENTSLOG в памяти с транзакцией (autocommit выключен: первый оператор
-    начинает её, rollback — всё назад). Принимает только SQL из erp_write.SQL_W_* (иначе AssertionError). hooks: имя
-    константы → fn(erp, params) перед выполнением (может бросить или изменить данные «другим пользователем»); after —
-    после."""
+    """ORDERS / DOCUMENTS / DOCPARENTS / DOCUMENTSLOG в памяти с транзакцией (autocommit выключен: первый оператор с
+    таблицей начинает её, rollback — всё назад). Сравнение по ORDERS — как SQL Server с CI-сортировкой (_sql_eq, _sql_trim),
+    fBODY — двоичное. Принимает только SQL из erp_write.SQL_W_* (иначе AssertionError). hooks: имя константы → fn(erp,
+    params) перед выполнением (может бросить или изменить данные «другим пользователем»); after — после; rowcount —
+    подменить rowcount оператора."""
 
     def __init__(self, orders, bodies, children=None):
         self.orders = {k: dict(v) for k, v in orders.items()}       # isn → {state, van, car (как в столбце)}
@@ -252,11 +290,13 @@ class FakeErp:
         self.children = dict(children or {})
         self.log = []
         self.calls = []
-        self.hooks, self.after = {}, {}
+        self.hooks, self.after, self.rowcount = {}, {}, {}
         self.verify_override = None
+        self.now = T0
         self.tx = None
         self.commits = self.rollbacks = 0
         self.closed = False
+        self.session = []
         self.names = {getattr(ew, n): n for n in dir(ew) if n.startswith('SQL_W_')}
 
     def _state(self):
@@ -288,13 +328,20 @@ class FakeCursor:
         name = e.names.get(sql)
         assert name is not None, f'SQL мимо erp_write.SQL_W_*: {sql!r}'
         assert isinstance(params, tuple) and all(not isinstance(p, (list, dict)) for p in params)
-        if e.tx is None and name != 'SQL_W_LOCK_TIMEOUT':
-            e.tx = e._state()
         e.calls.append((name, params))
         if name in e.hooks:
             e.hooks[name](e, params)
+        if e.tx is None and name not in ('SQL_W_TRANCOUNT', 'SQL_W_XACT_ABORT', 'SQL_W_DEADLOCK', 'SQL_W_LOCK_TIMEOUT'):
+            e.tx = e._state()
         self.rows, self.rowcount = [], -1
-        if name == 'SQL_W_ORDER':
+        if name in ('SQL_W_XACT_ABORT', 'SQL_W_DEADLOCK', 'SQL_W_LOCK_TIMEOUT'):
+            e.session.append(sql)
+        elif name == 'SQL_W_TRANCOUNT':
+            self.rows = [(1 if e.tx is not None else 0,)]
+        elif name == 'SQL_W_NOW':
+            self.rows = [(e.now,)]
+            e.now += timedelta(milliseconds=10)                              # часы сервера идут
+        elif name == 'SQL_W_ORDER':
             o = e.orders.get(params[0])
             self.rows = [(o['state'], o['van'], o['car'])] if o else []
         elif name in ('SQL_W_UPDATE_ORDER', 'SQL_W_UPDATE_ORDER_VAN'):
@@ -302,9 +349,10 @@ class FakeCursor:
                 van, car, isn, state, old_van, old_car = params
             else:
                 (van, isn, state, old_van, old_car), car = params, None
+            assert car is not None or name == 'SQL_W_UPDATE_ORDER_VAN'        # NULL машину не пишем никогда
             o = e.orders.get(isn)
             hit = (o is not None and o['state'] == state and (o['van'] or 0) == old_van
-                   and (o['car'] or '').strip() == old_car and not e.children.get(isn))
+                   and _sql_eq(_sql_trim(o['car']), old_car) and not e.children.get(isn))
             if hit:
                 o['van'] = van
                 if name == 'SQL_W_UPDATE_ORDER':
@@ -316,22 +364,26 @@ class FakeCursor:
             d = e.docs.get(params[0])
             self.rows = [(d['body'], d['ts'])] if d else []
         elif name == 'SQL_W_UPDATE_BODY':
-            new, isn, ts, old = params
+            new, now, isn, ts, old = params
             d = e.docs.get(isn)
-            hit = d is not None and d['ts'] == ts and d['body'] == old
+            hit = d is not None and d['ts'] == ts and d['body'] == old       # fBODY — двоичное сравнение
             if hit:
-                d['body'], d['mod'] = new, ('GETDATE()', 0)
+                d['body'], d['mod'] = new, (now, 0)
                 d['ts'] = (int.from_bytes(d['ts'], 'big') + 1).to_bytes(8, 'big')
             self.rowcount = int(hit)
         elif name == 'SQL_W_LOG':
-            isn, state, comment, comp, desc = params
-            e.log.append({'isn': isn, 'state': state, 'comment': comment, 'compname': comp, 'desc': desc})
+            isn, now, state, comment, comp, desc = params
+            if any(x['isn'] == isn and x['date'] == now for x in e.log):     # ключ (fISN, fDATE, fOP)
+                raise pyodbc.IntegrityError('23000', 'Violation of PRIMARY KEY constraint')
+            e.log.append({'isn': isn, 'date': now, 'state': state, 'comment': comment, 'compname': comp, 'desc': desc})
             self.rowcount = 1
         elif name == 'SQL_W_VERIFY':
             o, d = e.orders.get(params[0]), e.docs.get(params[0])
-            self.rows = [(o['van'], (o['car'] or '').strip(), d['body'])] if o and d else []
+            self.rows = [(o['van'], _sql_trim(o['car']), d['body'])] if o and d else []
             if e.verify_override is not None:
                 self.rows = e.verify_override
+        if name in e.rowcount:
+            self.rowcount = e.rowcount[name]
         if name in e.after:
             e.after[name](e, params, self)
         return self
@@ -344,6 +396,35 @@ class FakeCursor:
 
     def close(self):
         pass
+
+
+class FakeJournal:
+    """Журнал сайта для apply: pending до COMMIT, finish после; fail — где бросить JournalError; lease — продлевается ли."""
+
+    def __init__(self, erp=None, fail=(), lease=True):
+        self.rows, self.fail, self.lease, self.erp, self.renews = [], set(fail), lease, erp, 0
+        self.pending_seen_tx = []
+
+    def renew(self):
+        self.renews += 1
+        return self.lease if not callable(self.lease) else self.lease(self.renews)
+
+    def pending(self, d, old_raw):
+        if 'pending' in self.fail:
+            raise ew.JournalError('x')
+        if self.erp is not None:
+            self.pending_seen_tx.append(self.erp.tx is not None)    # до COMMIT: транзакция ERP ещё открыта
+        self.rows.append({'isn': d.isn, 'result': 'pending', 'old_raw': old_raw})
+        return len(self.rows) - 1
+
+    def finish(self, token, r):
+        if 'finish' in self.fail:
+            raise ew.JournalError('x')
+        result = 'unknown' if r.reason == ew.COMMIT_UNKNOWN else 'ok' if r.ok else 'failed'
+        if token is None:
+            self.rows.append({'isn': r.decision.isn, 'result': result, 'old_raw': r.old_car_raw})
+        else:
+            self.rows[token]['result'] = result
 
 
 def _erp(**over):
@@ -370,35 +451,40 @@ def test_apply_success_exact_sql_and_values():
     erp = _erp()
     ds = _decisions(erp)
     assert [d.write for d in ds] == [True, True]
-    seen = []
-    batch = ew.apply(erp, ds, 'boss', on_result=seen.append)
+    j = FakeJournal(erp)
+    batch = ew.apply(erp, ds, 'boss', journal=j)
     res = list(batch.results)
     assert batch.stopped == '' and [(r.decision.isn, r.ok, r.reason) for r in res] == [(I1, True, ''), (I2, True, '')]
-    assert seen == res
+    assert j.rows == [{'isn': I1, 'result': 'ok', 'old_raw': ''}, {'isn': I2, 'result': 'ok', 'old_raw': 'OLD1'}]
+    assert j.pending_seen_tx == [True, True] and j.renews == 2      # pending — до COMMIT; замок — перед каждым заказом
     assert erp.orders[I1] == {'state': 2, 'van': 3199, 'car': '333DO33'}
     assert erp.orders[I2] == {'state': 1, 'van': 3200, 'car': '504 CQ 61'}
     new1 = rw(body(van=1), 3199, '333DO33')
-    assert erp.docs[I1]['body'] == new1 and erp.docs[I1]['mod'] == ('GETDATE()', 0)
+    # одно время правки: DOCUMENTS.fLASTMODIFYDATE и DOCUMENTSLOG.fDATE — одинаковые (как у ERP), fLASTMODIFIERID 0
+    assert erp.docs[I1]['body'] == new1 and erp.docs[I1]['mod'] == (T0, 0) and erp.log[0]['date'] == T0
     assert _rest(erp.docs[I2]['body']) == _rest(body(van=2, car='OLD1'))
-    assert erp.log == [
+    assert [{k: v for k, v in x.items() if k != 'date'} for x in erp.log] == [
         {'isn': I1, 'state': 2, 'comment': 'Կայք՝ boss', 'compname': 'ARAQICH-SITE',
          'desc': '("Առաքիչ", "A001" -> "B001/1"), ("Առաքող ավտոմեքենա", "" -> "333DO33")'},
         {'isn': I2, 'state': 1, 'comment': 'Կայք՝ boss', 'compname': 'ARAQICH-SITE',
          'desc': '("Առաքիչ", "A002" -> "B002/1"), ("Առաքող ավտոմեքենա", "OLD1" -> "504 CQ 61")'}]
     ts0 = b'\x00' * 7 + bytes([1])
-    assert erp.calls[:10] == [
+    assert erp.calls[:13] == [
+        ('SQL_W_TRANCOUNT', ()),
         ('SQL_W_ORDER', (I1,)),
         ('SQL_W_UPDATE_ORDER', (3199, '333DO33', I1, 2, 1, '')),
         ('SQL_W_CHILDREN', (I1,)),
         ('SQL_W_BODY', (I1,)),
-        ('SQL_W_UPDATE_BODY', (new1, I1, ts0, body(van=1))),
+        ('SQL_W_NOW', ()),
+        ('SQL_W_UPDATE_BODY', (new1, T0, I1, ts0, body(van=1))),
         ('SQL_W_BODY', (I1,)),
         ('SQL_W_ORDER', (I1,)),
-        ('SQL_W_LOG', (I1, 2, 'Կայք՝ boss', 'ARAQICH-SITE', erp.log[0]['desc'])),
+        ('SQL_W_LOG', (I1, T0, 2, 'Կայք՝ boss', 'ARAQICH-SITE', erp.log[0]['desc'])),
         ('SQL_W_VERIFY', (I1,)),
+        ('SQL_W_TRANCOUNT', ()),
         ('SQL_W_ORDER', (I2,))]
     assert erp.commits == 2 and erp.tx is None
-    assert res[0].old_car_null is True and res[1].old_car_null is False
+    assert res[0].old_car_raw == '' and res[1].old_car_raw == 'OLD1'
 
 
 def test_apply_courier_only_does_not_touch_car_column_or_line():
@@ -423,6 +509,24 @@ def test_apply_optimistic_conflict_rolls_back():
     assert [(r.ok, r.reason) for r in res] == [(False, 'changed_in_erp'), (False, 'changed_in_erp')]
     assert erp._state() == before and erp.commits == 0 and erp.rollbacks == 2
     assert not any(c[0] in ('SQL_W_UPDATE_BODY', 'SQL_W_LOG') for c in erp.calls)
+
+
+def test_apply_sql_semantics_case_and_spaces_only_trim():
+    """Как SQL Server: LTRIM/RTRIM режут только пробелы (машина с табуляцией — не та, откат), сравнение без регистра (UPDATE
+    проходит, но fBODY и чтение назад в транзакции ловят чужую правку — откат)."""
+    erp = _erp(orders={I2: {'state': 1, 'van': 2, 'car': '  OLD1  '}})       # пробелы — режутся
+    ds = _decisions(erp)
+    assert ds[1].old_car == 'OLD1' and [(r.ok, r.reason) for r in _apply(erp, ds)][1] == (True, '')
+    erp = _erp(orders={I2: {'state': 1, 'van': 2, 'car': 'OLD1'}})
+    ds = _decisions(erp)
+    erp.orders[I2]['car'] = 'OLD1\t'                                          # табуляция — не режется
+    assert _apply(erp, ds)[1].reason == 'changed_in_erp' and erp.orders[I2]['car'] == 'OLD1\t'
+    erp = _erp()
+    ds = _decisions(erp)
+    erp.orders[I2]['car'] = 'old1'                                            # регистр: UPDATE проходит…
+    erp.docs[I2]['body'] = body(van=2, car='old1')                            # …ERP поменяла и fBODY
+    r = _apply(erp, ds)[1]
+    assert (r.ok, r.reason) == (False, 'changed_in_erp') and erp.orders[I2] == {'state': 1, 'van': 2, 'car': 'old1'}
 
 
 def test_apply_child_doc_before_and_after_update():
@@ -452,6 +556,56 @@ def test_apply_exception_midway_rolls_back_and_continues():
     assert erp.orders[I2]['van'] == 3200 and [x['isn'] for x in erp.log] == [I2] and erp.commits == 1
 
 
+def test_apply_log_key_conflict_rolls_back():
+    """Ключ DOCUMENTSLOG (fISN, fDATE, fOP) уже занят (та же миллисекунда) — log_conflict, откат."""
+    erp = _erp()
+    ds = _decisions(erp)
+    erp.log.append({'isn': I1, 'date': T0, 'state': 2, 'comment': '', 'compname': 'ERP', 'desc': ''})
+    res = _apply(erp, ds)
+    assert [(r.ok, r.reason) for r in res] == [(False, 'log_conflict'), (True, '')]
+    assert erp.orders[I1]['van'] == 1 and erp.docs[I1]['body'] == body(van=1)
+
+
+def test_apply_rollback_failure_stops_batch():
+    """Откат не удался — транзакция, может быть, открыта: дальше не пишем; заказ 1 не зафиксирован."""
+    erp = _erp()
+    ds = _decisions(erp)
+    erp.orders[I1]['van'] = 3300                                         # заказ 1 откатится (конфликт)…
+
+    def broken():
+        raise pyodbc.Error('08S01', 'link failure')
+    erp.rollback = broken                                                # …а откат падает
+    batch = ew.apply(erp, ds, 'boss')
+    assert batch.stopped == 'rollback' and [(r.decision.isn, r.reason) for r in batch.results] == [(I1, 'changed_in_erp')]
+    assert erp.commits == 0 and not any(c[1][:1] == (I2,) for c in erp.calls)
+
+
+def test_apply_open_transaction_after_lock_timeout_stops():
+    """Таймаут замка, транзакция осталась открытой (откат «прошёл», но @@TRANCOUNT ≠ 0) — следующий заказ не пишется."""
+    erp = _erp()
+    ds = _decisions(erp)
+
+    def timeout(e, p):
+        if p == (3199, '333DO33', I1, 2, 1, ''):
+            raise pyodbc.Error('HYT00', 'Lock request time out period exceeded')
+    erp.hooks['SQL_W_UPDATE_ORDER'] = timeout
+    erp.rollback = lambda: None                                          # транзакция не закрылась
+    batch = ew.apply(erp, ds, 'boss')
+    assert [(r.decision.isn, r.reason) for r in batch.results] == [(I1, 'error')] and batch.stopped == 'trancount'
+    assert not any(c[1][:1] == (I2,) for c in erp.calls) and erp.commits == 0
+
+
+def test_apply_rowcount_minus_one_aborts():
+    """rowcount −1 (SET NOCOUNT ON) — не знаем, сколько строк: откат, ничего не записано."""
+    for name in ('SQL_W_UPDATE_ORDER', 'SQL_W_UPDATE_BODY', 'SQL_W_LOG'):
+        erp = _erp()
+        ds = _decisions(erp)
+        erp.rowcount[name] = -1
+        res = _apply(erp, ds)
+        assert all(not r.ok for r in res) and erp.commits == 0, name
+        assert erp.orders[I1]['van'] == 1 and erp.docs[I1]['body'] == body(van=1) and erp.log == [], name
+
+
 def test_apply_body_mismatch_format_and_concurrent_body_change():
     erp = _erp()
     ds = _decisions(erp)
@@ -475,9 +629,9 @@ def test_apply_body_changed_between_read_and_update():
 
         def sneak(e, p, change=change):
             if change == 'ts':
-                e.docs[p[1]]['ts'] = b'other'
+                e.docs[p[2]]['ts'] = b'other'
             else:
-                e.docs[p[1]]['body'] = e.docs[p[1]]['body'] + 'X:1\r\n'
+                e.docs[p[2]]['body'] = e.docs[p[2]]['body'] + 'X:1\r\n'
         erp.hooks['SQL_W_UPDATE_BODY'] = sneak
         res = _apply(erp, ds)
         assert [(r.ok, r.reason) for r in res] == [(False, 'changed_in_erp')] * 2, change
@@ -510,17 +664,19 @@ def test_apply_read_back_inside_transaction():
     assert erp.orders[I1]['van'] == 1 and erp.commits == 0 and erp.log == []
 
 
-def test_apply_verify_mismatch_and_skips_untouched():
+def test_apply_verify_failed_stops_and_skips_untouched():
     erp = _erp()
     ds = _decisions(erp)
     erp.verify_override = [(1, '', body(van=1))]
-    res = _apply(erp, ds)
-    assert [(r.ok, r.reason) for r in res] == [(True, ew.VERIFY_FAILED)] * 2 and erp.commits == 2
+    batch = ew.apply(erp, ds, 'boss')
+    assert [(r.ok, r.reason) for r in batch.results] == [(True, ew.VERIFY_FAILED)] and batch.stopped == ew.VERIFY_FAILED
+    assert erp.commits == 1 and erp.orders[I2]['van'] == 2                     # второй заказ не трогали
     erp = _erp()
     skip = [ew.Decision(I1, 'N1', 101, '', 2, 1, 1, '', '', False, 'not_in_plan')]
     assert _apply(erp, skip) == [] and erp.calls == []
     bad = [ew.Decision(I1, 'N1', 101, 'T', 2, 1, 0, '', '', True, '')]          # առաքիչ 0 — не пишем
-    assert _apply(erp, bad)[0].reason == 'error' and erp.orders[I1]['van'] == 1 and erp.calls == []
+    r = _apply(erp, bad)[0]
+    assert r.reason == 'error' and erp.orders[I1]['van'] == 1 and [c[0] for c in erp.calls] == ['SQL_W_TRANCOUNT']
 
 
 @pytest.mark.parametrize('committed', [True, False])
@@ -537,11 +693,9 @@ def test_apply_commit_lost_is_verified_on_new_connection_and_stops(committed):
 
     def reconnect():
         fresh.append(1)
-        erp.verify_override = None
         return erp
     batch = ew.apply(erp, _decisions(erp), 'boss', reconnect=reconnect)
     if committed:
-        # подтвердилось — записано; дальше идём (и второй заказ тоже упадёт на COMMIT, но сервер «зафиксирует»)
         assert [(r.ok, r.reason) for r in batch.results] == [(True, ''), (True, '')] and batch.stopped == ''
         assert erp.orders[I1]['van'] == 3199 and fresh == [1, 1]
     else:
@@ -554,23 +708,42 @@ def test_apply_commit_lost_is_verified_on_new_connection_and_stops(committed):
     assert [r.reason for r in batch.results] == [ew.COMMIT_UNKNOWN] and batch.stopped == ew.COMMIT_UNKNOWN
 
 
-def test_apply_journal_failure_stops():
+def test_apply_journal_pending_failure_rolls_back_and_stops():
     erp = _erp()
+    j = FakeJournal(erp, fail={'pending'})
+    batch = ew.apply(erp, _decisions(erp), 'boss', journal=j)
+    assert batch.stopped == 'journal' and [(r.decision.isn, r.ok) for r in batch.results] == [(I1, False)]
+    assert erp.orders[I1]['van'] == 1 and erp.commits == 0 and erp.log == []     # без строки журнала — не фиксируем
 
-    def journal(r):
-        raise ew.JournalError('нет журнала')
-    batch = ew.apply(erp, _decisions(erp), 'boss', on_result=journal)
+
+def test_apply_journal_finish_failure_leaves_pending_and_stops():
+    """Сбой между COMMIT и итогом журнала — строка «pending» остаётся, запись остановлена."""
+    erp = _erp()
+    j = FakeJournal(erp, fail={'finish'})
+    batch = ew.apply(erp, _decisions(erp), 'boss', journal=j)
     assert batch.stopped == 'journal' and [r.decision.isn for r in batch.results] == [I1]
+    assert j.rows == [{'isn': I1, 'result': 'pending', 'old_raw': ''}]
     assert erp.orders[I1]['van'] == 3199 and erp.orders[I2]['van'] == 2
 
 
-def test_apply_back_to_empty_car_keeps_null_or_blank():
-    for null, want in ((True, None), (False, '')):
+def test_apply_lease_lost_stops():
+    erp = _erp()
+    j = FakeJournal(erp, lease=lambda n: n == 1)                               # второй заказ — замок не продлился
+    batch = ew.apply(erp, _decisions(erp), 'boss', journal=j)
+    assert batch.stopped == 'lease' and [r.decision.isn for r in batch.results] == [I1] and erp.orders[I2]['van'] == 2
+
+
+def test_apply_back_to_empty_car_restores_exact_string_never_null():
+    for raw in ('', '  '):
         erp = _erp(orders={I1: {'state': 2, 'van': 3199, 'car': '333DO33'}}, bodies={I1: body(van=3199, car='333DO33')})
-        d = ew.Decision(I1, 'N1', 101, '333DO33', 2, 3199, 1, '333DO33', '', True, '', 'B001/1', 'A001', '', null)
+        d = ew.Decision(I1, 'N1', 101, '333DO33', 2, 3199, 1, '333DO33', '', True, '', 'B001/1', 'A001', '', car_raw=raw)
         r = _apply(erp, [d])[0]
-        assert (r.ok, r.reason) == (True, '') and erp.orders[I1]['car'] is want and erp.docs[I1]['body'] == body(van=1)
+        assert (r.ok, r.reason) == (True, '') and erp.orders[I1]['car'] == raw and erp.docs[I1]['body'] == body(van=1)
         assert erp.log[0]['desc'] == '("Առաքիչ", "B001/1" -> "A001"), ("Առաքող ավտոմեքենա", "333DO33" -> "")'
+    erp = _erp(orders={I1: {'state': 2, 'van': 3199, 'car': '333DO33'}}, bodies={I1: body(van=3199, car='OLD 1')})
+    d = ew.Decision(I1, 'N1', 101, '333DO33', 2, 3199, 1, '333DO33', 'OLD 1', True, '', car_raw='OLD 1 ')
+    erp.docs[I1]['body'] = body(van=3199, car='333DO33')
+    assert _apply(erp, [d])[0].ok and erp.orders[I1]['car'] == 'OLD 1 '      # ровно прежняя строка столбца
 
 
 # ============================== состав SQL записи ==============================
@@ -579,8 +752,9 @@ def test_write_sql_is_static_and_minimal():
     """Пишется ТОЛЬКО: ORDERS.fVANAGENTID, ORDERS.fDELIVERYCAR; DOCUMENTS.fBODY, fLASTMODIFYDATE, fLASTMODIFIERID;
     INSERT DOCUMENTSLOG. Весь SQL модуля — в константах SQL_W_*; execute — только с ними; ни ';', ни DELETE/EXEC/DDL."""
     sql = {n: getattr(ew, n) for n in dir(ew) if n.startswith('SQL_W_')}
-    assert set(sql) == {'SQL_W_LOCK_TIMEOUT', 'SQL_W_ORDER', 'SQL_W_UPDATE_ORDER', 'SQL_W_UPDATE_ORDER_VAN', 'SQL_W_CHILDREN',
-                        'SQL_W_BODY', 'SQL_W_UPDATE_BODY', 'SQL_W_LOG', 'SQL_W_VERIFY'}
+    assert set(sql) == {'SQL_W_XACT_ABORT', 'SQL_W_DEADLOCK', 'SQL_W_LOCK_TIMEOUT', 'SQL_W_TRANCOUNT', 'SQL_W_ORDER',
+                        'SQL_W_UPDATE_ORDER', 'SQL_W_UPDATE_ORDER_VAN', 'SQL_W_CHILDREN', 'SQL_W_BODY', 'SQL_W_NOW',
+                        'SQL_W_UPDATE_BODY', 'SQL_W_LOG', 'SQL_W_VERIFY'}
     writes = {n for n, v in sql.items() if _SQL_WRITE_RE.search(v)}
     assert writes == {'SQL_W_UPDATE_ORDER', 'SQL_W_UPDATE_ORDER_VAN', 'SQL_W_UPDATE_BODY', 'SQL_W_LOG'}
     sets = {n: re.search(r'UPDATE\s+(\w+)\s+SET\s+(.*?)\s+WHERE', sql[n], re.S) for n in writes - {'SQL_W_LOG'}}
@@ -589,8 +763,10 @@ def test_write_sql_is_static_and_minimal():
                     'SQL_W_UPDATE_ORDER_VAN': ('ORDERS', {'fVANAGENTID'}),
                     'SQL_W_UPDATE_BODY': ('DOCUMENTS', {'fBODY', 'fLASTMODIFYDATE', 'fLASTMODIFIERID'})}
     assert re.match(r'INSERT INTO DOCUMENTSLOG \(fISN, fDATE, fUSERID, fSTATE, fOP, fCOMMENT, fCOMPNAME, '
-                    r'fCHANGEDESCRIPTION, fSOURCE\)\s+VALUES \(\?, GETDATE\(\), 0, \?, 2, \?, \?, \?, 0\)$', sql['SQL_W_LOG'])
-    assert sql['SQL_W_LOCK_TIMEOUT'] == f'SET LOCK_TIMEOUT {ew.LOCK_TIMEOUT_MS}' == 'SET LOCK_TIMEOUT 5000'
+                    r'fCHANGEDESCRIPTION, fSOURCE\)\s+VALUES \(\?, \?, 0, \?, 2, \?, \?, \?, 0\)$', sql['SQL_W_LOG'])
+    assert (sql['SQL_W_XACT_ABORT'], sql['SQL_W_DEADLOCK'], sql['SQL_W_LOCK_TIMEOUT']) == \
+        ('SET XACT_ABORT ON', 'SET DEADLOCK_PRIORITY LOW', f'SET LOCK_TIMEOUT {ew.LOCK_TIMEOUT_MS}')
+    assert ew.LOCK_TIMEOUT_MS == 5000 and sql['SQL_W_TRANCOUNT'] == 'SELECT @@TRANCOUNT' and sql['SQL_W_NOW'] == 'SELECT GETDATE()'
     for n, v in sql.items():
         assert ';' not in v and not re.search(r'\b(DELETE|DROP|ALTER|CREATE|EXEC|EXECUTE|MERGE|TRUNCATE|GRANT)\b', v), n
         assert '{' not in v and '%' not in v and 'NOLOCK' not in v, n       # не шаблон; в транзакции — без грязного чтения
@@ -599,12 +775,16 @@ def test_write_sql_is_static_and_minimal():
         assert 'fSTATE = ?' in sql[n]
         assert 'NOT EXISTS (SELECT 1 FROM DOCPARENTS p WITH (UPDLOCK, HOLDLOCK) WHERE p.fPARENTISN = ORDERS.fISN)' in sql[n]
     assert 'DOCPARENTS WITH (UPDLOCK, HOLDLOCK) WHERE fPARENTISN = ?' in sql['SQL_W_CHILDREN']
-    assert sql['SQL_W_UPDATE_BODY'].rstrip().endswith('WHERE fISN = ? AND fDOCTYPE = 1 AND fTS = ? AND fBODY = ?')
+    # длинный fBODY pyodbc передаёт как ntext: и в SET, и в сравнении — CAST к nvarchar(max) (ошибка 402)
+    assert sql['SQL_W_UPDATE_BODY'].rstrip().endswith(
+        'WHERE fISN = ? AND fDOCTYPE = 1 AND fTS = ? AND fBODY = CAST(? AS nvarchar(max))')
+    assert 'SET fBODY = CAST(? AS nvarchar(max)), fLASTMODIFYDATE = ?, fLASTMODIFIERID = 0' in sql['SQL_W_UPDATE_BODY']
+    assert 'GETDATE' not in sql['SQL_W_UPDATE_BODY'] + sql['SQL_W_LOG']      # одно время — параметром (SQL_W_NOW)
     tree = ast.parse((ROOT / 'route_optimizer' / 'erp_write.py').read_text(encoding='utf-8'))
     calls = [c for c in ast.walk(tree) if isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute)
              and c.func.attr in ('execute', 'executemany')]
     assert calls and all(c.func.attr == 'execute' and isinstance(c.args[0], ast.Name)
-                         and c.args[0].id.startswith('SQL_W_') for c in calls)
+                         and (c.args[0].id.startswith('SQL_W_') or c.args[0].id == 'sql') for c in calls)
     strings = [n.value for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str)]
     assert sorted(s for s in strings if _SQL_WRITE_RE.search(s)) == sorted(sql[n] for n in writes)
 
@@ -678,7 +858,7 @@ class _WConn:
         self.closed = True
 
 
-def test_connect_write_hides_driver_text_and_sets_lock_timeout(monkeypatch):
+def test_connect_write_hides_driver_text_and_sets_session(monkeypatch):
     def fail(*a, **k):
         raise pyodbc.Error('08001', 'Login failed for user araqich_rw; PWD=secret')
     monkeypatch.setattr(ew.pyodbc, 'connect', fail)
@@ -689,7 +869,7 @@ def test_connect_write_hides_driver_text_and_sets_lock_timeout(monkeypatch):
     conn = _WConn()
     monkeypatch.setattr(ew.pyodbc, 'connect', lambda dsn, **k: got.update(k, dsn=dsn) or conn)
     assert ew.connect_write('DSN=x') is conn and conn.timeout == ew.QUERY_TIMEOUT_S and got['autocommit'] is False
-    assert conn.sql == ['SET LOCK_TIMEOUT 5000'] and conn.commits == 1
+    assert conn.sql == ['SET XACT_ABORT ON', 'SET DEADLOCK_PRIORITY LOW', 'SET LOCK_TIMEOUT 5000'] and conn.commits == 1
     bad = _WConn(fail=True)
     monkeypatch.setattr(ew.pyodbc, 'connect', lambda dsn, **k: bad)
     with pytest.raises(ew.ErpWriteError):
@@ -701,6 +881,7 @@ def test_connect_write_hides_driver_text_and_sets_lock_timeout(monkeypatch):
     assert ew.write_dsn() is None
     monkeypatch.setenv(ew.DSN_ENV, ' DSN=x ')
     assert ew.write_dsn() == 'DSN=x'
+    assert 'ТОЛЬКО на CT115' in ew.__doc__
 
 
 # ============================== API ==============================
@@ -708,12 +889,14 @@ def test_connect_write_hides_driver_text_and_sets_lock_timeout(monkeypatch):
 CAR_DRIVERS = {'CAR1': 'Արամ Պետրոսյան', 'CAR2': 'Գագիկ Սարգսյան'}
 API_CARS = {'CAR1': Car('CAR1', 'HOWO', False), 'CAR2': Car('CAR2', 'FORD', True)}   # CAR2 закрыта — только առաքիչ
 CIDS = {_isn(1): 101, _isn(2): 102, _isn(3): 104, _isn(70): 101}
+ALL3 = [_isn(1), _isn(2), _isn(3)]
 
 
 @pytest.fixture
 def day(client, monkeypatch):
     """План 01.10 (сегодня) на CAR1 и CAR2; ERP — подделка FakeErp (её же читает предпросмотр); роль — из g.user_role (как
-    ставит app_v2), по умолчанию admin. Хук роли — до первого запроса (Flask не принимает его позже)."""
+    ставит app_v2), по умолчанию admin. Хук роли — до первого запроса (Flask не принимает его позже). Предел заказов за
+    раз — 10 (по умолчанию 1 — test_api_default_cap_is_one)."""
     role = {'value': 'admin'}
 
     @client.application.before_request
@@ -721,11 +904,12 @@ def day(client, monkeypatch):
         from flask import g
         if role['value']:
             g.user_role = role['value']
+    monkeypatch.setenv(ew.MAX_ORDERS_ENV, '10')
     state, _ = _page_setup(client, monkeypatch, now=NOW)
     for car, name in CAR_DRIVERS.items():
         state.store.save_truck_driver(car, DAY, name, 'qa')
     isns = [_isn(1), _isn(2), _isn(3), _isn(70)]
-    erp = FakeErp({i: {'state': 2, 'van': 1, 'car': None} for i in isns}, {i: body(van=1) for i in isns})
+    erp = FakeErp({i: {'state': 2, 'van': 1, 'car': ''} for i in isns}, {i: body(van=1) for i in isns})
     reads = []
 
     def states(asked):
@@ -758,6 +942,11 @@ def _rows(p):
     return {o['isn']: (t['truck'], t['driver'], o) for t in p['trucks'] for o in t['orders']}
 
 
+def _write(client, p, orders=None):
+    orders = [o['isn'] for t in p['trucks'] for o in t['orders'] if o['write']] if orders is None else orders
+    return client.post('/api/routes/dispatch/erp-write', json={'date': DAY, 'expected': p['signature'], 'orders': orders})
+
+
 def test_api_disabled_without_dsn(client, monkeypatch):
     @client.application.before_request
     def _role():
@@ -769,7 +958,7 @@ def test_api_disabled_without_dsn(client, monkeypatch):
     d = _sent(client)
     assert 'erp_write' not in d
     assert client.get('/api/routes/dispatch/erp-write?date=' + DAY).status_code == 404
-    assert client.post('/api/routes/dispatch/erp-write', json={'date': DAY, 'expected': 'x'}).status_code == 404
+    assert client.post('/api/routes/dispatch/erp-write', json={'date': DAY, 'expected': 'x', 'orders': [I1]}).status_code == 404
     assert client.post('/api/routes/dispatch/erp-write/undo', json={'date': DAY, 'orders': [_isn(1)]}).status_code == 404
 
 
@@ -795,29 +984,55 @@ def test_api_admin_only(day):
     for role in ('user', 'garage', 'warehouse', None):
         day.role['value'] = role
         assert day.get('/api/routes/dispatch/erp-write?date=' + DAY).status_code == 403
-        assert day.post('/api/routes/dispatch/erp-write', json={'date': DAY, 'expected': 'x'}).status_code == 403
+        assert day.post('/api/routes/dispatch/erp-write', json={'date': DAY, 'expected': 'x', 'orders': [I1]}).status_code == 403
         assert day.post('/api/routes/dispatch/erp-write/undo', json={'date': DAY, 'orders': [_isn(1)]}).status_code == 403
     assert day.erp.calls == [] and day.conns == []
 
 
 def test_api_refuses_unsent_plan_and_past_day(day, monkeypatch):
     d = _build(day, ('CAR1', 'CAR2'))
-    assert 'sent' not in d and d['erp_write'] == {'trucks': {}}
+    assert 'sent' not in d and d['erp_write'] == {'max_orders': 10, 'trucks': {}}
     r = day.get('/api/routes/dispatch/erp-write?date=' + DAY)
     assert r.status_code == 400 and r.get_json()['error'] == views.ERP_WRITE_NOT_SENT
-    r = day.post('/api/routes/dispatch/erp-write', json={'date': DAY, 'expected': 'x'})
+    r = day.post('/api/routes/dispatch/erp-write', json={'date': DAY, 'expected': 'x', 'orders': [_isn(1)]})
     assert r.status_code == 400 and r.get_json()['error'] == views.ERP_WRITE_NOT_SENT
     r = day.get('/api/routes/dispatch/erp-write?date=2026-09-30')
     assert r.status_code == 400 and r.get_json()['error'] == views.ERP_WRITE_PAST
     _sent(day)
-    sig = _preview(day)['signature']
+    p = _preview(day)
     monkeypatch.setattr(views, '_yerevan_now', lambda: datetime(2026, 10, 2, 9, 0, tzinfo=ac.YEREVAN))
-    r = day.post('/api/routes/dispatch/erp-write', json={'date': DAY, 'expected': sig})
+    r = _write(day, p)
     assert r.status_code == 400 and r.get_json()['error'] == views.ERP_WRITE_PAST
     r = day.post('/api/routes/dispatch/erp-write/undo', json={'date': DAY, 'orders': [_isn(1)]})
     assert r.status_code == 400 and r.get_json()['error'] == views.ERP_WRITE_PAST
-    assert day.post('/api/routes/dispatch/erp-write', json={'date': 'x', 'expected': sig}).status_code == 400
+    assert day.post('/api/routes/dispatch/erp-write', json={'date': 'x', 'expected': p['signature']}).status_code == 400
     assert day.erp.calls == [] and day.conns == []
+
+
+def test_api_orders_are_required_and_capped(day, monkeypatch):
+    _sent(day)
+    p = _preview(day)
+    assert p['max_orders'] == 10
+    for bad in (None, [], 'x', ['x']):
+        body_ = {'date': DAY, 'expected': p['signature'], **({'orders': bad} if bad is not None else {})}
+        r = day.post('/api/routes/dispatch/erp-write', json=body_)
+        assert r.status_code == 400 and r.get_json()['error'] == views.ERP_WRITE_BAD_ORDERS, bad
+    monkeypatch.setenv(ew.MAX_ORDERS_ENV, '2')
+    r = _write(day, p)
+    assert r.status_code == 400 and r.get_json()['error'] == 'Մեկ անգամից կարելի է գրել ոչ ավելի, քան 2 պատվեր'
+    assert day.erp.calls == [] and day.conns == []
+
+
+def test_api_default_cap_is_one(day, monkeypatch):
+    monkeypatch.delenv(ew.MAX_ORDERS_ENV)
+    _sent(day)
+    p = _preview(day)
+    assert p['max_orders'] == 1
+    r = _write(day, p)
+    assert r.status_code == 400 and '1 պատվեր' in r.get_json()['error'] and day.erp.calls == []
+    one = sorted(_rows(p))[0]
+    r = _write(day, p, [one])
+    assert r.status_code == 200 and [x['isn'] for x in r.get_json()['results']] == [one]
 
 
 def test_api_preview_write_and_idempotent_repeat(day):
@@ -825,7 +1040,7 @@ def test_api_preview_write_and_idempotent_repeat(day):
     owner = _plan_stops(d)
     p = _preview(day)
     assert day.erp.calls == [] and day.conns == []                    # предпросмотр ERP не пишет
-    assert sorted(day.reads[-1]) == sorted([_isn(1), _isn(2), _isn(3)])
+    assert sorted(day.reads[-1]) == sorted(ALL3)
     cid_of = {_isn(1): 101, _isn(2): 102, _isn(3): 104}
     for isn, (truck, driver, o) in _rows(p).items():
         assert truck == owner[cid_of[isn]] and driver == CAR_DRIVERS[truck] and o['write'] is True
@@ -839,9 +1054,9 @@ def test_api_preview_write_and_idempotent_repeat(day):
                 ('B002/1', '', 'car_not_in_erp', ew.REASON_HY['car_not_in_erp'])
             assert o['new_body'] == body(van=3200)
     assert p['counts'] == {'write': 3, 'skip': 0} and len(p['signature']) == 32
-    bad = day.post('/api/routes/dispatch/erp-write', json={'date': DAY, 'expected': 'other'})
+    bad = day.post('/api/routes/dispatch/erp-write', json={'date': DAY, 'expected': 'other', 'orders': ALL3})
     assert bad.status_code == 409 and bad.get_json()['error'] == views.ERP_WRITE_STALE and day.conns == []
-    r = day.post('/api/routes/dispatch/erp-write', json={'date': DAY, 'expected': p['signature']})
+    r = _write(day, p)
     assert r.status_code == 200, r.get_json()
     out = r.get_json()
     assert out['counts'] == {'ok': 3, 'failed': 0, 'unknown': 0} and 'stopped' not in out
@@ -854,21 +1069,38 @@ def test_api_preview_write_and_idempotent_repeat(day):
     trucks = {owner[cid_of[i]] for i in cid_of}
     assert set(page['erp_write']['trucks']) == trucks
     assert sum(t['written'] for t in page['erp_write']['trucks'].values()) == 3
+    assert not any('drift' in t for t in page['erp_write']['trucks'].values())   # ERP = записанное = план
     # повтор: ничего не меняется — нечего писать
     p2 = _preview(day)
     assert p2['counts'] == {'write': 0, 'skip': 3} and {o['reason'] for t in p2['trucks'] for o in t['orders']} == {'unchanged'}
     calls = len(day.erp.calls)
-    r = day.post('/api/routes/dispatch/erp-write', json={'date': DAY, 'expected': p2['signature']})
-    assert r.get_json()['counts'] == {'ok': 0, 'failed': 0, 'unknown': 0} and len(day.erp.calls) == calls
+    r = _write(day, p2, ALL3)
+    assert r.status_code == 400 and r.get_json()['error'] == views.ERP_WRITE_NOT_IN_PREVIEW and len(day.erp.calls) == calls
     # замок записи снят (и в базе)
     assert day.state.store.erp_write_lease('other') is True
+
+
+def test_api_page_shows_drift_from_erp(day):
+    d = _sent(day)
+    owner = _plan_stops(d)
+    p = _preview(day)
+    assert _write(day, p).status_code == 200
+    day.erp.orders[_isn(1)]['van'] = 3300                              # в ERP առաքիչ поменяли руками
+    page = day.get('/api/routes/dispatch?date=' + DAY).get_json()
+    t = page['erp_write']['trucks'][owner[101]]
+    assert t['drift'] == 1
+    reads = len(day.reads)
+    day.get('/api/routes/dispatch?date=' + DAY)                         # кэш: ERP повторно не читается
+    assert len(day.reads) == reads
+    js = (ROOT / 'static' / 'js' / 'routes_dispatch.js').read_text(encoding='utf-8')
+    assert 'ERP-ն տարբերվում է պլանից' in js
 
 
 def test_api_trial_writes_exactly_one_order(day):
     _sent(day)
     p = _preview(day)
     one = sorted(_rows(p))[0]
-    r = day.post('/api/routes/dispatch/erp-write', json={'date': DAY, 'expected': p['signature'], 'orders': [one]})
+    r = _write(day, p, [one])
     assert r.status_code == 200, r.get_json()
     assert [x['isn'] for x in r.get_json()['results']] == [one] and [x['isn'] for x in day.erp.log] == [one]
     assert sum(o['van'] != 1 for o in day.erp.orders.values()) == 1
@@ -876,8 +1108,7 @@ def test_api_trial_writes_exactly_one_order(day):
     p = _preview(day)
     calls = len(day.erp.calls)
     for bad in ([one], [_isn(99)], [], ['x'], 'x'):
-        r = day.post('/api/routes/dispatch/erp-write', json={'date': DAY, 'expected': p['signature'], 'orders': bad})
-        assert r.status_code == 400, bad
+        assert _write(day, p, bad).status_code == 400, bad
     assert len(day.erp.calls) == calls
 
 
@@ -892,21 +1123,40 @@ def test_api_order_entered_after_sending_is_not_written(day):
     row = _rows(p)[_isn(70)][2]
     assert (row['write'], row['reason'], row['reason_text']) == (False, 'not_in_sent_plan', 'Ուղարկելուց հետո մուտքագրված պատվեր')
     assert p['counts'] == {'write': 3, 'skip': 1}
-    r = day.post('/api/routes/dispatch/erp-write', json={'date': DAY, 'expected': p['signature']}).get_json()
+    assert _write(day, p, [_isn(70)]).status_code == 400
+    r = _write(day, p).get_json()
     assert _isn(70) not in [x['isn'] for x in r['results']] and day.erp.orders[_isn(70)]['van'] == 1
+
+
+def test_api_driver_on_two_trucks_is_ambiguous(day):
+    _sent(day)
+    day.state.store.save_truck_driver('CAR2', DAY, CAR_DRIVERS['CAR1'], 'qa', only_day=True)   # ведёт и CAR2
+    p = _preview(day)
+    assert p['counts']['write'] == 0
+    assert {o['reason'] for t in p['trucks'] for o in t['orders']} == {'courier_ambiguous'}
+
+
+def test_api_lone_surrogate_body_does_not_500(day):
+    day.erp.docs[_isn(1)]['body'] = body(van=1) + 'X:\ud800\r\n'
+    _sent(day)
+    p = _preview(day)
+    row = _rows(p)[_isn(1)][2]
+    assert row['write'] and row['old_body'].endswith('X:\ud800\r\n')
+    r = _write(day, p, [_isn(1)])
+    assert r.status_code == 200 and r.get_json()['results'][0]['ok']
 
 
 def test_api_signature_mismatch_when_erp_changed_after_preview(day):
     _sent(day)
     p = _preview(day)
     day.erp.children[_isn(1)] = 1                                      # офис выписал накладную
-    r = day.post('/api/routes/dispatch/erp-write', json={'date': DAY, 'expected': p['signature']})
+    r = _write(day, p, ALL3)
     assert r.status_code == 409 and r.get_json()['conflict'] is True and day.erp.calls == []
     p = _preview(day)
     row = _rows(p)[_isn(1)][2]
     assert (row['write'], row['reason']) == (False, 'has_child_docs') and 'new_body' not in row
     day.erp.docs[_isn(2)]['body'] += 'X:1\r\n'                          # правка документа — тоже другой отпечаток
-    r = day.post('/api/routes/dispatch/erp-write', json={'date': DAY, 'expected': p['signature']})
+    r = _write(day, p, [_isn(2)])
     assert r.status_code == 409 and day.erp.calls == []
 
 
@@ -915,36 +1165,60 @@ def test_api_write_busy_is_conflict(day):
     p = _preview(day)
     assert day.state.erp_write_lock.acquire(blocking=False)
     try:
-        r = day.post('/api/routes/dispatch/erp-write', json={'date': DAY, 'expected': p['signature']})
+        r = _write(day, p)
         assert r.status_code == 409 and r.get_json()['error'] == views.ERP_WRITE_BUSY
     finally:
         day.state.erp_write_lock.release()
     # другой процесс сервера держит замок в базе
     assert day.state.store.erp_write_lease('other-process') is True
-    r = day.post('/api/routes/dispatch/erp-write', json={'date': DAY, 'expected': p['signature']})
+    r = _write(day, p)
     assert r.status_code == 409 and r.get_json()['error'] == views.ERP_WRITE_BUSY
     r = day.post('/api/routes/dispatch/erp-write/undo', json={'date': DAY, 'orders': [_isn(1)]})
     assert r.status_code == 409
     assert day.erp.calls == [] and day.state.erp_write_lock.acquire(blocking=False)   # замок процесса отпущен
     day.state.erp_write_lock.release()
     day.state.store.erp_write_release('other-process')
-    assert day.post('/api/routes/dispatch/erp-write', json={'date': DAY, 'expected': p['signature']}).status_code == 200
+    assert _write(day, p).status_code == 200
 
 
-def test_api_journal_failure_stops_with_clear_error(day, monkeypatch, caplog):
+def test_api_journal_failure_before_commit_rolls_back(day, monkeypatch, caplog):
     _sent(day)
     p = _preview(day)
 
     def broken(*a, **k):
         raise st.StoreError('база недоступна')
     monkeypatch.setattr(day.state.store, 'add_erp_write', broken)
-    r = day.post('/api/routes/dispatch/erp-write', json={'date': DAY, 'expected': p['signature']})
+    r = _write(day, p)
     assert r.status_code == 200
     out = r.get_json()
-    assert out['stopped'] == views.ERP_WRITE_STOP_JOURNAL and len(out['results']) == 1 and out['results'][0]['ok']
-    assert sum(o['van'] != 1 for o in day.erp.orders.values()) == 1    # дальше не писали
+    assert out['stopped'] == views.ERP_WRITE_STOP['journal'] and len(out['results']) == 1 and not out['results'][0]['ok']
+    assert all(o['van'] == 1 for o in day.erp.orders.values()) and day.erp.commits == 0   # без журнала — не фиксируем
     isn = out['results'][0]['isn']
     assert any('журнал сайта НЕ записан' in m and isn in m for m in caplog.messages)
+
+
+def test_api_crash_between_commit_and_journal_leaves_pending(day, monkeypatch, caplog):
+    _sent(day)
+    p = _preview(day)
+
+    def broken(*a, **k):
+        raise st.StoreError('база недоступна')
+    monkeypatch.setattr(day.state.store, 'finish_erp_write', broken)
+    out = _write(day, p).get_json()
+    assert out['stopped'] == views.ERP_WRITE_STOP['journal'] and len(out['results']) == 1 and out['results'][0]['ok']
+    isn = out['results'][0]['isn']
+    assert day.erp.orders[isn]['van'] != 1 and sum(o['van'] != 1 for o in day.erp.orders.values()) == 1
+    assert [(x['order_isn'], x['result']) for x in day.state.store.erp_write_log(DAY)] == [(isn, 'pending')]
+    assert any('журнал сайта НЕ записан' in m and isn in m for m in caplog.messages)
+    monkeypatch.delattr(day.state.store, 'finish_erp_write')            # база снова пишется (метод класса)
+    page = day.get('/api/routes/dispatch?date=' + DAY).get_json()
+    assert sum(t['unknown'] for t in page['erp_write']['trucks'].values()) == 1
+    p2 = _preview(day)                                                   # сверка с ERP только чтением
+    assert p2['pending'] == [{'isn': isn, 'doc_num': 'N' + isn[-1], 'truck': out['results'][0]['truck'], 'erp': 'written',
+                              'text': 'Անհայտ՝ ստուգեք ERP-ում'}]
+    # «Վերադարձնել» разрешён: в ERP ровно наши значения
+    r = day.post('/api/routes/dispatch/erp-write/undo', json={'date': DAY, 'orders': [isn]}).get_json()
+    assert [(x['isn'], x['ok']) for x in r['results']] == [(isn, True)] and day.erp.orders[isn]['van'] == 1
 
 
 def test_api_commit_unknown_stops_and_page_shows_it(day):
@@ -958,8 +1232,8 @@ def test_api_commit_unknown_stops_and_page_shows_it(day):
         raise pyodbc.Error('08S01', 'Communication link failure')
     erp.commit = lost
     erp.verify_override = []                                           # и проверка новым соединением не удалась
-    out = day.post('/api/routes/dispatch/erp-write', json={'date': DAY, 'expected': p['signature']}).get_json()
-    assert out['stopped'] == views.ERP_WRITE_STOP_UNKNOWN and out['counts'] == {'ok': 0, 'failed': 0, 'unknown': 1}
+    out = _write(day, p).get_json()
+    assert out['stopped'] == views.ERP_WRITE_STOP[ew.COMMIT_UNKNOWN] and out['counts'] == {'ok': 0, 'failed': 0, 'unknown': 1}
     isn = out['results'][0]['isn']
     assert out['results'][0]['reason_text'] == 'Անհայտ՝ ստուգեք ERP-ում'
     log = day.state.store.erp_write_log(DAY)
@@ -975,7 +1249,7 @@ def test_api_commit_unknown_stops_and_page_shows_it(day):
 def test_api_undo_reverts_our_write_once(day):
     _sent(day)
     p = _preview(day)
-    out = day.post('/api/routes/dispatch/erp-write', json={'date': DAY, 'expected': p['signature']}).get_json()
+    out = _write(day, p).get_json()
     done = [x['isn'] for x in out['results'] if x['ok']]
     # третий заказ тем временем изменили в ERP — его не трогаем
     day.erp.orders[_isn(3)]['van'] = 3300
@@ -983,8 +1257,9 @@ def test_api_undo_reverts_our_write_once(day):
     assert r.status_code == 200, r.get_json()
     got = {x['isn']: (x['ok'], x['reason']) for x in r.get_json()['results']}
     assert got == {_isn(1): (True, ''), _isn(2): (True, ''), _isn(3): (False, 'changed_in_erp')}
-    assert day.erp.orders[_isn(1)] == {'state': 2, 'van': 1, 'car': None} and day.erp.docs[_isn(1)]['body'] == body(van=1)
-    assert day.erp.orders[_isn(2)] == {'state': 2, 'van': 1, 'car': None}
+    # машина — ровно прежняя строка столбца ('' — не NULL), документ — как был
+    assert day.erp.orders[_isn(1)] == {'state': 2, 'van': 1, 'car': ''} and day.erp.docs[_isn(1)]['body'] == body(van=1)
+    assert day.erp.orders[_isn(2)] == {'state': 2, 'van': 1, 'car': ''}
     assert day.erp.log[-1]['desc'].startswith('("Առաքիչ", "B00')
     log = day.state.store.erp_write_log(DAY)
     assert [x['op'] for x in log].count('undo') == 2
@@ -995,6 +1270,25 @@ def test_api_undo_reverts_our_write_once(day):
         assert day.post('/api/routes/dispatch/erp-write/undo', json={'date': DAY, 'orders': bad}).status_code == 400
     page = day.get('/api/routes/dispatch?date=' + DAY).get_json()
     assert sum(t['undone'] for t in page['erp_write']['trucks'].values()) == 2
+
+
+def test_api_undo_after_two_writes_restores_previous(day):
+    """A → B (запись), водитель машины сменился, B → C (вторая запись); «Վերադարձնել» — к B, не к A."""
+    d = _sent(day)
+    owner = _plan_stops(d)
+    isn = _isn(1)
+    truck = owner[101]
+    p = _preview(day)
+    assert _write(day, p, [isn]).status_code == 200
+    b = day.erp.orders[isn]['van']
+    assert b in (3199, 3200)
+    day.state.store.save_truck_driver(truck, DAY, 'Կարեն Ավագյան', 'qa', only_day=True)
+    p = _preview(day)
+    row = _rows(p)[isn][2]
+    assert row['write'] and row['new_van']['id'] == 3400
+    assert _write(day, p, [isn]).status_code == 200 and day.erp.orders[isn]['van'] == 3400
+    r = day.post('/api/routes/dispatch/erp-write/undo', json={'date': DAY, 'orders': [isn]}).get_json()
+    assert [(x['isn'], x['ok']) for x in r['results']] == [(isn, True)] and day.erp.orders[isn]['van'] == b
 
 
 def test_api_unknown_driver_is_skipped(day):
@@ -1028,15 +1322,21 @@ def test_schema_29_migration_adds_log_and_roundtrip(tmp_path):
     assert st._MIGRATIONS[28] == (st._ERP_WRITE_LOG_TABLE, st._ERP_WRITE_LOG_INDEX, st._ERP_WRITE_LEASE_TABLE)
     assert s2.truck_drivers('2026-10-01')[0] == {'CAR1': 'Արամ'}
     row = {'order_isn': I1, 'doc_num': 'N1', 'customer_id': 101, 'truck': 'CAR1', 'old_van': 1, 'new_van': 3199,
-           'old_car': '', 'new_car': 'CAR1', 'old_car_null': True, 'result': 'ok', 'reason': ''}
+           'old_car': '', 'new_car': 'CAR1', 'old_car_raw': '', 'result': 'ok', 'reason': ''}
     assert s2.add_erp_write('2026-10-01', 'write', row, 'boss') == 1
-    s2.add_erp_write('2026-10-01', 'undo', {**row, 'old_car_null': False, 'result': 'failed', 'reason': 'error'}, None)
-    s2.add_erp_write('2026-10-01', 'write', {**row, 'result': 'unknown', 'reason': 'commit_unknown'}, 'boss')
+    s2.add_erp_write('2026-10-01', 'undo', {**row, 'old_car_raw': 'X ', 'result': 'failed', 'reason': 'error'}, None)
+    pid = s2.add_erp_write('2026-10-01', 'write', {**row, 'result': 'pending'}, 'boss')
+    s2.finish_erp_write(pid, 'unknown', 'commit_unknown')
+    with pytest.raises(ValueError):
+        s2.finish_erp_write(pid, 'ok', '')                                  # итог — один раз
+    with pytest.raises(ValueError):
+        s2.finish_erp_write(1, 'pending', '')
     got = s2.erp_write_log('2026-10-01')
-    assert [(x['id'], x['op'], x['old_car_null'], x['result'], x['by_user']) for x in got] == \
-        [(1, 'write', True, 'ok', 'boss'), (2, 'undo', False, 'failed', None), (3, 'write', True, 'unknown', 'boss')]
+    assert [(x['id'], x['op'], x['old_car_raw'], x['result'], x['by_user']) for x in got] == \
+        [(1, 'write', '', 'ok', 'boss'), (2, 'undo', 'X ', 'failed', None), (3, 'write', '', 'unknown', 'boss')]
     assert set(got[0]) == set(st.ERP_WRITE_LOG_FIELDS) and s2.erp_write_log('2026-10-02') == []
-    for bad in ({**row, 'result': 'maybe'}, {**row, 'old_van': '1'}, {k: v for k, v in row.items() if k != 'truck'}):
+    for bad in ({**row, 'result': 'maybe'}, {**row, 'old_van': '1'}, {k: v for k, v in row.items() if k != 'truck'},
+                {**row, 'old_car_raw': None}):
         with pytest.raises(ValueError):
             s2.add_erp_write('2026-10-01', 'write', bad, 'boss')
     with pytest.raises(ValueError):
@@ -1060,14 +1360,18 @@ def test_write_lease_is_shared_and_expires(tmp_path):
         a.erp_write_lease('')
 
 
-def test_page_assets_bumped_and_texts_safe():
+def test_page_assets_bumped_and_ui_selects_nothing_by_default():
     page = (ROOT / 'templates' / 'routes_dispatch.html').read_text(encoding='utf-8')
     assert "routes_dispatch.js') }}?v=117" in page and "routes_dispatch.css') }}?v=74" in page
-    assert 'id="dpErpDlg"' in page and 'Գրել ERP-ում' in page
+    assert 'id="dpErpDlg"' in page and 'Գրել ERP-ում' in page and '<span>Հաստատել (0)</span>' in page
     js = (ROOT / 'static' / 'js' / 'routes_dispatch.js').read_text(encoding='utf-8')
     start, end = js.index('// ---------- «Գրել ERP-ում»'), js.index('// ---------- Требует внимания (№81)')
     part = js[start:end]
     # строки ERP — только textContent: innerHTML — лишь у кнопки с постоянной разметкой
     assert part.count('innerHTML') == 1 and "b.innerHTML = '<i class=\"fas fa-file-export\"" in part
-    assert '/api/routes/dispatch/erp-write' in part and 'expected: erp.sig' in part and 'body.orders = picked' in part
+    # H1: по умолчанию не отмечено ничего; кнопка — «Հաստատել (N)», при 0 и сверх предела — неактивна; список — всегда явно
+    assert 'cb.checked = false' in part and 'cb.checked = true' not in part
+    assert "'Հաստատել (' + n + ')'" in part and "$('dpErpOk').disabled = !erp.sig || !n || over" in part
+    assert 'orders: picked' in part and 'erp.all' not in part
+    assert '/api/routes/dispatch/erp-write' in part and 'expected: erp.sig' in part
     assert 'Անհայտ՝ ստուգեք ERP-ում' in part

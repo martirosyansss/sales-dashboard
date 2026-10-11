@@ -257,23 +257,25 @@ _LIVE_ACK_TABLE = (
 
 # Схема 29 (№97, «Գրել ERP-ում», docs/plans/erp-write-plan.md): журнал записи сайта в заказы ERP — строка на заказ и попытку:
 # op — запись по плану (write) или «Վերադարձնել» (undo); было → стало (առաքիչ — id ERP-агента, машина — код, '' — нет);
-# old_car_null — ORDERS.fDELIVERYCAR был NULL до записи (возврат к пустой машине пишет как было); result — ok (COMMIT
-# прошёл), failed (откат) или unknown (обрыв на COMMIT, проверка не подтвердила — erp_write.COMMIT_UNKNOWN), reason —
-# причина (erp_write.FAIL_REASONS) или verify_failed у ok. Для показа и отката пробы. erp_write_lease — одна запись в ERP
+# old_car_raw — ORDERS.fDELIVERYCAR до записи ровно как в столбце (NULL — ''): «Վերադարձնել» пишет его; result — pending
+# (строка до COMMIT в ERP; осталась — сервер упал между COMMIT и итогом: «Անհայտ՝ ստուգեք ERP-ում»), ok (COMMIT прошёл),
+# failed (откат) или unknown (обрыв на COMMIT, проверка не подтвердила — erp_write.COMMIT_UNKNOWN), reason — причина
+# (erp_write.FAIL_REASONS) или verify_failed у ok. Для показа и отката пробы. erp_write_lease — одна запись в ERP
 # на все процессы сервера (строка id = 1: чей замок и до когда; просроченный — свободен: процесс мог упасть).
 _ERP_WRITE_LOG_TABLE = (
     "CREATE TABLE IF NOT EXISTS erp_write_log(id INTEGER PRIMARY KEY AUTOINCREMENT, day TEXT NOT NULL, "
     "op TEXT NOT NULL CHECK (op IN ('write', 'undo')), order_isn TEXT NOT NULL, doc_num TEXT NOT NULL DEFAULT '', "
     "customer_id INTEGER NOT NULL, truck TEXT NOT NULL DEFAULT '', old_van INTEGER NOT NULL, new_van INTEGER NOT NULL, "
-    "old_car TEXT NOT NULL, new_car TEXT NOT NULL, old_car_null INTEGER NOT NULL CHECK (old_car_null IN (0, 1)), "
-    "result TEXT NOT NULL CHECK (result IN ('ok', 'failed', 'unknown')), reason TEXT NOT NULL DEFAULT '', by_user TEXT, "
+    "old_car TEXT NOT NULL, new_car TEXT NOT NULL, old_car_raw TEXT NOT NULL DEFAULT '', "
+    "result TEXT NOT NULL CHECK (result IN ('pending', 'ok', 'failed', 'unknown')), reason TEXT NOT NULL DEFAULT '', by_user TEXT, "
     "at TEXT NOT NULL)")
 _ERP_WRITE_LOG_INDEX = 'CREATE INDEX IF NOT EXISTS erp_write_log_day ON erp_write_log(day, order_isn)'
 _ERP_WRITE_LEASE_TABLE = (
     "CREATE TABLE IF NOT EXISTS erp_write_lease(id INTEGER PRIMARY KEY CHECK (id = 1), token TEXT NOT NULL, "
     "at TEXT NOT NULL, until REAL NOT NULL)")
 ERP_WRITE_LOG_FIELDS = ('id', 'day', 'op', 'order_isn', 'doc_num', 'customer_id', 'truck', 'old_van', 'new_van', 'old_car',
-                        'new_car', 'old_car_null', 'result', 'reason', 'by_user', 'at')
+                        'new_car', 'old_car_raw', 'result', 'reason', 'by_user', 'at')
+ERP_WRITE_RESULTS = ('pending', 'ok', 'failed', 'unknown')
 
 _MEASUREMENT_TABLE = (
     'CREATE TABLE IF NOT EXISTS route_measurement(day TEXT NOT NULL, car_code TEXT NOT NULL, '
@@ -2961,20 +2963,34 @@ class Store:
         Неверные данные — ValueError (записывает сам сервер после попытки, не пользователь)."""
         if _iso_day(day) is None or op not in ('write', 'undo'):
             raise ValueError('day: YYYY-MM-DD, op: write | undo')
-        if row.get('result') not in ('ok', 'failed', 'unknown') or not isinstance(row.get('order_isn'), str) \
+        if row.get('result') not in ERP_WRITE_RESULTS or not isinstance(row.get('order_isn'), str) \
                 or not all(_is_int(row.get(k)) for k in ('customer_id', 'old_van', 'new_van')) \
-                or not all(isinstance(row.get(k), str) for k in ('doc_num', 'truck', 'old_car', 'new_car', 'reason')):
+                or not all(isinstance(row.get(k), str)
+                           for k in ('doc_num', 'truck', 'old_car', 'new_car', 'old_car_raw', 'reason')):
             raise ValueError('строка журнала записи в ERP не прошла проверку')
 
         def write(conn: sqlite3.Connection) -> int:
             cur = conn.execute(
                 'INSERT INTO erp_write_log(day, op, order_isn, doc_num, customer_id, truck, old_van, new_van, old_car, '
-                'new_car, old_car_null, result, reason, by_user, at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                'new_car, old_car_raw, result, reason, by_user, at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
                 (day, op, row['order_isn'], row['doc_num'], row['customer_id'], row['truck'], row['old_van'],
-                 row['new_van'], row['old_car'], row['new_car'], int(bool(row.get('old_car_null', True))), row['result'],
-                 row['reason'], user, _now()))
+                 row['new_van'], row['old_car'], row['new_car'], row['old_car_raw'], row['result'], row['reason'], user,
+                 _now()))
             return int(cur.lastrowid)
         return self._transaction(write, 'не удалось сохранить журнал записи в ERP')
+
+    def finish_erp_write(self, row_id: int, result: str, reason: str) -> None:
+        """Итог строки «pending» журнала записи в ERP (после COMMIT): ok | failed | unknown и причина. Строки нет или она
+        уже не pending — ValueError (итог пишется один раз)."""
+        if not _is_int(row_id) or result not in ERP_WRITE_RESULTS[1:] or not isinstance(reason, str):
+            raise ValueError('id, result: ok | failed | unknown, reason: строка')
+
+        def write(conn: sqlite3.Connection) -> None:
+            cur = conn.execute("UPDATE erp_write_log SET result = ?, reason = ?, at = ? WHERE id = ? AND result = 'pending'",
+                               (result, reason, _now(), row_id))
+            if cur.rowcount != 1:
+                raise ValueError('строки pending нет')
+        self._transaction(write, 'не удалось сохранить журнал записи в ERP')
 
     def erp_write_lease(self, token: str, ttl_s: float = 600.0) -> bool:
         """Занять запись в ERP для всех процессов (BEGIN IMMEDIATE): свободно, свой или просрочен (дольше ttl_s — процесс
@@ -2998,10 +3014,10 @@ class Store:
                           'не удалось освободить запись в ERP')
 
     def erp_write_log(self, day: str) -> list[dict[str, Any]]:
-        """Журнал записи в ERP за день YYYY-MM-DD по порядку записи — словари ERP_WRITE_LOG_FIELDS (old_car_null — bool)."""
+        """Журнал записи в ERP за день YYYY-MM-DD по порядку записи — словари ERP_WRITE_LOG_FIELDS."""
         rows = self._read(lambda conn: conn.execute(
             f'SELECT {", ".join(ERP_WRITE_LOG_FIELDS)} FROM erp_write_log WHERE day = ? ORDER BY id', (day,)).fetchall())
-        return [{**dict(zip(ERP_WRITE_LOG_FIELDS, r)), 'old_car_null': bool(r[11])} for r in rows]
+        return [dict(zip(ERP_WRITE_LOG_FIELDS, r)) for r in rows]
 
     # --- Telegram-бот (схема 27, №91) ---
 

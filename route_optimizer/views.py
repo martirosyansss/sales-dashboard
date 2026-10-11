@@ -249,6 +249,9 @@ class RoutesState:
     erp_states_loader: Callable[[Sequence[str]], tuple[dict[str, OrderState], dict[int, Agent], dict[str, Car]]] | None = None
     erp_write_conn: Callable[[], Any] | None = None
     erp_write_lock: threading.Lock = field(default_factory=threading.Lock)
+    # сверка записанного сайтом с ERP для страницы (views._erp_drift): день → (time.monotonic(), ключ набора, машина →
+    # сколько разошлось); под dispatch_lock
+    erp_drift_cache: dict[date, tuple[float, Any, dict[str, int]]] = field(default_factory=dict)
 
 
 def _now() -> str:
@@ -3334,8 +3337,9 @@ def _waybill_body(state: RoutesState, dd: _DispatchDay, plan: Mapping[str, Any],
 
 # --- «Գրել ERP-ում» (ответ владельца №97, docs/plans/erp-write-plan.md, erp_write) ---
 # Сайт ставит в заказы дня առաքիչ и машину по отправленному водителям плану. Только администратор (_admin_only — вторая
-# линия после гейта app_v2) и только JSON (_json_body, как остальные POST раздела). Без ROUTES_ERP_WRITE_DSN — 404.
-# Запись и «Վերադարձնել» — одна за раз на все процессы сервера (_erp_lock: замок процесса и строка erp_write_lease базы).
+# линия после гейта app_v2) и только JSON (_json_body, как остальные POST раздела). Без ROUTES_ERP_WRITE_DSN (она есть только
+# на CT115) — 404. Запись и «Վերադարձնել» — одна за раз на все процессы сервера (_erp_lock: замок процесса и строка
+# erp_write_lease базы, продлевается перед каждым заказом). Заказов за раз — не больше erp_write.max_orders() (по умолчанию 1).
 
 ERP_WRITE_OFF = 'ERP-ում գրելը միացված չէ'
 ERP_WRITE_PAST = 'Անցած օրվա պատվերները ERP-ում չեն փոխվում'
@@ -3344,12 +3348,20 @@ ERP_WRITE_STALE = 'Պլանը կամ ERP-ն փոխվել է — թարմացրե
 ERP_WRITE_BUSY = 'ERP-ում գրանցումն արդեն ընթանում է — սպասեք և թարմացրեք'
 ERP_WRITE_BAD_ORDERS = 'Նշեք պատվերները'
 ERP_WRITE_NOT_IN_PREVIEW = 'Ընտրված պատվերները գրելու ցուցակում չեն — թարմացրեք'
-ERP_WRITE_STOP_UNKNOWN = ('Կապը ERP-ի հետ ընդհատվեց պատվերը գրելու պահին․ գրանցումը կանգնեցված է։ Ստուգեք այդ պատվերը '
-                          'ERP-ում, հետո թարմացրեք։')
-ERP_WRITE_STOP_JOURNAL = ('ERP-ում գրվեց, բայց կայքի մատյանը չպահպանվեց․ գրանցումը կանգնեցված է։ Դիմեք ադմինիստրատորին '
-                          '(տվյալները սերվերի մատյանում են)։')
-ERP_WRITE_MAX_ORDERS = 500   # заказов в одном запросе (проба, «Վերադարձնել») — защита от битого запроса
-ERP_WRITE_LEASE_S = 600      # замок записи в базе: дольше — процесс упал, замок свободен
+ERP_WRITE_TOO_MANY = 'Մեկ անգամից կարելի է գրել ոչ ավելի, քան {n} պատվեր'
+ERP_WRITE_STOP = {
+    ew.COMMIT_UNKNOWN: 'Կապը ERP-ի հետ ընդհատվեց պատվերը գրելու պահին․ գրանցումը կանգնեցված է։ Ստուգեք այդ պատվերը ERP-ում, '
+                       'հետո թարմացրեք։',
+    ew.VERIFY_FAILED: 'Գրվածը ERP-ում չհամընկավ ստուգման հետ․ գրանցումը կանգնեցված է։ Նայեք այդ պատվերը ERP-ում։',
+    'journal': 'Կայքի մատյանը չպահպանվեց․ գրանցումը կանգնեցված է։ Դիմեք ադմինիստրատորին (տվյալները սերվերի մատյանում են)։',
+    'rollback': 'ERP-ում հետ շրջելը չստացվեց․ գրանցումը կանգնեցված է։ Դիմեք ադմինիստրատորին։',
+    'trancount': 'ERP-ի հետ կապը անսովոր վիճակում է․ գրանցումը կանգնեցված է։ Դիմեք ադմինիստրատորին։',
+    'lease': 'ERP-ում գրանցման կողպեքը կորավ․ գրանցումը կանգնեցված է։ Թարմացրեք և կրկնեք։',
+}
+ERP_WRITE_MAX_UNDO = 500     # заказов в одном «Վերադարձնել» — защита от битого запроса
+ERP_WRITE_LEASE_S = 600      # замок записи в базе: дольше — процесс упал, замок свободен (продлевается перед заказом)
+ERP_DRIFT_TTL_S = DISPATCH_TTL_SECONDS   # сверка записанного с ERP на странице — не чаще, как заказы дня
+WRITTEN = ('ok', 'unknown', 'pending')   # итоги журнала, при которых в ERP, может быть, наши значения
 
 
 def _erp_write_on(state: RoutesState) -> bool:
@@ -3384,12 +3396,30 @@ def _erp_unlock(state: RoutesState, token: str) -> None:
         state.erp_write_lock.release()
 
 
-def _isn_list(raw: Any) -> list[str] | None:
-    """Список fISN из запроса (1 … ERP_WRITE_MAX_ORDERS, без повторов) или None."""
-    if not isinstance(raw, list) or not 0 < len(raw) <= ERP_WRITE_MAX_ORDERS \
+def _isn_list(raw: Any, limit: int) -> list[str] | None:
+    """Список fISN из запроса (1 … limit, без повторов) или None."""
+    if not isinstance(raw, list) or not 0 < len(raw) <= limit \
             or not all(isinstance(x, str) and dp.ISN_RE.match(x) for x in raw):
         return None
     return sorted(set(raw))
+
+
+def _latest(rows: Sequence[Mapping[str, Any]], results: Collection[str] | None = None) -> dict[str, Mapping[str, Any]]:
+    """Последняя строка журнала по заказу (только с итогом из results, если задан)."""
+    out: dict[str, Mapping[str, Any]] = {}
+    for row in rows:
+        if results is None or row['result'] in results:
+            out[row['order_isn']] = row
+    return out
+
+
+def _trucks_of(sent: dp.Draft) -> dict[int, str]:
+    """Клиент → машина(ы) отправленного плана, как erp_write.plan_assignments («A, B» — у нескольких)."""
+    by: dict[int, set[str]] = {}
+    for t in sent.trips:
+        for cid in t.stops:
+            by.setdefault(cid, set()).add(t.truck)
+    return {cid: ', '.join(sorted(codes)) for cid, codes in by.items()}
 
 
 def _erp_write_plan(state: RoutesState, day: date) -> tuple[list[ew.Decision], dict[str, Any]]:
@@ -3397,7 +3427,8 @@ def _erp_write_plan(state: RoutesState, day: date) -> tuple[list[ew.Decision], d
     предпросмотра. План не отправлен — DispatchError. Заказы — магазинов отправленного плана (Draft.for_drivers: его отбор
     заказов); писать можно только заказы, которые он видел (заказы его сборки, добавленные, взятые заказы дня — не
     заведённые после отправки). Водитель машины — кто в этот день за рулём (dispatch.crew_view, как Բեռնագիր: не вышел —
-    нет). У заказов к записи — fBODY до и после (проба: видно всю правку документа)."""
+    нет; ведёт две машины или посадка сборки устарела — неоднозначен). У заказов к записи — fBODY до и после (проба).
+    pending — строки журнала, чей итог неизвестен (сервер упал между COMMIT и итогом), со сверкой с ERP только чтением."""
     draft, rev = _stored_draft(state, day)
     if draft is None or draft.sent is None:
         raise dp.DispatchError(ERP_WRITE_NOT_SENT)
@@ -3407,15 +3438,19 @@ def _erp_write_plan(state: RoutesState, day: date) -> tuple[list[ew.Decision], d
     seen = set(sent.built_orders or ()) | set(sent.same_day) | set(sent.added)
     stops = _day_stops(dd, sent)
     plan_orders = [o for s in stops for o in s.orders]
+    log = state.store.erp_write_log(day.isoformat())
+    hanging = [row for row in _latest(log).values() if row['result'] == 'pending']
     assert state.erp_states_loader is not None
-    states, agents, cars = state.erp_states_loader([o.isn for o in plan_orders])
+    states, agents, cars = state.erp_states_loader(sorted({o.isn for o in plan_orders} | {r['order_isn'] for r in hanging}))
     # заказа уже нет в ORDERS (удалён) — состояние 0: пропуск order_state
     current = [states.get(o.isn) or OrderState(o.isn, o.doc_num, o.customer_id, 0, o.van_agent_id, o.car_code, False)
                for o in plan_orders]
     bodies = {o.isn: o.body for o in current}
     view = dp.crew_view(sent, _crew(state, day, bundle.trucks)[0])
     drivers = {code: v['name'] if v['warn'] != 'absent' else None for code, v in view.items()}
-    decisions = ew.plan_assignments([(t.truck, t.stops) for t in sent.trips], current, drivers, agents, cars, seen)
+    ambiguous = {code for code, v in view.items() if v['warn'] == 'twice' or v['stale']}
+    decisions = ew.plan_assignments([(t.truck, t.stops) for t in sent.trips], current, drivers, agents, cars, seen,
+                                    ambiguous)
     info = _stop_info(dd)
     names = {s.customer_id: info(s) for s in stops}
 
@@ -3433,41 +3468,73 @@ def _erp_write_plan(state: RoutesState, day: date) -> tuple[list[ew.Decision], d
             out.update(old_body=bodies[d.isn], new_body=ew.new_body(bodies[d.isn], d))
         return out
 
+    def hang(r: Mapping[str, Any]) -> dict[str, Any]:
+        cur = states.get(r['order_isn'])
+        now = (cur.van_id, cur.car) if cur is not None else None
+        erp = ('written' if now == (r['new_van'], r['new_car']) else 'not_written' if now == (r['old_van'], r['old_car'])
+               else 'other')
+        return {'isn': r['order_isn'], 'doc_num': r['doc_num'], 'truck': r['truck'], 'erp': erp,
+                'text': ew.REASON_HY[ew.COMMIT_UNKNOWN]}
+
     order = [t.truck for t in sent.trips]
     groups: dict[str, list[ew.Decision]] = {}
     for d in decisions:
         groups.setdefault(d.truck, []).append(d)
     keys = sorted(groups, key=lambda k: (k == '', k not in order, order.index(k) if k in order else 0, k))
     body = {'success': True, 'day': day.isoformat(), 'rev': rev, 'signature': ew.signature(decisions),
+            'max_orders': ew.max_orders(),
             'counts': {'write': sum(d.write for d in decisions), 'skip': sum(not d.write for d in decisions)},
             'trucks': [{'truck': k, 'driver': drivers.get(k),
                         'write': sum(d.write for d in groups[k]), 'skip': sum(not d.write for d in groups[k]),
                         'orders': [row(d) for d in groups[k]]}
-                       for k in keys]}
+                       for k in keys],
+            **({'pending': [hang(r) for r in hanging]} if hanging else {})}
     return decisions, body
 
 
-ERP_LOG_RESULT = {True: 'ok', False: 'failed'}
+class _ErpJournal:
+    """Журнал сайта для erp_write.apply: замок записи продлевается перед заказом; строка «pending» — до COMMIT в ERP,
+    итог — после. Не записалось — в журнал сервера всё, чтобы восстановить вручную, и JournalError: запись остановлена."""
 
+    def __init__(self, state: RoutesState, day: date, op: str, user: str | None, token: str) -> None:
+        self.state, self.day, self.op, self.user, self.token = state, day, op, user, token
 
-def _erp_logged(state: RoutesState, day: date, op: str, user: str | None) -> Callable[[ew.Result], None]:
-    """Журнал сайта (erp_write_log) — сразу после каждого заказа (erp_write.apply on_result). Не записался — в журнал
-    сервера всё, чтобы восстановить вручную, и JournalError: запись останавливается."""
-    def log(r: ew.Result) -> None:
-        d = r.decision
-        result = 'unknown' if r.reason == ew.COMMIT_UNKNOWN else ERP_LOG_RESULT[r.ok]
+    def renew(self) -> bool:
         try:
-            state.store.add_erp_write(day.isoformat(), op, {
-                'order_isn': d.isn, 'doc_num': d.doc_num, 'customer_id': d.customer_id, 'truck': d.truck,
+            return self.state.store.erp_write_lease(self.token, ERP_WRITE_LEASE_S)
+        except StoreError:
+            logger.exception('[Routes] ERP-запись: замок записи не продлён')
+            return False
+
+    def _row(self, d: ew.Decision, result: str, reason: str, old_raw: str) -> dict[str, Any]:
+        return {'order_isn': d.isn, 'doc_num': d.doc_num, 'customer_id': d.customer_id, 'truck': d.truck,
                 'old_van': d.old_van, 'new_van': d.new_van, 'old_car': d.old_car, 'new_car': d.new_car,
-                'old_car_null': r.old_car_null, 'result': result, 'reason': r.reason}, user)
+                'old_car_raw': old_raw, 'result': result, 'reason': reason}
+
+    def _lost(self, d: ew.Decision, result: str, reason: str, old_raw: str, e: BaseException) -> ew.JournalError:
+        logger.error('[Routes] ERP-запись: журнал сайта НЕ записан — день %s, %s, заказ %s (%s), магазин %s, машина плана %s, '
+                     'առաքիչ %s→%s, машина %r→%r (в столбце было %r), итог %s %s, кто %s', self.day, self.op, d.doc_num,
+                     d.isn, d.customer_id, d.truck, d.old_van, d.new_van, d.old_car, d.new_car, old_raw, result, reason,
+                     self.user, exc_info=e)
+        return ew.JournalError('журнал записи в ERP не сохранён')
+
+    def pending(self, d: ew.Decision, old_raw: str) -> Any:
+        try:
+            return self.state.store.add_erp_write(self.day.isoformat(), self.op, self._row(d, 'pending', '', old_raw),
+                                                  self.user)
         except Exception as e:
-            logger.error('[Routes] ERP-запись: журнал сайта НЕ записан — день %s, %s, заказ %s (%s), магазин %s, машина '
-                         'плана %s, առաքիչ %s→%s, машина %r→%r (было NULL: %s), итог %s %s, кто %s',
-                         day, op, d.doc_num, d.isn, d.customer_id, d.truck, d.old_van, d.new_van, d.old_car, d.new_car,
-                         r.old_car_null, result, r.reason, user, exc_info=True)
-            raise ew.JournalError('журнал записи в ERP не сохранён') from e
-    return log
+            raise self._lost(d, 'pending', '', old_raw, e) from e
+
+    def finish(self, token: Any, r: ew.Result) -> None:
+        result = 'unknown' if r.reason == ew.COMMIT_UNKNOWN else 'ok' if r.ok else 'failed'
+        try:
+            if token is None:
+                self.state.store.add_erp_write(self.day.isoformat(), self.op,
+                                               self._row(r.decision, result, r.reason, r.old_car_raw), self.user)
+            else:
+                self.state.store.finish_erp_write(token, result, r.reason)
+        except Exception as e:
+            raise self._lost(r.decision, result, r.reason, r.old_car_raw, e) from e
 
 
 def _erp_results_json(batch: ew.Batch, skipped: Sequence[ew.Decision] = ()) -> dict[str, Any]:
@@ -3478,19 +3545,19 @@ def _erp_results_json(batch: ew.Batch, skipped: Sequence[ew.Decision] = ()) -> d
     rows = [row(r.decision, r.ok, r.reason) for r in batch.results] + [row(d, False, d.reason) for d in skipped]
     ok = sum(r.ok for r in batch.results)
     unknown = sum(r.reason == ew.COMMIT_UNKNOWN for r in batch.results)
-    stopped = {ew.COMMIT_UNKNOWN: ERP_WRITE_STOP_UNKNOWN, 'journal': ERP_WRITE_STOP_JOURNAL}.get(batch.stopped)
+    stopped = ERP_WRITE_STOP.get(batch.stopped)
     return {'results': rows, 'counts': {'ok': ok, 'failed': len(rows) - ok - unknown, 'unknown': unknown},
             **({'stopped': stopped} if stopped else {})}
 
 
-def _erp_apply(state: RoutesState, day: date, op: str, decisions: Sequence[ew.Decision]) -> ew.Batch:
+def _erp_apply(state: RoutesState, day: date, op: str, decisions: Sequence[ew.Decision], token: str) -> ew.Batch:
     """Записать решения своим соединением записи (закрывается всегда) с журналом сайта; обрыв на COMMIT проверяет новое
     соединение (erp_write.apply reconnect)."""
     assert state.erp_write_conn is not None
     user = session.get('username')
     conn = state.erp_write_conn()
     try:
-        return ew.apply(conn, decisions, user, on_result=_erp_logged(state, day, op, user),
+        return ew.apply(conn, decisions, user, journal=_ErpJournal(state, day, op, user, token),
                         reconnect=state.erp_write_conn)
     finally:
         try:
@@ -3505,7 +3572,8 @@ def _erp_apply(state: RoutesState, day: date, op: str, decisions: Sequence[ew.De
 def api_dispatch_erp_preview() -> Any:
     """Предпросмотр «Գրել ERP-ում» (№97): ?date= → по машинам отправленного плана — какие заказы изменятся (было → станет:
     առաքիչ и машина, у заказа к записи — fBODY до и после) и какие пропущены и почему; signature — отпечаток (подтверждение
-    пишет, только если он тот же). ERP только читается. Прошедший день и неотправленный план — 400."""
+    пишет, только если он тот же); max_orders — сколько можно записать за раз. ERP только читается. Прошедший день и
+    неотправленный план — 400."""
     state = _state()
     if not _erp_write_on(state):
         return _erp_off()
@@ -3521,10 +3589,10 @@ def api_dispatch_erp_preview() -> Any:
 @_admin_only
 @_api
 def api_dispatch_erp_write() -> Any:
-    """«Հաստատել» (№97): {date, expected — signature предпросмотра, orders? — только эти заказы из предпросмотра (проба:
-    первая запись — ровно один заказ)}. Решения считаются заново по ERP сейчас; отпечаток другой — 409 (план или ERP
-    изменились, ничего не пишется). Только сегодня и будущие дни, только отправленный водителям план. Каждый заказ — своя
-    транзакция (erp_write.apply); ответ — итог по заказам (stopped — запись остановлена: обрыв на COMMIT, журнал)."""
+    """«Հաստատել» (№97): {date, expected — signature предпросмотра, orders — какие заказы предпросмотра писать (всегда
+    явно; не больше erp_write.max_orders(), по умолчанию 1 — проба)}. Решения считаются заново по ERP сейчас; отпечаток
+    другой — 409 (план или ERP изменились, ничего не пишется). Только сегодня и будущие дни, только отправленный водителям
+    план. Каждый заказ — своя транзакция (erp_write.apply); ответ — итог по заказам (stopped — почему запись остановлена)."""
     state = _state()
     if not _erp_write_on(state):
         return _erp_off()
@@ -3536,11 +3604,13 @@ def api_dispatch_erp_write() -> Any:
     expected = payload.get('expected')
     if not isinstance(expected, str) or not expected:
         return _bad_request({'expected': ERP_WRITE_STALE})
-    only = None
-    if payload.get('orders') is not None:
-        only = _isn_list(payload.get('orders'))
-        if only is None:
-            return _bad_request({'orders': ERP_WRITE_BAD_ORDERS})
+    cap = ew.max_orders()
+    raw = payload.get('orders')
+    if isinstance(raw, list) and len(set(map(str, raw))) > cap:
+        return _bad_request({'orders': ERP_WRITE_TOO_MANY.format(n=cap)})
+    only = _isn_list(raw, cap)
+    if only is None:
+        return _bad_request({'orders': ERP_WRITE_BAD_ORDERS})
     token = _erp_lock(state)
     if token is None:
         return _conflict(ERP_WRITE_BUSY)
@@ -3548,12 +3618,9 @@ def api_dispatch_erp_write() -> Any:
         decisions, _ = _erp_write_plan(state, day)
         if ew.signature(decisions) != expected:
             return _conflict(ERP_WRITE_STALE)
-        if only is not None:
-            writable = {d.isn for d in decisions if d.write}
-            if not set(only) <= writable:
-                return _bad_request({'orders': ERP_WRITE_NOT_IN_PREVIEW})
-            decisions = [d for d in decisions if d.isn in set(only)]
-        batch = _erp_apply(state, day, 'write', decisions)
+        if not set(only) <= {d.isn for d in decisions if d.write}:
+            return _bad_request({'orders': ERP_WRITE_NOT_IN_PREVIEW})
+        batch = _erp_apply(state, day, 'write', [d for d in decisions if d.isn in set(only)], token)
     finally:
         _erp_unlock(state, token)
     logger.info('[Routes] «Գրել ERP-ում» %s: записано %d из %d%s (%s)', day, sum(r.ok for r in batch.results),
@@ -3566,9 +3633,10 @@ def api_dispatch_erp_write() -> Any:
 @_api
 def api_dispatch_erp_undo() -> Any:
     """«Վերադարձնել» (№97, для пробы): {date, orders: [fISN]} — вернуть было ← стало нашей последней записи тем же путём
-    (erp_write.apply): только сегодня и будущие дни; только если последняя запись сайта по заказу с итогом ok или unknown
-    (обрыв на COMMIT) — запись по плану (не возврат), в ERP сейчас ровно наши значения (у unknown — это и есть проверка,
-    что запись прошла) и у заказа нет дочерних документов. Возврат — новая строка журнала (op undo)."""
+    (erp_write.apply): только сегодня и будущие дни; только если последняя запись сайта по заказу с итогом ok, unknown или
+    pending — запись по плану (не возврат), в ERP сейчас ровно наши значения (у unknown / pending — это и есть проверка, что
+    запись прошла) и у заказа нет дочерних документов. Машина в ORDERS — ровно прежняя строка столбца из журнала (не
+    обрезанная, '' — не NULL). Возврат — новая строка журнала (op undo)."""
     state = _state()
     if not _erp_write_on(state):
         return _erp_off()
@@ -3577,17 +3645,14 @@ def api_dispatch_erp_undo() -> Any:
         return error
     if day < _same_day_now().date():
         return _bad_request({'date': ERP_WRITE_PAST})
-    isns = _isn_list(payload.get('orders'))
+    isns = _isn_list(payload.get('orders'), ERP_WRITE_MAX_UNDO)
     if isns is None:
         return _bad_request({'orders': ERP_WRITE_BAD_ORDERS})
     token = _erp_lock(state)
     if token is None:
         return _conflict(ERP_WRITE_BUSY)
     try:
-        last: dict[str, dict[str, Any]] = {}
-        for entry in state.store.erp_write_log(day.isoformat()):
-            if entry['result'] in ('ok', 'unknown'):
-                last[entry['order_isn']] = entry
+        last = _latest(state.store.erp_write_log(day.isoformat()), WRITTEN)
         assert state.erp_states_loader is not None
         states, agents, _ = state.erp_states_loader(isns)
 
@@ -3604,7 +3669,7 @@ def api_dispatch_erp_undo() -> Any:
                             row['new_van'], row['old_van'], row['new_car'], row['old_car'], True, '',
                             code(row['new_van']), code(row['old_van']),
                             ' '.join(agents[row['old_van']].name.split()) if row['old_van'] in agents else '',
-                            row['old_car_null'])
+                            car_raw=row['old_car_raw'])
             why = ('order_state' if cur is None or cur.state not in ew.STATES else 'has_child_docs' if cur.children
                    else 'changed_in_erp' if (cur.van_id, cur.car) != (row['new_van'], row['new_car'])
                    else 'not_written' if row['old_van'] <= 0 else '')
@@ -3612,7 +3677,7 @@ def api_dispatch_erp_undo() -> Any:
                 skipped.append(replace(d, write=False, reason=why))
             else:
                 todo.append(d)
-        batch = _erp_apply(state, day, 'undo', todo) if todo else ew.Batch(())
+        batch = _erp_apply(state, day, 'undo', todo, token) if todo else ew.Batch(())
     finally:
         _erp_unlock(state, token)
     logger.info('[Routes] «Վերադարձնել» ERP %s: возвращено %d из %d (%s)', day, sum(r.ok for r in batch.results),
@@ -3620,23 +3685,57 @@ def api_dispatch_erp_undo() -> Any:
     return jsonify({'success': True, 'day': day.isoformat(), **_erp_results_json(batch, skipped)})
 
 
+def _erp_drift(state: RoutesState, dd: _DispatchDay, written: Mapping[str, Mapping[str, Any]]) -> dict[str, int] | None:
+    """Записанные сайтом заказы дня, которые разошлись с планом: в ERP сейчас не наши առաքիչ / машина или магазин уже в
+    рейсе другой машины отправленного плана → машина записи → сколько. ERP читается только для чтения, не чаще
+    ERP_DRIFT_TTL_S на один и тот же набор; не прочиталась — None (страница без отметки)."""
+    sent = dd.draft.for_drivers() if dd.draft is not None and dd.draft.sent is not None else None
+    plan = _trucks_of(sent) if sent is not None else {}
+    key = (dd.day, tuple(sorted((isn, r['new_van'], r['new_car'], r['truck'], plan.get(r['customer_id'], ''))
+                                for isn, r in written.items())))
+    with state.dispatch_lock:
+        hit = state.erp_drift_cache.get(dd.day)
+    if hit is not None and hit[1] == key and time.monotonic() - hit[0] < ERP_DRIFT_TTL_S:
+        return hit[2]
+    assert state.erp_states_loader is not None
+    try:
+        states = state.erp_states_loader(sorted(written))[0]
+    except Exception:
+        logger.warning('[Routes] ERP-запись: сверка записанного с ERP не прочитана', exc_info=True)
+        return None
+    out: dict[str, int] = {}
+    for isn, r in written.items():
+        cur = states.get(isn)
+        if cur is None or (cur.van_id, cur.car) != (r['new_van'], r['new_car']) or plan.get(r['customer_id'], '') != r['truck']:
+            out[r['truck']] = out.get(r['truck'], 0) + 1
+    with state.dispatch_lock:
+        state.erp_drift_cache[dd.day] = (time.monotonic(), key, out)
+        while len(state.erp_drift_cache) > DISPATCH_CACHE_DAYS:
+            state.erp_drift_cache.pop(next(iter(state.erp_drift_cache)))
+    return out
+
+
 def _erp_write_page(state: RoutesState, dd: _DispatchDay) -> dict[str, Any]:
-    """Странице «Развоза» (№97): запись включена — erp_write: {trucks: машина → {written, failed, unknown, undone, at}} по
-    последней попытке каждого заказа в журнале сайта за день (что сейчас записано нами; unknown — обрыв на COMMIT, смотреть
-    в ERP); выключена — ничего (ответ прежний до байта)."""
+    """Странице «Развоза» (№97): запись включена — erp_write: {max_orders, trucks: машина → {written, failed, unknown,
+    undone, drift?, at}} по последней попытке каждого заказа в журнале сайта за день (unknown — обрыв на COMMIT или итог не
+    записан: «Անհայտ՝ ստուգեք ERP-ում»; drift — записанные, что разошлись с ERP или планом, _erp_drift); выключена — ничего
+    (ответ прежний до байта)."""
     if not _erp_write_on(state):
         return {}
-    latest: dict[str, dict[str, Any]] = {}
-    for row in state.store.erp_write_log(dd.day.isoformat()):
-        latest[row['order_isn']] = row
+    latest = _latest(state.store.erp_write_log(dd.day.isoformat()))
     trucks: dict[str, dict[str, Any]] = {}
     for row in latest.values():
         t = trucks.setdefault(row['truck'], {'written': 0, 'failed': 0, 'unknown': 0, 'undone': 0, 'at': row['at']})
-        key = ('unknown' if row['result'] == 'unknown' else 'failed' if row['result'] != 'ok'
+        key = ('unknown' if row['result'] in ('unknown', 'pending') else 'failed' if row['result'] != 'ok'
                else 'undone' if row['op'] == 'undo' else 'written')
         t[key] += 1
         t['at'] = max(t['at'], row['at'])
-    return {'erp_write': {'trucks': trucks}}
+    written = {isn: r for isn, r in latest.items() if r['op'] == 'write' and r['result'] in WRITTEN}
+    drift = _erp_drift(state, dd, written) if written else {}
+    if drift is not None:
+        for code, n in drift.items():
+            trucks[code]['drift'] = n
+    return {'erp_write': {'max_orders': ew.max_orders(), 'trucks': trucks}}
 
 
 DRIVER_NO_TRUCK = 'Մեքենան չի գտնվել — թարմացրեք էջը'

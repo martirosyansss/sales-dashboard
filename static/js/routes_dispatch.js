@@ -720,10 +720,11 @@
     // ---------- «Գրել ERP-ում» (ответ владельца №97): առաքիչ и машина заказов дня в ERP по отправленному плану ----------
     // Кнопка — только если запись включена на сервере (d.erp_write), план отправлен водителям и день не прошёл. Окно:
     // предпросмотр по машинам (что изменится, что пропущено и почему — текст причины с сервера; у заказа к записи —
-    // документ ERP до и после) → галочки: писать все или только отмеченные (проба — один заказ) → «Հաստատել» пишет, только
-    // если план и ERP с тех пор не изменились (signature; иначе 409) → итог ✅/❌/❓ по заказам; «Վերադարձնել» — откат
-    // записанного сейчас (сервер проверит, что в ERP ровно наши значения). Строки из ERP — только textContent.
-    const erp = { sig: null, done: [], busy: false, all: [] };
+    // документ ERP до и после) → галочки: по умолчанию НЕ отмечено ничего, пишутся только отмеченные (не больше max_orders
+    // сервера; по умолчанию 1 — проба), список уходит всегда явно → «Հաստատել (N)» пишет, только если план и ERP с тех пор
+    // не изменились (signature; иначе 409) → итог ✅/❌/❓ по заказам; «Վերադարձնել» — откат записанного сейчас (сервер
+    // проверит, что в ERP ровно наши значения). Строки из ERP — только textContent.
+    const erp = { sig: null, done: [], busy: false, max: 1 };
     const erpVan = (v) => (v ? v.code + (v.name ? ' ' + v.name : '') : '—');
     const erpCar = (c) => c || '—';
     function renderErpState(box) {
@@ -744,12 +745,14 @@
         const line = document.createElement('span');
         line.className = 'dp-erpline';
         const unknown = codes.reduce((n, c) => n + (trucks[c].unknown || 0), 0);
+        const drift = codes.reduce((n, c) => n + (trucks[c].drift || 0), 0);
         line.textContent = 'ERP՝ ' + codes.map(c => {
             const t = trucks[c];
             return (c.indexOf(', ') < 0 ? truckLabel(truckBy(c)) : c) + ' ✅' + t.written + (t.failed ? ' ❌' + t.failed : '')
-                + (t.unknown ? ' ❓' + t.unknown : '') + (t.undone ? ' ↩' + t.undone : '');
+                + (t.unknown ? ' ❓' + t.unknown : '') + (t.undone ? ' ↩' + t.undone : '')
+                + (t.drift ? ' · ❌ ERP-ն տարբերվում է պլանից՝ ' + t.drift : '');
         }).join(' · ') + (unknown ? ' · Անհայտ՝ ստուգեք ERP-ում' : '');
-        line.classList.toggle('is-unknown', !!unknown);
+        line.classList.toggle('is-unknown', !!(unknown || drift));
         box.appendChild(line);
     }
     function erpCell(tr, text, cls) {
@@ -790,14 +793,23 @@
         return [...$('dpErpBody').querySelectorAll('input.dp-erp-pick:checked')].map(cb => cb.value);
     }
     function syncErpOk() {
-        const n = erpPicked().length;
-        $('dpErpOk').disabled = !erp.sig || !n;
-        $('dpErpOk').lastChild.textContent = n && n < erp.all.length ? 'Հաստատել (' + n + ')' : 'Հաստատել';
+        const n = erpPicked().length, over = n > erp.max;
+        $('dpErpOk').disabled = !erp.sig || !n || over;
+        $('dpErpOk').lastChild.textContent = 'Հաստատել (' + n + ')';
+        $('dpErpErr').textContent = over ? 'Մեկ անգամից կարելի է գրել ոչ ավելի, քան ' + erp.max + ' պատվեր' : '';
     }
     function renderErpPreview(p) {
         const box = $('dpErpBody');
         box.textContent = '';
-        erp.all = [];
+        erp.max = p.max_orders || 1;
+        if (Array.isArray(p.pending) && p.pending.length) {
+            // строки журнала без итога (сервер упал между COMMIT и итогом) — сверены с ERP только чтением
+            const ERP_HY = { written: 'ERP-ում արդեն գրված է', not_written: 'ERP-ում գրված չէ', other: 'ERP-ում այլ արժեք է' };
+            const warn = document.createElement('p');
+            warn.className = 'dp-erp-pending';
+            warn.textContent = '❓ ' + p.pending.map(x => x.doc_num + ' — ' + x.text + ' (' + (ERP_HY[x.erp] || '') + ')').join('; ');
+            box.appendChild(warn);
+        }
         $('dpErpSum').textContent = (p.counts.write ? 'Կփոխվի ' + pl(p.counts.write, 'պատվեր') : 'ERP-ում փոխելու բան չկա')
             + (p.counts.skip ? ' · բաց կթողնվի ' + pl(p.counts.skip, 'պատվեր') : '');
         p.trucks.forEach(g => {
@@ -821,11 +833,10 @@
                     cb.type = 'checkbox';
                     cb.className = 'dp-erp-pick';
                     cb.value = o.isn;
-                    cb.checked = true;
+                    cb.checked = false;   // ничего не отмечено: один щелчок не пишет весь день
                     cb.setAttribute('aria-label', 'Գրել ' + o.doc_num + ' պատվերը');
                     cb.addEventListener('change', syncErpOk);
                     pick.appendChild(cb);
-                    erp.all.push(o.isn);
                 }
                 const doc = erpCell(tr, o.doc_num);
                 if (o.write && typeof o.new_body === 'string') doc.appendChild(erpBodyDiff(o));
@@ -871,12 +882,11 @@
     function openErp() {
         erp.sig = null;
         erp.done = [];
-        erp.all = [];
         $('dpErpBody').textContent = '';
         $('dpErpErr').textContent = '';
         $('dpErpSum').textContent = 'Կարդում եմ ERP-ից…';
         $('dpErpOk').hidden = false;
-        $('dpErpOk').lastChild.textContent = 'Հաստատել';
+        $('dpErpOk').lastChild.textContent = 'Հաստատել (0)';
         $('dpErpUndo').hidden = true;
         $('dpErpDlg').showModal();
         erpCall(async () => {
@@ -888,9 +898,8 @@
     }
     function erpConfirm() {
         const picked = erpPicked();
-        if (!erp.sig || !picked.length) return;
-        const body = { date: state.day, expected: erp.sig };
-        if (picked.length < erp.all.length) body.orders = picked;   // проба: только отмеченные
+        if (!erp.sig || !picked.length || picked.length > erp.max) return;
+        const body = { date: state.day, expected: erp.sig, orders: picked };   // всегда явно — только отмеченные
         erpCall(async () => {
             const r = await api('POST', '/api/routes/dispatch/erp-write', body);
             erp.sig = null;
