@@ -1353,9 +1353,11 @@ body.dp-ws-on .rt-shell { --rt-secnav-gap: 8px; }
 .dp-stopcard-orders { list-style: none; margin: 8px 0 0; padding: 6px 0 0; border-top: 1px solid var(--rt-line-soft); font-size: .8125rem; }
 .dp-stopcard-orders li { display: flex; justify-content: space-between; gap: 12px; padding: 1px 0; color: var(--rt-fg-dim); }
 .dp-stopcard-orders b { color: var(--rt-fg); font-weight: 600; white-space: nowrap; }
-/* низкая карта — карточка прокручивается (maxHeight), кнопка прижата к её низу и видна всегда */
-#rtDispatch .dp-stopcard-x { position: sticky; bottom: 0; width: 100%; margin-top: 10px; justify-content: center; color: var(--rt-danger);
-    border-color: var(--rt-danger-line); background: var(--rt-panel-2); box-shadow: 0 6px 0 var(--rt-panel-2), 0 -6px 0 var(--rt-panel-2); }
+/* низкая карта — карточка прокручивается (maxHeight), кнопки прижаты к её низу и видны всегда */
+#rtDispatch .dp-stopcard-acts { position: sticky; bottom: 0; display: flex; flex-direction: column; gap: 6px; margin-top: 10px;
+    background: var(--rt-panel-2); box-shadow: 0 6px 0 var(--rt-panel-2), 0 -6px 0 var(--rt-panel-2); }
+#rtDispatch .dp-stopcard-acts .rt-btn { width: 100%; justify-content: center; }
+#rtDispatch .dp-stopcard-x { color: var(--rt-danger); border-color: var(--rt-danger-line); background: var(--rt-panel-2); }
 #rtDispatch .dp-stopcard-x:hover:not(:disabled) { background: linear-gradient(var(--rt-danger-bg), var(--rt-danger-bg)), var(--rt-panel-2); color: var(--rt-danger); }
 .dp-stopcard-note { margin-top: 8px; font-size: .8125rem; color: var(--rt-fg-mute); }
 

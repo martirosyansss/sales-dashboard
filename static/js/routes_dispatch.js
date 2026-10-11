@@ -4881,6 +4881,27 @@
             });
             box.appendChild(ul);
         }
+        if (!state.data.is_past && s.share > 1 && !canQuickEdit(s, tr.id)) {
+            line('dp-stopcard-note', 'Ծանր պատվեր՝ բաժանված է երթերի միջև. տեղափոխել կարելի է ցուցակից («Փոփոխել»)');
+        }
+        // кнопки карточки прижаты к её низу: «Փոխել տեղը» (владелец 11.10 — тот же диалог, что в списке магазинов) и
+        // «Հանել երթից»
+        const acts = document.createElement('div');
+        acts.className = 'dp-stopcard-acts';
+        if (!state.data.is_past) {
+            const g = document.createElement('button');
+            g.type = 'button';
+            g.className = 'rt-btn rt-btn-ghost rt-btn-sm dp-stopcard-geo';
+            g.innerHTML = '<i class="fas fa-location-dot" aria-hidden="true"></i><span>Փոխել տեղը</span>';
+            g.setAttribute('aria-label', 'Փոխել տեղը՝ ' + (s.name || s.code));
+            g.disabled = state.busy;
+            g.addEventListener('click', () => {
+                if (state.busy) return;
+                closeStopCard();
+                openGeo(s);
+            });
+            acts.appendChild(g);
+        }
         if (canQuickEdit(s, tr.id)) {
             const b = document.createElement('button');
             b.type = 'button';
@@ -4894,10 +4915,9 @@
                 // убрать из рейса — только с причиной (владелец 07.10), как «×» в карточке машины
                 openWhy(s, tr.id, Math.max(0, tr.stops.findIndex(x => x.customer_id === s.customer_id)));
             });
-            box.appendChild(b);
-        } else if (!state.data.is_past && s.share > 1) {
-            line('dp-stopcard-note', 'Ծանր պատվեր՝ բաժանված է երթերի միջև. տեղափոխել կարելի է ցուցակից («Փոփոխել»)');
+            acts.appendChild(b);
         }
+        if (acts.children.length) box.appendChild(acts);
         // Esc с фокусом на кнопке карточки (клавиатура Leaflet слушает только саму карту)
         box.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.stopPropagation(); closeStopCard(); } });
         // низкий экран (карта ниже из-за карточки машины) — карточка прокручивается, «Հանել երթից» не обрезана
