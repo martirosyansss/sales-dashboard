@@ -54,68 +54,64 @@
 #rtDispatch .rt-alert { border-radius: var(--rt-radius-sm); }
 
 /* Числа одной ширины — время и килограммы стоят ровным столбцом */
-.dp-num, .dp-stop-eta, .dp-stop-kg, .dp-time, .dp-bigstats b, .dp-stats b, .dp-plate, .dp-cal-day { font-variant-numeric: tabular-nums; }
+.dp-num, .dp-stop-eta, .dp-stop-kg, .dp-time, .dp-bigstats b, .dp-stats b, .dp-plate { font-variant-numeric: tabular-nums; }
 
 /* ==========================================================================
-   ШАПКА: раздел и вкладки, день (листок календаря), листать дни
+   ШАПКА — одна панель дня (владелец №99, как панель рабочего экрана): «Վաղը · երք, 13 հոկ» и день недели, листать
+   дни, ↻ и откуда заказы; справа — AI, помощь и «Կազմել երթերը» (до сборки) или действия рабочего экрана (#dpWsActs)
    ========================================================================== */
-.dp-mast { padding: 4px 0 6px; margin-bottom: 18px; }
-.dp-mast-top { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 20px; }
-.dp-kicker {
-    margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px;
-    font-size: .9375rem; font-weight: 700; color: var(--rt-acc); letter-spacing: .01em;
-}
-.dp-kicker > i { font-size: .95em; }
-.dp-kicker-sub { font-weight: 400; color: var(--rt-fg-mute); }
-
+.dp-mast { padding: 0; margin-bottom: 18px; }
 .dp-dayboard {
-    display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 14px 22px;
-    margin-top: 16px; padding: 18px 20px;
-    background: var(--rt-panel); border: 1px solid var(--rt-line); border-radius: var(--rt-radius);
-    box-shadow: var(--rt-shadow);
+    display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; min-height: 60px; padding: 10px 12px 10px 16px;
+    background: var(--rt-panel); border: 1px solid var(--rt-line); border-radius: 14px; box-shadow: var(--rt-shadow);
 }
-/* Листок календаря: день недели, число, месяц */
-.dp-cal {
-    width: 76px; display: flex; flex-direction: column; align-items: center; gap: 0; overflow: hidden;
-    border-radius: 14px; background: var(--rt-inset); border: 1px solid var(--rt-line);
-}
-.dp-cal-wd {
-    align-self: stretch; text-align: center; padding: 4px 0 3px; font-size: .75rem; font-weight: 700;
-    letter-spacing: .06em; text-transform: uppercase; color: var(--dp-acc-ink); background: var(--rt-acc);
-}
-.dp-cal-day { font-size: 2.125rem; font-weight: 700; line-height: 1.05; padding-top: 6px; color: var(--rt-fg); }
-.dp-cal-mon { font-size: .75rem; color: var(--rt-fg-dim); padding: 0 4px 7px; text-align: center; }
-.dp-day-main { min-width: 0; }
-#rtDispatch .rt-title { font-size: clamp(1.5rem, 1.15rem + 1.3vw, 2.125rem); font-weight: 700; letter-spacing: -.015em; line-height: 1.15; }
-.dp-datenote { margin: 8px 0 0; font-size: .9375rem; color: var(--rt-fg-dim); display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; line-height: 1.5; }
-.dp-datenote .rt-linkbtn { font-size: .9375rem; text-decoration: none; display: inline-flex; align-items: center; gap: 6px; }
-.dp-datenote .rt-linkbtn:hover { text-decoration: underline; }
-.dp-daynav { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+.dp-day-main { display: contents; }
+/* заголовок — короткий день (data-short), полный текст остаётся у h1 для экранного диктора и title вкладки */
+#rtDispatch .rt-title { order: 1; flex: none; margin: 0; font-size: 0; line-height: 1.25; white-space: nowrap; letter-spacing: -.01em; }
+#rtDispatch .rt-title::after { content: attr(data-short); content: attr(data-short) / ""; font-size: 1.125rem; font-weight: 700; }
+.dp-day-wd { order: 1; flex: none; margin: 0 6px 0 -4px; font-size: .8125rem; color: var(--rt-fg-mute); white-space: nowrap; }
+.dp-day-wd:empty { display: none; }
+.dp-daynav { order: 2; flex: none; display: flex; align-items: center; gap: 10px; }
 .dp-dayseg {
-    display: inline-flex; align-items: center; gap: 2px; padding: 4px;
+    display: inline-flex; align-items: center; gap: 2px; padding: 2px;
     border: 1px solid var(--rt-line); border-radius: 999px; background: var(--rt-inset);
 }
 .dp-segbtn {
-    width: 40px; height: 40px; border-radius: 50%; border: 0; background: transparent; color: var(--rt-fg-dim);
+    width: 30px; height: 30px; border-radius: 50%; border: 0; background: transparent; color: var(--rt-fg-dim);
     display: inline-grid; place-items: center; cursor: pointer; transition: background .15s, color .15s;
 }
 .dp-segbtn:hover { background: var(--rt-panel-2); color: var(--rt-fg); }
 #rtDispatch .rt-input.dp-date {
-    width: auto; min-width: 160px; height: 40px; border: 0; background: transparent; text-align: center;
-    font-family: var(--rt-mono); font-size: .9375rem; color-scheme: dark; box-shadow: none;
+    width: 138px; min-width: 0; height: 30px; padding: 0 4px; border: 0; background: transparent; text-align: center;
+    font-family: var(--rt-mono); font-size: .875rem; color-scheme: dark; box-shadow: none;
 }
 #rtDispatch .rt-input.dp-date:focus-visible { outline: 2px solid var(--rt-acc); outline-offset: 0; }
-.dp-daynav .rt-linkbtn { font-size: .875rem; }
+.dp-daynav .rt-linkbtn { font-size: .8125rem; white-space: nowrap; }
+.dp-daynav .rt-linkbtn[hidden] { display: none; }
+/* ↻ и «Պատվերներ՝ երկ, 12 հոկ · ERP 16:42» — кнопкой-иконкой и мелкой строкой (полный текст — в подсказке) */
+.dp-datenote { order: 3; flex: 0 1 auto; min-width: 0; margin: 0; display: flex; align-items: center; gap: 10px; font-size: .8125rem; color: var(--rt-fg-mute); }
+.dp-datenote > span { order: 2; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dp-datenote .rt-linkbtn {
+    order: 1; flex: none; width: 34px; height: 34px; display: inline-flex; align-items: center; justify-content: center; gap: 0;
+    font-size: 0; border-radius: 9px; border: 1px solid var(--rt-line); background: var(--rt-panel-2); color: var(--rt-fg-dim); text-decoration: none;
+}
+.dp-datenote .rt-linkbtn:hover { color: var(--rt-acc); border-color: var(--rt-acc-dim); text-decoration: none; }
+.dp-datenote .rt-linkbtn i { font-size: .875rem; }
+.dp-sendstate { order: 4; }
+.dp-setacts { order: 5; margin-left: auto; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
+.dp-setacts > .rt-btn { height: 36px; padding: 0 14px; font-size: .875rem; gap: 8px; }
+.dp-setacts > .rt-btn[hidden] { display: none; }
+/* «Կազմել երթերը» до сборки — главная кнопка панели; «Մոտ 5 վայրկյան» — её описание (aria-describedby), не строкой */
+#rtDispatch .dp-setacts .dp-run { display: contents; }
+#rtDispatch .dp-setacts #dpBuild { height: 40px; padding: 0 20px; font-size: .9375rem; gap: 9px; }
+#rtDispatch .dp-setacts #dpBuild:disabled { background: #24313f; border-color: #24313f; color: var(--rt-fg-mute); opacity: 1; }
+#rtDispatch .dp-setacts .dp-run .dp-note { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.dp-dayboard .rt-btn:active { transform: translateY(1px) scale(.98); }
 
 .dp-help { margin-top: 10px; }
-.dp-help summary {
-    cursor: pointer; display: inline-flex; align-items: center; gap: 8px; list-style: none;
-    font-weight: 600; color: var(--rt-fg-dim); font-size: .9375rem; padding: 4px 2px;
-}
-.dp-help summary:hover { color: var(--rt-acc); }
-.dp-help summary::-webkit-details-marker { display: none; }
+.dp-help[hidden] { display: none; }
 .dp-help-body {
-    margin-top: 8px; max-width: 860px; padding: 14px 18px; border-radius: var(--rt-radius-sm);
+    max-width: 860px; padding: 14px 18px; border-radius: var(--rt-radius-sm);
     background: var(--rt-panel); border: 1px solid var(--rt-line);
 }
 .dp-help-lead { margin: 0 0 10px; color: var(--rt-fg); line-height: 1.55; }
@@ -663,12 +659,6 @@
     #rtDispatch .dp-mapfilter { max-height: none; }
 }
 @media (max-width: 767px) {
-    .dp-dayboard { grid-template-columns: auto minmax(0, 1fr); padding: 14px; gap: 12px 14px; }
-    .dp-daynav { grid-column: 1 / -1; flex-direction: row; flex-wrap: wrap; align-items: center; }
-    .dp-dayseg { flex: 1 1 auto; }
-    #rtDispatch .rt-input.dp-date { flex: 1 1 auto; min-width: 0; }
-    .dp-cal { width: 64px; }
-    .dp-cal-day { font-size: 1.75rem; }
     .dp-todo { grid-template-columns: minmax(0, 1fr); padding: 16px; }
     .dp-todo-ico { display: none; }
     .dp-todo-body { grid-template-columns: minmax(0, 1fr); }
@@ -897,12 +887,7 @@
 }
 .dp-toast-act:hover, .dp-toast-act:focus-visible { background: var(--rt-acc-glow); }
 
-/* --- Водители дня (№77): список в шаге 1 — те же плитки, что у машин; машины без водителя — серой карточкой --- */
-.dp-crew { margin: 18px 0 0; padding: 0; border: 0; min-width: 0; }
-.dp-crew[hidden] { display: none; }
-.dp-crew-t { display: flex; align-items: center; gap: 10px; margin: 0 0 6px; padding: 0; font-size: 1rem; font-weight: 700; color: var(--rt-fg); }
-#rtDispatch .dp-truck-sub.is-warn { color: var(--rt-warn); font-weight: 600; }
-#rtDispatch .dp-driver::before { background: var(--rt-acc-dim); }
+/* --- Водители дня (№77): машины без водителя — серой карточкой (в шаге 1 водители — в таблице машин, №99) --- */
 .dp-crew-warn { color: var(--rt-fg-mute); }
 .dp-crew-warn.is-bad { color: var(--rt-warn); font-weight: 600; }
 #rtDispatch .dp-tcard.is-unmanned { opacity: .6; border-style: dashed; }
@@ -998,14 +983,13 @@ details.dp-costnote p { margin: 6px 0 0; }
     .dp-tab[hidden] { display: none; }
     /* «Օր»: день, подготовка и сводка; «Երթեր»: шкала и рейсы; «Քարտեզ»: только карта */
     #rtDispatch[data-tab="day"] :is(#dpBoard, #dpOverflow, #dpUnassigned, .dp-split) { display: none !important; }
-    #rtDispatch[data-tab="trips"] :is(.dp-kicker, .dp-help, #dpTodo, #dpInbox, #dpNoDriver, #dpSameDay, .dp-prep, #dpRun, .dp-summary, .dp-mapcol, #dpAnalysis) { display: none !important; }
-    #rtDispatch[data-tab="map"] :is(.dp-kicker, .dp-help, #dpTodo, #dpInbox, #dpNoDriver, #dpSameDay, .dp-prep, #dpRun, .dp-summary, #dpBoard, #dpOverflow, #dpUnassigned, .dp-trucklist, #dpAnalysis) { display: none !important; }
+    #rtDispatch[data-tab="trips"] :is(.dp-setacts, .dp-help, #dpTodo, #dpInbox, #dpNoDriver, #dpSameDay, .dp-prep, #dpRun, .dp-summary, .dp-mapcol, #dpAnalysis) { display: none !important; }
+    #rtDispatch[data-tab="map"] :is(.dp-setacts, .dp-help, #dpTodo, #dpInbox, #dpNoDriver, #dpSameDay, .dp-prep, #dpRun, .dp-summary, #dpBoard, #dpOverflow, #dpUnassigned, .dp-trucklist, #dpAnalysis) { display: none !important; }
     #rtDispatch[data-tab="map"] .dp-mapbox-body > .dp-map { height: calc(100vh - var(--rt-nav-h, 64px) - 330px); min-height: 300px; }
     /* «Երթեր» и «Քարտեզ»: от шапки — только день и что видят водители */
     body:is([data-dp-tab="trips"], [data-dp-tab="map"]) .rt-secnav-bar { display: none; }
-    #rtDispatch:is([data-tab="trips"], [data-tab="map"]) :is(.dp-cal, .dp-datenote, #dpTomorrow) { display: none !important; }
-    #rtDispatch:is([data-tab="trips"], [data-tab="map"]) .dp-dayboard { grid-template-columns: minmax(0, 1fr); padding: 10px 12px; gap: 8px; }
-    #rtDispatch:is([data-tab="trips"], [data-tab="map"]) .dp-dayboard .rt-title { font-size: 1.125rem; }
+    #rtDispatch:is([data-tab="trips"], [data-tab="map"]) :is(.dp-day-wd, .dp-datenote, #dpTomorrow) { display: none !important; }
+    #rtDispatch:is([data-tab="trips"], [data-tab="map"]) .dp-dayboard { padding: 10px 12px; gap: 8px; }
     #rtDispatch:is([data-tab="trips"], [data-tab="map"]) .dp-sendstate { margin-top: 4px; }
     #rtDispatch[data-tab="map"] .dp-mapfilter { max-height: 84px; }
     .dp-inbox { margin-top: 0; }
@@ -1021,7 +1005,7 @@ details.dp-costnote p { margin: 6px 0 0; }
 .dp-blabel-x { display: none; }
 .dp-bar i.dp-tick { font-size: 0; }
 
-#rtDispatch.is-ws .dp-kicker, #rtDispatch.is-ws .dp-help, #rtDispatch.is-ws .dp-cal, #rtDispatch.is-ws .dp-split,
+#rtDispatch.is-ws .dp-split,
 #rtDispatch.is-ws .dp-summary-top, #rtDispatch.is-ws .dp-ai-fab, #rtDispatch.is-ws #dpTomorrow { display: none !important; }
 #rtDispatch.is-ws .dp-mast { margin-bottom: 10px; padding: 0; }
 /* шапка рабочего экрана — одна строка: день · листать · что у водителей · обновить … действия */
@@ -1586,3 +1570,214 @@ body.dp-ws-on .rt-shell { --rt-secnav-gap: 8px; }
 .dp-erp-body-diff pre { margin: 2px 0 0; padding: 6px 8px; max-height: 220px; overflow: auto; white-space: pre-wrap;
     overflow-wrap: anywhere; border-radius: 8px; background: var(--rt-inset); color: var(--rt-fg); font: .75rem/1.4 var(--rt-mono); }
 .dp-erp-pending { margin: 0 0 8px; color: var(--rt-danger); font-weight: 600; overflow-wrap: anywhere; }
+
+/* ==========================================================================
+   №99 — экран до сборки (владелец: «Эта страница выглядит очень плохо»; макет output/dispatch-taste/mock-setup.html):
+   фон до низа документа, честный статус с чипами, шаг 1 таблицей «машина + водитель + сегодня», шаг 2 справа
+   ========================================================================== */
+/* фон — у самого документа: фиксированный слой страницы (::before) кончается на высоте окна в снимках во всю длину,
+   а светлый фон дашборда под ним был виден полосой */
+body:has(#rtDispatch) { background: #0e1116; }
+
+/* до сборки плавающей кнопки AI нет — AI в панели дня; помощь и AI на рабочем экране — в его шапке */
+#rtDispatch.is-setup .dp-ai-fab { display: none !important; }
+#rtDispatch.is-ws :is(.dp-setacts, .dp-day-wd, .dp-help) { display: none !important; }
+
+/* статус дня: заголовок, одно предложение с главным выводом, проблемы — чипами с числами */
+#rtDispatch .dp-todo.is-setup {
+    display: block; margin: 0 0 22px; padding: 2px 2px 0; border: 0; border-radius: 0; background: none; box-shadow: none; overflow: visible;
+}
+.dp-todo.is-setup::before { content: none; }
+#rtDispatch .dp-st-t { margin: 0 0 6px; font-size: clamp(1.25rem, 1.05rem + .6vw, 1.5rem); font-weight: 700; line-height: 1.25; letter-spacing: -.015em; }
+.dp-st-lead { margin: 0; max-width: 82ch; color: var(--rt-fg-dim); font-size: .9688rem; line-height: 1.55; }
+.dp-st-note { margin: 6px 0 0; max-width: 82ch; color: var(--rt-fg-mute); font-size: .875rem; line-height: 1.5; }
+.dp-st-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.dp-st-chips[hidden] { display: none; }
+#rtDispatch .dp-chipbtn {
+    display: inline-flex; align-items: center; gap: 8px; min-height: 32px; padding: 0 13px; border-radius: 999px;
+    border: 1px solid var(--rt-line); background: var(--rt-panel); color: var(--rt-fg-dim); text-decoration: none;
+    font: 500 .8125rem/1.2 var(--rt-font); cursor: pointer; transition: background .15s, border-color .15s, transform .15s;
+}
+.dp-chipbtn b { font-family: var(--rt-mono); font-weight: 600; color: var(--rt-fg); font-variant-numeric: tabular-nums; }
+#rtDispatch .dp-chipbtn:hover { background: var(--rt-panel-2); border-color: #33404f; }
+#rtDispatch .dp-chipbtn:active { transform: scale(.98); }
+#rtDispatch .dp-chipbtn:focus-visible { outline: 2px solid var(--rt-acc); outline-offset: 2px; }
+#rtDispatch .dp-chipbtn.is-warn { border-color: rgba(255, 176, 58, .35); color: #f3d39a; }
+.dp-chipbtn.is-warn b { color: var(--rt-warn); }
+#rtDispatch .dp-chipbtn.is-bad { border-color: rgba(255, 107, 121, .35); color: #f5b3b5; }
+.dp-chipbtn.is-bad b { color: var(--rt-danger); }
+
+/* шаг 1 широкий слева, шаг 2 справа */
+.dp-prep { grid-template-columns: minmax(0, 1.75fr) minmax(320px, 1fr); gap: 20px; }
+.dp-step-n { flex: none; font-size: .8125rem; color: var(--rt-fg-mute); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.dp-st-lead b { color: var(--rt-fg); font-weight: 700; }
+.dp-step-n:empty, .dp-step-n[hidden] { display: none; }
+.dp-step-head { flex-wrap: wrap; row-gap: 10px; }
+.dp-step-hgroup { flex: 0 1 auto; }
+.dp-step.is-folded .dp-step-hgroup { flex: 1 1 0; min-width: 0; }
+#dpStep2.is-folded .dp-step-n { display: none; }
+.dp-seg { margin-left: auto; display: flex; gap: 2px; padding: 3px; border: 1px solid var(--rt-line); border-radius: 999px; background: var(--rt-bg); }
+.dp-seg button {
+    border: 0; border-radius: 999px; background: none; color: var(--rt-fg-mute); padding: 6px 12px; cursor: pointer;
+    font: 600 .75rem/1.2 var(--rt-font); transition: background .15s, color .15s;
+}
+.dp-seg button:hover { color: var(--rt-fg); }
+.dp-seg button[aria-pressed="true"] { background: var(--rt-panel-2); color: var(--rt-fg); }
+.dp-seg button:focus-visible { outline: 2px solid var(--rt-acc); outline-offset: 1px; }
+.dp-step.is-folded .dp-seg { display: none; }
+
+/* таблица: строка — машина и её водитель; от края до края карточки */
+.dp-fleet .dp-step-body { margin: 14px -20px -20px; }
+.dp-fleet-t { width: 100%; border-collapse: collapse; }
+.dp-fleet-t th { padding: 10px 12px 8px; text-align: left; font: 600 .75rem/1.2 var(--rt-font); color: var(--rt-fg-mute); }
+.dp-fleet-t td { padding: 8px 12px; border-top: 1px solid var(--rt-line-soft); vertical-align: middle; }
+.dp-fleet-t :is(th, td):first-child { padding-left: 20px; width: 44px; }
+.dp-fleet-t :is(th, td):last-child { padding-right: 20px; }
+.dp-fleet-t tr[hidden] { display: none; }
+.dp-fleet-t tbody tr { transition: background .15s; }
+.dp-fleet-t tbody tr:hover td { background: rgba(255, 255, 255, .015); }
+.dp-fleet-t input.dp-tkpick { width: 18px; height: 18px; margin: 0; accent-color: var(--rt-acc); cursor: pointer; vertical-align: middle; }
+.dp-fleet-t input.dp-tkpick:disabled { cursor: default; }
+.dp-fl-truck b { display: block; font-size: .9375rem; font-weight: 600; line-height: 1.3; }
+.dp-fl-truck .dp-plate { display: block; width: fit-content; padding: 0; border: 0; background: none; font-family: var(--rt-mono); font-size: .8125rem; color: var(--rt-fg-dim); letter-spacing: .02em; }
+.dp-fl-truck .dp-plate:empty { display: none; }
+.dp-fl-cap { white-space: nowrap; font-family: var(--rt-mono); font-size: .875rem; }
+.dp-fl-tag {
+    display: inline-block; margin-left: 6px; padding: 2px 7px; border-radius: 6px; background: var(--rt-panel-2);
+    font: 600 .6875rem/1.3 var(--rt-font); color: var(--rt-fg-dim);
+}
+/* водитель — кнопка диалога «Վարորդ» */
+.dp-drvpick, .dp-setdrv {
+    display: inline-flex; align-items: center; gap: 10px; max-width: 100%; padding: 4px 8px 4px 4px; margin-left: -4px;
+    border: 0; border-radius: 10px; background: none; color: var(--rt-fg); text-align: left; cursor: pointer; font: inherit;
+    transition: background .15s;
+}
+.dp-drvpick:hover { background: var(--rt-panel-2); }
+.dp-drvpick:focus-visible, .dp-setdrv:focus-visible { outline: 2px solid var(--rt-acc); outline-offset: 1px; }
+.dp-av {
+    flex: none; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center;
+    background: #20384a; color: #9fdcf9; font: 600 .6875rem/1 var(--rt-font);
+}
+.dp-av.is-away { background: var(--rt-panel-2); color: var(--rt-fg-mute); }
+.dp-fl-who { min-width: 0; display: flex; flex-direction: column; }
+.dp-fl-who b { font-size: .875rem; font-weight: 500; line-height: 1.3; overflow-wrap: break-word; }
+.dp-fl-who small { font-size: .75rem; color: var(--rt-fg-mute); }
+.dp-setdrv { padding: 6px 8px; color: var(--rt-acc); font-size: .8125rem; font-weight: 600; }
+.dp-setdrv:hover { background: var(--rt-acc-glow); }
+/* «Այսօր»: եկել է / մինչև 17.10 — переключатель-пилюля; առանց վարորդի — серая */
+.dp-pres, .dp-pill {
+    position: relative; display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px;
+    font-size: .75rem; font-weight: 600; line-height: 1.4; white-space: nowrap;
+}
+.dp-pres { cursor: pointer; transition: background .15s; }
+.dp-pres input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.dp-pres input:disabled { cursor: default; }
+.dp-pres:has(input:focus-visible) { outline: 2px solid var(--rt-acc); outline-offset: 2px; }
+.dp-pres.is-came { color: var(--rt-ok); background: rgba(69, 217, 143, .1); }
+.dp-pres.is-came:hover { background: rgba(69, 217, 143, .18); }
+.dp-pres.is-away { color: var(--rt-warn); background: rgba(255, 181, 71, .1); }
+.dp-pres.is-away:hover { background: rgba(255, 181, 71, .18); }
+.dp-pres .dp-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.dp-pres.is-came .dp-dot { animation: dp-breathe 2.4s ease-in-out infinite; }
+@keyframes dp-breathe { 50% { opacity: .35; } }
+.dp-pill.is-none { color: var(--rt-fg-mute); background: var(--rt-panel-2); }
+.dp-fl-why { display: block; margin-top: 4px; font-size: .75rem; color: var(--rt-warn); font-weight: 600; }
+/* машина снята — строка приглушена; машина с неполными данными — строка-ошибка */
+.dp-fleet-t tr.is-off td:not(.dp-fl-ck) { opacity: .55; }
+.dp-fleet-t tr.is-off .dp-fl-truck b { text-decoration: line-through; text-decoration-color: var(--rt-fg-mute); }
+.dp-fleet-t tr.is-bad td { background: rgba(255, 107, 121, .05); }
+.dp-fleet-t tr.is-bad .dp-fl-truck b { color: #f5b3b5; text-decoration: none; }
+.dp-fl-fix a { font-size: .8125rem; font-weight: 600; }
+.dp-fl-fix small { display: block; font-size: .75rem; color: var(--rt-fg-mute); }
+.dp-fl-empty { padding: 16px 20px !important; color: var(--rt-fg-dim); }
+.dp-fl-none { margin: 0; padding: 14px 20px; border-top: 1px solid var(--rt-line-soft); color: var(--rt-fg-mute); font-size: .875rem; }
+.dp-fl-none[hidden] { display: none; }
+.dp-fleet-foot { padding: 4px 20px 16px; border-top: 1px solid var(--rt-line-soft); }
+.dp-fleet-foot .dp-note { margin-top: 10px; font-size: .8125rem; }
+.dp-fl-lost { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 6px; }
+.dp-fl-lost[hidden] { display: none; }
+.dp-fl-lost li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 12px; font-size: .8125rem; color: var(--rt-fg-mute); }
+.dp-fl-lost li b { color: var(--rt-fg-dim); font-weight: 600; }
+
+/* шаг 2: четыре числа в ряд (моно, разделители), пустое состояние, блоки «что требует решения» */
+/* числа — по ширине самого шага (в узкой правой колонке 320–450 px «1 250 000 ֏» в четверть ширины не влезает):
+   узко — 2×2, от 680 px — в ряд; длинное значение переносится, а не вылезает за карточку */
+#dpStep2Body { container: dp-orders / inline-size; }
+#rtDispatch .dp-step:not(.dp-fleet) .dp-step-body > .dp-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0; margin: 0 -20px; border-bottom: 1px solid var(--rt-line-soft);
+}
+#rtDispatch .dp-step:not(.dp-fleet) .dp-stats .dp-stat { min-width: 0; padding: 4px 16px 14px; border: 0; border-radius: 0; background: none; }
+#rtDispatch .dp-step:not(.dp-fleet) .dp-stats .dp-stat:nth-child(odd) { padding-left: 20px; }
+#rtDispatch .dp-step:not(.dp-fleet) .dp-stats .dp-stat:nth-child(even) { border-left: 1px solid var(--rt-line-soft); }
+#rtDispatch .dp-step:not(.dp-fleet) .dp-stats .dp-stat:nth-child(n+3) { border-top: 1px solid var(--rt-line-soft); padding-top: 12px; }
+#rtDispatch .dp-step:not(.dp-fleet) .dp-stats .dp-stat b { font: 600 1.25rem/1.15 var(--rt-mono); white-space: normal; overflow-wrap: anywhere; letter-spacing: 0; }
+@container dp-orders (min-width: 680px) {
+    #rtDispatch .dp-step:not(.dp-fleet) .dp-step-body > .dp-stats { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    #rtDispatch .dp-step:not(.dp-fleet) .dp-stats .dp-stat:nth-child(n+3) { border-top: 0; padding-top: 4px; }
+    #rtDispatch .dp-step:not(.dp-fleet) .dp-stats .dp-stat:nth-child(3) { padding-left: 16px; border-left: 1px solid var(--rt-line-soft); }
+}
+#rtDispatch .dp-step:not(.dp-fleet) .dp-stats .dp-stat span { font-size: .75rem; }
+.dp-empty { display: grid; grid-template-columns: 40px minmax(0, 1fr); gap: 14px; padding: 18px 0; border-bottom: 1px solid var(--rt-line-soft); }
+.dp-empty[hidden] { display: none; }
+.dp-empty-ic { width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; background: var(--rt-panel-2); color: var(--rt-fg-mute); }
+.dp-empty b { display: block; margin-bottom: 2px; font-size: .9375rem; }
+.dp-empty p { margin: 0; color: var(--rt-fg-dim); font-size: .875rem; line-height: 1.5; }
+#rtDispatch .dp-attn { gap: 0; margin: 0; }
+#rtDispatch .dp-attn-item {
+    display: block; padding: 14px 0; border: 0; border-bottom: 1px solid var(--rt-line-soft); border-radius: 0; background: none;
+}
+.dp-attn-h { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.dp-attn-h i { width: 16px; text-align: center; color: var(--rt-fg-mute); font-size: .875rem; }
+.dp-attn-h b { font-size: .875rem; font-weight: 700; }
+.dp-attn-n { margin-left: auto; font-size: .8125rem; font-weight: 600; color: var(--rt-fg-dim); white-space: nowrap; }
+.dp-attn-item.is-warn .dp-attn-h i, .dp-attn-item.is-warn .dp-attn-n { color: var(--rt-warn); }
+#rtDispatch .dp-attn-t { margin: 0 0 10px; color: var(--rt-fg-dim); font-size: .875rem; line-height: 1.5; }
+.dp-attn-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+.dp-attn-link { font-size: .8125rem; font-weight: 600; }
+/* складки шага 2 — в том же ключе: строка с разделителем, без отдельной коробки */
+#rtDispatch .dp-step:not(.dp-fleet) .rt-fold { margin: 0; background: none; border: 0; border-bottom: 1px solid var(--rt-line-soft); border-radius: 0; }
+#rtDispatch .dp-step:not(.dp-fleet) .rt-fold > summary { padding: 13px 0 13px 24px; border-radius: 0; }
+#rtDispatch .dp-step:not(.dp-fleet) .rt-fold > summary::before { left: 2px; top: 17px; }
+#rtDispatch .dp-step:not(.dp-fleet) .rt-fold[open] > summary { border-bottom: 0; }
+#rtDispatch .dp-step:not(.dp-fleet) .rt-fold-t { font-size: .875rem; }
+#rtDispatch .dp-step:not(.dp-fleet) .rt-fold-note { font-size: .8125rem; }
+#rtDispatch .dp-step:not(.dp-fleet) .rt-fold-body { padding: 0 0 14px; }
+#rtDispatch .dp-step:not(.dp-fleet) .rt-fold-lead { font-size: .875rem; }
+#rtDispatch .dp-step:not(.dp-fleet) .dp-step-body > .dp-note { margin: 12px 0 0; font-size: .8125rem; }
+/* менеджеры — строками, как в макете */
+#rtDispatch .dp-agents { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; }
+#rtDispatch .dp-agents .dp-truck { padding: 9px 4px; border: 0; border-radius: 0; background: none; }
+#rtDispatch .dp-agents .dp-truck + .dp-truck { border-top: 1px solid var(--rt-line-soft); }
+#rtDispatch .dp-agents .dp-truck::before { content: none; }
+#rtDispatch .dp-agents .dp-truck:not(:has(input:checked)) { opacity: 1; }
+#rtDispatch .dp-agents .dp-truck:not(:has(input:checked)) .dp-truck-t b { text-decoration: none; color: var(--rt-fg-dim); }
+
+@media (prefers-reduced-motion: reduce) {
+    .dp-pres.is-came .dp-dot { animation: none; }
+}
+@media (max-width: 1100px) {
+    .dp-prep { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 767px) {
+    .dp-dayboard { padding: 10px 12px; }
+    /* телефон: день; ‹ дата › и ↻ одной строкой; «Վերադառնալ վաղվան» — под ними; кнопки — во всю ширину */
+    .dp-daynav { display: contents; }
+    .dp-dayseg { order: 2; flex: 1 1 220px; min-width: 0; justify-content: space-between; }
+    .dp-daynav .rt-linkbtn { order: 4; flex: 1 1 100%; text-align: left; }
+    #rtDispatch .rt-input.dp-date { flex: 1 1 auto; width: auto; }
+    .dp-datenote > span { display: none; }
+    .dp-setacts { flex: 1 1 100%; margin-left: 0; }
+    .dp-setacts > .rt-btn { flex: 1 1 0; justify-content: center; }
+    #rtDispatch .dp-setacts #dpBuild { flex: 1 1 100%; justify-content: center; }
+    .dp-fleet .dp-step-body { margin: 14px -16px -16px; }
+    .dp-fleet-t .dp-h-m { display: none; }
+    .dp-fleet-t th, .dp-fleet-t td { padding-left: 8px; padding-right: 8px; }
+    .dp-fleet-t :is(th, td):first-child { padding-left: 14px; width: 34px; }
+    .dp-fleet-t :is(th, td):last-child { padding-right: 14px; }
+    .dp-av { display: none; }
+    .dp-pres, .dp-pill { white-space: normal; }
+    .dp-seg { margin-left: 0; width: 100%; }
+    .dp-seg button { flex: 1 1 0; }
+    .dp-fleet-foot { padding: 4px 14px 14px; }
+    #rtDispatch .dp-step:not(.dp-fleet) .dp-step-body > .dp-stats { margin: 0 -16px; }
+}

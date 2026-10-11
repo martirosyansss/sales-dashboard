@@ -44,6 +44,7 @@
                 if (shown($('dpAiOpen'))) $('dpAiOpen').focus();
                 else if (shown(tab)) tab.focus();
                 else if (shown(wsAi)) wsAi.focus();   // №82: рабочий экран — кнопка AI в шапке
+                else if (shown(document.getElementById('dpSetAi'))) document.getElementById('dpSetAi').focus();   // №99: до сборки — в панели дня
             }
             // Ответ AI — абзацы и строки-пункты «• …» (без разметки: всё через textContent)
             function aiText(box, text) {
