@@ -1423,8 +1423,6 @@ body.dp-ws-on .rt-shell { --rt-secnav-gap: 8px; }
 .dp-bl-off { margin-top: 12px; }
 .dp-bl-off > summary { cursor: pointer; padding: 6px 0; font-size: .875rem; color: var(--rt-fg-dim); }
 .dp-bl-off > .dp-bl { margin-top: 6px; opacity: .85; }
-/* сводка в боковой панели (сам список — в окне dpBlDlg) */
-#dpBacklog .rt-fold-body .dp-bl-stats { margin-bottom: 12px; }
 /* большое окно списка (владелец 10.10 «тесно в боковой панели»): почти весь экран, шапка с окном дней закреплена */
 .dp-dlg.dp-bl-dlg {
     width: min(1320px, calc(100vw - 32px)); height: calc(100vh - 32px); height: calc(100dvh - 32px); max-height: calc(100dvh - 32px);
