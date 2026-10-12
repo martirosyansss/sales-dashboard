@@ -817,8 +817,9 @@ def main() -> int:
             ws.wait_for_selector('#rtDispatch.is-ws', timeout=30000)
             ws.wait_for_timeout(800)
             check(ws.locator('#dpWsMap #dpMap').count() == 1 and ws.locator('#dpWsBottom #dpBoard').count() == 1
-                  and ws.locator('#dpWsKpi #dpPlanStats').is_visible() and ws.locator('#dpWsActs #dpPrint').is_visible(),
-                  'Y workspace: map, board, KPI over the map, print in the header')
+                  and ws.locator('#dpWsKpi #dpPlanStats').is_visible() and ws.locator('#dpWsMenu #dpMenuPrint').count() == 1
+                  and ws.locator('#dpPrint').is_hidden(),
+                  'Y workspace: map, board, KPI over the map, print in the «⋯» menu (живой отзыв 12.10)')
             check(ws.locator('#dpBoard .dp-bar i.dp-tick').first.inner_text() == '1'
                   and ws.locator('#dpBoard .dp-blabel .dp-blx-t').first.is_visible(), 'Y board: numbered stops, load line per truck')
             box = ws.evaluate("(() => { const r = document.getElementById('dpWs').getBoundingClientRect(); return [r.top, r.bottom, innerHeight]; })()")

@@ -177,10 +177,26 @@ def main() -> int:
                           f'L {tag}: glass panels top/left/bottom, a row per plan truck ({rows}/{trucks}), no truck card yet')
                     check(pg.locator('#dpWsKpi #dpPlanStats').is_visible() and pg.locator('#dpWsTop #dpInbox').is_visible(),
                           f'L {tag}: day totals and attention chips in the top panel')
-                    # подсказка дня и строка дня — переносятся, ничего не обрезано
-                    clip = pg.evaluate("""() => [...document.querySelectorAll('#dpTodo .dp-todo-t, #dpTodo .dp-todo-lines p, .dp-dayboard, #dpSendState .dp-sendpill, #dpWsActs .rt-btn')]
-                        .filter(e => e.offsetParent && e.clientWidth > 1 && e.scrollWidth > e.clientWidth + 1).map(e => e.id || e.className)""")   # 1 px — пояснение только для диктора
-                    check(pg.locator('#dpWsTop #dpTodo .dp-todo-t').is_visible() and not clip, f'L {tag}: day hint in the top panel, nothing clipped {clip}')
+                    # живой отзыв 12.10: строка дня — одной строкой, ничего не обрезано; главная «Հաստատել և ուղարկել» — последней;
+                    # подсказка дня — не строкой в панели, а в подсказке статус-таблетки
+                    clip = pg.evaluate("""() => [...document.querySelectorAll('.dp-dayboard, #dpSendState .dp-sendpill, #dpWsActs .rt-btn')]
+                        .filter(e => e.offsetParent && e.clientWidth > 1 && e.scrollWidth > e.clientWidth + 1).map(e => e.id || e.className)""")
+                    row = pg.evaluate("""() => { const kids = ['dpTitle', 'dpDate', 'dpRefresh', 'dpPrepOpen', 'dpWsMore', 'dpApproveBtn']
+                        .map(id => document.getElementById(id)).filter(e => e && e.offsetParent).map(e => { const b = e.getBoundingClientRect(); return b.top + b.height / 2; });
+                        const acts = [...document.querySelectorAll('#dpWsActs > :not([hidden])')].filter(e => e.offsetParent);
+                        return { spread: Math.max(...kids) - Math.min(...kids), last: acts.length ? acts[acts.length - 1].id : '',
+                                 h: document.querySelector('.dp-dayboard').getBoundingClientRect().height }; }""")
+                    check(not clip and row['spread'] < 12 and row['h'] <= 56 and row['last'] == 'dpApprove',
+                          f'L {tag}: day row in one line, nothing clipped, «Հաստատել և ուղարկել» last {row} {clip}')
+                    tip = pg.get_attribute('#dpSendState .dp-sendpill', 'title') or ''
+                    check(pg.locator('#dpTodo').is_hidden() and 'հաստատեք' in tip, f'L {tag}: day hint in the status pill tooltip ({tip[:60]}…)')
+                    # верх видимой карты (низ панели итогов) — не ниже 200 px на 1366×768; панель — одной строкой
+                    if (w, h) == (1366, 768):
+                        check(r['top'][3] <= 200 and r['top'][3] - r['top'][1] <= 56, f'L {tag}: the map is visible from {r["top"][3]:.0f} px (≤ 200), totals in one row')
+                    chips = pg.eval_on_selector_all('#dpInbox .dp-inchip', 'els => els.map(e => [e.querySelector("span").textContent, e.className])')
+                    check(chips and chips[-1][0] == 'Լրացնել մեքենաների նորմերը' and 'is-link' in chips[-1][1]
+                          and (not any(c[0] == 'Առանց վարորդի' for c in chips) or chips[0][0] == 'Առանց վարորդի'),
+                          f'L {tag}: chips by importance, norms — a quiet link at the end {[c[0] for c in chips]}')
                     pg.screenshot(path=str(SHOTS / f'ws-{theme}-{w}.png'))
                     # S — машина из панели слева
                     pg.locator('#dpWsRows .dp-wl-row').nth(1).click()
@@ -271,6 +287,24 @@ def main() -> int:
                                       f'K {tag}', reload, '#dpDate')
                         hv = pg.evaluate(HOT_VISIBLE)
                         check(hv['n'] > 0 and hv['hidden'] == 0, f'K {tag}: after collapsing/expanding the selected trip is still visible {hv}')
+                    if w == 1366:
+                        # живой отзыв 12.10: «Տպել» и «Excel» — в меню «⋯» (клавиатура: стрелки), работают как раньше
+                        pg.click('#dpWsMore')
+                        items = pg.eval_on_selector_all('#dpWsMenu [role="menuitem"]:not([hidden])', 'els => els.map(e => e.id)')
+                        check(items[:2] == ['dpMenuPrint', 'dpMenuExcel'] and pg.locator('#dpPrint').is_hidden() and pg.locator('#dpExcel').is_hidden(),
+                              f'P {tag}: «Տպել» and «Excel» are the first items of «⋯» {items}')
+                        with pg.context.expect_page(timeout=15000) as popup:
+                            pg.keyboard.press('Enter')    # фокус — на первом пункте («Տպել»)
+                        sheet = popup.value
+                        sheet.wait_for_load_state()
+                        check(sheet.locator('.sheet').count() == trucks, f'P {tag}: «⋯ → Տպել» opens the driver sheets ({sheet.locator(".sheet").count()})')
+                        sheet.close()
+                        pg.click('#dpWsMore')
+                        pg.keyboard.press('ArrowDown')
+                        check(pg.evaluate('document.activeElement.id') == 'dpMenuExcel', 'P «⋯»: ArrowDown → «Excel»')
+                        with pg.expect_download(timeout=30000) as dl:
+                            pg.keyboard.press('Enter')
+                        check(dl.value.suggested_filename.endswith('.xlsx'), f'P {tag}: «⋯ → Excel» downloads {dl.value.suggested_filename}')
                     if theme == 'dark' and w == 1366:
                         # D — второстепенное в выдвижной панели
                         chip = pg.locator('#dpInbox .dp-inchip', has_text='Երթերում չեն')

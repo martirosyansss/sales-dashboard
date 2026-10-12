@@ -563,6 +563,12 @@
         const dn = dayNotes(d);
         lines.push(...dn.tail);
         lines.unshift(...dn.head);
+        // Tesla+ (живой отзыв 12.10): на рабочем экране строки нет — заголовок и пояснение в подсказке статус-таблетки
+        // строки дня, а для состояний с действием (пересобрать, настройки, показать проблемы) — чип с этим действием
+        state.todo = { tone, title, lines: lines.slice(), btn: btns[0] || null };
+        const sp = $('dpSendState').querySelector('.dp-sendpill');
+        if (sp) sp.title = (sp.dataset.base || (sp.dataset.base = sp.title)) + ' — ' + title + (lines[0] ? '։ ' + lines[0] : '');
+        syncTodoChip();
         box.className = 'dp-todo ' + tone;
         box.innerHTML = '<div class="dp-todo-ico" aria-hidden="true"><i class="fas ' + ico + '"></i></div>'
             + '<div class="dp-todo-body"><p class="dp-todo-k">Ի՞նչ անել հիմա</p><h2 class="dp-todo-t"></h2>'
@@ -1066,32 +1072,35 @@
             if (count) el.querySelector('b').textContent = fmt(count);
             box.appendChild(el);
         };
+        // Tesla+ (живой отзыв 12.10): по важности — «Առանց վարորդի», «Նախորդ օրերից», «Առանց կետի» первыми, число — цветом
+        // серьёзности; «Նոր պատվերներ» — нейтрально; нулевых нет; «Լրացնել մեքենաների նորմերը» — тихой ссылкой в конце
+        const o = d.orders;
+        const nd = noDriver();
+        if (nd.length && !d.is_past && wsOn()) add('is-bad', 'fa-id-card', 'Առանց վարորդի', nd.length, () => openDriver(nd[0].car_code));
+        const bl = d.backlog || [];
+        const blOpen = blTodo(bl).length;
+        if (bl.length) add(blOpen ? 'is-warn' : '', 'fa-clock-rotate-left', 'Նախորդ օրերից', blOpen || bl.length, () => openFold('dpBacklog'), null, 'dpBlChip');
+        if (o.no_coords) add('is-warn', 'fa-location-dot', 'Առանց կետի', o.no_coords, () => openFold('dpNoCoords'));
         const bad = plan.trucks.reduce((n, t) => n + t.trips.filter(tripBad).length, 0);
         if (bad) add('is-bad', 'fa-triangle-exclamation', 'Խնդիր երթերում', bad, () => showPlanPart(() => $('dpOverflow').firstElementChild));
         if (plan.unassigned.length) add('is-bad', 'fa-inbox', 'Երթերում չեն', plan.unassigned.length, () => showPlanPart(() => $('dpUnassigned').firstElementChild));
+        const gs = geoSug();
+        if (gs.count) add('is-warn', 'fa-location-crosshairs', 'Նոր տեղ՝ վարորդներից', gs.count, () => openFold('dpGeoSug'));
         // №86: на рабочем экране плашка «Այսօրվա նոր պատվերներ» — счётчиком в этой строке (карта выше); нажатие — тот же диалог
         if (wsOn() && sdData()) {
             const later = sdLater(state.day), inv = sdInvoiced().filter(o => !sdOutside(o));
             const fresh = sdNew().filter(o => !later.has(o.isn));
             const all = sdOpenOrders().length + sdTaken().length;
-            if (fresh.length || inv.length) add('is-warn', 'fa-bolt', 'Նոր պատվերներ', fresh.length + inv.length, () => openSameDay(), null, 'dpSdChip');
+            if (fresh.length || inv.length) add('', 'fa-bolt', 'Նոր պատվերներ', fresh.length + inv.length, () => openSameDay(), null, 'dpSdChip');
             else if (all) add('', 'fa-bolt', 'Այսօրվա պատվերներ', all, () => openSameDay(), null, 'dpSdChip');
         }
-        const o = d.orders;
-        if (o.no_coords) add('is-warn', 'fa-location-dot', 'Առանց կետի', o.no_coords, () => openFold('dpNoCoords'));
-        const gs = geoSug();
-        if (gs.count) add('is-warn', 'fa-location-crosshairs', 'Նոր տեղ՝ վարորդներից', gs.count, () => openFold('dpGeoSug'));
-        const bl = d.backlog || [];
-        const blOpen = blTodo(bl).length;
-        if (bl.length) add(blOpen ? 'is-warn' : '', 'fa-clock-rotate-left', 'Նախորդ օրերից', blOpen || bl.length, () => openFold('dpBacklog'), null, 'dpBlChip');
-        const nd = noDriver();
-        if (nd.length && !d.is_past && wsOn()) add('is-warn', 'fa-id-card', 'Առանց վարորդի', nd.length, () => openDriver(nd[0].car_code));
         if (o.excluded) add('', 'fa-ban', 'Այսօր չենք տանում', o.excluded, () => openFold('dpExcluded'));
         // нормы погрузки, расхода и износа не заполнены — цифры дня приблизительные (раньше — только серым текстом под сводкой)
         const sm = plan.summary;
         if (sm.loading_configured === false || sm.fuel_load_unconfigured || sm.wear_unconfigured)
-            add('is-warn', 'fa-gear', 'Լրացնել մեքենաների նորմերը', 0, null, '/routes/settings#trucks');
+            add('is-link', 'fa-gear', 'Լրացնել մեքենաների նորմերը', 0, null, '/routes/settings#trucks');
         syncLateChips();
+        syncTodoChip();
     }
 
     // ---------- Новые заказы дня (ответ владельца №72) ----------
@@ -6195,6 +6204,24 @@
         $('dpBoard').classList.toggle('has-progress', !!p);
         syncLateChips();
     }
+    // Tesla+: подсказка дня с действием (не «готово — утвердите / печатайте»: эти действия — в строке дня) — первым чипом
+    function syncTodoChip() {
+        const old = $('dpTodoChip');
+        if (old) old.remove();
+        const t = state.todo, box = $('dpInbox');
+        // «Ուղարկել վարորդներին» — уже кнопкой у статус-таблетки
+        if (!t || t.tone !== 'is-warn' || !t.btn || t.btn.act === sendPlan || !wsOn() || !(state.data && state.data.plan)) { box.hidden = !box.children.length; return; }
+        const el = document.createElement(t.btn.href ? 'a' : 'button');
+        el.id = 'dpTodoChip';
+        el.className = 'dp-inchip is-warn dp-todochip';
+        if (t.btn.href) el.href = t.btn.href; else { el.type = 'button'; el.addEventListener('click', t.btn.act); }
+        el.innerHTML = '<i class="fas ' + t.btn.ico + '" aria-hidden="true"></i><span></span>';
+        el.lastChild.textContent = t.btn.text;
+        el.title = t.title + (t.lines[0] ? '։ ' + t.lines[0] : '');
+        el.setAttribute('aria-label', t.title + ' — ' + t.btn.text);
+        box.prepend(el);
+        box.hidden = false;
+    }
     // №87: «N խանութ ուշանում է» / «M մեքենա չի հասցնում վերադառնալ» — в строке счётчиков (dpInbox, её перерисовывает
     // renderInbox — тогда и снова здесь); нажатие — следующая такая машина по кругу (шкала, карта, карточка)
     let lateTurn = 0;
@@ -6254,8 +6281,8 @@
     }
     // Tesla+: подсказка дня и счётчики — в верхней стеклянной панели над картой; не поместилось, «как посчитано» и
     // «для руководителя» — в выдвижной панели #dpSheet (открывают счётчики, «Ցույց տալ» и меню «⋯»)
-    const wsNodes = () => [[$('dpApprove'), 'dpWsActs'], [document.querySelector('#rtDispatch .dp-summary-cta'), 'dpWsActs'],
-        [$('dpPlanStats'), 'dpWsKpi'], [$('dpTodo'), 'dpWsTop'], [$('dpInbox'), 'dpWsTop'], [$('dpMapBox'), 'dpWsMap'],
+    const wsNodes = () => [[$('dpApprove'), 'dpWsActs'],
+        [$('dpPlanStats'), 'dpWsKpi'], [$('dpInbox'), 'dpWsTop'], [$('dpMapBox'), 'dpWsMap'],
         [$('dpBoard'), 'dpWsBottom'], [$('dpTruckCards'), 'dpWsSide'],
         [$('dpOverflow'), 'dpSheetTrips'], [$('dpUnassigned'), 'dpSheetTrips'], [$('dpMainLead'), 'dpSheetCalc'], [$('dpWhy'), 'dpSheetCalc'],
         [$('dpAnalysis'), 'dpSheetBoss'],
@@ -6274,8 +6301,9 @@
         if (!on) { if (setup) wsPark($('dpRun'), $('dpSetActs')); else wsUnpark($('dpRun')); }
         root.classList.toggle('is-setup', setup);
         // меню «⋯» — последним и в DOM: Tab идёт в том же порядке, что видно (утверждение и печать паркуются в конец)
-        const more = $('dpWsMoreBox');
-        if (on && more.parentNode.lastElementChild !== more) more.parentNode.appendChild(more);
+        // справа: «Մեքենաներ, պատվերներ», AI, «⋯», главная «Հաստատել և ուղարկել» — последней (и в порядке Tab)
+        const more = $('dpWsMoreBox'), appr = $('dpApprove');
+        if (on) { more.parentNode.appendChild(more); if (appr.parentNode === more.parentNode) more.parentNode.appendChild(appr); }
         root.classList.toggle('is-ws', on);
         document.body.classList.toggle('dp-ws-on', on);
         $('dpWs').hidden = !on;
@@ -6382,6 +6410,7 @@
         $('dpMenuUnapprove').hidden = !$('dpUnapprove');
         $('dpMenuDiscard').hidden = !$('dpDiscardBtn');
         $('dpMenuCompare').hidden = !(state.data && state.data.plan);
+        $('dpMenuPrint').hidden = $('dpMenuExcel').hidden = !(state.data && state.data.plan);
         $('dpMenuTrips').hidden = !($('dpOverflow').children.length || $('dpUnassigned').children.length);
         $('dpMenuBoss').hidden = $('dpAnalysis').hidden;
         // перерисовка спрятала пункт с фокусом — фокус на первый видимый, а не на <body> (иначе Esc не сработает)
@@ -6430,7 +6459,7 @@
         $('dpViewList').addEventListener('click', () => { openMenu(false); setView('list'); });
         // меню «⋯»: пункты нажимают настоящие кнопки (там же подтверждение), сами кнопки на рабочем экране скрыты
         $('dpWsMore').addEventListener('click', () => openMenu($('dpWsMenu').hidden));
-        [['dpMenuUnapprove', 'dpUnapprove'], ['dpMenuDiscard', 'dpDiscardBtn']].forEach(([item, real]) => $(item).addEventListener('click', () => {
+        [['dpMenuPrint', 'dpPrint'], ['dpMenuExcel', 'dpExcel'], ['dpMenuUnapprove', 'dpUnapprove'], ['dpMenuDiscard', 'dpDiscardBtn']].forEach(([item, real]) => $(item).addEventListener('click', () => {
             openMenu(false, true);
             const b = $(real);
             if (b && !b.disabled) b.click();

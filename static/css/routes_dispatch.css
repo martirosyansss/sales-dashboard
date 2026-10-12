@@ -2008,3 +2008,33 @@ body.dp-ws-on main.py-4 { padding-top: 8px !important; }
 /* панель машины свёрнута — шкала дня и подписи карты снова до правого края */
 #rtDispatch .dp-ws.has-side.rt-min-side .dp-ws-low { right: 12px; }
 #rtDispatch .dp-ws.has-side.rt-min-side .dp-ws-map .leaflet-bottom.leaflet-right { right: 0; }
+
+/* ==========================================================================
+   Живой отзыв 12.10 «fix»: на 1366×768 до карты было ≈ 340 px — строка дня одной строкой («Տպել» и «Excel» — в «⋯»,
+   главная «Հաստատել և ուղարկել» — последней справа), панель итогов — одной строкой (цифры слева, чипы справа; подсказка дня
+   — в подсказке статус-таблетки и чипом с действием), меньше отступов: верх видимой карты ≈ 190–200 px
+   ========================================================================== */
+body.dp-ws-on .rt-page.rt-top { margin-bottom: 8px; }
+#rtDispatch.is-ws .dp-mast { margin-bottom: 6px; }
+#rtDispatch.is-ws .dp-dayboard { min-height: 48px; margin-top: 0; padding: 6px 10px; flex-wrap: wrap; }
+@media (min-width: 1280px) { #rtDispatch.is-ws .dp-dayboard { flex-wrap: nowrap; } }
+#rtDispatch.is-ws #dpTodo { display: none !important; }
+#rtDispatch.is-ws .dp-summary-cta { display: none !important; }
+/* панель итогов — одна строка: цифры не переносятся, чипы справа (переносятся внутри себя, если их очень много) */
+#dpWs .dp-ws-top { flex-wrap: nowrap; align-items: center; gap: 8px 18px; padding: 6px 52px 6px 16px; }
+#dpWs .dp-ws-top > .rt-pmin { top: 50%; margin-top: -15px; }
+#rtDispatch .dp-ws-kpi { flex: none; }
+#rtDispatch .dp-ws-kpi .dp-stats { flex-wrap: nowrap; gap: 2px 18px; }
+#rtDispatch .dp-ws-kpi .dp-stat b { font-size: 1.1875rem; line-height: 1.1; }
+/* подписи под числами — на шаг крупнее и контрастнее (text-2 на стекле ≥ 4.5:1 в обеих темах) */
+#rtDispatch .dp-ws-kpi .dp-stat span { font-size: 12.5px; line-height: 1.2; color: var(--rt-fg-dim); }
+#rtDispatch.is-ws .dp-inbox { flex: 1 1 auto; min-width: 0; }
+/* чипы: цвет — только у числа (warn / risk), значок — тихий; «Լրացնել մեքենաների նորմերը» — тихой ссылкой в конце */
+#rtDispatch.is-ws .dp-inchip i, #rtDispatch.is-ws .dp-inchip.is-warn i, #rtDispatch.is-ws .dp-inchip.is-bad i { color: var(--rt-fg-dim); }
+#rtDispatch.is-ws .dp-inchip.is-warn b { color: var(--rt-warn); }
+#rtDispatch.is-ws .dp-inchip.is-bad b { color: var(--rt-danger); }
+#rtDispatch.is-ws .dp-inchip.is-link { min-height: 0; height: auto; padding: 0 2px; background: none; color: var(--rt-fg-dim); font-weight: 500; text-decoration: none; }
+#rtDispatch.is-ws .dp-inchip.is-link:hover { box-shadow: none; color: var(--rt-acc); text-decoration: underline; }
+#rtDispatch.is-ws .dp-inchip.is-link i { display: none; }
+/* подсказка дня с действием (пересобрать, настройки, показать проблемы) — первым чипом, жёлтая точка */
+#rtDispatch.is-ws .dp-todochip { box-shadow: inset 0 0 0 1px var(--rt-warn-line); }
