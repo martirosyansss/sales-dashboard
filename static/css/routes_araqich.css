@@ -5,9 +5,8 @@
 .kp-month { min-width: 230px; }
 .kp-sub { font-size: .9375rem; color: var(--rt-fg-dim); }
 
-/* таблица прокручивается внутри карточки — страница не шире экрана */
-.kp-scroll { max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch;
-    border: 1px solid var(--rt-line); border-radius: var(--rt-radius-sm); }
+/* таблица прокручивается внутри карточки — страница не шире экрана; Tesla+: прямо на панели, без рамки */
+.kp-scroll { max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
 .kp-table { min-width: 1080px; }
 .rt-numtable.kp-table thead th.kp-name { text-align: left; }
 .kp-table thead th { padding: 0; }
@@ -26,13 +25,13 @@
 .kp-table td.kp-name { white-space: nowrap; }
 /* имя не уезжает при прокрутке таблицы вбок (телефон) */
 .kp-table .kp-name { position: sticky; left: 0; z-index: 1; background: var(--rt-panel); }
-.kp-table thead th.kp-name { background: var(--rt-panel-2); z-index: 2; }
+.kp-table thead th.kp-name { background: var(--rt-panel); z-index: 2; }
 .kp-table tbody tr:hover td.kp-name { background: var(--rt-panel-2); }
 /* полупрозрачная подсветка поверх непрозрачного фона — цифры не просвечивают через закреплённое имя */
 .kp-table tbody tr.is-open td.kp-name { background: linear-gradient(var(--rt-acc-glow), var(--rt-acc-glow)), var(--rt-panel); }
 .kp-person { font-weight: 600; }
 .kp-table .rt-badge { margin-left: 8px; vertical-align: 1px; }
-.kp-code { display: block; font-family: var(--rt-mono); font-size: .8125rem; color: var(--rt-fg-mute); margin-top: 2px; }
+.kp-code { display: block; font-size: .8125rem; color: var(--rt-fg-mute); margin-top: 2px; }
 .kp-dim { color: var(--rt-fg-mute); font-size: .875rem; }
 .kp-arr { display: inline-block; margin-left: 6px; font-size: .75rem; font-weight: 600; }
 .kp-arr.is-good { color: var(--rt-ok); }
@@ -54,7 +53,7 @@
 .kp-plan td.is-bad { color: var(--rt-danger); }
 .kp-person-name { font-weight: 600; color: var(--rt-fg); }
 .kp-score { white-space: nowrap; }
-.kp-score-val { font-weight: 700; font-size: 1.05rem; }
+.kp-score-val { font-weight: 300; font-size: 1.25rem; }
 .kp-score-val.is-good { color: var(--rt-ok); }
 .kp-score-val.is-warn { color: var(--rt-warn); }
 .kp-score-val.is-bad { color: var(--rt-danger); }
@@ -68,13 +67,15 @@
 .kp-bars { display: block; }
 .kp-bar { fill: var(--rt-acc); }
 .kp-bar.is-below { fill: var(--rt-warn); }
-.kp-bar-v { fill: var(--rt-fg); font: 600 11px var(--rt-mono); text-anchor: middle; }
+.kp-bar-v { fill: var(--rt-fg); font: 500 11px var(--rt-font); text-anchor: middle; }
 .kp-bar-l { fill: var(--rt-fg-mute); font: 500 11px var(--rt-font); text-anchor: middle; }
 .kp-norm { stroke: var(--rt-fg-dim); stroke-width: 1; stroke-dasharray: 4 4; }
 
 .kp-how p { margin: 0 0 8px; font-size: .9375rem; line-height: 1.55; color: var(--rt-fg-dim); max-width: 92ch; }
 .kp-how b { color: var(--rt-fg); }
 
+.kp-month { min-width: 230px; }
 @media (max-width: 575px) {
     .kp-month { flex: 1 1 auto; min-width: 0; }
+    #kpPage .rt-pagehead__actions { width: 100%; }
 }

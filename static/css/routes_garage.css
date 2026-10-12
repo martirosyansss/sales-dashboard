@@ -182,6 +182,7 @@ main:has(> #gjPage) { padding-top: 12px !important; }   /* py-4 дашборда
     #gjPage .gj-sum-main { padding: 14px 14px 6px; }
     #gjPage .gj-sum-main > .rt-card-head, #gjPage .gj-sum-main > .gj-help { padding: 0; }
     .gj-sum-table { min-width: 0; }
+    .gj-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
     .gj-pkm { min-width: 0; }
     .gj-form .gj-actions, #gjOdoForm .gj-actions { margin: 8px -14px -16px; padding-left: 14px; padding-right: 14px; }
     .gj-map { margin: 8px -14px; }
