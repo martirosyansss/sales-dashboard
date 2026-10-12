@@ -9,26 +9,31 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400..700&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+Armenian:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=27">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_ui.css') }}?v=2">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_pay.css') }}?v=3">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_ui.css') }}?v=3">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_pay.css') }}?v=4">
 {% endblock %}
 
 {% block content %}
 <!-- «Աշխատավարձ» (docs/research/09-crew-pay.md): зарплата առաքիչ за месяц по ERP; только администратору -->
-<div class="rt-page" id="cpPage" lang="hy">
+<div class="rt-page rt-tesla" id="cpPage" lang="hy">
 
-    <header class="rt-head">
-        <div class="rt-head-row">
-            <h1 class="rt-title">Աշխատավարձ</h1>
-            <div class="rt-head-tools">
-                <label for="cpMonth" class="cp-month-label">Ամիս</label>
-                <select id="cpMonth" class="rt-select cp-month"></select>
-                <button type="button" id="cpCsv" class="rt-btn rt-btn-ghost">
-                    <i class="fas fa-file-csv" aria-hidden="true"></i>Ներբեռնել CSV</button>
-            </div>
+    <!-- Шапка страницы (Tesla+): заголовок, серая строка, пояснение по раскрытию; справа — месяц и CSV -->
+    <header class="rt-pagehead">
+        <div>
+            <h1 class="rt-pagehead__title">Աշխատավարձ</h1>
+            <p class="rt-pagehead__sub">Առաքիչների ամսական աշխատավարձը՝ ըստ ERP-ի ապրանքագրերի</p>
+            <details class="rt-howto">
+                <summary><i class="fas fa-circle-question" aria-hidden="true"></i>Ինչպե՞ս օգտվել</summary>
+                <p>Առաքիչների ամսական աշխատավարձը՝ ըստ ERP-ի անցկացված ապրանքագրերի։ Առաքիչը ապրանքագրում նշված
+                    առաքիչն է, եթե նա ինքը մենեջերը չէ։ Սեղմեք տողի վրա՝ օր առ օր տեսնելու համար։</p>
+            </details>
         </div>
-        <p class="rt-head-lead">Առաքիչների ամսական աշխատավարձը՝ ըստ ERP-ի անցկացված ապրանքագրերի։ Առաքիչը ապրանքագրում նշված
-            առաքիչն է, եթե նա ինքը մենեջերը չէ։ Սեղմեք տողի վրա՝ օր առ օր տեսնելու համար։</p>
+        <div class="rt-pagehead__actions">
+            <label for="cpMonth" class="cp-month-label">Ամիս</label>
+            <select id="cpMonth" class="rt-select cp-month"></select>
+            <button type="button" id="cpCsv" class="rt-btn rt-btn--secondary">
+                <i class="fas fa-file-csv" aria-hidden="true"></i>Ներբեռնել CSV</button>
+        </div>
     </header>
 
     <div id="cpStatus" class="rt-sr-only" role="status" aria-live="polite"></div>
@@ -41,13 +46,8 @@
         <span id="cpWarnText" class="rt-alert-text"></span>
     </div>
 
-    <!-- Формула простыми словами с текущими числами (заполняет routes_pay.js) -->
-    <section class="rt-card" aria-labelledby="cpFormulaTitle">
-        <div class="rt-card-head">
-            <h2 class="rt-card-title" id="cpFormulaTitle"><i class="fas fa-calculator" aria-hidden="true"></i>Ինչպես է հաշվվում</h2>
-        </div>
-        <div id="cpFormula" class="cp-formula"></div>
-    </section>
+    <!-- Итог месяца: из итоговой строки таблицы (routes_pay.js renderTable) -->
+    <div class="cp-kpis" id="cpKpis" aria-label="Ամսվա ամփոփում" hidden></div>
 
     <section class="rt-card" aria-labelledby="cpTableTitle">
         <div class="rt-card-head">
@@ -99,6 +99,14 @@
             </table>
         </div>
         <p class="rt-field-hint cp-legend">Օրվա գործավարձը մոտավոր է՝ կլորացված օր առ օր, ամսվա գումարը հաշվվում է ամբողջ ամսվա կետերով, տոննաներով և կմ-ով։</p>
+    </section>
+
+    <!-- Формула простыми словами с текущими числами (заполняет routes_pay.js) — под таблицей, вторичное -->
+    <section class="rt-card" aria-labelledby="cpFormulaTitle">
+        <div class="rt-card-head">
+            <h2 class="rt-card-title" id="cpFormulaTitle"><i class="fas fa-calculator" aria-hidden="true"></i>Ինչպես է հաշվվում</h2>
+        </div>
+        <div id="cpFormula" class="cp-formula"></div>
     </section>
 
     <!-- Параметры формулы: route_optimizer.db (ERP не меняется) -->
@@ -172,5 +180,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/routes_pay.js') }}?v=8"></script>
+<script src="{{ url_for('static', filename='js/routes_pay.js') }}?v=9"></script>
 {% endblock %}

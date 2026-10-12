@@ -9,12 +9,13 @@
 .cp-formula { display: grid; gap: 8px; font-size: .9375rem; line-height: 1.55; max-width: 92ch; }
 .cp-formula p { margin: 0; }
 .cp-formula b { color: var(--rt-fg); }
-.cp-formula .num { font-family: var(--rt-mono); color: var(--rt-acc); white-space: nowrap; }
+.cp-formula .num { color: var(--rt-acc); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .cp-formula .note { color: var(--rt-fg-mute); font-size: .875rem; }
 
-/* таблица прокручивается внутри карточки — страница не шире экрана */
-.cp-scroll { max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch;
-    border: 1px solid var(--rt-line); border-radius: var(--rt-radius-sm); }
+/* таблица прокручивается внутри карточки — страница не шире экрана; Tesla+: прямо на панели, без рамки */
+.cp-scroll { max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.cp-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.cp-kpis[hidden] { display: none; }
 .cp-table { min-width: 1060px; }
 .cp-days { min-width: 500px; }
 .rt-numtable.cp-table thead th:nth-child(2) { text-align: left; }
@@ -22,10 +23,10 @@
 .cp-table tbody tr { cursor: pointer; }
 .cp-table tbody tr:hover td { background: var(--rt-panel-2); }
 .cp-table tbody tr.is-open td { background: var(--rt-acc-glow); }
-.cp-table td.pay { font-weight: 700; }
+.cp-table td.pay { font-weight: 600; }
 .cp-table td.is-min { color: var(--rt-warn); }
 .cp-table .rt-badge, .cp-days .rt-badge { margin-left: 6px; vertical-align: 1px; }
-.cp-table tfoot td { font-weight: 700; border-top: 1px solid var(--rt-line); padding: 10px 12px; }
+.cp-table tfoot td { font-weight: 600; border-top: 1px solid var(--rt-line); padding: 12px 12px 14px; }
 .cp-legend { margin: 10px 0 0; }
 .cp-changed { margin: -8px 0 12px; }
 
@@ -39,6 +40,8 @@
 
 @media (max-width: 575px) {
     .cp-month { flex: 1 1 auto; min-width: 0; }
+    #cpPage .rt-pagehead__actions { width: 100%; }
+    .cp-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
     #cpCsv { flex: 1 1 100%; }
     .cp-actions .rt-btn { flex: 1 1 auto; }
 }

@@ -193,6 +193,18 @@
             return tr;
         }));
         const t = d.totals;
+        // Tesla+: 4 показателя месяца — те же числа, что в строке «Ընդամենը» (новых расчётов нет)
+        const card = (cap, val, unit, note, tone) => h('div', { class: 'rt-kpi rt-kpi--card' }, h('span', { class: 'rt-kpi__cap', text: cap }),
+            h('span', { class: 'rt-kpi__val' }, h('span', { class: 'rt-kpi__num', text: val }), unit ? h('span', { class: 'rt-kpi__unit', text: unit }) : null),
+            note ? h('span', { class: 'rt-kpi__note' + (tone ? ' ' + tone : ''), text: note }) : null);
+        const mins = rows.filter(r => r.min_applied).length;
+        $('cpKpis').hidden = !rows.length;
+        $('cpKpis').replaceChildren(...(rows.length ? [
+            card('Վճարել', fmt(t.pay), '֏', 'ֆիքս՝ ' + fmt(t.fix) + ' · գործավարձ՝ ' + fmt(t.piece)),
+            card('Առաքիչներ', fmt(rows.length), '', mins ? 'նվազագույնով՝ ' + mins : 'բոլորը՝ ըստ բանաձևի', mins ? 'is-warn' : ''),
+            card('Կետեր', fmt(t.points), '', 'տոննա՝ ' + fmt(t.tonnes, 1) + (d.km_counted ? ' · կմ՝ ' + fmt(t.km) : '')),
+            card('Հին սխեմայի համեմատ', signed(t.diff), '֏', 'հին սխեմայով՝ ' + fmt(t.old) + ' ֏'),
+        ] : []));
         $('cpTotals').replaceChildren(rows.length ? h('tr', null,
             h('td', { colspan: 2, text: 'Ընդամենը' }), num(''), num(fmt(t.points)), num(fmt(t.tonnes, 1)),
             num(d.km_counted ? fmt(t.km) : '—'), num(fmt(t.fix)),
