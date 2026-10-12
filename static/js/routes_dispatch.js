@@ -744,7 +744,8 @@
         // новые заказы дня (№72): пришли или ушли — перечитать день, плашка появится без перезагрузки страницы
         const sdBefore = d.same_day ? d.same_day.count : 0;
         const sdChanged = isObj(s.same_day) && isObj(d.same_day) && s.same_day.sig !== d.same_day.sig;
-        if ((s.orders_sig !== d.orders_sig || s.rev !== d.rev || sdChanged) && !interacting()) {
+        const crewChanged = typeof s.crew_sig === 'string' && s.crew_sig !== d.crew_sig;   // экипаж сменили (другая вкладка)
+        if ((s.orders_sig !== d.orders_sig || s.rev !== d.rev || sdChanged || crewChanged) && !interacting()) {
             const picked = trucksChanged() ? selectedTrucks() : null;
             try { await reloadQuiet(); } catch (e) { return; }
             if (picked && state.day === day) {
@@ -4325,8 +4326,11 @@
         if (stop.center) tag(stop.center_miss ? 'b-danger' : 'b-warn', stop.center_miss ? 'Կենտրոն — մեքենան չի կարող մտնել' : 'Կենտրոն', 'fa-city', !stop.center_miss);
         // ревью логики 12.10 (P1 №1): магазин здесь по решению логиста — пересборка его не переставит («⋯» → снять)
         if (stop.locked) {
-            tag('dp-b-lock', 'Ձեռքով', 'fa-hand', false);
-            tags.lastChild.title = 'Դուք եք տեղադրել այս մեքենայում․ վերակազմելիս խանութը կմնա այստեղ («⋯» → «Հանել ձեռքով որոշումները»)';
+            const lt = stop.lock_truck ? truckBy(stop.lock_truck) : null;
+            tag('dp-b-lock', 'Ձեռքով' + (stop.lock_truck ? '՝ ' + (lt ? truckLabel(lt) : stop.lock_truck) : ''), 'fa-hand', false);
+            tags.lastChild.title = stop.lock_truck
+                ? 'Դուք եք ընտրել այս մեքենան, բայց խանութը նրանում չտեղավորվեց․ հանեք ձեռքով որոշումը կամ ազատեք տեղ'
+                : 'Դուք եք տեղադրել այս մեքենայում․ վերակազմելիս խանութը կմնա այստեղ («⋯» → «Հանել ձեռքով որոշումները»)';
         }
         // большая машина в зоне Еревана (№68): к разгрузке прибавлены минуты — они уже во времени точки и рейса
         if (num(stop.yerevan_min)) {
@@ -4511,10 +4515,14 @@
         box.textContent = '';
         // Не поместились до конца рабочего дня выбранных машин (сборка за конец дня не планирует) — отдельно;
         // не успеваем в окно приёма и центр без машины с правом въезда — свои карточки (решает логист, №36)
-        const noVehicle = plan.unassigned.filter(s => s.no_vehicle);
-        const noRoom = plan.unassigned.filter(s => s.no_room && !s.no_vehicle);
-        const noWindow = plan.unassigned.filter(s => s.no_window && !s.no_vehicle), noCenter = plan.unassigned.filter(s => s.no_center && !s.no_vehicle);
-        const other = plan.unassigned.filter(s => !s.no_room && !s.no_window && !s.no_center && !s.no_vehicle);
+        // ревью ветки 12.10: магазин держится ручным решением за машину, которая его не вместила, — своя карточка и «Հանել
+        // ձեռքով որոշումը» у каждого (иначе решение не снять: меню считает только точки рейсов)
+        const lockedOut = plan.unassigned.filter(s => s.locked);
+        const free = plan.unassigned.filter(s => !s.locked);
+        const noVehicle = free.filter(s => s.no_vehicle);
+        const noRoom = free.filter(s => s.no_room && !s.no_vehicle);
+        const noWindow = free.filter(s => s.no_window && !s.no_vehicle), noCenter = free.filter(s => s.no_center && !s.no_vehicle);
+        const other = free.filter(s => !s.no_room && !s.no_window && !s.no_center && !s.no_vehicle);
         const kgOf = (list) => list.reduce((a, s) => a + (s.kg || 0), 0);
         const reasonCard = (list, ico, title, leads) => {
             const card = document.createElement('section');
@@ -4546,6 +4554,24 @@
             btn.addEventListener('click', overtime);
             return [p, btn];
         };
+        if (lockedOut.length) {
+            const plate = (c) => { const t = truckBy(c); return t ? truckLabel(t) : c; };
+            const card = reasonCard(lockedOut, 'fa-hand', 'Չտեղավորվեց ձեռքով ընտրված մեքենայում', lockedOut.map(s =>
+                '«' + (s.name || s.code) + '»՝ չտեղավորվեց ' + plate(s.lock_truck) + ' մեքենայում (ձեռքով որոշում)։')
+                .concat(['Հանեք ձեռքով որոշումը, որ ծրագիրը ինքն ընտրի մեքենան, կամ ազատեք տեղ այդ մեքենայում և վերակազմեք։']));
+            const acts = document.createElement('div');
+            acts.className = 'dp-unlock-acts';
+            lockedOut.forEach(s => {
+                const b = document.createElement('button');
+                b.type = 'button';
+                b.className = 'rt-btn rt-btn-ghost rt-btn-sm';
+                b.innerHTML = '<i class="fas fa-hand" aria-hidden="true"></i><span></span>';
+                b.lastChild.textContent = 'Հանել ձեռքով որոշումը՝ ' + (s.name || s.code);
+                b.addEventListener('click', () => edit({ action: 'unlock', customer_id: s.customer_id }, 'Ձեռքով որոշումը հանված է՝ «' + (s.name || s.code) + '»'));
+                acts.appendChild(b);
+            });
+            card.appendChild(acts);
+        }
         if (noVehicle.length) reasonCard(noVehicle, 'fa-truck', 'Այսօր չկա խանութը սպասարկող մեքենա', [
             '1-ին քայլում միացրեք թույլատրված մեքենան և վերակազմեք երթերը։ Եթե սահմանափակումը սխալ է, փոխեք այն խանութի «Մեքենաներ» կոճակով։']);
         if (noWindow.length) {
@@ -6748,6 +6774,7 @@
     const lockedCount = () => {
         const plan = state.data && state.data.plan;
         if (!plan) return 0;
+        if (num(plan.locks) !== null) return plan.locks;   // все решения плана — и у магазинов «ещё не в рейсах»
         const ids = new Set();
         plan.trucks.forEach(t => t.trips.forEach(tr => tr.stops.forEach(s => { if (s.locked) ids.add(s.customer_id); })));
         return ids.size;
@@ -7195,7 +7222,8 @@
         lock.forEach(id => { $(id).disabled = false; });
         $('dpDriverDlg').close();
         if (state.data && state.data.day === r.day) {
-            ['drivers', 'substitutes', 'helpers', 'helper_substitutes', 'driver_list', 'crew'].forEach(k => { state.data[k] = r[k]; });
+            ['drivers', 'substitutes', 'helpers', 'helper_substitutes', 'driver_list', 'crew', 'crew_sig'].forEach(k => { state.data[k] = r[k]; });
+            applyPublication(r);
             if (state.data.plan) renderTruckCards(state.data.plan);
             renderCrew();
             renderNoDriver();
@@ -7240,9 +7268,21 @@
             state.busy = false;
         }
     }
+    // ревью ветки 12.10: сменили водителя или «не вышел» у отправленного плана — сервер вернул, что видят водители
+    // (publication: unsent с экипажем, crew_problems): плашка «Չուղարկված» и «Ուղարկել» — сразу, без перезагрузки
+    function applyPublication(r) {
+        if (!isObj(r.publication) || !state.data.sent) return;
+        state.data.unsent = r.publication.unsent || null;
+        if (Array.isArray(r.publication.crew_problems) && r.publication.crew_problems.length) state.data.crew_problems = r.publication.crew_problems;
+        else delete state.data.crew_problems;
+        renderSendState();
+        syncMenu();
+    }
     function crewSaved(r) {
         if (state.data && state.data.day === r.day) {
             state.data.crew = r.crew;
+            if (typeof r.crew_sig === 'string') state.data.crew_sig = r.crew_sig;
+            applyPublication(r);
             renderCrew();
             if (state.data.plan) renderTruckCards(state.data.plan);
             renderFresh();

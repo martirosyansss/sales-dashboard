@@ -921,6 +921,7 @@ button.dp-planwarn:focus-visible { outline: 2px solid var(--rt-acc); outline-off
 .dp-split-list { list-style: none; margin: 0 0 14px; padding: 0; display: grid; gap: 12px; }
 .dp-split-list li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .dp-split-list b { flex-basis: 100%; }
+.dp-unlock-acts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .rt-badge.dp-b-lock { color: var(--rt-acc); border-color: var(--rt-acc-dim); background: var(--rt-acc-glow); }
 
 /* требует внимания: счётчики одной строкой под «Ի՞նչ անել հիմա» */
