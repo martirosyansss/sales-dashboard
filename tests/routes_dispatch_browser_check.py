@@ -830,8 +830,10 @@ def main() -> int:
             check(ws.locator('.dp-ws-map .leaflet-tooltip').count() >= 1, 'Y hover a board stop → its point on the map is shown')
             ws.mouse.move(5, 5)
             ws.locator('.dp-ws-map .dp-dpin').first.click(force=True)
-            ws.wait_for_selector('#dpWsSide:not([hidden]) .dp-stop.is-flash', timeout=5000)
-            check(ws.locator('#dpWsSide .dp-tcard.is-focus .dp-stop.is-flash').count() == 1, 'Y click a map point → truck card, the store row flashes')
+            # Tesla+ (12.10 «магазины покажи снизу страницы»): строки магазинов — в списке «Խանութներ» под картой
+            ws.wait_for_selector('#dpWsSide:not([hidden]) .dp-tcard.is-focus', timeout=5000)
+            ws.wait_for_selector('#dpStops .dp-stop.is-flash', state='attached', timeout=5000)
+            check(ws.locator('#dpStops .dp-stop.is-flash').count() == 1, 'Y click a map point → truck card, the store row flashes in «Խանութներ» below')
             ws.click('#dpWsClose')
             ws.wait_for_timeout(600)
             map_moves = []
@@ -857,8 +859,8 @@ def main() -> int:
             ws.locator('#dpBoard .dp-blabel').first.click()
             ws.wait_for_selector('#dpWsSide:not([hidden]) .dp-tcard.is-focus', timeout=5000)
             check(ws.locator('#dpWsSide .dp-tcard.is-focus .dp-editbtn').first.is_visible(), 'Y truck click → its card on the right with «Փոփոխել»')
-            src = ws.locator('#dpWsSide .dp-tcard.is-focus .dp-trip .dp-stop[draggable="true"]').first
-            own = ws.evaluate("(document.querySelector('#dpWsSide .dp-tcard.is-focus .dp-trip') || {}).dataset?.trip || ''")
+            src = ws.locator('#dpStops .dp-trip .dp-stop[draggable="true"]').first
+            own = ws.evaluate("(document.querySelector('#dpStops .dp-trip') || {}).dataset?.trip || ''")
             tgt = ws.locator(f'#dpBoard .dp-bar:not([data-trip="{own}"])').first
             moves = []
             ws.on('request', lambda r: moves.append(r.post_data) if r.method == 'POST' and r.url.endswith('/dispatch/edit') else None)
@@ -901,7 +903,7 @@ def main() -> int:
             ws.wait_for_selector('#dpWsSide:not([hidden]) .dp-tcard.is-focus', timeout=5000)
             if ws.locator('#dpWsSide .dp-trip.is-editing').count() == 0:
                 ws.locator('#dpWsSide .dp-tcard.is-focus .dp-editbtn').first.click()
-            sel = ws.locator('#dpWsSide .dp-trip.is-editing .dp-move').first
+            sel = ws.locator('#dpStops .dp-trip.is-editing .dp-move').first
             opts = sel.locator('option').evaluate_all("os => os.map(o => o.value)")
             sel.select_option(next((v for v in opts if v.startswith('t:')), None) or next(v for v in opts if v.startswith('n:')))
             ws.wait_for_selector('#dpSendState .dp-sendpill.is-unsent', timeout=15000)

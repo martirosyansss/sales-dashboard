@@ -7,7 +7,7 @@ tests/routes_dispatch_browser_check.py, но день побольше (build_de
 центре (туда въезжают не все машины); порт 8781 на 127.0.0.1, плитки карт подменяются серой картинкой.
 
 L обе темы ☀/☾ × 1366×768 и 1920×1080: рабочий экран, карта — во всю «сцену» и доходит до низа окна (отступ ≤ 24 px),
-  страница не прокручивается ни вбок, ни вниз; стеклянные панели: сверху итоги дня и счётчики, слева «Մեքենաներ»
+  ниже — только список «Խանութներ» (страница прокручивается к нему), вбок прокрутки нет; стеклянные панели: сверху итоги дня и счётчики, слева «Մեքենաներ»
   (строка на машину плана), снизу шкала дня; тема применена;
 S выбрали машину в панели слева: строка нажата (aria-pressed), справа — её карточка (номер, экипаж, четыре числа,
   точки, «Բեռնագիր»); на карте выбранный рейс — пронумерованные точки, и каждая видна (не под панелью: elementFromPoint
@@ -15,6 +15,12 @@ S выбрали машину в панели слева: строка нажа�
 P панели не налезают друг на друга: левая — между верхней и шкалой дня, правая — под верхней до низа, шкала — левее неё;
 D второстепенное — в выдвижной панели: «Երթերում չեն» (счётчик) → «Դեռ ոչ մի երթում չեն» в панели; «⋯ → Ինչպես է հաշված» и
   «⋯ → Ղեկավարի համար» — свои части; Esc закрывает, фокус возвращается;
+B «Խանութներ» внизу (пользователь 12.10): выбрана машина — её точки (номера — как на карте, акцентом), в карточке строк нет,
+  «Խանութները ↓»; имя магазина → страница вверх, точка обведена с подписью; точка на карте → «Ցուցակում» → строка видна и
+  подсвечена; «×» и перенос мышью у строки, «Փոփոխել» — кнопки под строками; «Բոլոր մեքենաները» — группы машин (все
+  точки дня), группа сворачивается (aria-expanded);
+K 1920×1080, обе темы: панели сворачиваются (tests/rt_panels_check.py): «—» → таблетка со счётчиком и фокусом, Enter —
+  обратно, «Միայն քարտեզ» и M, M в поле ввода — нет, запоминается после перезагрузки; выбранный рейс снова виден;
 T телефон 390×860 (обе темы): вкладки «Քարտեզ · Մեքենաներ · Երթ», на «Քարտեզ» карта видна и высокая, горизонтальной
   прокрутки нет;
 Ошибки страницы и консоли — провал (кроме внешних ресурсов, как в основной проверке).
@@ -35,6 +41,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / 'tests'))
 
 import routes_dispatch_browser_check as base  # noqa: E402  (переменные окружения и карта дорог — как там)
+from rt_panels_check import panels_checks  # noqa: E402
 from playwright.sync_api import sync_playwright  # noqa: E402
 from werkzeug.serving import make_server  # noqa: E402
 
@@ -111,7 +118,7 @@ def build_demo(tmp: str):
 
 RECTS = """() => { const r = (s) => { const e = document.querySelector(s); if (!e || !e.offsetParent) return null;
     const b = e.getBoundingClientRect(); return [b.left, b.top, b.right, b.bottom]; };
-  return { ws: r('#dpWs'), map: r('#dpMap'), top: r('#dpWs .dp-ws-top'), list: r('#dpWsList'), side: r('#dpWsSide'),
+  return { ws: r('#dpWs'), map: r('#dpMap'), top: r('#dpWs .dp-ws-top'), list: r('#dpWsList'), side: r('#dpWsSide'), stops: r('#dpStops'),
            low: r('#dpWs .dp-ws-low'), h: innerHeight, w: innerWidth,
            sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth,
            sh: document.documentElement.scrollHeight, theme: document.documentElement.dataset.rtTheme }; }"""
@@ -159,8 +166,9 @@ def main() -> int:
                     pg.wait_for_timeout(700)
                     r = pg.evaluate(RECTS)
                     check(r['theme'] == theme, f'L {tag}: theme applied ({r["theme"]})')
-                    check(r['ws'] and r['h'] - 24 <= r['ws'][3] <= r['h'] + 1 and r['sh'] <= r['h'] + 1 and r['sw'] <= r['cw'],
-                          f'L {tag}: stage reaches the window bottom, no page scroll (ws={r["ws"]}, h={r["h"]}, sh={r["sh"]}, sw={r["sw"]})')
+                    # сцена — до низа окна; ниже (страница прокручивается) — только список «Խանութներ»
+                    check(r['ws'] and r['h'] - 24 <= r['ws'][3] <= r['h'] + 1 and r['sw'] <= r['cw'] and r['stops'] and r['stops'][1] >= r['ws'][3],
+                          f'L {tag}: stage reaches the window bottom, stores below it, no horizontal scroll (ws={r["ws"]}, h={r["h"]}, stops={r["stops"]}, sw={r["sw"]})')
                     check(r['map'] and r['ws'] and all(abs(a - b) < 2 for a, b in zip(r['map'], r['ws'])),
                           f'L {tag}: the map fills the whole stage {r["map"]} / {r["ws"]}')
                     rows = pg.locator('#dpWsRows .dp-wl-row').count()
@@ -171,7 +179,7 @@ def main() -> int:
                           f'L {tag}: day totals and attention chips in the top panel')
                     # подсказка дня и строка дня — переносятся, ничего не обрезано
                     clip = pg.evaluate("""() => [...document.querySelectorAll('#dpTodo .dp-todo-t, #dpTodo .dp-todo-lines p, .dp-dayboard, #dpSendState .dp-sendpill, #dpWsActs .rt-btn')]
-                        .filter(e => e.offsetParent && e.clientWidth > 1 && e.scrollWidth > e.clientWidth + 1)   // 1 px — пояснение только для диктора (низкое окно).map(e => e.id || e.className)""")
+                        .filter(e => e.offsetParent && e.clientWidth > 1 && e.scrollWidth > e.clientWidth + 1).map(e => e.id || e.className)""")   # 1 px — пояснение только для диктора
                     check(pg.locator('#dpWsTop #dpTodo .dp-todo-t').is_visible() and not clip, f'L {tag}: day hint in the top panel, nothing clipped {clip}')
                     pg.screenshot(path=str(SHOTS / f'ws-{theme}-{w}.png'))
                     # S — машина из панели слева
@@ -183,9 +191,21 @@ def main() -> int:
                           and pg.locator(f'#dpWsSide .dp-tcard.is-focus[data-truck="{code}"]').count() == 1,
                           f'S {tag}: row pressed, its card on the right ({code})')
                     side = pg.locator('#dpWsSide .dp-tcard.is-focus')
+                    # карточка компактная: точки рейсов — внизу страницы, в карточке их нет; ссылка «Խանութները ↓»
                     check(side.locator('.dp-tsum-nums > div').count() == 4 and side.locator('.dp-tsum-crew > div').count() == 2
-                          and side.locator('.dp-stop').first.is_visible() and side.locator('.dp-wbbtn').filter(has_text='Բեռնագիր').is_visible(),
-                          f'S {tag}: card — crew, four numbers, stops, «Բեռնագիր»')
+                          and side.locator('.dp-trip-head .dp-editbtn').first.is_visible() and side.locator('.dp-stop').count() == 0
+                          and side.locator('.dp-tstops-link').is_visible() and side.locator('.dp-wbbtn').filter(has_text='Բեռնագիր').is_visible(),
+                          f'S {tag}: compact card — crew, four numbers, trips with «Փոփոխել», «Խանութները ↓», «Բեռնագիր», no store rows')
+                    truck = next(t for t in pg.evaluate("() => fetch('/api/routes/dispatch?date=%s').then(r => r.json()).then(d => d.plan.trucks)" % DAY)
+                                 if t['car_code'] == code)
+                    n_stops = sum(len(tr['stops']) for tr in truck['trips'])
+                    rows = pg.locator('#dpStops .dp-st-r[data-cid]:not(.dp-lunch)')
+                    check(code in pg.inner_text('#dpStopsTitle') and rows.count() == n_stops and pg.locator('#dpStops .dp-st-g').count() == 0
+                          and pg.locator('#dpStops .dp-st-num.is-hot').count() == n_stops,
+                          f'B {tag}: «Խանութներ · {code}» below the map — {rows.count()}/{n_stops} rows, numbers in the accent as on the map')
+                    labels_map = sorted(pg.eval_on_selector_all('#dpWsMap .dp-npin.is-hot span', 'els => els.map(e => e.textContent)'))
+                    labels_list = sorted(pg.eval_on_selector_all('#dpStops .dp-st-num.is-hot', 'els => els.map(e => e.textContent)'))
+                    check(labels_map == labels_list, f'B {tag}: list numbers = map numbers {labels_list[:4]}…')
                     hv = pg.evaluate(HOT_VISIBLE)
                     check(hv['n'] > 0 and hv['hidden'] == 0 and hv['muted'] > 0,
                           f'S {tag}: selected trip points all visible between the panels, other trips muted {hv}')
@@ -195,6 +215,62 @@ def main() -> int:
                           and r['top'][3] <= r['list'][1] + 1 and r['list'][3] <= r['low'][1] + 1 and r['list'][2] <= r['side'][0],
                           f'P {tag}: panels do not overlap (top {r["top"]}, list {r["list"]}, side {r["side"]}, low {r["low"]})')
                     pg.screenshot(path=str(SHOTS / f'ws-{theme}-{w}-truck.png'))
+                    if w == 1366:
+                        # B — строка внизу ↔ точка на карте
+                        pg.locator('#dpStopsTitle').scroll_into_view_if_needed()
+                        row = rows.nth(2)
+                        trip = row.evaluate("e => e.closest('.dp-trip').dataset.trip")
+                        row.locator('.dp-st-go').click()
+                        pg.wait_for_timeout(900)
+                        mk = pg.evaluate("() => { const t = document.querySelector('.leaflet-tooltip'); return [scrollY, !!t && !!t.offsetParent]; }")
+                        check(mk[0] < 5 and mk[1], f'B {tag}: store name below → page up to the map, the point outlined with its label {mk}')
+                        pg.locator(f'#dpWsMap .dp-npin span[data-trip="{trip}"]').nth(1).click(force=True)
+                        pg.wait_for_selector('.leaflet-popup .dp-stopcard-list', timeout=5000)
+                        pg.click('.leaflet-popup .dp-stopcard-list')
+                        pg.wait_for_timeout(900)
+                        fl = pg.evaluate("() => { const r = document.querySelector('#dpStops .dp-stop.is-flash'); if (!r) return null;"
+                                         " const b = r.getBoundingClientRect(); return [b.top, b.bottom, innerHeight]; }")
+                        check(fl and fl[0] >= 0 and fl[1] <= fl[2], f'B {tag}: map point → «Ցուցակում» → its row scrolled into view and flashing {fl}')
+                        # действия строки: «×», перенос мышью; «Փոփոխել» — кнопки под строкой
+                        check(rows.first.locator('.dp-stop-x').count() == 1 and rows.first.get_attribute('draggable') == 'true',
+                              f'B {tag}: row has «×» and can be dragged')
+                        pg.evaluate('window.scrollTo(0, 0)')
+                        side.locator('.dp-editbtn').first.click()
+                        pg.wait_for_timeout(500)
+                        check(pg.locator('#dpStops .dp-trip.is-editing .dp-st-r .dp-untilbtn').count() > 0
+                              and pg.locator('#dpStops .dp-trip.is-editing .dp-move').count() > 0,
+                              f'B {tag}: «Փոփոխել» → store actions (move, «Մինչև ժամը»…) under the rows below')
+                        pg.locator('#dpStops').screenshot(path=str(SHOTS / f'stops-{theme}-truck.png'))
+                        side.locator('.dp-editbtn').first.click()
+                        # все машины — группами, группа сворачивается
+                        pg.click('#dpStopsAll')
+                        pg.wait_for_timeout(500)
+                        groups = pg.locator('#dpStops .dp-st-gbtn')
+                        all_rows = pg.locator('#dpStops .dp-st-r[data-cid]:not(.dp-lunch)').count()
+                        check(groups.count() == trucks and all_rows == sum(t['stops'] for t in pg.evaluate(
+                              "() => fetch('/api/routes/dispatch?date=%s').then(r => r.json()).then(d => d.plan.trucks)" % DAY))
+                              and pg.locator('#dpWsSide').is_hidden(),
+                              f'B {tag}: no truck selected → all stores grouped by truck ({groups.count()} groups, {all_rows} rows)')
+                        groups.first.click()
+                        check(pg.locator('#dpStops .dp-st-gbtn').first.get_attribute('aria-expanded') == 'false'
+                              and pg.locator('#dpStops .dp-st-r[data-cid]:not(.dp-lunch):visible').count() < all_rows,
+                              f'B {tag}: group collapsed (aria-expanded=false), its rows hidden')
+                        pg.locator('#dpStops .dp-st-gbtn').first.click()
+                        pg.locator('#dpStops').screenshot(path=str(SHOTS / f'stops-{theme}-all.png'))
+                        pg.evaluate('window.scrollTo(0, 0)')
+                    if w == 1920:
+                        # 6b: панели сворачиваются (выбрана машина — есть и её панель)
+                        def reload():
+                            pg.reload()
+                            pg.wait_for_selector('#rtDispatch.is-ws #dpBoard .dp-bar', state='attached', timeout=30000)
+                            # панель машин может быть свёрнута — выбрать машину как её строкой (нажатие из кода)
+                            pg.evaluate("document.querySelectorAll('#dpWsRows .dp-wl-row')[1].click()")
+                            pg.wait_for_timeout(700)
+                        panels_checks(pg, check, [('top', '#dpWsTop', 'խանութ'), ('list', '#dpWsList', str(trucks)),
+                                                  ('side', '#dpWsSide', code), ('board', '#dpWsLow', None)],
+                                      f'K {tag}', reload, '#dpDate')
+                        hv = pg.evaluate(HOT_VISIBLE)
+                        check(hv['n'] > 0 and hv['hidden'] == 0, f'K {tag}: after collapsing/expanding the selected trip is still visible {hv}')
                     if theme == 'dark' and w == 1366:
                         # D — второстепенное в выдвижной панели
                         chip = pg.locator('#dpInbox .dp-inchip', has_text='Երթերում չեն')

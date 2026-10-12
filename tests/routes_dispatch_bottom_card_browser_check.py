@@ -10,7 +10,7 @@
 A рабочий экран, рейсы собраны: карточки машины нет, карта на всю ширину;
 B нажали машину на шкале: карточка — панелью справа внутри рабочего экрана, под верхней панелью итогов (Tesla+), карта
   своего размера не меняет;
-C нажали точку на карте: строка магазина в карточке подсвечена, у точки — карточка магазина (название, машина, заказы)
+C нажали точку на карте: строка магазина в списке «Խանութներ» под картой подсвечена, у точки — карточка магазина (название, машина, заказы)
   с «Հանել երթից»;
 D «Հանել երթից» → карточка магазина закрыта, окно «Ինչու՞» (причина обязательна, ничего не отправлено); «Միայն այսօր»
   → одна правка trip_stops remove [cid] этого рейса, подсказка «հանվեց», магазин — в «Դեռ երթերում չեն»;
@@ -113,11 +113,13 @@ def main() -> int:
             check(abs((mp[3] - mp[1]) - (map0[3] - map0[1])) < 3, f'B map keeps its size ({mp[3] - mp[1]:.0f} px, was {map0[3] - map0[1]:.0f})')
             size = page.evaluate("(() => { const m = document.getElementById('dpMap'); return [m.clientWidth, m.clientHeight]; })()")
             check(abs(size[1] - (mp[3] - mp[1])) < 3, f'B Leaflet container follows the new map height {size}')
-            check(page.locator('#dpWsSide .dp-tcard.is-focus .dp-stop').first.is_visible(), 'B store rows visible in the card')
-            hd = rect('#dpWsSide .dp-tcard.is-focus .dp-trip-head')
-            st = rect('#dpWsSide .dp-tcard.is-focus .dp-stop')
-            check(page.locator('#dpWsSide .dp-tcard.is-focus .dp-trip-head .dp-editbtn').first.is_visible() and hd[3] <= st[1] + 1,
-                  'B card: trip head with its buttons above the stores, as in the list')
+            # Tesla+ (12.10 «магазины покажи снизу страницы»): карточка компактная — рейсы и их кнопки; магазины — в списке
+            # «Խանութներ» под рабочим экраном (строки выбранной машины)
+            st = rect('#dpStops .dp-stop')
+            check(page.locator('#dpWsSide .dp-tcard.is-focus .dp-stop').count() == 0 and st and st[1] >= ws1[3] - 1
+                  and page.locator('#dpStops .dp-stop').count() > 0, f'B store rows — in «Խանութներ» under the work screen {st} / {ws1}')
+            check(page.locator('#dpWsSide .dp-tcard.is-focus .dp-trip-head .dp-editbtn').first.is_visible(),
+                  'B card: trip head with its buttons (Քարտեզում, Խանութ, Փոփոխել)')
             page.screenshot(path=str(SHOTS / 'b-truck.png'), full_page=True)
 
             # C — точка на карте: строка подсвечена, карточка магазина у точки
@@ -126,7 +128,7 @@ def main() -> int:
             pin.click(force=True)
             page.wait_for_selector('.leaflet-popup .dp-stopcard', timeout=5000)
             card = page.locator('.leaflet-popup .dp-stopcard')
-            flashed = page.locator('#dpWsSide .dp-stop.is-flash')
+            flashed = page.locator('#dpStops .dp-stop.is-flash')
             check(flashed.count() == 1, 'C the store row flashes in the truck card')
             cid = int(flashed.first.get_attribute('data-cid')) if flashed.count() else None
             d = data()
@@ -175,7 +177,7 @@ def main() -> int:
             page.locator('.dp-ws-map .dp-dpin').first.click(force=True)
             page.wait_for_selector('#dpWsSide:not([hidden]) .dp-tcard.is-focus', timeout=5000)
             page.wait_for_selector('.leaflet-popup .dp-stopcard', timeout=5000)
-            check(page.locator('.leaflet-popup .dp-stopcard .dp-stopcard-x').is_visible() and page.locator('#dpWsSide .dp-stop.is-flash').count() == 1,
+            check(page.locator('.leaflet-popup .dp-stopcard .dp-stopcard-x').is_visible() and page.locator('#dpStops .dp-stop.is-flash').count() == 1,
                   'F all trucks: point → truck card on the right and the store card')
             page.keyboard.press('Escape')
             page.wait_for_timeout(200)

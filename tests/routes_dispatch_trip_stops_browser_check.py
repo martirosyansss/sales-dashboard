@@ -263,14 +263,15 @@ def main() -> int:
             page.click('.dp-tab[data-tab="trips"]')         # №81: на телефоне рейсы — во вкладке «Երթեր»
             page.wait_for_timeout(300)
             open_cards()
-            x = page.locator('#dpTruckCards .dp-stop-x').first
+            # Tesla+ (12.10): на телефоне вкладка «Երթ» — магазины списком «Խանութներ» (как под картой на ПК)
+            x = page.locator('#dpStops .dp-stop-x').first
             box = x.bounding_box()
-            card = page.locator('#dpTruckCards .dp-tcard').first.bounding_box()
+            card = page.locator('#dpStops').bounding_box()
             check(bool(box) and box['width'] >= 36 and box['x'] + box['width'] <= card['x'] + card['width'],
-                  f'H phone: «×» ≥36 px and inside the card ({box})')
+                  f'H phone: «×» ≥36 px and inside the stores list ({box})')
             over = page.evaluate('() => document.documentElement.scrollWidth - document.documentElement.clientWidth')
             check(over <= 0, f'H phone: no horizontal scroll ({over}px)')
-            check(page.locator('#dpTruckCards .dp-stop-x').first.is_visible(), 'H phone: «×» visible')
+            check(page.locator('#dpStops .dp-stop-x').first.is_visible(), 'H phone: «×» visible')
             page.screenshot(path=str(SHOTS / 'h-phone.png'), full_page=True)
             browser.close()
     finally:

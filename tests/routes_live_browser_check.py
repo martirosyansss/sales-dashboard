@@ -96,6 +96,8 @@ from route_optimizer import dispatch as dp  # noqa: E402
 from route_optimizer import live  # noqa: E402
 from route_optimizer import store as st  # noqa: E402
 from route_optimizer.geo import haversine_km  # noqa: E402
+sys.path.insert(0, str(ROOT / 'tests'))
+from rt_panels_check import panels_checks  # noqa: E402
 
 # порт: LIVE_CHECK_PORT или свободный (0) — проверки соседних сессий на одном ПК не отвечают друг за друга (Windows
 # пускает два сервера на один порт)
@@ -1010,6 +1012,46 @@ def main() -> int:
                         out.mkdir(parents=True, exist_ok=True)
                         pc.screenshot(path=str(out / 'live-1366x650-car-selected.png'))
                     pc.close()
+                # 6b (пользователь 12.10 «сильно закрывает карту»): панели сворачиваются в таблетки, «Միայն քարտեզ» и M,
+                # запоминается после перезагрузки, фокус и aria (tests/rt_panels_check.py); у свёрнутых «Խնդիրներ» новая
+                # тревога — таблетка пульсирует; обе темы, 1440×900
+                for theme in ('dark', 'light'):
+                    pk = browser.new_page(viewport={'width': 1440, 'height': 900})
+                    pk.add_init_script("try { localStorage.setItem('rtTheme', '%s'); } catch (e) {}" % theme)
+                    pk.on('pageerror', lambda e: errors.append(str(e)))
+                    pk.on('console', lambda m: m.type == 'error' and not (
+                        'Failed to load resource' in m.text and any(h in (m.location or {}).get('url', '') for h in EXTERNAL))
+                        and errors.append(m.text))
+                    pk.goto(base + '/routes/live')
+                    pk.wait_for_selector('.lv-item')
+
+                    def pick():
+                        # список машин может быть свёрнут — выбрать машину как её строкой (нажатие из кода)
+                        pk.evaluate("(c) => document.querySelector('.lv-item[data-car=\"' + c + '\"]').click()", cars[0])
+                        pk.wait_for_selector('#lvCard:not([hidden])', state='attached')
+                        pk.wait_for_timeout(900)
+
+                    def reload():
+                        pk.reload()
+                        pk.wait_for_selector('.lv-item', state='attached')
+                        pick()
+                    pick()
+                    panels_checks(pk, check, [('side', '.lv-side', str(len(cars))), ('probs', '#lvProbs', None),
+                                              ('card', '#lvCard', cars[0]), ('bottom', '.lv-bottom', None)], f'K live {theme}', reload, '#lvDate')
+                    fresh = pk.evaluate("!document.getElementById('lvAlarm').hidden")
+                    pk.click('.rt-pmin[data-panel="probs"]')
+                    pk.wait_for_timeout(250)
+                    pill = pk.locator('.rt-ppill[data-panel="probs"]')
+                    check(('is-alert' in (pill.get_attribute('class') or '')) == fresh and not pk.is_visible('#lvAlarm'),
+                          f'K live {theme}: «Խնդիրներ» collapsed — pill pulses = there are new alarms ({fresh}), not expanded by itself')
+                    pk.screenshot(path=str(SHOTS / f'live_panels_{theme}.png'))
+                    pill.click()
+                    # «×» карточки — снять выбор (как раньше повторным нажатием в списке)
+                    pk.click('#lvCardClose')
+                    pk.wait_for_timeout(400)
+                    check(pk.locator('#lvCard').is_hidden() and pk.locator(f'.lv-item[data-car="{cars[0]}"]').get_attribute('aria-selected') == 'false',
+                          f'K live {theme}: card «×» → selection removed')
+                    pk.close()
                 # «меньше движения»: новые — без анимации, обводка и «ՆՈՐ» (свой контекст и отметки «Տեսա» сервера
                 # сняты — круг 2: они общие; страница с отметками закрыта — иначе её опрос вернул бы их на сервер)
                 page.close()
@@ -1026,6 +1068,21 @@ def main() -> int:
                       and new_row.evaluate('e => getComputedStyle(e).outlineWidth') == '3px',
                       'тревоги, reduced motion: метка «ՆՈՐ» в баннере и строке, обводка 3px')
                 calm.close()
+                # 6b: есть новые тревоги, «Խնդիրներ» свёрнуты — таблетка пульсирует, сама не разворачивается
+                pp = browser.new_page(viewport={'width': 1440, 'height': 900})
+                pp.on('pageerror', lambda e: errors.append(str(e)))
+                pp.goto(base + '/routes/live')
+                pp.wait_for_selector('.lv-item')
+                pp.wait_for_timeout(500)
+                had = pp.is_visible('#lvAlarm')
+                pp.click('.rt-pmin[data-panel="probs"]')
+                pp.wait_for_timeout(16500)   # следующий опрос (15 с) — таблетка не разворачивается
+                pill = pp.locator('.rt-ppill[data-panel="probs"]')
+                check(had and 'is-alert' in (pill.get_attribute('class') or '') and pill.is_visible()
+                      and not pp.is_visible('#lvAlarm') and not pp.is_visible('#lvProbs'),
+                      f'6b: new alarms, «Խնդիրներ» collapsed — the pill pulses, panel not reopened by polling ({pill.inner_text()!r})')
+                pp.screenshot(path=str(SHOTS / 'live_panels_alarm_pill.png'))
+                pp.close()
 
                 phone = browser.new_page(viewport={'width': 390, 'height': 860}, is_mobile=True, has_touch=True)
                 phone.on('pageerror', lambda e: errors.append(str(e)))

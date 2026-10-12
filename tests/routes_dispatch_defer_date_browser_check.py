@@ -204,7 +204,7 @@ def main() -> int:
             page.click('.dp-tab[data-tab="trips"]')
             page.wait_for_timeout(300)
             open_cards()
-            page.locator('#dpTruckCards .dp-stop-x').first.click()
+            page.locator('#dpStops .dp-stop-x').first.click()   # Tesla+ (12.10): на телефоне магазины — списком «Խանութներ»
             page.locator('#dpWhyOpts input[value="not_today"]').check()
             dlg = page.locator('#dpWhyDlg')
             over = dlg.evaluate('(el) => el.scrollWidth - el.clientWidth')

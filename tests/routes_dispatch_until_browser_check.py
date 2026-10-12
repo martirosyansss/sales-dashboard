@@ -94,7 +94,8 @@ def main() -> int:
                     page.locator('#dpTruckCards .dp-editbtn').first.click()
 
             def row(cid):
-                return page.locator(f'#dpTruckCards .dp-trip.is-editing .dp-stop[data-cid="{cid}"]').first
+                # прежний вид — в карточке; телефон (вкладка «Երթ») — в списке «Խանութներ» (Tesla+, 12.10)
+                return page.locator(f':is(#dpTruckCards, #dpStops) .dp-trip.is-editing .dp-stop[data-cid="{cid}"]').first
 
             def open_until(cid):
                 editing()
