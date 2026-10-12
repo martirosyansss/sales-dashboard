@@ -385,6 +385,7 @@
             renderAll();
             $('rsForm').classList.remove('d-none');
             state.initial = snapshot();
+            state.initialBlocks = blockSnaps();
             updateDirty();
             renderProgress();
             if (state.map) state.map.invalidateSize();
@@ -1765,12 +1766,179 @@
         const noHome = inCalc.filter(tr => tr.querySelector('.rs-home .b-warn')).length;
         set('rsStManagers', noHome ? 'part' : 'ok', noHome ? 'տունը չի գտնվել՝ ' + noHome + NB + 'մենեջեր' : 'տները նշված են');
 
+        // Tesla+ (макет): обязательное пустое поле — жёлтая обводка
+        $('rsDepot').classList.toggle('is-need', !depotOk);
+        ['diesel', 'petrol', 'lpg'].forEach(k => {
+            const i = document.querySelector('[data-norm="fuel_price_' + k + '"]');
+            if (i) i.classList.toggle('is-need', miss.includes(k));
+        });
         const n = [depotOk, trucksOk, fuelOk].filter(Boolean).length;
         $('rsProgress').querySelectorAll('.rt-progress-bar > span').forEach((el, i) => el.classList.toggle('is-ok', i < n));
         const t = $('rsProgressText');
         t.textContent = n === 3 ? 'Ամեն ինչ լրացված է' : 'Լրացված է՝ ' + n + ' / 3';
         t.classList.toggle('is-done', n === 3);
         $('rsStep1').classList.toggle('is-done', n === 3);
+        renderToc(n);
+    }
+
+    // ---------- Tesla+ (макет Settings.dc.html): оглавление, поиск, напоминание, плавающая панель сохранения ----------
+    // Оглавление — три шага и «Խանութներ և չափումներ»; у блока — его состояние (то же, что таблетка блока: ✓ заполнено,
+    // ! нужно заполнить, · стоит проверить); нажатие — к блоку (свёрнутое раскрывается), текущий — aria-current
+    const TOC = [
+        { t: '1 · Պարտադիր լրացնել', ids: ['depot', 'trucks', 'fuel'], need: true },
+        { t: '2 · Ստուգեք', ids: ['days', 'managers', 'center', 'yerevan', 'agents', 'agentphones', 'fleet', 'custoff'] },
+        { t: '3 · Կարելի է չփոխել', ids: ['norms', 'season', 'calibration'] },
+        { t: 'Խանութներ և չափումներ', ids: ['rsCustomerSettings', 'measurements'] },
+    ];
+    const secTitle = (sec) => {
+        const hd = sec.querySelector('.rt-card-title, .rt-h3, summary .rt-fold-t');
+        return hd ? hd.textContent.trim() : sec.id;
+    };
+    const secState = (sec) => {
+        const st = sec.querySelector(':scope > .rt-card-head .rt-card-state, :scope .rt-card-state');
+        return st ? (st.classList.contains('is-ok') ? 'ok' : st.classList.contains('is-todo') ? 'todo' : st.classList.contains('is-part') ? 'part' : '') : '';
+    };
+    function buildToc() {
+        const nav = $('rsToc');
+        TOC.forEach((g, gi) => {
+            const grp = h('div', { class: 'rs-toc-g' },
+                h('div', { class: 'rs-toc-h' }, h('span', { text: g.t }), h('span', { class: 'rs-toc-gs', id: 'rsTocG' + gi })));
+            g.ids.forEach(id => {
+                const sec = $(id);
+                if (!sec) return;
+                const a = h('a', { class: 'rs-toc-i', href: '#' + id, dataset: { sec: id }, title: secTitle(sec) },
+                    h('span', { class: 'rs-toc-m', 'aria-hidden': 'true' }), h('span', { class: 'rs-toc-l', text: secTitle(sec) }),
+                    h('span', { class: 'rt-sr-only rs-toc-sr' }));
+                grp.append(a);
+            });
+            nav.append(grp);
+        });
+        nav.addEventListener('click', (e) => {
+            const a = e.target.closest('.rs-toc-i');
+            if (!a) return;
+            e.preventDefault();
+            goSection(a.dataset.sec);
+        });
+        // текущий блок — тот, что вверху видимой части страницы
+        if (typeof window.IntersectionObserver !== 'undefined') {
+            const seen = new Map();
+            const io = new IntersectionObserver((entries) => {
+                entries.forEach(en => seen.set(en.target.id, en.isIntersecting));
+                const all = TOC.flatMap(g => g.ids).filter(id => seen.get(id));
+                if (all.length) markCurrent(all[0]);
+            }, { rootMargin: '-15% 0px -70% 0px' });
+            TOC.flatMap(g => g.ids).forEach(id => { if ($(id)) io.observe($(id)); });
+        }
+    }
+    function markCurrent(id) {
+        $('rsToc').querySelectorAll('.rs-toc-i').forEach(a => {
+            if (a.dataset.sec === id) a.setAttribute('aria-current', 'true'); else a.removeAttribute('aria-current');
+        });
+    }
+    function goSection(id) {
+        const sec = $(id);
+        if (!sec) return;
+        openFolds(sec);
+        if (sec.tagName === 'DETAILS') sec.open = true;
+        history.replaceState(null, '', '#' + id);
+        markCurrent(id);
+        requestAnimationFrame(() => {
+            sec.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' });
+            flash(sec.classList.contains('rt-card') ? sec : (sec.querySelector('.rt-group') || sec));
+        });
+    }
+    function renderToc(n1) {
+        const nav = $('rsToc');
+        if (!nav.children.length) buildToc();
+        const word = { ok: 'լրացված է', todo: 'պետք է լրացնել', part: 'ստուգեք' };
+        TOC.forEach((g, gi) => {
+            let bad = 0;
+            g.ids.forEach(id => {
+                const sec = $(id), a = nav.querySelector('.rs-toc-i[data-sec="' + id + '"]');
+                if (!sec || !a) return;
+                const st = secState(sec);
+                a.dataset.state = st;
+                a.querySelector('.rs-toc-m').textContent = st === 'ok' ? '✓' : st === 'todo' ? '!' : st === 'part' ? '·' : '';
+                a.querySelector('.rs-toc-sr').textContent = st ? ' — ' + word[st] : '';
+                if (st === 'todo' || st === 'part') bad++;
+                // обязательный блок без данных — жёлтая обводка блока
+                sec.classList.toggle('is-need', !!g.need && st !== 'ok' && st !== '');
+            });
+            const gs = $('rsTocG' + gi);
+            gs.textContent = g.need ? (n1 === undefined ? '' : n1 + ' / ' + g.ids.length) : bad ? '! ' + bad : g.ids.some(id => $(id) && secState($(id))) ? '✓' : '';
+            gs.className = 'rs-toc-gs' + (g.need ? (n1 === g.ids.length ? ' is-ok' : ' is-warn') : bad ? ' is-warn' : ' is-ok');
+        });
+        // жёлтая строка-напоминание: что из обязательного ещё не заполнено, ссылка — к первому
+        const todo = TOC[0].ids.filter(id => $(id) && secState($(id)) !== 'ok');
+        $('rsTodo').hidden = !todo.length;
+        if (todo.length) {
+            $('rsTodoN').textContent = String(todo.length);
+            $('rsTodoText').textContent = '';
+            $('rsTodoText').append('Քայլ 1-ում մնացել է ', h('b', { text: todo.length + ' բլոկ' }), '՝ '
+                + todo.map(id => '«' + secTitle($(id)) + '»').join(', ') + '։ Առանց դրանց երթերը և ծախսը չեն հաշվվի։');
+            $('rsTodoLink').href = '#' + todo[0];
+            $('rsTodoLink').dataset.sec = todo[0];
+        }
+        // переключатели «Աշխատում է» / «В расчёте» — роль switch (вид — routes_settings.css)
+        document.querySelectorAll('#rsTrucks [data-f="active"], #rsManagers [data-f="inc"]').forEach(el => el.setAttribute('role', 'switch'));
+    }
+    // поиск: блоки и пункты оглавления, в заголовках, подписях и подсказках которых есть текст; пусто — всё видно
+    function applySearch() {
+        const q = $('rsSearch').value.trim().toLowerCase();
+        let shown = 0;
+        TOC.forEach(g => g.ids.forEach(id => {
+            const sec = $(id);
+            if (!sec) return;
+            const text = [...sec.querySelectorAll('h2, h3, label, legend, th, summary, .rt-field-label, .rt-field-hint, .rt-card-lead, p')]
+                .map(e => e.textContent).join(' ').toLowerCase();
+            const ok = !q || text.includes(q);
+            sec.classList.toggle('rs-off', !ok);
+            const a = $('rsToc').querySelector('.rs-toc-i[data-sec="' + id + '"]');
+            if (a) a.hidden = !ok;
+            if (ok) { shown++; if (q) openFolds(sec); }
+        }));
+        // шаг без видимых блоков — скрыт целиком
+        ['rsStep1', 'rsStep2', 'rsStep3'].forEach(s => {
+            const st = $(s);
+            st.classList.toggle('rs-off', !!q && !st.querySelector('section[id]:not(.rs-off), .rs-sub:not(.rs-off)'));
+        });
+        $('rsToc').querySelectorAll('.rs-toc-g').forEach(g => { g.hidden = !g.querySelector('.rs-toc-i:not([hidden])'); });
+        $('rsNoMatch').hidden = !q || shown > 0;
+        $('rsSearchNote').textContent = q ? (shown ? 'Գտնվել է՝ ' + shown + ' բլոկ' : 'Ոչինչ չի գտնվել') : '';
+        // карты в снова показанных блоках — пересчитать размер
+        if (state.map) state.map.invalidateSize();
+        Object.keys(ZONES).forEach(z => { if (state.zones[z].map) state.zones[z].map.invalidateSize(); });
+    }
+    // снимок значений по блокам: какие блоки изменены (для плавающей панели сохранения)
+    function blockSnaps() {
+        const out = {};
+        SECTIONS.forEach(id => {
+            const sec = $(id);
+            if (!sec) return;
+            out[id] = [...sec.querySelectorAll('input, select')].filter(el => !el.dataset.noTrack)
+                .map(el => (el.type === 'checkbox' || el.type === 'radio') ? (el.checked ? '1' : '0') : el.value).join('\u0001');
+        });
+        out.days += '|' + [...state.holidays].sort().join(',');
+        out.season += '|' + state.season.mode + [...state.season.low].sort() + '/' + [...state.season.peak].sort();
+        out.center += '|' + JSON.stringify(zoneValue('center'));
+        out.yerevan += '|' + JSON.stringify(zoneValue('yerevan'));
+        out.custoff += '|' + [...state.customersOff.keys()].sort((a, b) => a - b).join(',');
+        out.trucks += '|' + JSON.stringify((state.manual || []).map(m => [m.car_code, m.name || null, m.van_agent_id === undefined ? null : m.van_agent_id]))
+            + [...document.querySelectorAll('#rsTrucks [data-f="active"]')].map(el => el.dataset.mode || '').join(',');
+        out.managers += '|' + [...document.querySelectorAll('#rsManagers [data-f="inc"]')].map(el => el.dataset.mode || '').join(',');
+        return out;
+    }
+    function renderDock() {
+        const dock = $('rsDock');
+        const on = !!(state.dirty || state.saving);
+        dock.classList.toggle('is-on', on);
+        const now = on && state.initialBlocks ? blockSnaps() : null;
+        const changed = now ? SECTIONS.filter(id => now[id] !== state.initialBlocks[id]) : [];
+        const list = $('rsDirtyList');
+        list.textContent = '';
+        if (!on) return;
+        const n = changed.length || 1;
+        list.append(n + ' չպահպանված փոփոխություն', changed.length ? h('span', { class: 'rs-dock-l', text: '՝ ' + changed.map(id => '«' + secTitle($(id)) + '»').join(', ') }) : '');
     }
 
     // Подсказка в пустом поле нормы дорог: что возьмёт расчёт — калибровку по GPS или значение по умолчанию
@@ -2188,6 +2356,7 @@
         const el = $('rsDirty');
         el.textContent = state.dirty ? 'Կան չպահպանված փոփոխություններ' : 'Փոփոխություններ չկան';
         el.classList.toggle('is-dirty', state.dirty);
+        renderDock();
     }
 
     function setSaving(on) {
@@ -2197,6 +2366,7 @@
         btn.setAttribute('aria-busy', on ? 'true' : 'false');
         btn.querySelector('i').className = on ? 'rt-spin-inline' : 'fas fa-floppy-disk';
         btn.querySelector('span').textContent = on ? 'Պահպանում եմ…' : 'Պահպանել';
+        renderDock();
     }
 
     async function save() {
@@ -2221,6 +2391,7 @@
             try { data = await resp.json(); } catch (e) { data = null; }
             if (resp.ok && data && data.success === true) {
                 state.initial = snapshot();
+                state.initialBlocks = blockSnaps();
                 updateDirty();
                 const toast = $('rsToast');
                 if (window.bootstrap && bootstrap.Toast) bootstrap.Toast.getOrCreateInstance(toast).show();
@@ -2282,6 +2453,16 @@
             zoneChanged('yerevan', 'Երևանի գոտին մաքրվեց՝ կանոնն անջատված է');
         });
         $('rsRetryBtn').addEventListener('click', () => load(false));
+        // Tesla+: поиск по настройкам, «Լրացնել →», «Չեղարկել» плавающей панели (снова как на сервере)
+        $('rsSearch').addEventListener('input', applySearch);
+        $('rsSearch').addEventListener('keydown', (e) => { if (e.key === 'Escape' && $('rsSearch').value) { $('rsSearch').value = ''; applySearch(); } });
+        $('rsTodoLink').addEventListener('click', (e) => { e.preventDefault(); goSection($('rsTodoLink').dataset.sec || 'depot'); });
+        $('rsDiscard').addEventListener('click', async () => {
+            if (state.saving || !state.dirty) return;
+            await load(true);
+            announce('Փոփոխությունները չեղարկվեցին');
+            $('rsSearch').focus();
+        });
         window.addEventListener('beforeunload', (e) => {
             if (state.dirty) { e.preventDefault(); e.returnValue = ''; }
         });

@@ -13,36 +13,47 @@
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=27">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes_ui.css') }}?v=4">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes_customer_settings.css') }}?v=3">
+<!-- Tesla+ (макет mockups/Settings.dc.html): оглавление по шагам, поиск, панели-блоки, плавающая панель сохранения -->
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_settings.css') }}?v=1">
 {% endblock %}
 
 {% block content %}
 <!-- Страница на армянском (решение владельца №58) -->
-<div class="rt-page" id="rtSettings" lang="hy">
+<div class="rt-page rt-tesla" id="rtSettings" lang="hy">
 
-    <header class="rt-head">
-        <div class="rt-head-row">
-            <h1 class="rt-title">Երթուղիների կարգավորումներ</h1>
+    <!-- ШАПКА (макет): H1, подстрока; справа поиск по настройкам — фильтрует оглавление и блоки (routes_settings.js) -->
+    <header class="rt-pagehead rs-head">
+        <div>
+            <h1 class="rt-pagehead__title">Կարգավորումներ</h1>
+            <p class="rt-pagehead__sub">Պահեստ, մեքենաներ, մենեջերներ, նորմեր · ERP-ում ոչինչ չի փոխվում</p>
         </div>
-        <p class="rt-head-lead">Այստեղ նշեք այն, ինչ ծրագիրն ինքը չի կարող իմանալ՝ որտեղ է պահեստը, ինչ մեքենաներ կան, երբ են խանութներն ընդունում ապրանքը և որքան արժե վառելիքը։
-            Մնացածը ծրագիրն ինքն է ընտրել ըստ ERP-ի և GPS-ի — դա կարելի է չփոխել։</p>
+        <label class="rs-search" for="rsSearch">
+            <i class="fas fa-magnifying-glass" aria-hidden="true"></i>
+            <span class="rt-sr-only">Որոնել կարգավորում</span>
+            <input id="rsSearch" type="search" autocomplete="off" spellcheck="false" placeholder="Որոնել՝ «դիզել», «ճաշ», «տոն»…" aria-describedby="rsSearchNote">
+        </label>
     </header>
+    <details class="rt-howto rs-howto">
+        <summary><i class="fas fa-circle-question" aria-hidden="true"></i>Ինչ է այստեղ</summary>
+        <p>Այստեղ նշեք այն, ինչ ծրագիրն ինքը չի կարող իմանալ՝ որտեղ է պահեստը, ինչ մեքենաներ կան, երբ են խանութներն ընդունում ապրանքը և որքան արժե վառելիքը։
+            Մնացածը ծրագիրն ինքն է ընտրել ըստ ERP-ի և GPS-ի — դա կարելի է չփոխել։</p>
+    </details>
 
     <div id="rsStatus" class="rt-sr-only" role="status" aria-live="polite"></div>
+    <p id="rsSearchNote" class="rt-sr-only" role="status" aria-live="polite"></p>
 
-    <section class="rt-card rcs-card" id="rsCustomerSettings" aria-labelledby="rcsTitle">
-        <div class="rt-card-head">
-            <h2 class="rt-card-title" id="rcsTitle"><i class="fas fa-store" aria-hidden="true"></i>Խանութներ՝ ժամ և մեքենաներ</h2>
-        </div>
-        <p class="rt-card-lead">Գտեք խանութը և նշեք ընդունման ժամը, որքան է մեքենան կանգնում խանութի մոտ և որ մեքենաները կարող են այն սպասարկել։
-            Պայմանները գործում են բոլոր օրերի համար, այդ թվում, երբ խանութը դեռ պատվեր չունի։</p>
-        <div class="rt-field">
-            <label for="rcsSearch">Խանութի անվանումը կամ կոդը</label>
-            <input id="rcsSearch" class="rt-input" type="search" maxlength="100" autocomplete="off" placeholder="Գտնել խանութ" aria-describedby="rcsSearchStatus">
-        </div>
-        <p id="rcsSearchStatus" class="rt-field-hint" role="status" aria-live="polite"></p>
-        <ul id="rcsMatches" class="rcs-matches"></ul>
-        <p id="rcsSaved" class="rcs-saved" role="status" aria-live="polite"></p>
-    </section>
+    <!-- слева — оглавление по трём шагам с прогрессом и состоянием каждого блока (renderToc), справа — блоки -->
+    <div class="rs-layout">
+    <nav class="rs-toc" id="rsToc" aria-label="Կարգավորումների բաժիններ"></nav>
+    <div class="rs-main">
+    <!-- незаполненные обязательные блоки — одной жёлтой строкой со ссылкой (renderToc) -->
+    <div class="rs-todo" id="rsTodo" hidden>
+        <span class="rs-todo-n" id="rsTodoN" aria-hidden="true"></span>
+        <span class="rs-todo-t" id="rsTodoText"></span>
+        <a class="rs-todo-a" id="rsTodoLink" href="#depot">Լրացնել →</a>
+    </div>
+    <p class="rs-nomatch" id="rsNoMatch" hidden>Ոչինչ չի գտնվել։ Փորձեք այլ բառ՝ օրինակ «դիզել», «ճաշ», «տոն»։</p>
+
 
     <dialog id="rcsDialog" class="rcs-dialog" aria-labelledby="rcsDialogTitle" aria-describedby="rcsShop">
         <h2 id="rcsDialogTitle" class="rcs-dialog-title">Խանութի առաքման պայմանները</h2>
@@ -320,11 +331,31 @@
             </div>
         </section>
 
-        <div class="rt-savebar">
+        <!-- плавающая панель сохранения (макет): только при несохранённых изменениях — сколько блоков изменено и какие,
+             «Չեղարկել» (снова как на сервере) и «Պահպանել»; проверки и предупреждения сохранения — прежние -->
+        <div class="rt-savebar rs-dock" id="rsDock" role="region" aria-label="Չպահպանված փոփոխություններ">
             <span id="rsDirty" class="rt-savebar-state">Փոփոխություններ չկան</span>
+            <span class="rs-dock-t" id="rsDirtyList"></span>
+            <button type="button" id="rsDiscard" class="rt-btn rt-btn--secondary">Չեղարկել</button>
             <button type="submit" id="rsSaveBtn" class="rt-btn rt-btn-primary"><i class="fas fa-floppy-disk" aria-hidden="true"></i><span>Պահպանել</span></button>
         </div>
     </form>
+
+    <!-- «Խանութներ՝ ժամ և մեքենաներ» — после формы, как в оглавлении (группа «Խանութներ և չափումներ») -->
+    <section class="rt-card rcs-card" id="rsCustomerSettings" aria-labelledby="rcsTitle">
+        <div class="rt-card-head">
+            <h2 class="rt-card-title" id="rcsTitle"><i class="fas fa-store" aria-hidden="true"></i>Խանութներ՝ ժամ և մեքենաներ</h2>
+        </div>
+        <p class="rt-card-lead">Գտեք խանութը և նշեք ընդունման ժամը, որքան է մեքենան կանգնում խանութի մոտ և որ մեքենաները կարող են այն սպասարկել։
+            Պայմանները գործում են բոլոր օրերի համար, այդ թվում, երբ խանութը դեռ պատվեր չունի։</p>
+        <div class="rt-field">
+            <label for="rcsSearch">Խանութի անվանումը կամ կոդը</label>
+            <input id="rcsSearch" class="rt-input" type="search" maxlength="100" autocomplete="off" placeholder="Գտնել խանութ" aria-describedby="rcsSearchStatus">
+        </div>
+        <p id="rcsSearchStatus" class="rt-field-hint" role="status" aria-live="polite"></p>
+        <ul id="rcsMatches" class="rcs-matches"></ul>
+        <p id="rcsSaved" class="rcs-saved" role="status" aria-live="polite"></p>
+    </section>
 
     <details class="rt-fold mt-4" id="measurements">
         <summary><span class="rt-fold-t">Փաստացի չափումներ և կանխատեսման ստուգում</span></summary>
@@ -340,6 +371,8 @@
             <div class="rt-table-scroll"><table class="rt-table"><thead><tr><th>Ամսաթիվ / մեքենա</th><th>Կմ</th><th>Րոպե</th><th>Դիզել, լ</th><th>Կանխատեսման սխալ</th></tr></thead><tbody id="rmHistory"></tbody></table></div>
         </div>
     </details>
+    </div>
+    </div>
 
     <div class="position-fixed bottom-0 end-0 p-3" style="z-index:1080">
         <div id="rsToast" class="toast rt-toast align-items-center border-0" role="status" aria-live="polite" aria-atomic="true">
@@ -356,7 +389,7 @@
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=4" data-yandex-key="{{ yandex_tiles_key }}"></script>
-<script src="{{ url_for('static', filename='js/routes_settings.js') }}?v=46"></script>
+<script src="{{ url_for('static', filename='js/routes_settings.js') }}?v=47"></script>
 <script src="{{ url_for('static', filename='js/routes_customer_settings.js') }}?v=13"></script>
 <script src="{{ url_for('static', filename='js/routes_measurements.js') }}?v=4"></script>
 {% endblock %}

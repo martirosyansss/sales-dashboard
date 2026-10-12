@@ -12,7 +12,11 @@ O «Օպտիմալացում»: шапка страницы (H1, «Վերահա�
   таблетками и «Փոխել» (раскрывает прежнюю форму), 4 карточки «было → стало» с разницей, «Բոլոր թվերը», менеджеры
   аккордеоном (раскрытый — предложения в его строке), карта дня справа с «Հիմա | Եթե ընդունեք» и днями;
   «Ընդունել» предложения → главная кнопка становится доступной;
-S «Կարգավորումներ» — см. блок S ниже; L «Ուսուցում», W «Պահեստ» — шапка, KPI-карточки, таблицы;
+S «Կարգավորումներ»: шапка с поиском; оглавление по шагам (группы, состояние каждого блока, прогресс «n / 3»), нажатие —
+  к блоку и aria-current; поиск «դիզել» оставляет только подходящие блоки и пункты, Esc — снова всё; жёлтая строка о
+  незаполненных обязательных блоках со ссылкой; блоки-панели с таблеткой состояния, обязательный пустой — обводка;
+  переключатели role=switch; панель сохранения не видна без изменений, после изменения — «1 չպահպանված փոփոխություն՝
+  «Առաքման մեքենաներ»», «Չեղարկել» — снова как на сервере, панель скрыта; L «Ուսուցում», W «Պահեստ» — шапка, KPI-карточки, таблицы;
 T обе темы × 390 / 1366 / 1920: тема применена, без горизонтальной прокрутки (tests/tesla_layout_check.py).
 Ошибки страницы и консоли — провал (кроме внешних ресурсов, как в основной проверке).
 """
@@ -132,6 +136,50 @@ def main() -> int:
                 check(True, 'O «Չեղարկել բոլորը» → nothing to download again')
             else:
                 check(False, 'O an accept button in the open manager')
+
+            # S — «Կարգավորումներ»
+            page.goto(f'{BASE}/routes/settings')
+            page.wait_for_function("() => !document.getElementById('rsForm').classList.contains('d-none') && document.querySelector('#rsToc .rs-toc-i[data-state]')", timeout=30000)
+            page.wait_for_timeout(500)
+            groups = page.locator('#rsToc .rs-toc-g')
+            items = page.locator('#rsToc .rs-toc-i')
+            check(page.inner_text('#rtSettings .rt-pagehead__title') == 'Կարգավորումներ' and page.locator('#rsSearch').is_visible()
+                  and groups.count() == 4 and items.count() >= 14, f'S head with search; table of contents {groups.count()} groups, {items.count()} blocks')
+            st = page.eval_on_selector_all('#rsToc .rs-toc-i', 'els => els.map(a => [a.dataset.sec, a.dataset.state])')
+            check(dict(st).get('depot') == 'ok' and dict(st).get('fuel') in ('todo', 'part') and '/ 3' in page.inner_text('#rsTocG0'),
+                  f'S block states in the TOC (depot ✓, fuel !) and progress «{page.inner_text("#rsTocG0")}»')
+            check(page.locator('#rsTodo').is_visible() and 'Վառելիքի գներ' in page.inner_text('#rsTodo')
+                  and 'is-need' in (page.get_attribute('#fuel', 'class') or ''), 'S yellow reminder about unfilled required blocks, the block outlined')
+            page.click('#rsTodoLink')
+            page.wait_for_timeout(900)
+            check(page.get_attribute('#rsToc .rs-toc-i[data-sec="fuel"]', 'aria-current') == 'true'
+                  and page.evaluate("document.getElementById('fuel').getBoundingClientRect().top") < 300, 'S «Լրացնել →» scrolls to the block, TOC marks it current')
+            page.click('#rsToc .rs-toc-i[data-sec="season"]')
+            page.wait_for_timeout(900)
+            check(page.locator('#season').is_visible() and page.locator('#rsAuto').evaluate('d => d.open'), 'S TOC item inside a fold opens it and scrolls')
+            page.fill('#rsSearch', 'դիզել')
+            page.wait_for_timeout(300)
+            vis = page.eval_on_selector_all('#rsToc .rs-toc-i:not([hidden])', 'els => els.map(a => a.dataset.sec)')
+            check('fuel' in vis and 'depot' not in vis and page.locator('#fuel').is_visible() and not page.locator('#depot').is_visible(),
+                  f'S search «դիզել» → only matching blocks {vis}')
+            page.locator('#rsSearch').press('Escape')
+            page.wait_for_timeout(300)
+            check(page.locator('#depot').is_visible() and page.locator('#rsToc .rs-toc-i:not([hidden])').count() == items.count(), 'S Esc clears the search')
+            check(page.locator('#rsTrucks [data-f="active"][role="switch"]').count() > 0, 'S truck «works» toggles are switches (role=switch)')
+            check(not page.locator('#rsDock').is_visible() and page.inner_text('#rsDirty') == '' or not page.locator('#rsDock').is_visible(),
+                  'S save panel hidden without changes')
+            page.locator('#rsTrucks [data-f="active"]').first.click()
+            page.wait_for_timeout(300)
+            check(page.locator('#rsDock').is_visible() and '1 չպահպանված փոփոխություն' in page.inner_text('#rsDirtyList')
+                  and 'Առաքման մեքենաներ' in page.inner_text('#rsDirtyList') and 'is-dirty' in page.get_attribute('#rsDirty', 'class'),
+                  f'S change → floating save panel «{page.inner_text("#rsDirtyList")}»')
+            page.click('#rsDiscard')
+            page.wait_for_function("() => document.getElementById('rsDirty').textContent === 'Փոփոխություններ չկան'", timeout=15000)
+            check(not page.locator('#rsDock').is_visible(), 'S «Չեղարկել» → as on the server, panel hidden')
+            page.screenshot(path=str(SHOTS / 'settings.png'), full_page=True)
+            themes_and_widths(browser, f'{BASE}/routes/settings',
+                              lambda p: p.wait_for_function("() => !document.getElementById('rsForm').classList.contains('d-none') && document.querySelector('#rsToc .rs-toc-i[data-state]')", timeout=30000),
+                              check, errors, 'T settings')
 
             themes_and_widths(browser, f'{BASE}/routes/optimize',
                               lambda p: p.wait_for_selector('#roResult:not(.d-none) #roCards .ro-card', timeout=30000),

@@ -1,0 +1,127 @@
+/* «Կարգավորումներ» — Tesla+ (макет mockups/Settings.dc.html, DESIGN.md). Поверх routes.css, routes_ui.css и
+   routes_customer_settings.css: слева оглавление по трём шагам с состоянием блоков, справа блоки-панели (--surface,
+   заголовок и таблетка состояния; обязательный незаполненный — жёлтая обводка), поля 40 px / r12, подпись сверху,
+   подсказка снизу; плавающая панель сохранения — только при несохранённых изменениях. Только токены --rt-*. */
+#rtSettings { max-width: 1440px; }
+.rs-head { margin-bottom: 4px; }
+.rs-howto { margin: 0 4px 14px; }
+.rs-search {
+    display: flex; align-items: center; gap: 8px; height: 40px; width: 320px; max-width: 100%; margin: 0; padding: 0 12px; border-radius: 12px;
+    background: var(--rt-panel); box-shadow: var(--rt-shadow-sm); color: var(--rt-fg-dim); cursor: text;
+}
+.rs-search input { flex: 1; min-width: 0; height: 100%; border: 0; outline: 0; background: transparent; color: var(--rt-fg); font: inherit; font-size: 13.5px; }
+.rs-search:focus-within { box-shadow: var(--rt-shadow-sm), 0 0 0 2px var(--rt-acc); }
+
+.rs-layout { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; }
+.rs-main { flex: 999 1 640px; min-width: 0; display: flex; flex-direction: column; }
+/* оглавление: шаг — подпись и прогресс («2 / 3», «! 1», «✓»), блоки — состояние кружком, текущий — accent-soft */
+.rs-toc {
+    flex: 1 1 260px; max-width: 300px; min-width: 0; position: sticky; top: 12px; max-height: calc(100vh - 24px); overflow: auto;
+    padding: 10px; border-radius: var(--rt-radius); background: var(--rt-panel); box-shadow: var(--rt-shadow);
+    display: flex; flex-direction: column; gap: 2px;
+}
+.rs-toc-g { display: flex; flex-direction: column; gap: 2px; padding-bottom: 6px; }
+.rs-toc-g[hidden] { display: none; }
+.rs-toc-h { display: flex; justify-content: space-between; gap: 8px; padding: 8px 10px 4px; color: var(--rt-fg-dim); font-size: 11.5px; font-weight: 600; }
+.rs-toc-gs.is-ok { color: var(--rt-ok); }
+.rs-toc-gs.is-warn { color: var(--rt-warn); }
+.rs-toc-i { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 10px; color: var(--rt-fg-dim); text-decoration: none; }
+.rs-toc-i[hidden] { display: none; }
+.rs-toc-i:hover { color: var(--rt-fg); background: var(--rt-hl); }
+.rs-toc-i:focus-visible { outline: 2px solid var(--rt-acc); outline-offset: -2px; }
+.rs-toc-i[aria-current="true"] { background: var(--rt-acc-glow); color: var(--rt-acc); font-weight: 600; }
+.rs-toc-m {
+    flex: none; width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center; font-size: 11px; font-weight: 700;
+    background: var(--rt-chip); color: var(--rt-fg-dim);
+}
+.rs-toc-i[data-state="ok"] .rs-toc-m { background: var(--rt-ok-bg); color: var(--rt-ok); }
+.rs-toc-i[data-state="todo"] .rs-toc-m { background: var(--rt-warn); color: var(--rt-status-ink); }
+.rs-toc-i[data-state="part"] .rs-toc-m { background: var(--rt-warn-bg); color: var(--rt-warn); }
+.rs-toc-l { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 13px; }
+
+/* жёлтая строка-напоминание */
+.rs-todo { display: flex; align-items: center; gap: 12px; margin: 0 0 16px; padding: 12px 16px; border-radius: 14px; background: var(--rt-warn-bg); color: var(--rt-fg); }
+.rs-todo[hidden] { display: none; }
+.rs-todo-n { flex: none; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; background: var(--rt-warn); color: var(--rt-status-ink); font-weight: 700; }
+.rs-todo-t { flex: 1; min-width: 0; font-size: 13.5px; }
+.rs-todo-t b { font-weight: 600; }
+.rs-todo-a { color: var(--rt-warn); font-weight: 600; text-decoration: none; white-space: nowrap; }
+.rs-todo-a:hover { color: var(--rt-warn); text-decoration: underline; }
+.rs-nomatch { margin: 0 0 16px; padding: 14px 16px; border-radius: 14px; background: var(--rt-panel); color: var(--rt-fg-dim); }
+.rs-nomatch[hidden] { display: none; }
+#rtSettings .rs-off { display: none !important; }
+
+/* шаги — без номеров слева (номера — в оглавлении); блоки — панели --surface */
+#rtSettings .rt-step { display: block; padding: 0; margin: 0 0 8px; scroll-margin-top: 12px; }
+#rtSettings .rt-step-mark { display: none; }
+#rtSettings .rt-step-title { margin: 6px 4px 12px; font-size: 13px; font-weight: 600; color: var(--rt-fg-dim); }
+#rtSettings .rt-progress { margin: 0 4px 12px; }
+#rtSettings .rt-card, #rtSettings .rcs-card {
+    margin: 0 0 16px; padding: 18px 20px; border: 0; border-radius: var(--rt-radius); background: var(--rt-panel); box-shadow: var(--rt-shadow);
+    scroll-margin-top: 12px;
+}
+#rtSettings .rt-card.is-need { box-shadow: var(--rt-shadow), inset 0 0 0 2px var(--rt-warn); }
+#rtSettings .rt-card-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px; }
+#rtSettings .rt-card-title { margin: 0; font-size: 16px; font-weight: 600; }
+#rtSettings .rt-card-title > i { display: none; }
+#rtSettings .rt-card-state { padding: 2px 10px; font-size: 12px; font-weight: 500; }
+#rtSettings .rt-card-state > i { display: none; }
+#rtSettings .rt-card-lead { color: var(--rt-fg-dim); font-size: 12.5px; }
+#rtSettings .rs-sub { margin: 0 0 16px; padding: 18px 20px; border-radius: var(--rt-radius); background: var(--rt-panel); box-shadow: var(--rt-shadow); scroll-margin-top: 12px; }
+#rtSettings #rsAuto, #rtSettings #measurements { margin: 0 0 16px; border: 0; border-radius: var(--rt-radius); box-shadow: var(--rt-shadow); background: var(--rt-panel); }
+#rtSettings #rsAuto .rs-sub { box-shadow: none; padding: 12px 0 0; margin: 0 0 16px; border-top: 1px solid var(--rt-line); border-radius: 0; }
+
+/* поля (макет): 40 px, радиус 12, подпись сверху, серая подсказка снизу; обязательное пустое — жёлтая обводка */
+#rtSettings .rt-input, #rtSettings .rt-select { height: 40px; border-radius: 12px; }
+#rtSettings .rt-table .rt-input, #rtSettings .rt-table .rt-select { height: 34px; border-radius: 10px; }
+#rtSettings .rt-field label, #rtSettings .rt-field .rt-field-label { font-size: 12.5px; font-weight: 500; }
+#rtSettings .rt-field-hint { font-size: 12px; color: var(--rt-fg-dim); }
+#rtSettings .rt-field-row { flex-direction: column; align-items: stretch; gap: 6px; }
+#rtSettings .rt-field-row .rt-input { width: 100%; text-align: left; }
+#rtSettings .rt-input.is-need { border: 2px solid var(--rt-warn); }
+/* карты (склад, зоны) — в общем стиле карт: без рамки, радиус */
+#rtSettings .rt-depotmap { border: 0; border-radius: 14px; box-shadow: inset 0 0 0 1px var(--rt-line); }
+
+/* таблицы машин и менеджеров: строки через 1 px, переключатели «Աշխատում է» / «Հաշվարկում» (role=switch) */
+#rtSettings .rt-table thead th { background: transparent; color: var(--rt-fg-dim); font-size: 12px; font-weight: 500; }
+#rtSettings .rt-table td, #rtSettings .rt-table th { border-color: var(--rt-line); }
+#rtSettings input[type="checkbox"][role="switch"] {
+    appearance: none; -webkit-appearance: none; position: relative; flex: none; width: 44px; height: 26px; margin: 0; border: 0; border-radius: 999px;
+    background: var(--rt-chip); cursor: pointer; vertical-align: middle; transition: background .15s;
+}
+#rtSettings input[type="checkbox"][role="switch"]::after {
+    content: ""; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%; background: var(--rt-panel);
+    box-shadow: 0 1px 3px var(--rt-shadow-c); transition: left .15s;
+}
+#rtSettings input[type="checkbox"][role="switch"]:checked { background: var(--rt-acc-fill); }
+#rtSettings input[type="checkbox"][role="switch"]:checked::after { left: 21px; background: var(--rt-acc-ink); }
+#rtSettings input[type="checkbox"][role="switch"]:focus-visible { outline: 2px solid var(--rt-acc); outline-offset: 2px; }
+#rtSettings input[type="checkbox"][role="switch"]:disabled { opacity: .5; cursor: default; }
+@media (prefers-reduced-motion: reduce) {
+    #rtSettings input[type="checkbox"][role="switch"], #rtSettings input[type="checkbox"][role="switch"]::after { transition: none; }
+}
+
+/* плавающая панель сохранения: только при несохранённых изменениях; что изменено — перечень блоков */
+#rtSettings .rs-dock {
+    position: fixed; left: 50%; bottom: 20px; z-index: 1030; transform: translateX(-50%); width: min(720px, calc(100% - 32px));
+    margin: 0; display: none; flex-wrap: wrap; align-items: center; gap: 10px 14px; padding: 10px 10px 10px 18px;
+    border: 0; border-radius: 18px; background: var(--rt-glass); box-shadow: var(--rt-shadow-pop);
+}
+#rtSettings .rs-dock.is-on { display: flex; animation: rs-dock-in .15s ease-out; }
+@keyframes rs-dock-in { from { opacity: 0; transform: translate(-50%, 8px); } }
+@media (prefers-reduced-motion: reduce) { #rtSettings .rs-dock.is-on { animation: none; } }
+#rtSettings .rs-dock #rsDirty { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.rs-dock-t { flex: 1 1 180px; min-width: 0; font-size: 13.5px; }
+.rs-dock-t:not(:empty)::before {
+    content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 8px; border-radius: 50%; background: var(--rt-warn); vertical-align: 1px;
+}
+.rs-dock-l { color: var(--rt-fg-dim); }
+#rtSettings .rs-dock .rt-btn-primary { margin-left: 0; height: 44px; padding: 0 22px; border-radius: 999px; }
+#rtSettings .rs-dock #rsDiscard { height: 40px; }
+/* под панелью сохранения последний блок не прячется */
+#rtSettings .rs-main { padding-bottom: 88px; }
+
+@media (max-width: 900px) {
+    .rs-toc { position: static; max-width: none; flex-basis: 100%; max-height: none; }
+    .rs-search { width: 100%; }
+}
