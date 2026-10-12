@@ -724,7 +724,7 @@
     const interacting = () => {
         const a = document.activeElement;
         return state.dragging || !!state.mapDrag || (!!state.stopCard && state.stopCard.isOpen() && wsOn()) || $('dpGeoDlg').open || $('dpUnloadDlg').open || $('dpCondDlg').open || $('dpUntilDlg').open || $('dpDriverDlg').open
-            || $('dpSameDayDlg').open || $('dpAbsentDlg').open || $('dpSendFirstDlg').open || $('dpErpDlg').open || $('dpAddDlg').open || $('dpWhyDlg').open || $('dpCmpDlg').open
+            || $('dpSameDayDlg').open || $('dpAbsentDlg').open || $('dpSendFirstDlg').open || $('dpSplitDlg').open || $('dpErpDlg').open || $('dpAddDlg').open || $('dpWhyDlg').open || $('dpCmpDlg').open
             || (!!a && $('dpBody').contains(a) && /^(SELECT|INPUT|TEXTAREA)$/.test(a.tagName));
     };
     async function poll() {
@@ -868,16 +868,17 @@
     function renderPlanWarnings(box) {
         const d = state.data;
         if (d.is_past) return;
-        const chip = (text, title) => {
-            const el = document.createElement('span');
+        const chip = (text, title, act) => {
+            const el = document.createElement(act ? 'button' : 'span');
             el.className = 'dp-planwarn';
-            el.setAttribute('role', 'note');
+            if (act) { el.type = 'button'; el.addEventListener('click', act); } else el.setAttribute('role', 'note');
             el.innerHTML = '<i class="fas fa-triangle-exclamation" aria-hidden="true"></i><span></span>';
             el.lastChild.textContent = text;
             el.title = title;
             box.appendChild(el);
         };
-        // P1 №2: магазин в рейсах нескольких машин, а заказ один — он целиком у одной машины, другой везти нечего
+        // магазин в рейсах нескольких машин, а заказ один (решение владельца 12.10 «Запрещать»: один заказ ERP — одна
+        // машина): план не утверждается и не отправляется — по нажатию окно «Տանել ամբողջը <машина>»
         const split = d.plan && Array.isArray(d.plan.order_split) ? d.plan.order_split.filter(isObj) : [];
         if (split.length) {
             const label = (c) => { const t = truckBy(c); return t ? truckLabel(t) : c; };
@@ -886,11 +887,40 @@
                 + (x.trucks || []).map(label).join(', ') + ' մեքենաների միջև, բայց պատվերը մեկն է․ ամբողջը կտանի '
                 + (x.trucks || []).filter(c => !(x.empty || []).includes(c)).map(label).join(', ') + '-ը, '
                 + (x.empty || []).map(label).join(', ') + '-ի «Առաքիչ»-ում այս խանութի պատվեր չի լինի։').join('\n')
-                + '\nՏեղափոխեք խանութը մեկ մեքենա կամ ERP-ում բաժանեք պատվերը։');
+                + '\nՏեղափոխեք խանութը մեկ մեքենա կամ ERP-ում բաժանեք պատվերը։ Մինչ այդ պլանը չի ուղարկվում։', () => openSplit(split));
         }
         // P2 №10: машины плана — не работает, без водителя, водитель не вышел или ведёт две машины
         const crew = Array.isArray(d.crew_problems) ? d.crew_problems.filter(isObj) : [];
         if (crew.length) chip(pl(crew.length, 'մեքենայի') + ' վարորդի խնդիր', crewProblemsText(crew));
+    }
+    // «Տանել ամբողջը <машина>»: list — магазины нескольких машин с одним заказом (order_split плана или split_block ответа
+    // сервера: {customer_id, trucks, name?}); кнопка — правка whole_store (магазин целиком этой машине, ручное решение)
+    function openSplit(list) {
+        const ul = $('dpSplitList');
+        ul.textContent = '';
+        list.filter(isObj).forEach(x => {
+            const s = findStop(x.customer_id);
+            const name = (s && (s.name || s.code)) || (typeof x.name === 'string' && x.name) || String(x.customer_id);
+            const li = document.createElement('li');
+            const b = document.createElement('b');
+            b.textContent = name;
+            li.appendChild(b);
+            (Array.isArray(x.trucks) ? x.trucks : []).forEach(code => {
+                const t = truckBy(code), label = t ? truckLabel(t) : String(code);
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'rt-btn rt-btn-ghost rt-btn-sm';
+                btn.innerHTML = '<i class="fas fa-truck" aria-hidden="true"></i><span></span>';
+                btn.lastChild.textContent = 'Տանել ամբողջը ' + label;
+                btn.addEventListener('click', () => {
+                    $('dpSplitDlg').close();
+                    edit({ action: 'whole_store', customer_id: x.customer_id, truck: code }, '«' + name + '»-ը ամբողջությամբ կտանի ' + label);
+                });
+                li.appendChild(btn);
+            });
+            ul.appendChild(li);
+        });
+        $('dpSplitDlg').showModal();
     }
     const findStop = (cid) => {
         const plan = state.data && state.data.plan;
@@ -6177,6 +6207,8 @@
             }
             render();
             showActionError(e);
+            // один заказ ERP — одна машина (решение владельца 12.10): план не отправлен — окно «Տանել ամբողջը»
+            if (e.data && Array.isArray(e.data.split_block) && e.data.split_block.length) openSplit(e.data.split_block);
             return null;
         }
     }
@@ -7510,6 +7542,7 @@
             if (go) go(false, true);
         });
         $('dpSfCancel').addEventListener('click', () => $('dpSendFirstDlg').close());
+        $('dpSplitClose').addEventListener('click', () => $('dpSplitDlg').close());
         $('dpErpOk').addEventListener('click', erpConfirm);
         $('dpErpUndo').addEventListener('click', erpUndo);
         $('dpErpClose').addEventListener('click', () => $('dpErpDlg').close());

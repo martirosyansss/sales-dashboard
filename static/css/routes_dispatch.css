@@ -916,6 +916,11 @@
 .dp-erpwarn { order: 5; align-self: center; }
 .dp-erpwarn[hidden] { display: none; }
 #rtDispatch.is-ws .dp-erpwarn { flex: none; white-space: nowrap; }
+button.dp-planwarn { font: inherit; font-size: .8125rem; cursor: pointer; }
+button.dp-planwarn:focus-visible { outline: 2px solid var(--rt-acc); outline-offset: 2px; }
+.dp-split-list { list-style: none; margin: 0 0 14px; padding: 0; display: grid; gap: 12px; }
+.dp-split-list li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.dp-split-list b { flex-basis: 100%; }
 .rt-badge.dp-b-lock { color: var(--rt-acc); border-color: var(--rt-acc-dim); background: var(--rt-acc-glow); }
 
 /* требует внимания: счётчики одной строкой под «Ի՞նչ անել հիմա» */
