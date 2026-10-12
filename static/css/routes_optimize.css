@@ -1,0 +1,94 @@
+/* «Երթուղիների օպտիմալացում» — Tesla+ (макет mockups/Optimize.dc.html, DESIGN.md). Поверх routes.css и routes_ui.css:
+   шапка страницы (rt-pagehead), шаги карточками, параметры таблетками, «было → стало» карточками с разницей
+   (ok-soft — лучше, warn-soft — хуже), менеджеры аккордеоном слева и карта дня справа. Только токены --rt-*. */
+#rtOptimize { max-width: 1640px; }
+.ro-head { margin-bottom: 4px; }
+.ro-howto { margin: 0 4px 14px; }
+
+/* шаги карточками: номер (выполнен — ✓ на акценте), название, подпись состояния; текущий — accent-soft */
+.ro-steps { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 16px; }
+.ro-stepcard {
+    flex: 1 1 240px; min-width: 0; display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-radius: 16px;
+    background: var(--rt-panel); box-shadow: var(--rt-shadow-sm); color: var(--rt-fg); text-decoration: none;
+}
+.ro-stepcard:hover { color: var(--rt-fg); box-shadow: var(--rt-shadow-sm), 0 0 0 1px var(--rt-acc-dim) inset; }
+.ro-stepcard:focus-visible { outline: 2px solid var(--rt-acc); outline-offset: 2px; }
+.ro-stepcard[aria-current="step"] { background: var(--rt-acc-glow); box-shadow: none; }
+.ro-stepcard__mark {
+    flex: none; width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; font-weight: 600;
+    background: var(--rt-chip); color: var(--rt-fg-dim);
+}
+.ro-stepcard[aria-current="step"] .ro-stepcard__mark, .ro-stepcard.is-done .ro-stepcard__mark { background: var(--rt-acc-fill); color: var(--rt-acc-ink); }
+.ro-stepcard__t { display: flex; flex-direction: column; min-width: 0; }
+.ro-stepcard__t b { font-weight: 600; }
+.ro-stepcard__t span { color: var(--rt-fg-dim); font-size: 12px; overflow-wrap: anywhere; }
+
+/* разделы шагов — без номеров слева (номера — в карточках шагов), заголовки скромнее */
+#rtOptimize .rt-step { display: block; padding: 0; margin: 0 0 22px; scroll-margin-top: 12px; }
+#rtOptimize .rt-step-mark { display: none; }
+#rtOptimize .rt-step-title { margin: 0 4px 12px; font-size: 15px; font-weight: 600; }
+#rtOptimize #roStep1.is-done .rt-step-title { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
+/* после расчёта: параметры таблетками + «Փոխել»; строка «Հաշվված է …» — тише */
+.ro-done { padding: 0 4px; gap: 8px 14px; }
+.ro-params-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.ro-params-l { color: var(--rt-fg-dim); font-size: 12.5px; }
+.ro-pills { display: flex; flex-wrap: wrap; gap: 8px; }
+.ro-param { padding: 4px 12px; border-radius: 999px; background: var(--rt-panel); box-shadow: var(--rt-shadow-sm); font-size: 12.5px; }
+#rtOptimize .ro-done-text { flex: 1 1 100%; order: 3; font-size: 12.5px; color: var(--rt-fg-dim); }
+#rtOptimize #roParamsToggle { font-size: 12.5px; font-weight: 500; text-decoration: none; }
+
+/* «Եթե ընդունեք բոլոր առաջարկները»: 4 карточки — было зачёркнуто серым → стало крупно тонко; разница — таблеткой */
+.ro-sec-t { margin: 4px 4px 10px; font-size: 15px; font-weight: 600; }
+#rtOptimize .ro-kpis { grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); margin-bottom: 12px; }
+#rtOptimize .ro-kpis .rt-kpi { border-radius: var(--rt-radius); }
+#rtOptimize .ro-kpis .rt-kpi-val .was { font-size: 16px; font-weight: 400; color: var(--rt-fg-dim); text-decoration: line-through; }
+#rtOptimize .ro-kpis .rt-kpi-val .now, #rtOptimize .ro-kpis .rt-kpi.is-good .now, #rtOptimize .ro-kpis .rt-kpi.is-bad .now { color: var(--rt-fg); }
+#rtOptimize .ro-kpis .rt-kpi-delta { align-self: flex-start; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; box-shadow: none; }
+#rtOptimize .ro-kpis .rt-kpi.is-good .rt-kpi-delta { background: var(--rt-ok-bg); color: var(--rt-ok); box-shadow: none; }
+#rtOptimize .ro-kpis .rt-kpi.is-bad .rt-kpi-delta { background: var(--rt-warn-bg); color: var(--rt-warn); box-shadow: none; }
+#rtOptimize #roAllBox { margin-bottom: 16px; }
+#rtOptimize .rt-main { margin-bottom: 16px; }
+
+/* менеджеры слева (аккордеон), карта дня справа */
+.ro-split { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; }
+.ro-mgrs-box { flex: 1 1 520px; min-width: 0; border-radius: var(--rt-radius); background: var(--rt-panel); box-shadow: var(--rt-shadow); overflow: hidden; }
+.ro-split > .ro-mapfold { flex: 999 1 560px; min-width: 0; margin: 0; }
+#rtOptimize .ro-cards-head { margin: 0; padding: 16px 20px 8px; }
+#rtOptimize .ro-cards-head .rt-h3 { margin: 0; font-size: 15px; font-weight: 600; }
+#rtOptimize .ro-cards-head .rt-h3-note { margin: 2px 0 0; font-size: 12.5px; color: var(--rt-fg-dim); }
+#rtOptimize .ro-cards { display: block; }
+#rtOptimize .ro-card {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; align-items: center; padding: 12px 20px;
+    border: 0; border-top: 1px solid var(--rt-line); border-radius: 0; background: transparent; box-shadow: none;
+}
+#rtOptimize .ro-card > * { grid-column: 1; }
+#rtOptimize .ro-card > .ro-card-btn { grid-column: 2; grid-row: 1 / span 3; width: auto; }
+#rtOptimize .ro-card > .ro-panel { grid-column: 1 / -1; }
+#rtOptimize .ro-card.is-open { background: var(--rt-acc-glow); box-shadow: none; }
+#rtOptimize .ro-card-name { font-size: 14.5px; font-weight: 600; }
+#rtOptimize .ro-card-sum { font-size: 12.5px; }
+#rtOptimize .ro-card-prog { margin: 0; font-size: 12px; }
+#rtOptimize .ro-card-prog .bar { height: 3px; max-width: 220px; }
+#rtOptimize .ro-card-btn { height: 34px; padding: 0 12px; font-size: 12.5px; }
+#rtOptimize .ro-card .ro-panel { margin: 8px 0 4px; border: 0; box-shadow: none; background: var(--rt-panel); border-radius: 14px; }
+
+/* карта дня — панель справа: сверху выбор менеджера и «Հիմա | Եթե ընդունեք», плитки дней, под ними карта и легенда */
+#rtOptimize .ro-mapfold { border: 0; box-shadow: var(--rt-shadow); border-radius: var(--rt-radius); overflow: hidden; }
+#rtOptimize .ro-split .ro-mapgrid { grid-template-columns: minmax(0, 1fr); }
+#rtOptimize .ro-split .ro-days { order: -1; border-left: 0; padding: 12px 16px 4px; }
+#rtOptimize .ro-split .ro-map { height: 470px; border-radius: 0; }
+#rtOptimize .ro-split .ro-daylist { grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); }
+#rtOptimize .ro-dayb { border: 0; border-radius: 12px; background: var(--rt-panel-2); box-shadow: inset 0 0 0 1px var(--rt-line); align-items: center; text-align: center; }
+#rtOptimize .ro-dayb[aria-pressed="true"] { background: var(--rt-acc-glow); box-shadow: inset 0 0 0 1px var(--rt-acc); }
+#rtOptimize .rt-maptools .rt-seg { border-radius: 999px; background: var(--rt-chip); padding: 3px; border: 0; }
+
+@media (max-width: 640px) {
+    .ro-stepcard { flex-basis: 100%; }
+    #rtOptimize .ro-card { grid-template-columns: minmax(0, 1fr); padding: 12px 14px; }
+    #rtOptimize .ro-card > .ro-card-btn { grid-column: 1; grid-row: auto; width: 100%; }
+    #rtOptimize .ro-split .ro-map { height: 340px; }
+    .ro-mgrs-box, .ro-split > .ro-mapfold { flex-basis: 100%; }
+}
+/* главная кнопка шапки, пока нечего скачивать: видно, что недоступна (почему — в подсказке и для диктора) */
+#rtOptimize .rt-pagehead__actions .rt-btn[aria-disabled="true"] { opacity: .45; cursor: not-allowed; box-shadow: none; }

@@ -539,6 +539,7 @@
         rb.classList.toggle('rt-btn-primary', state.dirty && !busy);
         rb.classList.toggle('rt-btn-ghost', !(state.dirty && !busy));
         $('roStaleNote').classList.toggle('d-none', !(busy && state.result));
+        renderSteps();
     }
 
     // После расчёта шаг 1 — одна строка «Посчитано … · Пересчитать»; форма — по «Изменить параметры»
@@ -560,9 +561,49 @@
         const el = $('roDoneText');
         el.textContent = '';
         el.append(icon('fa-circle-check'), h('span', { text: parts.join(', ') }));
+        // Tesla+ (макет): параметры расчёта — таблетками
+        $('roParamPills').replaceChildren(...[n + ' մենեջեր',
+            p.mode === 'transfer' ? 'խանութների փոխանցումով' : 'միայն օրերը',
+            p.start === 'fresh' ? 'զրոյից' : 'ընթացիկ պլանից',
+            p.frequencies === 'current' ? 'հաճախականությունը՝ ինչպես հիմա' : 'հաճախականությունը՝ ըստ պատվերների']
+            .map(t => h('span', { class: 'ro-param', text: t })));
         const snap = parseTime(r.snapshot_as_of);
         if (snap) el.append(tip('ERP-ի տվյալները կարդացվել են ' + dayTime(snap) + (num(r.seconds) !== null ? ', հաշվարկը տևել է ' + duration(r.seconds) : '')
             + '։ «Վերահաշվել»՝ նորից հաշվել նույն մենեջերներով և ձեր որոշումները հաշվի առնելով։', 'երբ է հաշվված'));
+    }
+
+    // ---------- Tesla+: шаги карточками и кнопки шапки страницы ----------
+    // 1 Հաշվել — ✓ и когда посчитано; 2 Առաջարկներ — предложено / принято / отклонено; 3 — сколько войдёт в файл.
+    // Текущий шаг (aria-current): нет расчёта — 1, есть, но в файл ещё нечего — 2, есть что скачивать — 3
+    function renderSteps() {
+        const r = state.result, s = state.decisions ? state.decisions.summary : null, n = s ? num(s.export_changes) : null;
+        const card = (i, done, sub) => {
+            const a = $('roStepCard' + i);
+            a.classList.toggle('is-done', !!done);
+            a.querySelector('.ro-stepcard__mark').textContent = done ? '✓' : String(i);
+            $('roStepSub' + i).textContent = sub;
+        };
+        const t = r ? parseTime(r.generated_at) : null;
+        card(1, !!r, running() ? 'Հաշվում եմ…' : r ? (t ? 'Հաշվված է ' + dayTime(t) : 'Հաշվված է') : 'Դեռ չի հաշվված');
+        if (r) {
+            const st = { accepted: 0, rejected: 0 };
+            allChanges().forEach(c => { const x = statusOf(c); if (x === 'accepted' || x === 'mixed') st.accepted++; else if (x === 'rejected') st.rejected++; });
+            card(2, false, fmt(allChanges().length) + ' առաջարկ · ընդունված ' + fmt(st.accepted) + ' · մերժված ' + fmt(st.rejected));
+        } else card(2, false, 'Հաշվելուց հետո');
+        card(3, false, !r ? 'Excel՝ ERP-ի համար' : n ? fmt(n) + ' փոփոխություն ֆայլում' : n === 0 ? 'Նախ ընդունեք առաջարկներ' : 'Excel՝ ERP-ի համար');
+        const cur = !r ? 1 : n ? 3 : 2;
+        [1, 2, 3].forEach(i => { const a = $('roStepCard' + i); if (i === cur) a.setAttribute('aria-current', 'step'); else a.removeAttribute('aria-current'); });
+        // шапка: главная «Ներբեռնել…» — как кнопка шага 3; «Վերահաշվել» — как «Վերահաշվել» (или «Հաշվել», пока расчёта нет)
+        const ex = $('roExportBtn'), off = !r || ex.getAttribute('aria-disabled') === 'true';
+        const head = $('roHeadExport');
+        head.setAttribute('aria-disabled', String(off));
+        head.setAttribute('aria-busy', ex.getAttribute('aria-busy') || 'false');
+        const hint = !r ? 'Նախ հաշվեք առաջարկները' : n === 0 ? 'Դեռ ներբեռնելու բան չկա՝ ընդունեք գոնե մեկ առաջարկ' : '';
+        head.title = hint;
+        $('roHeadExportHint').textContent = hint;
+        const rb = r ? $('roRecalcBtn') : $('roRunBtn'), hb = $('roHeadRecalc');
+        hb.setAttribute('aria-disabled', rb.getAttribute('aria-disabled') || 'false');
+        hb.querySelector('span').textContent = running() ? 'Հաշվում եմ…' : r ? 'Վերահաշվել' : 'Հաշվել';
     }
 
     // ---------- Запуск и опрос задачи ----------
@@ -1096,6 +1137,8 @@
         renderDecisions();
         renderRecalc();
         updateRunState();
+        // Tesla+ (макет): справа от менеджеров — карта дня, на широком экране раскрыта сразу (toggle → onMapToggle рисует)
+        if (window.matchMedia('(min-width: 1101px)').matches && !$('roMapBox').open) $('roMapBox').open = true;
         loadDecisions();       // расчёт мог отметить решения отработавшими — список и число для Excel заново
     }
 
@@ -1308,7 +1351,11 @@
                 d: 1, lower: true, unit: () => 'օր', tip: 'Թույլ օր՝ օր, երբ հասույթը պակաս է ' + minFrom() + '։ ' + weakTipText() }),
             kpiNode({ label: 'Այցեր շաբաթում', was: total('before', 'visits_week', 'visits'), now: total('after', 'visits_week', 'visits'),
                 d: 1, lower: true, unit: () => 'այց', tip: 'Քանի անգամ են մենեջերները շաբաթում մտնում խանութներ՝ հաշվարկի բոլոր մենեջերներով։ '
-                    + '«2 շաբաթը մեկ» այցը հաշվվում է որպես կես այց շաբաթում։' }));
+                    + '«2 շաբաթը մեկ» այցը հաշվվում է որպես կես այց շաբաթում։' }),
+            // Tesla+ (макет — 4 карточки): рабочий день менеджера, как в «Բոլոր թվերը»
+            kpiNode({ label: 'Աշխատանքային օր, ժամ', was: total('before', 'avg_plan_hours', 'avg_plan_hours', true),
+                now: total('after', 'avg_plan_hours', 'avg_plan_hours', true), d: 1, lower: true, unit: () => 'ժ',
+                tip: 'Մենեջերի միջին աշխատանքային օրը՝ տնից ճանապարհով, խանութներում և հետ։' }));
     }
 
     // ---------- «Все цифры» ----------
@@ -1489,6 +1536,7 @@
             return;
         }
         state.result.managers.forEach(m => ul.append(cardNode(m)));
+        placePanel();
     }
 
     // Карточка перерисовывается целиком (прогресс, кнопка); фокус на её кнопке сохраняется
@@ -1499,7 +1547,17 @@
         const hadFocus = old.contains(document.activeElement);
         const fresh = cardNode(m);
         old.replaceWith(fresh);
+        placePanel();
         if (hadFocus) { const b = fresh.querySelector('button[data-open]'); if (b) b.focus({ preventScroll: true }); }
+    }
+    // Tesla+ (макет — аккордеон): панель предложений — в строке раскрытого менеджера; закрыта — снова после списка
+    function placePanel() {
+        // ссылка — своя: строка менеджера перерисовывается целиком (refreshCard), панель на миг вне документа
+        const panel = state.panelEl || (state.panelEl = $('roPanel'));
+        const li = state.panelAgent && $('roCards').querySelector('.ro-card[data-agent="' + state.panelAgent + '"]');
+        if (li) { if (panel.parentNode !== li) li.appendChild(panel); }
+        else if (panel.previousElementSibling !== $('roCards')) $('roCards').after(panel);
+        renderSteps();
     }
 
     function onCardsClick(ev) {
@@ -1549,8 +1607,9 @@
         state.rows = new Map();
         state.pgroups = [];
         const m = panelMgr();
-        if (!m) { box.hidden = true; return; }
+        if (!m) { box.hidden = true; placePanel(); return; }
         box.hidden = false;
+        placePanel();
         box.style.setProperty('--mgr', m._color);
 
         // группы по смыслу, внутри — по названию магазина
@@ -2552,6 +2611,7 @@
         note.textContent = '';
         note.append('Ֆայլում նոր պլանն է՝ ըստ մենեջերների և օրերի։ Այն ձեռքով մուտքագրեք ERP-ում։ ',
             status ? h('span', { class: n === 0 ? 'is-warn' : 'is-ok', text: status }) : null);
+        renderSteps();
     }
 
     function setExportBusy(on) {
@@ -2843,6 +2903,16 @@
             if (b) b.focus();
         });
         $('roExportBtn').addEventListener('click', exportPlan);
+        // шапка страницы: те же действия, что у кнопок шагов (там же подтверждения и проверки)
+        $('roHeadExport').addEventListener('click', () => {
+            if ($('roHeadExport').getAttribute('aria-disabled') === 'true') { announce($('roHeadExportHint').textContent || 'Դեռ ներբեռնելու բան չկա'); return; }
+            $('roExportBtn').click();
+        });
+        $('roHeadRecalc').addEventListener('click', () => {
+            if (state.result) $('roRecalcBtn').click();
+            else if (typeof $('roForm').requestSubmit === 'function') $('roForm').requestSubmit();
+            else $('roRunBtn').click();
+        });
         $('roStepWarn').addEventListener('click', (e) => {
             if (!e.target.closest('button[data-showdec]')) return;
             const box = $('roDecBox');

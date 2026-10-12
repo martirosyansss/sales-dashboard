@@ -12,19 +12,44 @@
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=27">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes_ui.css') }}?v=4">
+<!-- Tesla+ (макет mockups/Optimize.dc.html): шапка страницы, шаги карточками, параметры таблетками, «было → стало»,
+     менеджеры аккордеоном слева и карта дня справа -->
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_optimize.css') }}?v=1">
 {% endblock %}
 
 {% block content %}
-<div class="rt-page" id="rtOptimize" lang="hy">
+<div class="rt-page rt-tesla" id="rtOptimize" lang="hy">
 
-    <!-- ШАПКА: что это за страница — одной строкой -->
-    <header class="rt-head">
-        <div class="rt-head-row">
-            <h1 class="rt-title">Երթուղիների օպտիմալացում</h1>
+    <!-- ШАПКА СТРАНИЦЫ (макет): H1 и подстрока; «Վերահաշվել» — вторичная, главная — «Ներբեռնել պլանը ERP-ի համար»
+         (нажимают настоящие кнопки шагов 1 и 3 — #roRecalcBtn / #roRunBtn и #roExportBtn; недоступна, пока нечего скачивать) -->
+    <header class="rt-pagehead ro-head">
+        <div>
+            <h1 class="rt-pagehead__title">Երթուղիների օպտիմալացում</h1>
+            <p class="rt-pagehead__sub">Որ օրերին որ խանութներ այցելել · ERP-ից միայն կարդում ենք</p>
         </div>
-        <p class="rt-head-lead">Ծրագիրն առաջարկում է, թե որ օրերին այցելել խանութներ, որպեսզի մենեջերներն ավելի քիչ ճանապարհ անցնեն, և ամեն օր
-            բավականաչափ պատվերներ լինեն։ ERP-ում ոչինչ չի փոխվում, քանի դեռ ինքներդ չեք մուտքագրել պլանը։</p>
+        <div class="rt-pagehead__actions">
+            <button type="button" id="roHeadRecalc" class="rt-btn rt-btn--secondary"><i class="fas fa-rotate" aria-hidden="true"></i><span>Վերահաշվել</span></button>
+            <button type="button" id="roHeadExport" class="rt-btn rt-btn--primary" aria-disabled="true" aria-describedby="roHeadExportHint">
+                <i class="fas fa-file-excel" aria-hidden="true"></i><span>Ներբեռնել պլանը ERP-ի համար</span></button>
+            <span class="rt-sr-only" id="roHeadExportHint"></span>
+        </div>
     </header>
+    <details class="rt-howto ro-howto">
+        <summary><i class="fas fa-circle-question" aria-hidden="true"></i>Ինչպե՞ս է աշխատում</summary>
+        <p>Ծրագիրն առաջարկում է, թե որ օրերին այցելել խանութներ, որպեսզի մենեջերներն ավելի քիչ ճանապարհ անցնեն, և ամեն օր
+            բավականաչափ պատվերներ լինեն։ ERP-ում ոչինչ չի փոխվում, քանի դեռ ինքներդ չեք մուտքագրել պլանը։</p>
+    </details>
+
+    <!-- ШАГИ карточками (макет): 1 Հաշվել — ✓ и время расчёта; 2 Առաջարկներ — сколько предложено / принято / отклонено;
+         3 Ընդունել և ներբեռնել — сколько войдёт в файл; нажатие — к шагу (renderSteps) -->
+    <nav class="ro-steps" id="roSteps" aria-label="Քայլեր">
+        <a class="ro-stepcard" id="roStepCard1" href="#roStep1"><span class="ro-stepcard__mark" aria-hidden="true">1</span>
+            <span class="ro-stepcard__t"><b>Հաշվել</b><span id="roStepSub1">Դեռ չի հաշվված</span></span></a>
+        <a class="ro-stepcard" id="roStepCard2" href="#roStep2"><span class="ro-stepcard__mark" aria-hidden="true">2</span>
+            <span class="ro-stepcard__t"><b>Առաջարկներ</b><span id="roStepSub2">Հաշվելուց հետո</span></span></a>
+        <a class="ro-stepcard" id="roStepCard3" href="#roStep3"><span class="ro-stepcard__mark" aria-hidden="true">3</span>
+            <span class="ro-stepcard__t"><b>Ընդունել և ներբեռնել</b><span id="roStepSub3">Excel՝ ERP-ի համար</span></span></a>
+    </nav>
 
     <!-- Объявления для скринридеров -->
     <div id="roStatus" class="rt-sr-only" role="status" aria-live="polite"></div>
@@ -36,7 +61,12 @@
             <h2 class="rt-step-title" id="roStep1Title"><span class="rt-sr-only">Քայլ 1. </span>Հաշվել</h2>
 
             <!-- После расчёта шаг сворачивается в одну строку -->
+            <!-- после расчёта (макет): параметры одной строкой таблетками + «Փոխել» (раскрывает прежнюю форму) -->
             <div id="roDone" class="ro-done" hidden>
+                <div class="ro-params-row">
+                    <span class="ro-params-l">Պարամետրեր՝</span>
+                    <span class="ro-pills" id="roParamPills"></span>
+                </div>
                 <span class="ro-done-text" id="roDoneText"></span>
                 <div class="ro-done-acts">
                     <button type="button" id="roRecalcBtn" class="rt-btn rt-btn-ghost">
@@ -182,8 +212,9 @@
                     <div class="ro-warns" id="roQualityWarnings" aria-live="polite"></div>
                 </div>
 
-                <!-- Три главных показателя -->
-                <div class="rt-kpis ro-kpis" id="roKpis" role="group" aria-label="Երեք հիմնական ցուցանիշ՝ հիմա և եթե ընդունեք առաջարկները"></div>
+                <!-- «Եթե ընդունեք բոլոր առաջարկները» (макет): 4 карточки «было → стало» с разницей; «Բոլոր թվերը ▾» — ниже -->
+                <h3 class="ro-sec-t" id="roKpisTitle">Եթե ընդունեք բոլոր առաջարկները</h3>
+                <div class="rt-kpis is-4 ro-kpis" id="roKpis" role="group" aria-labelledby="roKpisTitle"></div>
 
                 <details class="rt-fold" id="roAllBox">
                     <summary><span class="rt-fold-t">Բոլոր թվերը</span> <span class="rt-fold-note">հիմա և եթե ընդունեք — բոլոր ցուցանիշներով</span></summary>
@@ -199,15 +230,18 @@
                     </div>
                 </details>
 
-                <!-- Менеджеры -->
+                <!-- Менеджеры аккордеоном слева (раскрытый — его предложения, #roPanel переезжает в строку), карта дня справа -->
+                <div class="ro-split">
+                <section class="ro-mgrs-box" aria-labelledby="roCardsTitle">
                 <div class="ro-cards-head">
                     <h3 class="rt-h3" id="roCardsTitle">Առաջարկներ ըստ մենեջերների</h3>
                     <p class="rt-h3-note">Բացեք մենեջերին — առաջարկները խմբավորված են, դրանք կարելի է ընդունել ամբողջ խմբով կամ ըստ առանձին խանութի։</p>
                 </div>
                 <ul class="ro-cards" id="roCards" aria-labelledby="roCardsTitle"></ul>
 
-                <!-- Предложения выбранного менеджера -->
+                <!-- Предложения выбранного менеджера (в раскрытой строке менеджера) -->
                 <section class="ro-panel" id="roPanel" hidden aria-labelledby="roPanelTitle"></section>
+                </section>
 
                 <!-- Карта: свёрнута -->
                 <details class="rt-fold ro-mapfold" id="roMapBox">
@@ -241,6 +275,7 @@
                         </div>
                     </div>
                 </details>
+                </div>
             </div>
         </div>
     </section>
@@ -293,5 +328,5 @@
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=4" data-yandex-key="{{ yandex_tiles_key }}"></script>
-<script src="{{ url_for('static', filename='js/routes_optimize.js') }}?v=15"></script>
+<script src="{{ url_for('static', filename='js/routes_optimize.js') }}?v=16"></script>
 {% endblock %}
