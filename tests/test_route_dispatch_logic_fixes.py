@@ -363,3 +363,35 @@ def test_waybill_of_unsent_plan_is_marked_draft(client, monkeypatch):
     d = _ok(_post(client, '/api/routes/dispatch/edit', {'rev': d['rev'], 'action': 'move', 'customer_id': trip['stops'][0]['customer_id'],
                                                         'from_trip': trip['id'], 'to_trip': None, 'truck': None}))
     assert car in d['unsent']['trucks'] and waybill(d)['draft'] is True     # правка не отправлена — снова черновик
+
+
+# ============================== склад — те же заказы, что у терминала (ревью ветки, P1) ==============================
+
+def test_order_added_after_send_not_loaded_by_warehouse_and_truck_changing(client, monkeypatch):
+    """Заказ магазина плана пришёл в ERP после отправки: терминал его не видит (снимок заказов) — и склад не грузит и не
+    печатает его, а машина этого магазина у склада «меняется», пока логист не отправит план снова."""
+    from test_route_warehouse import _sent_day, _wb
+    state, d, asked = _sent_day(client, monkeypatch)
+    owner = {s['customer_id']: tr['truck'] for t in d['plan']['trucks'] for tr in t['trips'] for s in tr['stops']}
+    car = owner[101]
+    late = _dorder(40, 101, 120.0)
+    _erp_orders(state, lambda orders, since, until: [*orders, *(o for o in [late] if since <= o.order_date < until)])
+    w = _ok(client.get('/api/routes/warehouse?date=2026-10-01'))
+    trucks = {t['car_code']: t for t in w['trucks']}
+    assert trucks[car].get('changing') is True and all('changing' not in t for c, t in trucks.items() if c != car)
+    # склад грузит отправленное: в строках рейса и в Բեռնագիր других машин нового заказа нет
+    asked.clear()
+    for t in w['trucks']:
+        for tr in t['trips']:
+            _ok(client.get('/api/routes/warehouse/goods', query_string={'date': '2026-10-01', 'truck': t['car_code'],
+                                                                       'trip': tr['id'], 'rev': w['rev']}))
+    assert asked and all(late.isn not in isns for isns in asked)
+    r = _wb(client, car, w['rev'])
+    assert r.status_code == 409 and r.get_json()['changing'] is True
+    # отправили — склад грузит и его
+    d = _ok(_post(client, '/api/routes/dispatch/edit', {'rev': d['rev'], 'action': 'send'}))
+    w = _ok(client.get('/api/routes/warehouse?date=2026-10-01'))
+    assert all('changing' not in t for t in w['trucks'])
+    asked.clear()
+    assert _wb(client, car, w['rev']).status_code == 200 and any(late.isn in isns for isns in asked)
+

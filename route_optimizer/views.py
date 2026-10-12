@@ -1682,16 +1682,40 @@ def _with_carry(dd: _DispatchDay) -> dp.Draft:
     return replace(dd.draft, auto_carried={**dd.draft.auto_carried, **pending})
 
 
-def _changing_now(state: RoutesState, bundle: Bundle, day: date, draft: dp.Draft, rev: int) -> set[str]:
+def _changing_now(state: RoutesState, bundle: Bundle, day: date, draft: dp.Draft, rev: int,
+                  car: str | None = None) -> set[str]:
     """_changing_trucks с недовезённым вчера, вошедшим в рейсы после отправки (№98, _with_carry): сегодня и дальше, при
-    факте терминалов. ERP не ответила — как раньше, по черновику (в журнал)."""
-    if state.live_facts is None or draft.sent is None or day < _same_day_now().date():
-        return _changing_trucks(draft)
+    факте терминалов; и с заказами машин, которые разошлись со снимком отправки (ревью логики 12.10: заказ пришёл, ушёл или
+    изменился в ERP после отправки — dp.orders_unsent, как «не отправлено» на странице): терминал его не видит — склад не
+    грузит. car — машина запроса склада: она «меняется» уже по черновику — ответ без чтения ERP. ERP не ответила — как
+    раньше, по черновику (в журнал)."""
+    base = _changing_trucks(draft)
+    sent_orders = (draft.sent or {}).get('orders')
+    if draft.sent is None or day < _same_day_now().date() or (car is not None and car in base) \
+            or (state.live_facts is None and sent_orders is None):
+        return base
     try:
-        return _changing_trucks(_with_carry(_load_day(state, bundle, day, draft=draft, rev=rev)))
+        dd = _load_day(state, bundle, day, draft=draft, rev=rev)
     except ErpError:
-        logger.warning('[Routes] Заказы %s не прочитаны — склад без учёта нового переноса', day, exc_info=True)
-        return _changing_trucks(draft)
+        logger.warning('[Routes] Заказы %s не прочитаны — склад без учёта нового переноса и заказов после отправки', day,
+                       exc_info=True)
+        return base
+    out = _changing_trucks(_with_carry(dd)) if state.live_facts is not None else base
+    moved, _ = dp.orders_unsent(sent_orders, dp.published_orders(draft, dd.stops))
+    return out | set(moved)
+
+
+def _as_sent(dd: _DispatchDay) -> _DispatchDay:
+    """День склада — с заказами, отправленными водителям (ревью логики 12.10): снимок отправки с заказами (Draft.sent
+    orders) — точки только из них, как у терминала (routes_link.pick_orders); заказ, пришедший в ERP после отправки, склад не
+    грузит и не печатает. Снимок без заказов (отправлен до ревью) — день как есть."""
+    sent = (dd.draft.sent or {}).get('orders') if dd.draft is not None else None
+    if sent is None:
+        return dd
+    return replace(dd, stops=dp.build_stops(
+        [o for s in dd.stops for o in s.orders if o.isn in sent],
+        lambda cid: evaluate.visit_coord(dd.snap, cid, 0, dd.bundle.geo_overrides, dd.bundle.driver_points),
+        _order_age(dd.day, dd.bundle.settings, dd.auto)))
 
 
 def _held(state: RoutesState, day: date, settings: Mapping[str, Any], draft: dp.Draft | None,
@@ -7403,7 +7427,7 @@ def _warehouse_body(state: RoutesState, bundle: Bundle, day: date) -> dict[str, 
     if draft.approved is None:
         return {**head, 'approved': False, 'planned': True, 'trucks': []}
     # №81: склад грузит то, что отправлено водителям (не неотправленные правки черновика); отметки «Բեռնված է» — черновика
-    dd = _load_day(state, bundle, day, draft=draft.for_drivers(), rev=rev, live=False)   # №98: перенос — из снимка
+    dd = _as_sent(_load_day(state, bundle, day, draft=draft.for_drivers(), rev=rev, live=False))   # №98: перенос — из снимка
     if dd.ctx is None:
         raise dp.DispatchError(WAREHOUSE_NO_SETUP)
     plan = dp.plan_view(dd.ctx, dd.stops, dd.draft, _stop_info(dd), explain=False)
@@ -7484,7 +7508,7 @@ def api_warehouse_goods() -> Any:
     dd = _load_day(state, bundle, day)
     if int(rev) != dd.rev or dd.draft is None or dd.draft.approved is None:
         return _conflict(WAREHOUSE_STALE)
-    dd = _load_day(state, bundle, day, draft=dd.draft.for_drivers(), rev=dd.rev, live=False)   # №81, №98: план водителей
+    dd = _as_sent(_load_day(state, bundle, day, draft=dd.draft.for_drivers(), rev=dd.rev, live=False))   # №81, №98
     if dd.ctx is None:
         return _bad_request({'_': WAREHOUSE_NO_SETUP})
     plan = dp.plan_view(dd.ctx, dd.stops, dd.draft, _stop_info(dd), explain=False)
@@ -7520,11 +7544,11 @@ def api_warehouse_waybill() -> Any:
     draft, cur = _stored_draft(state, day)   # проверки — по сохранённому черновику, до заказов и строк ERP
     if int(rev) != cur or draft is None or draft.approved is None:
         return _conflict(WAREHOUSE_STALE)
-    if car in _changing_now(state, bundle, day, draft, cur):   # ответ владельца 07.10: до «Ուղարկել» — не печатать
+    if car in _changing_now(state, bundle, day, draft, cur, car):   # ответ владельца 07.10: до «Ուղարկել» — не печатать
         return jsonify({'success': False, 'error': WAREHOUSE_WAYBILL_CHANGING, 'conflict': True, 'changing': True}), 409
     if all(t.truck != car for t in draft.for_drivers().trips):
         return _conflict(WAREHOUSE_STALE)
-    dd = _load_day(state, bundle, day, draft=draft.for_drivers(), rev=cur, live=False)   # №81, №98: план водителей
+    dd = _as_sent(_load_day(state, bundle, day, draft=draft.for_drivers(), rev=cur, live=False))   # №81, №98: план водителей
     if dd.ctx is None:
         return _bad_request({'_': WAREHOUSE_NO_SETUP})
     plan = dp.plan_view(dd.ctx, dd.stops, dd.draft, _stop_info(dd), explain=False)
@@ -7571,7 +7595,7 @@ def api_warehouse_loaded() -> Any:
     # (снятие убрало бы защиту груза, который уже в машине, пока логист её правит: его правки и «Ուղարկել» перестали бы
     # спрашивать подтверждение). Машина рейса — у водителей, нет там — в черновике.
     car = next((t.truck for d in (draft.for_drivers(), draft) for t in d.trips if t.id == payload.get('trip')), None)
-    if car is not None and car in _changing_now(state, bundle, day, draft, rev):
+    if car is not None and car in _changing_now(state, bundle, day, draft, rev, car):
         return _conflict(WAREHOUSE_CHANGING)
     me = session.get('username')
     now = _same_day_now()
