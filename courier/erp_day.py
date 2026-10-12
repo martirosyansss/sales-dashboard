@@ -28,10 +28,12 @@
   родитель заказа) нет ни одного; заказов с несколькими накладными нет. Отсюда `replaces` точки S: (контракт
   §5 п. 2) — SQL_SALE_PARENTS.
 
-Точки /day — ПО КЛИЕНТУ (контракт §5 п. 1): у клиента есть накладная машины на дату — точки S: (её заказы,
-из которых сделана накладная, — в `replaces`); у клиента накладной нет — точки O: по заказам, которые «Развоз»
-отдал машине (routes_link.pick_orders) и по которым накладной ещё нет нигде (DispatchOrder.shipped пуст:
-накладная на другой машине — это точка той машины).
+Точки /day: накладные машины на дату — точки S: (её заказы, из которых сделана накладная, — в `replaces`); заказы,
+которые «Развоз» отдал машине (routes_link.pick_orders) и по которым накладной ещё нет нигде (DispatchOrder.shipped
+пуст: накладная на другой машине — это точка той машины), — точки O:, кроме заказов, которые накладная машины заменила
+(pending_orders, ревью логики 12.10: по DOCPARENTS, а не по клиенту — накладная одного заказа не прячет другой заказ
+того же клиента). Накладная машины без заказа-родителя (не из заказа) — какой заказ она заменила, неизвестно: у её
+клиента точек O: нет, как раньше (контракт §5 п. 1 — по клиенту).
 
 Накладная машины — fDELIVERYCAR = машина ИЛИ fDELIVERYCAR пуст и накладная сделана из заказа, который «Развоз»
 отдал этой машине (SQL_PLAN_SALES): машину в накладной офис ставит не всегда (05.10.2026 — у 141 из 151, обычно у
@@ -717,6 +719,15 @@ def morning_debts(conn: Any, ids: Sequence[int], day: date) -> dict[int, float]:
     return compose_debts(sorted(set(ids)), debit, rest)
 
 
+def pending_orders(picked: Sequence[DispatchOrder], sales: Sequence[Doc]) -> list[DispatchOrder]:
+    """Заказы машины, которые идут точками O: (ревью логики 12.10, P1 №3): ещё без накладной нигде (shipped пуст) и не
+    заменённые накладной машины — её `replaces` (DOCPARENTS). Накладная без заказа-родителя заменяет неизвестно что — у её
+    клиента заказов O: нет (иначе один товар повезли бы дважды: накладной и заказом)."""
+    replaced = {r[2:] for d in sales for r in d.replaces if r.startswith('O:')}
+    unlinked = {d.customer_id for d in sales if not d.replaces}
+    return [o for o in picked if o.shipped is None and o.isn not in replaced and o.customer_id not in unlinked]
+
+
 # заказы окна и ERP-справочник «клиенты → адрес и название» (routes_link.Places, №74) → заказы машины
 OrdersPick = Callable[[Sequence[DispatchOrder], Callable[[Sequence[int]], dict[int, tuple[str, str]]]], list[DispatchOrder]]
 
@@ -741,8 +752,7 @@ def load_day(connection_string: str, car_code: str, day: date, orders_window: tu
         parents = sale_parents(conn, [d.isn for d in sales]) if sales else {}
         sales = [Doc(d.stop_id, d.source, d.isn, d.doc_number, d.customer_id, d.agent_id, d.pay_type, d.amount,
                      parents.get(d.isn, ())) for d in sales]
-        invoiced = {d.customer_id for d in sales}
-        pending = [o for o in picked if o.shipped is None and o.customer_id not in invoiced]
+        pending = pending_orders(picked, sales)
         docs = sales + (order_docs(conn, pending) if pending else [])
         lines = doc_lines(conn, [d.isn for d in docs]) if docs else {}
         links, tare_names = _ref(connection_string, 'containers', lambda: containers(conn))

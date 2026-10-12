@@ -247,3 +247,25 @@ def test_crew_not_tracked_means_no_driver_check(client, monkeypatch):
     assert 'crew_problems' not in d
     d = _ok(_post(client, '/api/routes/dispatch/edit', {'rev': d['rev'], 'action': 'approve'}))
     assert d['unsent'] is None
+
+
+# ============================== 3. накладная одного заказа не прячет другой ==============================
+
+def _sale(isn_i, cid, replaces=()):
+    from courier.erp_day import Doc
+    return Doc(f'S:{_isn(isn_i)}', 'invoice', _isn(isn_i), f'S{isn_i}', cid, 1, '1', 100.0, tuple(replaces))
+
+
+def test_invoice_of_one_order_keeps_other_order_of_same_customer():
+    from courier.erp_day import pending_orders
+    invoiced = _dorder(1, 101, 100.0, day=D, shipped=D)       # из него сделана накладная машины
+    second = _dorder(2, 101, 50.0, day=D)                       # второй заказ того же магазина — ещё без накладной
+    other = _dorder(3, 102, 70.0, day=D)
+    sale = _sale(90, 101, [f'O:{invoiced.isn}'])
+    # до правки: накладная клиента 101 прятала и second (отбор по клиенту) — водитель его не видел
+    assert pending_orders([invoiced, second, other], [sale]) == [second, other]
+    # накладная без заказа-родителя (не из заказа) — что она заменила, неизвестно: у клиента заказов O: нет
+    assert pending_orders([second, other], [_sale(91, 101)]) == [other]
+    # накладная заменила заказ, по которому shipped ещё не отметился — тоже не точка O:
+    fresh = _dorder(4, 102, 70.0, day=D)
+    assert pending_orders([fresh], [_sale(92, 102, [f'O:{fresh.isn}'])]) == []
