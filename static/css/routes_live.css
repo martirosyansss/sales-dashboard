@@ -520,3 +520,31 @@ button.lv-prob:focus-visible { outline: 2px solid var(--rt-acc); outline-offset:
     .lv-grid { grid-template-columns: minmax(0, 1fr); }
     .lv-summary b { font-size: 1.125rem; }
 }
+
+/* Tesla+ (пользователь 12.10 «сильно закрывает карту»): панели сворачиваются (rt_panels.js, таблетки — routes_ui.css):
+   «—» в правом верхнем углу; таблетки «Մեքենաներ» и «Օրվա ամփոփում» — у левого края сверху и снизу, «Խնդիրներ» и «Մեքենա» —
+   первыми в правой колонке; пустая часть правой колонки карту не перекрывает (нажатия проходят на карту) */
+.lv-card-x {
+    flex: none; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 50%; display: grid; place-items: center;
+    background: var(--rt-chip); color: var(--rt-fg-dim); cursor: pointer;
+}
+.lv-card-x:hover { color: var(--rt-fg); background: var(--rt-line); }
+.lv-card-x:focus-visible { outline: 2px solid var(--rt-acc); outline-offset: 2px; }
+.lv-card { position: relative; }
+.lv-card-head { padding-right: 40px; }
+#lvPage .lv-side-title, #lvPage .lv-probs-title { padding-right: 40px; }
+.lv-probs { position: relative; }   /* «—» — в его углу (.lv-side и .lv-bottom на ПК — absolute) */
+.rt-panels-on .lv-bottom { padding-right: 52px; }
+@media (min-width: 900px) {
+    .lv-right { pointer-events: none; }
+    .lv-right > * { pointer-events: auto; }
+    .lv-right > .rt-ppill { order: -1; align-self: flex-end; flex: none; }
+    .lv-layout > .rt-pdock--left { top: 12px; left: 12px; }
+    .lv-layout > .rt-pdock--bottom { bottom: 12px; left: 12px; }
+    /* «Մեքենաներ» свёрнуты — кнопки масштаба и «Միայն քարտեզ» у левого края, под таблеткой */
+    #lvPage .lv-layout.rt-min-side .leaflet-top.leaflet-left { left: 0; top: 52px; }
+    #lvPage .lv-layout.rt-min-side .leaflet-bottom.leaflet-left { left: 0; }
+    /* правая колонка свёрнута целиком — подписи карты до правого края */
+    #lvPage .lv-layout.rt-min-probs.rt-min-card .leaflet-bottom.leaflet-right,
+    #lvPage .lv-layout.rt-min-probs.is-nocard .leaflet-bottom.leaflet-right { right: 0; }
+}

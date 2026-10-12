@@ -968,9 +968,9 @@ details.dp-costnote p { margin: 6px 0 0; }
     .dp-tab[aria-pressed="true"] { color: var(--rt-acc); background: var(--rt-acc-glow); }
     .dp-tab[hidden] { display: none; }
     /* «Օր»: день, подготовка и сводка; «Երթեր»: шкала и рейсы; «Քարտեզ»: только карта */
-    #rtDispatch[data-tab="day"] :is(#dpBoard, #dpOverflow, #dpUnassigned, .dp-split) { display: none !important; }
+    #rtDispatch[data-tab="day"] :is(#dpBoard, #dpOverflow, #dpUnassigned, .dp-split, #dpStops) { display: none !important; }
     #rtDispatch[data-tab="trips"] :is(.dp-setacts, .dp-help, #dpTodo, #dpInbox, #dpNoDriver, #dpSameDay, .dp-prep, #dpRun, .dp-summary, .dp-mapcol, #dpAnalysis) { display: none !important; }
-    #rtDispatch[data-tab="map"] :is(.dp-setacts, .dp-help, #dpTodo, #dpInbox, #dpNoDriver, #dpSameDay, .dp-prep, #dpRun, .dp-summary, #dpBoard, #dpOverflow, #dpUnassigned, .dp-trucklist, #dpAnalysis) { display: none !important; }
+    #rtDispatch[data-tab="map"] :is(.dp-setacts, .dp-help, #dpTodo, #dpInbox, #dpNoDriver, #dpSameDay, .dp-prep, #dpRun, .dp-summary, #dpBoard, #dpOverflow, #dpUnassigned, .dp-trucklist, #dpAnalysis, #dpStops) { display: none !important; }
     #rtDispatch[data-tab="map"] .dp-mapbox-body > .dp-map { height: calc(100svh - var(--rt-nav-h, 64px) - 330px); min-height: 380px; }
     /* Tesla+: «Քարտեզ» — без заголовка свёртки: карта сразу под строкой дня и выбором машин */
     #rtDispatch[data-tab="map"] .dp-mapbox > summary { display: none; }
@@ -1919,3 +1919,92 @@ body.dp-ws-on main.py-4 { padding-top: 8px !important; }
     .dp-fleet-foot { padding: 4px 14px 14px; }
     #rtDispatch .dp-step:not(.dp-fleet) .dp-step-body > .dp-stats { margin: 0 -16px; }
 }
+
+/* ==========================================================================
+   Tesla+: «Խանութներ» внизу страницы (пользователь 12.10 «магазины покажи снизу страницы») — под картой рабочего экрана
+   и во вкладке «Երթ» телефона; таблица линиями (как rt-table--lined): № как на карте · магазин · адрес · рейс · кг ·
+   прибытие · окно приёма («մինչև» — жёлтым) · ֏ · «×»; режим «Փոփոխել» — кнопки строки под ней
+   ========================================================================== */
+.dp-stops { margin: 16px 0 0; padding: 14px 18px 10px; border-radius: var(--rt-radius); background: var(--rt-panel); box-shadow: var(--rt-shadow-sm); scroll-margin-top: 12px; }
+.dp-stops[hidden] { display: none; }
+.dp-stops-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px; margin: 0 0 8px; }
+#rtDispatch .dp-stops-t { margin: 0; font-size: 1.0625rem; font-weight: 600; }
+.dp-stops-n { color: var(--rt-fg-dim); font-size: .8125rem; }
+.dp-stops-head #dpStopsAll { margin-left: auto; }
+.dp-st { --st-cols: 52px minmax(170px, 1.5fr) minmax(150px, 1.2fr) 64px 76px 76px minmax(120px, .9fr) 108px 40px; font-size: .875rem; }
+.dp-st-h, .dp-st-r { display: grid; grid-template-columns: var(--st-cols); column-gap: 12px; align-items: center; }
+.dp-st-h { position: sticky; top: 0; z-index: 2; padding: 8px; border-bottom: 1px solid var(--rt-line); background: var(--rt-panel); color: var(--rt-fg-dim); font-size: .75rem; }
+.dp-st-h > :nth-child(n+5):nth-child(-n+6), .dp-st-h > :nth-child(8) { text-align: right; }
+#rtDispatch .dp-st-r { position: relative; padding: 8px; border-bottom: 1px solid var(--rt-line); border-top: 0; }
+#rtDispatch .dp-st-r::before { content: none; }
+.dp-st-r:hover { background: var(--rt-hl); }
+.dp-st-c-kg, .dp-st-c-eta, .dp-st-c-sum { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.dp-st-c-eta { font-weight: 500; }
+.dp-st-c-addr, .dp-st-c-trip { color: var(--rt-fg-dim); overflow-wrap: anywhere; }
+.dp-st-c-name { min-width: 0; }
+.dp-st-c-name small { display: block; color: var(--rt-fg-mute); font-size: .75rem; overflow-wrap: anywhere; }
+.dp-st-c-name .dp-stop-tags { margin-top: 4px; }
+.dp-st-c-act { display: flex; justify-content: flex-end; }
+.dp-st-c-edit { grid-column: 1 / -1; }
+.dp-st-c-edit .dp-stop-acts { margin: 6px 0 2px 64px; }
+.dp-st-c-lunch { grid-column: 2 / 6; color: var(--rt-fg-dim); }
+.dp-lunch .dp-st-c-eta { grid-column: 6; color: var(--rt-fg-dim); }
+.dp-st-num {
+    display: inline-grid; place-items: center; min-width: 24px; height: 24px; padding: 0 6px; border-radius: 12px;
+    background: var(--dp-c, var(--rt-chip)); color: var(--dp-c-ink); font: 600 .6875rem/1 var(--rt-font);
+}
+.dp-st-num.is-hot { background: var(--rt-acc-fill); color: var(--rt-acc-ink); }
+.dp-st-num.is-lunch { background: var(--rt-chip); color: var(--rt-fg-dim); }
+.dp-st-go { display: block; max-width: 100%; margin: 0; padding: 0; border: 0; background: none; color: var(--rt-fg); font: 500 .875rem/1.35 var(--rt-font); text-align: left; cursor: pointer; overflow-wrap: anywhere; }
+.dp-st-go:hover { color: var(--rt-acc); text-decoration: underline; }
+.dp-st-go:focus-visible { outline: 2px solid var(--rt-acc); outline-offset: 2px; border-radius: 4px; }
+#rtDispatch .dp-st .rt-badge.dp-b-win { background: var(--rt-chip); color: var(--rt-fg-dim); border-color: transparent; }
+#rtDispatch .dp-st .rt-badge.dp-b-until { background: var(--rt-warn-bg); color: var(--rt-warn); border-color: transparent; font-weight: 500; }
+.dp-st-c-win .rt-badge { white-space: normal; }
+/* группа машины (машина не выбрана): цвет, номер, итоги; нажатие сворачивает её точки */
+.dp-st-g { padding: 12px 8px 6px; border-bottom: 1px solid var(--rt-line); }
+.dp-st-gbtn {
+    display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin: 0; padding: 4px 6px; border: 0; border-radius: 8px;
+    background: none; color: var(--rt-fg); font: 600 .9375rem var(--rt-font); text-align: left; cursor: pointer;
+}
+.dp-st-gbtn:hover { background: var(--rt-hl); }
+.dp-st-gbtn:focus-visible { outline: 2px solid var(--rt-acc); outline-offset: 1px; }
+.dp-st-gbtn > i { width: 14px; font-size: .75rem; color: var(--rt-fg-dim); transition: transform .15s; }
+.dp-st-gbtn[aria-expanded="false"] > i { transform: rotate(-90deg); }
+.dp-st-gsum { color: var(--rt-fg-dim); font-weight: 400; font-size: .8125rem; }
+#rtDispatch .dp-st-trip { margin: 0; padding: 0; border-top: 0; }
+.dp-st-trip[hidden] { display: none; }
+#rtDispatch .dp-st-trip.is-drop { outline: 2px dashed var(--rt-acc); outline-offset: -2px; background: var(--rt-acc-glow); }
+@media (prefers-reduced-motion: reduce) { .dp-st-gbtn > i { transition: none; } }
+/* ссылка «Խանութները ↓» в карточке выбранной машины */
+.dp-tstops-link { align-self: flex-start; display: inline-flex; align-items: center; gap: 6px; font-size: .8125rem; font-weight: 600; text-decoration: none; }
+/* средний экран и телефон: таблица — строками-карточками (номер слева, «×» справа, цифры — строкой под адресом) */
+@media (max-width: 1100px) {
+    .dp-st-h { display: none; }
+    #rtDispatch .dp-st-r { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; padding: 10px 48px 10px 40px; }
+    .dp-st-c-n { position: absolute; left: 6px; top: 10px; }
+    .dp-st-c-act { position: absolute; right: 4px; top: 6px; }
+    .dp-st-c-name, .dp-st-c-addr, .dp-st-c-edit, .dp-st-c-lunch { flex: 1 1 100%; }
+    .dp-st-c-kg, .dp-st-c-eta, .dp-st-c-sum, .dp-st-c-trip { text-align: left; font-size: .8125rem; }
+    .dp-st-c-edit .dp-stop-acts { margin-left: 0; }
+    .dp-stops { padding: 12px 12px 8px; }
+}
+
+/* Tesla+ (пользователь 12.10 «сильно закрывает карту»): панели рабочего экрана сворачиваются (rt_panels.js, стили таблеток —
+   routes_ui.css): «—» в правом верхнем углу панели, таблетки — у своего края; кнопки карты и подписи — вне таблеток */
+#dpWs .dp-ws-top { padding-right: 52px; }
+#dpWs .dp-wl-head { padding-right: 52px; }
+#dpWs .dp-ws-side > .rt-pmin { top: 13px; right: 52px; }
+#rtDispatch .dp-ws-side .dp-thead { padding-right: 96px; }
+#dpWs .dp-ws-low > .rt-pmin { top: 8px; }
+#rtDispatch .dp-ws-bottom .dp-board-head { padding-right: 52px; }
+#dpWs > .rt-pdock--top { top: 12px; left: 12px; right: 12px; }
+#dpWs > .rt-pdock--left { top: calc(var(--ws-top-h, 72px) + 20px); left: 12px; }
+#dpWs > .rt-pdock--right { top: calc(var(--ws-top-h, 72px) + 20px); right: 12px; }
+#dpWs > .rt-pdock--bottom { bottom: 12px; left: 12px; }
+/* панель машин свёрнута — кнопки масштаба и «Միայն քարտեզ» у левого края, под её таблеткой */
+#rtDispatch .dp-ws.rt-min-list .dp-ws-map .leaflet-top.leaflet-left { left: 0; top: calc(var(--ws-top-h, 72px) + 64px); }
+#rtDispatch .dp-ws.rt-min-list .dp-ws-map .leaflet-bottom.leaflet-left { left: 0; }
+/* панель машины свёрнута — шкала дня и подписи карты снова до правого края */
+#rtDispatch .dp-ws.has-side.rt-min-side .dp-ws-low { right: 12px; }
+#rtDispatch .dp-ws.has-side.rt-min-side .dp-ws-map .leaflet-bottom.leaflet-right { right: 0; }

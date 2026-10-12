@@ -12,9 +12,9 @@
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=27">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_ui.css') }}?v=3">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_ui.css') }}?v=4">
 <!-- Страница на армянском (ответ владельца №31). Цвета — тема Tesla+ из routes.css (☀/☾), свои стили поверх routes.css -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=80">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=81">
 {% endblock %}
 
 {% block content %}
@@ -147,7 +147,7 @@
             <aside class="dp-ws-side" id="dpWsSide" aria-label="Ընտրված մեքենան" hidden>
                 <button type="button" class="dp-ws-close" id="dpWsClose" aria-label="Փակել մեքենայի քարտը" title="Փակել"><i class="fas fa-xmark" aria-hidden="true"></i></button>
             </aside>
-            <div class="dp-ws-low">
+            <div class="dp-ws-low" id="dpWsLow">
                 <div class="dp-ws-bottom" id="dpWsBottom"></div>
             </div>
         </div>
@@ -374,6 +374,17 @@
                     </details>
                 </aside>
             </div>
+
+            <!-- Tesla+ (пользователь 12.10 «магазины покажи снизу страницы»): точки — внизу, под картой рабочего экрана (и во
+                 вкладке «Երթ» на телефоне): выбранная машина — её рейсы; не выбрана — все машины группами (renderStops) -->
+            <section class="dp-stops" id="dpStops" aria-labelledby="dpStopsTitle" hidden>
+                <div class="dp-stops-head">
+                    <h2 class="dp-stops-t" id="dpStopsTitle">Խանութներ</h2>
+                    <span class="dp-stops-n" id="dpStopsNote"></span>
+                    <button type="button" class="rt-btn rt-btn-ghost rt-btn-sm" id="dpStopsAll" hidden><i class="fas fa-layer-group" aria-hidden="true"></i><span>Բոլոր մեքենաները</span></button>
+                </div>
+                <div class="dp-st" id="dpStopsTable" role="table" aria-labelledby="dpStopsTitle"></div>
+            </section>
         </section>
 
         <!-- ДЛЯ РУКОВОДИТЕЛЯ: сравнение «по менеджерам» и «план и факт» -->
@@ -688,5 +699,7 @@
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=4" data-yandex-key="{{ yandex_tiles_key }}"></script>
 <!-- панель «Հարցրու AI-ին» — до страницы: init подключает её (RoutesDispatchAI.attach) -->
 <script src="{{ url_for('static', filename='js/routes_dispatch_ai.js') }}?v=4"></script>
-<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=123"></script>
+<!-- Tesla+: стеклянные панели поверх карты сворачиваются (общий модуль с «Մեքենաները առցանց») -->
+<script src="{{ url_for('static', filename='js/rt_panels.js') }}?v=1"></script>
+<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=124"></script>
 {% endblock %}

@@ -360,7 +360,7 @@
         const fresh = state.alarm.probs.filter(isNew).sort(byAlarm);
         $('lvAlarm').hidden = !fresh.length;
         document.title = fresh.length ? '(' + fresh.length + ') ⚠ ' + BASE_TITLE : BASE_TITLE;
-        if (!fresh.length) { $('lvAlarm').className = 'lv-alarm'; $('lvAlarmSr').textContent = ''; return; }
+        if (!fresh.length) { $('lvAlarm').className = 'lv-alarm'; $('lvAlarmSr').textContent = ''; panelsRefresh(); return; }
         const sev = fresh[0].sev;   // есть новая красная — баннер красный
         // эскалация: красная без ответа ESCALATE_MS — баннер сильнее и сколько она ждёт (самая давняя)
         const esc = escalated(fresh);
@@ -373,6 +373,7 @@
         const items = fresh.slice(0, 3).map(p => h('li', null, icon(SEV[p.sev][0]), h('span', { text: p.t.car_code + ' · ' + p.title })));
         if (fresh.length > 3) items.push(h('li', { text: '+' + (fresh.length - 3) }));
         $('lvAlarmList').replaceChildren(...items);
+        panelsRefresh();
     }
 
     // звук: AudioContext — только по жесту пользователя (без жеста он «спит»); ошибки не наружу
@@ -636,7 +637,10 @@
         if (!lay) return;
         const top = lay.getBoundingClientRect().top + window.scrollY;
         lay.style.setProperty('--lv-stage-h', Math.max(560, window.innerHeight - top - 16) + 'px');
-        lay.style.setProperty('--lv-bottom-h', (WIDE.matches && bottom ? bottom.offsetHeight + 24 : 112) + 'px');
+        // нижняя полоса свёрнута (rt_panels.js) — над её таблеткой
+        const dock = lay.querySelector(':scope > .rt-pdock--bottom');
+        const bh = bottom && bottom.offsetParent ? bottom.offsetHeight : dock ? dock.offsetHeight : 0;
+        lay.style.setProperty('--lv-bottom-h', (WIDE.matches ? bh + 24 : 112) + 'px');
         if (state.map) state.map.invalidateSize({ pan: false });
     }
     window.addEventListener('resize', fitStage);
@@ -644,11 +648,13 @@
     // центрируется в видимой части карты, а не под панелью
     function covers() {
         if (!WIDE.matches || !state.map) return { l: 0, r: 0, b: 0 };
-        const m = $('lvMap').getBoundingClientRect(), side = document.querySelector('.lv-side').getBoundingClientRect();
-        const right = [...document.querySelectorAll('.lv-right > :not([hidden])')].map(e => e.getBoundingClientRect().left);
-        const bottom = document.querySelector('.lv-bottom').getBoundingClientRect();
-        return { l: Math.max(0, side.right - m.left), r: right.length ? Math.max(0, m.right - Math.min(...right)) : 0,
-                 b: Math.max(0, m.bottom - bottom.top) };
+        // свёрнутые панели (rt_panels.js) не закрывают карту — считаются только видимые (и таблетка нижней полосы)
+        const vis = (el) => (el && el.offsetParent ? el.getBoundingClientRect() : null);
+        const m = $('lvMap').getBoundingClientRect(), side = vis(document.querySelector('.lv-side'));
+        const right = [...document.querySelectorAll('.lv-right > :not([hidden])')].map(vis).filter(Boolean).map(r => r.left);
+        const bottom = vis(document.querySelector('.lv-bottom')) || vis(document.querySelector('.lv-layout > .rt-pdock--bottom'));
+        return { l: side ? Math.max(0, side.right - m.left) : 0, r: right.length ? Math.max(0, m.right - Math.min(...right)) : 0,
+                 b: bottom ? Math.max(0, m.bottom - bottom.top) : 0 };
     }
     const fitPad = () => { const c = covers(); return { paddingTopLeft: [c.l + 12, 12], paddingBottomRight: [c.r + 12, c.b + 12] }; };
     function panVisible(latlng) {
@@ -660,6 +666,33 @@
         const ro = new ResizeObserver(() => fitStage());
         document.querySelectorAll('.lv-bottom, .lv-head').forEach(el => ro.observe(el));
     }
+
+    // ---------- сворачиваемые панели (пользователь 12.10 «сильно закрывает карту», rt_panels.js) ----------
+    // ПК: «Մեքենաներ», «Խնդիրներ» (полоса новых тревог и список), карточка машины и нижняя полоса — в таблетки у своего
+    // края; «Միայն քարտեզ» и клавиша M — все; новая тревога у свёрнутых «Խնդիրներ» — таблетка пульсирует (не разворачивается)
+    function initPanels() {
+        if (typeof window.RtPanels === 'undefined') return;
+        const right = document.querySelector('.lv-right');
+        RtPanels.init({
+            page: 'live', stage: document.querySelector('.lv-layout'), map: state.map,
+            enabled: () => WIDE.matches,
+            panels: [
+                { id: 'side', title: 'Մեքենաներ', edge: 'left', els: [document.querySelector('.lv-side')],
+                  label: () => (state.data ? String(state.data.trucks.length) : '') },
+                { id: 'probs', title: 'Խնդիրներ', edge: 'right', els: [$('lvAlarm'), $('lvProbs')], anchor: $('lvProbs'), dock: right,
+                  label: () => String(state.alarm.probs.length), alert: () => state.alarm.probs.some(isNew) },
+                { id: 'card', title: 'Մեքենա', edge: 'right', els: [$('lvCard')], dock: right, label: () => state.selected || '' },
+                { id: 'bottom', title: 'Օրվա ամփոփում', edge: 'bottom', els: [document.querySelector('.lv-bottom')] },
+            ],
+            onChange: () => {
+                fitStage();
+                const t = state.detail;
+                if (t && t.position && state.map) panVisible([t.position.lat, t.position.lon]);
+            },
+        });
+        state.panels = true;
+    }
+    const panelsRefresh = () => { if (state.panels) RtPanels.refresh(); };
 
     // ---------- карта ----------
     function initMap() {
@@ -1130,6 +1163,7 @@
     function renderCard() {
         const t = state.detail || (state.data && state.data.trucks.find(x => x.car_code === state.selected));
         $('lvCard').hidden = !t;
+        panelsRefresh();   // таблетка свёрнутой карточки — номер выбранной машины
         // широкий экран: без карточки карта занимает и её колонку; размер карты сменился — Leaflet пересчитывает (иначе
         // серые плитки)
         const lay = document.querySelector('.lv-layout');
@@ -1734,6 +1768,7 @@
         refresh();
         schedule();
     });
+    $('lvCardClose').addEventListener('click', () => { if (state.selected) select(state.selected); });   // «×» — снять выбор
     $('lvToday').addEventListener('click', () => { $('lvDate').value = ''; $('lvDate').dispatchEvent(new Event('change')); });
     // «Տեսա բոլորը» — все новые; «Ձայն» — включение (жест пользователя будит AudioContext: пробный сигнал)
     $('lvAlarmAck').addEventListener('click', () => {
@@ -1753,6 +1788,7 @@
     armAudio();
 
     initMap();
+    initPanels();
     refresh();
     schedule();
 })();

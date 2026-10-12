@@ -134,3 +134,44 @@
 .rt-howto > summary::-webkit-details-marker { display: none; }
 .rt-howto > summary:hover { color: var(--rt-acc-hover); }
 .rt-howto > p { max-width: 80ch; margin: 4px 0 0; color: var(--rt-fg-dim); font-size: .9375rem; line-height: 1.55; }
+
+/* Стеклянные панели поверх карты сворачиваются (static/js/rt_panels.js; «Առաքում», «Մեքենաները առցանց»): «—» в углу
+   панели, свёрнутая — таблетка у своего края (название и счётчик), «Միայն քարտեզ» рядом с +/− прячет все. Механизм
+   включён — у «сцены» класс .rt-panels-on; свёрнутая панель — .rt-is-min. Появление ≤ 150 мс, reduced motion — без него */
+.rt-pmin {
+    position: absolute; top: 10px; right: 10px; z-index: 6; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 50%;
+    display: grid; place-items: center; background: var(--rt-chip); color: var(--rt-fg-dim); font-size: .75rem; cursor: pointer;
+}
+.rt-pmin:hover { color: var(--rt-fg); background: var(--rt-line); }
+.rt-pmin[hidden] { display: none; }
+.rt-pmin:focus-visible, .rt-ppill:focus-visible, .rt-mapbtn:focus-visible { outline: 2px solid var(--rt-acc); outline-offset: 2px; }
+.rt-panels-on .rt-is-min { display: none !important; }
+.rt-pdock { position: absolute; z-index: 650; display: flex; gap: 8px; pointer-events: none; }
+.rt-pdock > * { pointer-events: auto; }
+.rt-pdock--left, .rt-pdock--right { flex-direction: column; align-items: flex-start; }
+.rt-pdock--right { align-items: flex-end; }
+.rt-ppill {
+    display: inline-flex; align-items: center; gap: 8px; height: 36px; max-width: 100%; padding: 0 14px; border: 0; border-radius: 999px;
+    background: var(--rt-glass); box-shadow: var(--rt-shadow-sm); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+    color: var(--rt-fg); font: 600 .8125rem var(--rt-font); white-space: nowrap; cursor: pointer; animation: rt-pill-in .15s ease-out;
+}
+.rt-ppill[hidden], .rt-ppill__n[hidden] { display: none; }
+.rt-ppill:hover { box-shadow: var(--rt-shadow-sm), 0 0 0 1px var(--rt-acc-dim) inset; }
+.rt-ppill__t { overflow: hidden; text-overflow: ellipsis; }
+.rt-ppill__n { color: var(--rt-fg-dim); font-weight: 500; font-variant-numeric: tabular-nums; }
+.rt-ppill > i { font-size: .6875rem; color: var(--rt-fg-dim); }
+/* новая тревога у свёрнутой панели — таблетка пульсирует (не разворачивается сама) */
+.rt-ppill.is-alert { color: var(--rt-danger); animation: rt-pill-in .15s ease-out, rt-pill-pulse 1.6s ease-in-out .15s infinite; }
+.rt-ppill.is-alert .rt-ppill__n, .rt-ppill.is-alert > i { color: var(--rt-danger); }
+@keyframes rt-pill-in { from { opacity: 0; transform: scale(.94); } }
+@keyframes rt-pill-pulse { 50% { box-shadow: var(--rt-shadow-sm), 0 0 0 5px var(--rt-danger-bg); } }
+.rt-is-opening { animation: rt-panel-in .15s ease-out; }
+@keyframes rt-panel-in { from { opacity: 0; transform: scale(.985); } }
+.rt-mapctl[hidden] { display: none; }
+.rt-page .rt-mapctl .rt-mapbtn {
+    width: 30px; height: 30px; padding: 0; border: 0; border-radius: 4px; display: grid; place-items: center;
+    background: var(--rt-panel-2); color: var(--rt-fg); font-size: .8125rem; cursor: pointer;
+}
+.rt-page .rt-mapctl .rt-mapbtn:hover { background: var(--rt-panel); color: var(--rt-acc); }
+.rt-page .rt-mapctl .rt-mapbtn[aria-pressed="true"] { background: var(--rt-acc-fill); color: var(--rt-acc-ink); }
+@media (prefers-reduced-motion: reduce) { .rt-ppill, .rt-ppill.is-alert, .rt-is-opening { animation: none; } }

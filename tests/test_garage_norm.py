@@ -368,7 +368,8 @@ def test_public_allowlist_covers_norm_and_basemap_only():
         '/static/img/yandex_maps_logo_ru.svg',                          # её подложка — Яндекс, логотип обязателен
         '/static/css/routes_warehouse.css', '/static/js/routes_warehouse.js',    # склад «Պահեստ» (№78)
         '/static/css/routes_drivers.css', '/static/js/routes_drivers.js',        # «Վարորդներ» гаражу (№87)
-        '/static/css/routes_ui.css', '/static/js/routes_top.js'))                # Tesla+: компоненты и верхняя панель раздела
+        '/static/css/routes_ui.css', '/static/js/routes_top.js',                 # Tesla+: компоненты и верхняя панель раздела
+        '/static/js/rt_panels.js'))                                              # Tesla+: сворачиваемые панели карты машин
 
 
 def test_garage_page_tab_and_basemap_without_yandex_key(dashboard, monkeypatch):

@@ -13,9 +13,9 @@
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=27">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_ui.css') }}?v=3">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_ui.css') }}?v=4">
 <!-- Машины на карте сейчас (№76): тема «Развоза», свои классы .lv-*; новые файлы статики — и в _PUBLIC_STATIC app_v2 -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_live.css') }}?v=18">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_live.css') }}?v=19">
 {% endblock %}
 
 {% block content %}
@@ -78,6 +78,8 @@
                     <p class="lv-sub" id="lvSub"></p>
                 </div>
                 <span class="lv-state" id="lvState"></span>
+                <!-- «×» — снять выбор машины (как повторное нажатие в списке); «—» рядом ставит rt_panels.js -->
+                <button type="button" class="lv-card-x" id="lvCardClose" aria-label="Փակել մեքենայի քարտը" title="Փակել"><i class="fas fa-xmark" aria-hidden="true"></i></button>
             </div>
             <div class="lv-active" id="lvActive" hidden></div>
             <dl class="lv-grid" id="lvGrid"></dl>
@@ -249,5 +251,7 @@
         integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
 <!-- подложка — Яндекс, как на остальных картах (решение владельца 06.10, см. live_page) -->
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=4" data-yandex-key="{{ yandex_tiles_key }}"></script>
-<script src="{{ url_for('static', filename='js/routes_live.js') }}?v=27"></script>
+<!-- Tesla+: стеклянные панели поверх карты сворачиваются (общий модуль с «Առաքում») -->
+<script src="{{ url_for('static', filename='js/rt_panels.js') }}?v=1"></script>
+<script src="{{ url_for('static', filename='js/routes_live.js') }}?v=28"></script>
 {% endblock %}

@@ -492,6 +492,7 @@ _PUBLIC_STATIC = frozenset((
     '/static/css/routes_warehouse.css', '/static/js/routes_warehouse.js',                     # routes_warehouse.html (№78)
     '/static/css/routes_drivers.css', '/static/js/routes_drivers.js',                         # routes_drivers.html (№87)
     '/static/css/routes_ui.css', '/static/js/routes_top.js',   # Tesla+: общие компоненты и верхняя панель раздела (routes_base.html)
+    '/static/js/rt_panels.js',   # Tesla+ (12.10): сворачиваемые панели поверх карты — routes_live.html
 ))
 # API журнала и карты машин (№76) снаружи — только простые сегменты (путь уже раскодирован сервером): без '..',
 # '//', '%', '\', регистра. «Վարորդներ» (№87) — только точный путь _DRIVERS_API.
