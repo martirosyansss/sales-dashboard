@@ -32,7 +32,7 @@ import logging
 import sys
 import tempfile
 import threading
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -70,8 +70,11 @@ CREW = {'123AV61': ('Դ. Գասպարյան', 'Հ. Մանուկյան'), '991AT6
 NOW = datetime(2026, 9, 30, 17, 0)   # «сейчас» — вечер накануне: день 01.10 — завтрашний (не прошедший)
 
 
-def build_demo(tmp: str):
-    """Приложение с днём 01.10 побольше: 6 машин, 48 магазинов в 8 местах (2 — Ереван, часть — малый центр)."""
+def build_demo(tmp: str, chips: bool = False):
+    """Приложение с днём 01.10 побольше: 6 машин, 48 магазинов в 8 местах (2 — Ереван, часть — малый центр).
+    chips — день, как у пользователя 12.10 (живые данные): «сейчас» — утро 01.10, ненулевые «Առանց վարորդի» (3 машины без
+    водителя), «Նախորդ օրերից» (заказы 29.09), «Առանց կետի» (5 магазинов без точки), «Նոր պատվերներ» (заказы дня) и
+    незаполненные нормы машин."""
     app = base.build_app(tmp, base.FakeClient())
     views._clock = lambda: NOW
     views._yerevan_now = lambda: NOW.replace(tzinfo=ZoneInfo('Asia/Yerevan'))
@@ -94,6 +97,21 @@ def build_demo(tmp: str):
             addresses[cid] = f'{town}, {street} {3 + k * 7}'
             orders.append(_dorder(100 + i, cid, 80.0 + (i * 37) % 420, agent=1 + i % 2, rev=12000.0 + (i * 1300) % 40000))
             i += 1
+    if chips:
+        for k in range(5):   # магазины без точки на карте
+            cid = 3900 + k
+            customers[cid] = erp.Customer(cid, f'C{cid}', f'«Նոր» խանութ {k + 1}', '036', 'Այլ', False, '101')
+            names[cid] = (f'C{cid}', f'«Նոր» խանութ {k + 1}')
+            addresses[cid] = f'Երևան, Նոր փողոց {k + 1}'
+            orders.append(_dorder(200 + k, cid, 60.0 + 10 * k))
+        for k in range(6):   # недовезённые заказы прошлых дней — у своих магазинов (без заказов дня)
+            cid, pid = 3950 + k, 9950 + k
+            points[pid] = (cid, (round(40.17 + .004 * k, 5), round(44.49 + .006 * k, 5)))
+            default[cid] = pid
+            customers[cid] = erp.Customer(cid, f'C{cid}', f'«Հին» խանութ {k + 1}', '036', 'Այլ', False, '101')
+            names[cid] = (f'C{cid}', f'«Հին» խանութ {k + 1}')
+            addresses[cid] = f'Երևան, Հին փողոց {k + 1}'
+            orders.append(_dorder(300 + k, cid, 90.0 + 5 * k, day=date(2026, 9, 29)))
     cars = dict(snap.cars)
     cars.update({c: erp.Car(c, m, False) for c, m, _, _ in CARS})
     demo = dataclasses.replace(snap, customers=customers, erp_points={**snap.erp_points, **points},
@@ -101,6 +119,12 @@ def build_demo(tmp: str):
     state.snapshots = SnapshotCache(lambda: demo)
     data = dp.DispatchData(tuple(orders), names, addresses, {1: ('123AV61',), 2: ('991AT61',)}, snap.data_as_of)
     state.dispatch_loader = lambda since, until, day: data
+    if chips:
+        new = [_dorder(400 + k, 3001 + k * 5, 70.0 + 10 * k, day=date(2026, 10, 1)) for k in range(4)]
+        state.same_day_loader = lambda day: dp.SameDayData(
+            tuple(o for o in new if o.order_date == day), {}, {o.customer_id: names[o.customer_id] for o in new}, {},
+            datetime(2026, 10, 1, 8, 0))
+    crew = {k: v for k, v in CREW.items() if not chips or k in ('123AV61', '991AT61', '026LS62')}
     with app.test_request_context():
         r = app.test_client().post('/api/routes/settings', json={
             'settings': {'yerevan_zone': [], 'truck_end_reserve_min': 0, 'morning_loading_from': '01-01', 'morning_loading_to': '12-31'},
@@ -108,12 +132,20 @@ def build_demo(tmp: str):
             'trucks': [{'car_code': c, 'capacity_kg': kg, 'fuel_l_per_100km': 14 + kg // 1000, 'active': True, 'center_ok': ok}
                        for c, _, kg, ok in CARS] + [{'car_code': c, 'capacity_kg': 3500, 'active': False} for c in ('CAR1', 'CAR2')]})
         assert r.status_code == 200, r.get_json()
-        for car, (name, helper) in CREW.items():
+        for car, (name, helper) in crew.items():
             r = app.test_client().post('/api/routes/dispatch/driver', json={'date': DAY, 'car_code': car, 'name': name, **({'helper': helper} if helper else {})})
             assert r.status_code == 200, r.get_json()
         r = app.test_client().post('/api/routes/dispatch/build', json={'date': DAY, 'trucks': [c for c, *_ in CARS]})
         assert r.status_code == 200, r.get_json()
     return app
+
+
+CHIPS_NOW = datetime(2026, 10, 1, 8, 0)   # день 01.10 — «сегодня» (новые заказы дня)
+
+
+def use_chips_clock():
+    views._clock = lambda: CHIPS_NOW
+    views._yerevan_now = lambda: CHIPS_NOW.replace(tzinfo=ZoneInfo('Asia/Yerevan'))
 
 
 RECTS = """() => { const r = (s) => { const e = document.querySelector(s); if (!e || !e.offsetParent) return null;
@@ -140,8 +172,11 @@ def main() -> int:
         print(('OK   ' if cond else 'FAIL ') + msg)
 
     app = build_demo(tempfile.mkdtemp(prefix='dispatch-layout-'))
+    chips_app = build_demo(tempfile.mkdtemp(prefix='dispatch-layout-chips-'), chips=True)
     server = make_server('127.0.0.1', PORT, app, threaded=True)
     threading.Thread(target=server.serve_forever, daemon=True).start()
+    chips_server = make_server('127.0.0.1', PORT + 4, chips_app, threaded=True)
+    threading.Thread(target=chips_server.serve_forever, daemon=True).start()
     errors = []
     try:
         with sync_playwright() as pw:
@@ -342,9 +377,57 @@ def main() -> int:
                     check(sw <= 390, f'T {theme}: tab {tab} — no horizontal scroll ({sw})')
                     pg.screenshot(path=str(SHOTS / f'phone-{theme}-{tab}.png'), full_page=True)
                 pg.close()
+
+            # C (живой отзыв 12.10): день как у пользователя — 4 ненулевых чипа и незаполненные нормы; строка итогов — одна
+            # строка (≤ 64 px) на 1280–1920, чипы — кнопки с полным aria-label (тесно — «значок + число», название в подсказке),
+            # нормы — ⚙; на 1366×768 карта видна не ниже 200 px
+            use_chips_clock()
+            for theme in ('dark', 'light'):
+                for w, h in ((1280, 768), (1366, 768), (1440, 900), (1920, 1080)):
+                    tag = f'{theme} {w}×{h}'
+                    pg = browser.new_page(viewport={'width': w, 'height': h})
+                    pg.add_init_script("try { localStorage.setItem('rtTheme', '%s'); localStorage.setItem('dpLayout', 'ws'); } catch (e) {}" % theme)
+                    pg.on('pageerror', lambda e: errors.append(f'pageerror chips {theme} {w}: {e}'))
+                    pg.on('console', lambda m: errors.append(f'console chips {theme} {w}: {m.text}')
+                          if m.type == 'error' and not base.is_ignorable(m) else None)
+                    for pat in ('https://tiles.api-maps.yandex.ru/**', 'https://*.tile.openstreetmap.org/**'):
+                        pg.route(pat, lambda r: r.fulfill(status=200, content_type='image/png', body=base.TILE_PNG))
+                    pg.goto(f'http://127.0.0.1:{PORT + 4}/routes/dispatch?date={DAY}')
+                    pg.wait_for_selector('#rtDispatch.is-ws #dpBoard .dp-bar', timeout=30000)
+                    pg.wait_for_timeout(800)
+                    st = pg.evaluate("""() => { const top = document.querySelector('#dpWs .dp-ws-top').getBoundingClientRect();
+                        const items = [document.getElementById('dpWsKpi'), ...document.querySelectorAll('#dpInbox .dp-inchip')];
+                        const mid = items.map(e => { const b = e.getBoundingClientRect(); return b.top + b.height / 2; });
+                        const chips = [...document.querySelectorAll('#dpInbox .dp-inchip')].map(c => ({ tag: c.tagName, tab: c.tabIndex,
+                            label: c.getAttribute('aria-label') || '', compact: c.classList.contains('is-compact'), title: c.title,
+                            inside: c.getBoundingClientRect().left >= top.left && c.getBoundingClientRect().right <= top.right }));
+                        return { h: top.height, bottom: top.bottom, spread: Math.max(...mid) - Math.min(...mid), chips }; }""")
+                    names = [c['label'].split(' · ')[0] for c in st['chips']]
+                    check(st['h'] <= 64 and st['spread'] < 10 and all(c['inside'] for c in st['chips']),
+                          f'C {tag}: totals in one row ({st["h"]:.0f} px, spread {st["spread"]:.0f}), chips inside the panel')
+                    check(names[:3] == ['Առանց վարորդի', 'Նախորդ օրերից', 'Առանց կետի'] and 'Նոր պատվերներ' in names
+                          and names[-1] == 'Լրացնել մեքենաների նորմերը' and all(' · ' in c['label'] for c in st['chips'][:4]),
+                          f'C {tag}: 4 non-zero chips by importance + norms, full aria-labels {names}')
+                    check(all(c['tag'] in ('BUTTON', 'A') and c['tab'] >= 0 and c['title'] for c in st['chips']),
+                          f'C {tag}: chips are keyboard-reachable buttons/links with a tooltip')
+                    comp = [n for n, c in zip(names, st['chips']) if c['compact']]
+                    # сжимаются сначала наименее важные: если сжат важный — сжаты и все менее важные
+                    rank = ['Լրացնել մեքենաների նորմերը', 'Նոր պատվերներ', 'Առանց կետի', 'Նախորդ օրերից', 'Առանց վարորդի']
+                    ok_order = all(all(r in comp for r in rank[:rank.index(n)]) for n in comp if n in rank)
+                    check(ok_order, f'C {tag}: compacted from the least important {comp}')
+                    if (w, h) == (1366, 768):
+                        check(st['bottom'] <= 200, f'C {tag}: the map is visible from {st["bottom"]:.0f} px (≤ 200) with 4 chips')
+                        if comp:
+                            pg.locator('#dpInbox .dp-inchip.is-compact').first.focus()
+                            tip = pg.evaluate("(() => { const e = document.activeElement; return getComputedStyle(e, '::after').content; })()")
+                            check(tip.strip('"') == pg.evaluate("document.activeElement.dataset.label"), f'C {tag}: focus on a compact chip shows its name ({tip})')
+                    if w in (1366, 1440):
+                        pg.screenshot(path=str(SHOTS / f'chips-{theme}-{w}.png'))
+                    pg.close()
             browser.close()
     finally:
         server.shutdown()
+        chips_server.shutdown()
     for e in errors:
         print('ERR  ' + e)
     check(not errors, f'no page/console errors ({len(errors)})')

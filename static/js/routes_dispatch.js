@@ -1070,6 +1070,12 @@
             el.innerHTML = '<i class="fas ' + ico + '" aria-hidden="true"></i><span></span>' + (count ? '<b></b>' : '');
             el.querySelector('span').textContent = label;
             if (count) el.querySelector('b').textContent = fmt(count);
+            // полное название — в подсказке и для диктора: в тесной строке чип сжимается до значка и числа (fitChips)
+            const full = label + (count ? ' · ' + fmt(count) : '');
+            el.title = full;
+            el.dataset.label = full;
+            el.setAttribute('aria-label', full);
+            el.dataset.prio = String(CHIP_PRIO.indexOf(label) < 0 ? 50 : CHIP_PRIO.indexOf(label));
             box.appendChild(el);
         };
         // Tesla+ (живой отзыв 12.10): по важности — «Առանց վարորդի», «Նախորդ օրերից», «Առանց կետի» первыми, число — цветом
@@ -1101,6 +1107,30 @@
             add('is-link', 'fa-gear', 'Լրացնել մեքենաների նորմերը', 0, null, '/routes/settings#trucks');
         syncLateChips();
         syncTodoChip();
+    }
+    // Живой отзыв 12.10: строка счётчиков — всегда одна; не помещается — чипы сжимаются до «значок + число» (полное
+    // название — в aria-label, подсказке и при фокусе), начиная с наименее важных; «Լրացնել մեքենաների նորմերը» — значком ⚙,
+    // полным текстом — только если места с запасом. Порядок сжатия (первым сжимается первый):
+    const CHIP_PRIO = ['Լրացնել մեքենաների նորմերը', 'Այսօր չենք տանում', 'Այսօրվա պատվերներ', 'Նոր պատվերներ', 'Նոր տեղ՝ վարորդներից',
+        'Առանց կետի', 'Երթերում չեն', 'Խնդիր երթերում', 'Նախորդ օրերից', 'Առանց վարորդի'];
+    function fitChips() {
+        const box = $('dpInbox');
+        const chips = [...box.querySelectorAll('.dp-inchip')];
+        chips.forEach(c => c.classList.remove('is-compact'));
+        if (!$('rtDispatch').classList.contains('is-ws') || !chips.length) return;
+        // ширина содержимого — от левого края первого чипа до правого края последнего (строка прижата вправо: лишнее
+        // уходит влево и scrollWidth его не видит)
+        const over = (spare) => {
+            const a = chips[0].getBoundingClientRect(), b = chips[chips.length - 1].getBoundingClientRect();
+            return b.right - a.left > box.clientWidth - spare;
+        };
+        const link = chips.find(c => c.classList.contains('is-link'));
+        if (link && over(40)) link.classList.add('is-compact');
+        const order = chips.filter(c => c !== link).sort((a, b) => (+(a.dataset.prio || 50)) - (+(b.dataset.prio || 50)));
+        for (const c of order) {
+            if (!over(1)) break;
+            c.classList.add('is-compact');
+        }
     }
 
     // ---------- Новые заказы дня (ответ владельца №72) ----------
@@ -6218,9 +6248,12 @@
         el.innerHTML = '<i class="fas ' + t.btn.ico + '" aria-hidden="true"></i><span></span>';
         el.lastChild.textContent = t.btn.text;
         el.title = t.title + (t.lines[0] ? '։ ' + t.lines[0] : '');
+        el.dataset.label = t.btn.text;
+        el.dataset.prio = '99';
         el.setAttribute('aria-label', t.title + ' — ' + t.btn.text);
         box.prepend(el);
         box.hidden = false;
+        fitChips();
     }
     // №87: «N խանութ ուշանում է» / «M մեքենա չի հասցնում վերադառնալ» — в строке счётчиков (dpInbox, её перерисовывает
     // renderInbox — тогда и снова здесь); нажатие — следующая такая машина по кругу (шкала, карта, карточка)
@@ -6240,6 +6273,9 @@
                 el.className = 'dp-inchip is-bad';
                 el.innerHTML = '<i class="fas fa-hourglass-half" aria-hidden="true"></i><span></span>';
                 el.lastChild.textContent = label;
+                el.title = el.dataset.label = label;
+                el.setAttribute('aria-label', label);
+                el.dataset.prio = '95';
                 el.addEventListener('click', () => {
                     const t = d.plan.trucks.find(x => x.car_code === cars[lateTurn++ % cars.length]);
                     if (t) focusFromBoard(t, null);
@@ -6251,6 +6287,7 @@
             if (n) chip('dpLateChip', pl(n, 'խանութ') + ' ուշանում է', stores.map(x => x[0]));
         }
         box.hidden = !box.children.length;
+        fitChips();
         panelsRefresh();   // таблетка свёрнутой верхней панели — со счётчиком «требует внимания»
     }
 
@@ -6327,6 +6364,7 @@
         }, 0);
         // M3: подписи Яндекса / Leaflet справа внизу — не под карточкой машины
         $('dpWs').classList.toggle('has-side', on && !!state.mapFocus);
+        fitChips();
         panelsRefresh();   // свёртка панелей — только на рабочем экране
     }
     // шапка рабочего экрана — одной строкой: не помещается — подписи кнопок ступенями уходят в подсказки (сначала второстепенные)
@@ -6482,12 +6520,14 @@
             if (WIDE.addEventListener) WIDE.addEventListener('change', sync); else if (WIDE.addListener) WIDE.addListener(sync);
         }
         window.addEventListener('resize', () => { if ($('rtDispatch').classList.contains('is-ws')) sizeWs(); });
-        if (document.fonts && document.fonts.ready) document.fonts.ready.then(fitToolbar);   // ширина подписей — после загрузки шрифтов
+        if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { fitToolbar(); fitChips(); });   // ширина подписей — после загрузки шрифтов
         // шапка, подсказка и счётчики меняют высоту после отрисовки (шрифты, переносы) — высота рабочего экрана следом
         if (typeof window.ResizeObserver !== 'undefined') {
             const ro = new ResizeObserver(() => { if ($('rtDispatch').classList.contains('is-ws')) sizeWs(); });
             // ширина шапки меняется и без resize окна (полоса прокрутки, масштаб) — подписи кнопок следом; классы ширину не меняют
             new ResizeObserver(() => window.requestAnimationFrame(fitToolbar)).observe(document.querySelector('#rtDispatch .dp-dayboard'));
+            // ширина верхней панели сменилась (окно, полоса прокрутки) — чипы заново по месту (без дёрганья: одно измерение)
+            new ResizeObserver(() => window.requestAnimationFrame(fitChips)).observe(document.querySelector('#dpWs .dp-ws-top'));
             [document.querySelector('#rtDispatch .dp-mast'), $('dpTodo'), $('dpInbox'), $('dpSameDay'), $('dpActionError'),
                 document.querySelector('#dpWs .dp-ws-top'), document.querySelector('#dpWs .dp-ws-low')].forEach(el => el && ro.observe(el));
         }
