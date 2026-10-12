@@ -2090,7 +2090,8 @@
         if (state.geoMap) {
             state.geoMap.invalidateSize();
             if (state.geoMarker) { state.geoMarker.remove(); state.geoMarker = null; }
-            if (has) { setGeo(stop.lat, stop.lon, false); state.geoMap.setView([stop.lat, stop.lon], 16); }
+            // сначала вид, потом маркер: panTo в setGeo на карте без вида даёт зум NaN — Leaflet падает, карта чёрная
+            if (has) { state.geoMap.setView([stop.lat, stop.lon], 16); setGeo(stop.lat, stop.lon, false); }
             else state.geoMap.setView(state.data.depot ? [state.data.depot.lat, state.data.depot.lon] : YEREVAN, 11);
         }
         $('dpGeoCoord').focus();
