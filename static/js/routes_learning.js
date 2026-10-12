@@ -181,8 +181,24 @@
             + (st.run_day ? ' «Ըստ փաստի» սյունակը՝ ' + day(st.run_day) + '-ի վերահաշվարկից։' : '')
             + (st.total > st.shown ? ' Ցույց են տրված ' + fmt(st.shown) + ' / ' + fmt(st.total) + ' խանութ՝ ամենաշատ բեռնաթափումներով։' : '');
     }
+    // Tesla+: карточки «что выучено» — из того же статуса, что таблица «Ինչ է սովորել ծրագիրը»
+    function renderLearnKpis(status) {
+        const box = $('lrLearnKpis');
+        const norms = status.filter(s => s.kind !== 'truck_time');
+        if (!norms.length) { box.innerHTML = ''; return; }
+        const learned = norms.filter(s => s.in_effect).length;
+        const lasts = status.map(s => s.last).filter(Boolean);
+        const lastDay = lasts.map(l => l.run_day).filter(Boolean).sort().pop();
+        const accepted = lasts.filter(l => l.accepted).length;
+        const st = (status.find(s => s.kind === 'unload') || {}).stores;
+        box.innerHTML = kpi('Սովորած նորմեր', fmt(learned) + ' / ' + fmt(norms.length), learned ? 'մնացածը՝ կարգավորումներից' : 'բոլորը՝ կարգավորումներից')
+            + kpi('Վերջին վերահաշվարկը', lastDay ? esc(day(lastDay)) : '—', 'ամեն գիշեր՝ ժամը ' + esc($('lrNightly').textContent) + '-ին')
+            + kpi('Ընդունված վերջին անգամ', lasts.length ? fmt(accepted) + ' / ' + fmt(lasts.length) : '—', lasts.length ? 'նոր նորմը՝ միայն եթե ավելի քիչ է սխալվում' : 'դեռ չի վերահաշվվել')
+            + kpi('Խանութներ՝ սեփական ժամանակով', st ? fmt(st.total || 0) : '—', st ? 'մնացածում՝ ' + fmt(st.per_stop_min, 1) + ' րոպե' : 'դեռ տվյալ չկա');
+    }
     function renderStatus(d) {
         const status = d.status || [];
+        renderLearnKpis(status);
         firstFuel = status.find(s => s.kind === 'fuel') || null;
         renderTruckTime(status.find(s => s.kind === 'truck_time') || null);
         renderStores(status.find(s => s.kind === 'unload') || null);
@@ -216,8 +232,9 @@
             + '</td><td><button type="button" class="rt-btn rt-btn-ghost rt-btn-sm" data-day="' + esc(r.day) + '" data-car="' + esc(r.car_code) + '">Քարտեզ</button></td></tr>';
     }
     function kpi(label, value, sub) {
-        return '<div class="rt-kpi"><div class="rt-kpi-label">' + esc(label) + '</div><div class="rt-kpi-val"><span class="now">' + value + '</span></div>'
-            + '<div class="rt-kpi-sub">' + sub + '</div></div>';
+        // Tesla+ (табличный образец): подпись, крупное тонкое число, строка-пояснение
+        return '<div class="rt-kpi rt-kpi--card"><span class="rt-kpi__cap">' + esc(label) + '</span><span class="rt-kpi__val"><span class="rt-kpi__num">'
+            + value + '</span></span><span class="rt-kpi__note">' + sub + '</span></div>';
     }
     function renderKpis(rows) {
         if (!rows.length) { $('lrKpis').innerHTML = ''; return; }

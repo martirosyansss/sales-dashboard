@@ -29,16 +29,29 @@
 {% endblock %}
 
 {% block content %}
-<div class="rt-page" id="lrPage" lang="hy">
+<div class="rt-page rt-tesla" id="lrPage" lang="hy">
 
-    <header class="rt-head">
-        <div class="rt-head-row">
-            <h1 class="rt-title">Ուսուցում և փաստ</h1>
-        </div>
-        <p class="rt-head-lead">Ծրագիրը համեմատում է «Առաքում» էջի պլանը այն բանի հետ, թե ինչպես են մեքենաներն իրականում շրջել (վարորդների
+    <!-- Шапка страницы (Tesla+, табличный образец Garage.dc.html): заголовок, серая строка, пояснение по раскрытию;
+         справа — период «Պլան և փաստ»; под ней — итоги периода карточками (routes_learning.js renderKpis / renderEta) -->
+    <header class="rt-pagehead">
+        <div>
+            <h1 class="rt-pagehead__title">Ուսուցում և փաստ</h1>
+            <p class="rt-pagehead__sub">Պլանն ընդդեմ GPS-ի փաստի · նորմերը ճշտվում են ամեն գիշեր · ERP-ում ոչինչ չի փոխվում</p>
+            <details class="rt-howto">
+                <summary><i class="fas fa-circle-question" aria-hidden="true"></i>Ինչպե՞ս է աշխատում</summary>
+                <p>Ծրագիրը համեմատում է «Առաքում» էջի պլանը այն բանի հետ, թե ինչպես են մեքենաներն իրականում շրջել (վարորդների
             տերմինալների GPS), և ինքն է ճշտում նորմերը՝ որքան է տևում բեռնաթափումը և բեռնումը, որքան արագ են մեքենաները գնում տարբեր ժամերի
             և որքան վառելիք են ծախսում։ Նոր նորմը միանում է միայն այն դեպքում, եթե վերջին շաբաթում այն ավելի քիչ է սխալվում, քան նախկինը։
             ERP-ում ոչինչ չի փոխվում։</p>
+            </details>
+        </div>
+        <div class="rt-pagehead__actions">
+            <form class="lr-period" id="lrPeriod">
+                <div class="rt-field"><label for="lrFrom">Սկսած</label><input type="date" id="lrFrom" class="rt-input"></div>
+                <div class="rt-field"><label for="lrTo">Մինչև</label><input type="date" id="lrTo" class="rt-input"></div>
+                <button type="submit" class="rt-btn rt-btn-primary rt-btn-sm">Ցույց տալ</button>
+            </form>
+        </div>
     </header>
 
     <div id="lrStatus" class="rt-sr-only" role="status" aria-live="polite"></div>
@@ -51,6 +64,13 @@
         <span id="lrWarnText" class="rt-alert-text"></span>
     </div>
 
+    <!-- что выучено: нормы в силе, последний пересчёт, принято, своё время магазинов (routes_learning.js renderLearnKpis) -->
+    <div class="rt-kpis is-4" id="lrLearnKpis"></div>
+    <!-- итоги периода «Պլան և փաստ»: км, точки, вовремя, точек в час; точность плана (ETA) -->
+    <div class="rt-kpis is-4" id="lrKpis"></div>
+    <!-- точность планового ETA за период (№87 п. 7): по точкам с плановым ETA и прибытием по GPS -->
+    <div class="rt-kpis is-4" id="lrEta" hidden></div>
+
     <section class="rt-card" aria-labelledby="lrLearnTitle">
         <div class="rt-card-head">
             <h2 class="rt-card-title" id="lrLearnTitle"><i class="fas fa-graduation-cap" aria-hidden="true"></i>Ինչ է սովորել ծրագիրը</h2>
@@ -58,7 +78,7 @@
         <p class="rt-card-lead">Վերահաշվվում է ամեն գիշեր՝ ժամը <span id="lrNightly">03:00</span>-ին։ Եթե սովորած նորմը նախկինից ավելի լավ չէ կամ
             տվյալները քիչ են, գործում է նախկինը (այն, ինչ նշել եք կարգավորումներում)։ «Սովորել» նշումը կարելի է հանել — այդ դեպքում միշտ
             գործում են կարգավորումները։</p>
-        <div class="rt-table-scroll"><table class="rt-table">
+        <div class="rt-table-scroll"><table class="rt-table rt-table--lined">
             <thead><tr><th scope="col">Ինչ</th><th scope="col">Գործում է հիմա</th><th scope="col">Վերջին վերահաշվարկը</th>
                 <th scope="col">Սխալ՝ էր → դարձավ</th><th scope="col">Սովորել</th></tr></thead>
             <tbody id="lrLearnRows"><tr><td colspan="5" class="rt-empty">Բեռնվում է…</td></tr></tbody>
@@ -85,7 +105,7 @@
             «2-րդ բեռնաթափումից՝ ըստ փաստի» կանոնը։</span>
             <b>Հաշվարկում</b>՝ այն, ինչ «Առաքում» էջը վերցնում է հիմա։
             Բեռի ժամանակը (<span id="lrStoresTonne">6</span> րոպե յուրաքանչյուր տոննայի համար) ավելանում է դրա վրա։</p>
-        <div class="rt-table-scroll"><table class="rt-table">
+        <div class="rt-table-scroll"><table class="rt-table rt-table--lined">
             <thead><tr><th scope="col">Խանութ</th><th scope="col">Մուտքագրված</th><th scope="col">Ըստ փաստի</th><th scope="col">Հաշվարկում</th></tr></thead>
             <tbody id="lrStoreRows"><tr><td colspan="4" class="rt-empty">Բեռնվում է…</td></tr></tbody>
         </table></div>
@@ -103,7 +123,7 @@
             <span id="lrTtGain">2</span>%-ով ավելի քիչ է սխալվում, և հատվածները բավարար են։ Հետ փոխվում է նույն կանոնով, այդ պատճառով մոդելը
             հետ ու առաջ չի փոխվում։</p>
         <p id="lrTtNow"></p>
-        <div class="rt-table-scroll"><table class="rt-table">
+        <div class="rt-table-scroll"><table class="rt-table rt-table--lined">
             <thead><tr><th scope="col">Մոդել</th><th scope="col">Սխալ, րոպե մեկ հատվածի համար</th>
                 <th scope="col">Համակարգային շեղում, րոպե <span class="lr-why">(դրականը՝ մոդելն ավելի երկար է հաշվում, քան իրականում գնացել են)</span></th></tr></thead>
             <tbody id="lrTtRows"><tr><td colspan="3" class="rt-empty">Բեռնվում է…</td></tr></tbody>
@@ -117,15 +137,7 @@
         </div>
         <p class="rt-card-lead">Խոշոր՝ ինչպես է եղել իրականում, տակը՝ մանր, որքան էր պլանավորել «Առաքում» էջը։ Փաստը կա միայն այն մեքենաների
             համար, որոնց վարորդն աշխատել է տերմինալով (երթուղու գրանցումը միացված է)։ Լիտրերը՝ ըստ «մինչև լրիվ բաք» լիցքավորումների։</p>
-        <form class="lr-period" id="lrPeriod">
-            <div class="rt-field"><label for="lrFrom">Սկսած</label><input type="date" id="lrFrom" class="rt-input"></div>
-            <div class="rt-field"><label for="lrTo">Մինչև</label><input type="date" id="lrTo" class="rt-input"></div>
-            <button type="submit" class="rt-btn rt-btn-primary rt-btn-sm">Ցույց տալ</button>
-        </form>
-        <div class="rt-kpis is-4" id="lrKpis"></div>
-        <!-- точность планового ETA за период (№87 п. 7): по точкам с плановым ETA и прибытием по GPS -->
-        <div class="rt-kpis is-4" id="lrEta" hidden></div>
-        <div class="rt-table-scroll"><table class="rt-table">
+        <div class="rt-table-scroll"><table class="rt-table rt-table--lined">
             <thead><tr><th scope="col">Օր</th><th scope="col">Մեքենա</th><th scope="col">Կմ</th><th scope="col">Աշխատանքի տևողություն</th>
                 <th scope="col">Երթեր</th><th scope="col">Դիզել, լ</th><th scope="col">Կետ</th><th scope="col">Ժամանակին՝ ընդունման ժամին</th>
                 <th scope="col">Կետ ժամում</th><th scope="col">Կմ մեկ կետի համար</th><th scope="col">Լ մեկ կետի համար</th>
@@ -143,7 +155,7 @@
             մոտ կանգառ չի եղել։</p>
         <p class="lr-why" id="lrMapNote"></p>
         <div id="lrMap" class="lr-map" role="region" aria-label="Քարտեզ՝ մեքենայի օրվա պլանը և փաստը"></div>
-        <div class="rt-table-scroll"><table class="rt-table">
+        <div class="rt-table-scroll"><table class="rt-table rt-table--lined">
             <thead><tr><th scope="col">№ ըստ պլանի</th><th scope="col">Խանութ</th><th scope="col">Պլան (կազմելիս)</th>
                 <th scope="col">Ընդունման ժամ</th><th scope="col">Փաստ՝ ժամանում–մեկնում</th></tr></thead>
             <tbody id="lrMapStops"></tbody>
@@ -218,5 +230,5 @@
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=4" data-yandex-key="{{ yandex_tiles_key }}"></script>
-<script src="{{ url_for('static', filename='js/routes_learning.js') }}?v=20"></script>
+<script src="{{ url_for('static', filename='js/routes_learning.js') }}?v=21"></script>
 {% endblock %}
