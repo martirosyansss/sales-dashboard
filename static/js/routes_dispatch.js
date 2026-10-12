@@ -912,6 +912,11 @@
                 btn.className = 'rt-btn rt-btn-ghost rt-btn-sm';
                 btn.innerHTML = '<i class="fas fa-truck" aria-hidden="true"></i><span></span>';
                 btn.lastChild.textContent = 'Տանել ամբողջը ' + label;
+                // машина, которой магазин запрещён (допуск машин), — не предлагается: кнопка выключена, причина — в подсказке
+                if (s && !vehicleAllowed(s, code)) {
+                    btn.disabled = true;
+                    btn.title = 'Այս մեքենան չի կարող սպասարկել խանութը՝ ' + vehicleText(s.vehicle_access);
+                }
                 btn.addEventListener('click', () => {
                     $('dpSplitDlg').close();
                     edit({ action: 'whole_store', customer_id: x.customer_id, truck: code }, '«' + name + '»-ը ամբողջությամբ կտանի ' + label);

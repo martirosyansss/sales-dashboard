@@ -2529,6 +2529,11 @@ def apply_edit(ctx: DayContext, stops: Sequence[Stop], draft: Draft, edit: Mappi
             draft.trips.remove(trip)
             trip.truck = truck
             draft.trips.append(trip)
+            # ручные решения магазинов рейса — за новой машиной (решение логиста новее; ревью ветки 12.10, раунд 6: иначе
+            # после снятия закрепления пересборка вернула бы магазин прежней машине)
+            for c in trip.stops:
+                if c in draft.locks:
+                    draft.locks[c] = truck
         trip.pinned = True
         if trip.loaded is not None:   # №78: закрепление теперь держит логист — снятие отметки рейс не открепит
             trip.loaded = {**trip.loaded, 'pin': False}
@@ -2604,15 +2609,17 @@ def apply_edit(ctx: DayContext, stops: Sequence[Stop], draft: Draft, edit: Mappi
 
 
 def _whole_store(ctx: DayContext, draft: Draft, routable: Mapping[int, Stop], edit: Mapping[str, Any]) -> Draft:
-    """«Տանել ամբողջը <машина>» (решение владельца 12.10 «Запрещать»: один заказ ERP — одна машина): магазин уходит из рейсов
-    других машин и остаётся только в рейсах машины truck — её ручное решение (Draft.locks), пересборка его не разделит снова;
-    рейсы, откуда он ушёл, — 2-opt, как у move. Машины нет среди машин магазина — DispatchError."""
+    """«Տանել ամբողջը <машина>» (решение владельца 12.10 «Запретить целиком»: магазин — одной машине): магазин уходит из
+    рейсов других машин и остаётся только в рейсах машины truck — её ручное решение (Draft.locks), пересборка его не разделит
+    снова; рейсы, откуда он ушёл, — 2-opt, как у move. Машины нет среди машин магазина или она магазину запрещена (допуск
+    машин, _require_vehicle — как у move и pin) — DispatchError, черновик не меняется."""
     cid, truck = edit.get('customer_id'), edit.get('truck')
     if not _is_int(cid) or cid not in routable:
         raise DispatchError('Խանութը չի գտնվել այս օրվա պատվերներում — թարմացրեք էջը')
     on = [t for t in draft.trips if cid in t.stops]
     if not isinstance(truck, str) or all(t.truck != truck for t in on):
         raise DispatchError('Խանութն այդ մեքենայի երթերում չէ — թարմացրեք էջը')
+    _require_vehicle(ctx, [cid], truck)   # как move и pin: машина, которой магазин запрещён, его не берёт (до правки)
     touched = [t for t in on if t.truck != truck]
     for t in touched:
         t.stops.remove(cid)

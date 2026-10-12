@@ -877,3 +877,44 @@ def test_deadline_check_uses_assigned_weight():
     assert got['late'] is True and got['kept'] == [1]
     view = dp.plan_view(ctx, stops, draft, _info, explain=False)
     assert next(s for t in view['trucks'] for tr in t['trips'] for s in tr['stops'] if s['customer_id'] == 102)['window_miss']
+
+
+# ============================== ревью ветки, раунд 6 ==============================
+
+def test_pin_trip_to_other_truck_moves_store_locks_with_it():
+    """P2: магазин перенесён в A (решение), потом весь рейс закреплён за B («pin») — решение магазина теперь B: после снятия
+    закрепления пересборка держит его у B (до правки решение указывало на A — магазин молча возвращался туда)."""
+    ctx = _dp_ctx()
+    stops, orders = _dp_stops(EAST + WEST)
+    ids = {o.isn for o in orders}
+    draft = dp.build(ctx, stops, None, TRUCKS, 'now')
+    src = next(t for t in draft.trips if 104 in t.stops)
+    a = src.truck
+    b = next(c for c in TRUCKS if c != a)
+    draft = dp.apply_edit(ctx, stops, draft, {'action': 'move', 'customer_id': 104, 'from_trip': src.id,
+                                              'to_trip': None, 'truck': a}, ids)
+    trip = next(t for t in draft.trips if 104 in t.stops)
+    assert draft.locks == {104: a}
+    draft = dp.apply_edit(ctx, stops, draft, {'action': 'pin', 'trip': trip.id, 'truck': b}, ids)
+    assert draft.locks == {104: b}
+    draft = dp.apply_edit(ctx, stops, draft, {'action': 'unpin', 'trip': trip.id}, ids)
+    assert _where(dp.build(ctx, stops, draft, TRUCKS, 'now2'), 104) == [b]
+
+
+def test_whole_store_refuses_truck_prohibited_for_store():
+    """P2: «Տանել ամբողջը» машине, которой магазин запрещён (допуск машин), — отказ до правки (как move и pin); разрешённой —
+    можно."""
+    from route_optimizer.vehicle_access import VehicleAccess
+    ford, howo = '333DO33', '991AT61'
+    stops, orders = _dp_stops(EAST)
+    ctx = replace(_dp_ctx(), vehicle_access={101: VehicleAccess('allow', (howo,))})
+    draft = dp.Draft(TRUCKS, trips=[dp.DraftTrip(1, ford, [101, 102]), dp.DraftTrip(2, howo, [101, 103])], next_id=3)
+    before = draft.to_json()
+    try:
+        dp.apply_edit(ctx, stops, draft, {'action': 'whole_store', 'customer_id': 101, 'truck': ford}, set())
+        raise AssertionError('ожидался отказ')
+    except dp.DispatchError:
+        pass
+    assert draft.to_json() == before                                       # ничего не изменилось
+    got = dp.apply_edit(ctx, stops, draft, {'action': 'whole_store', 'customer_id': 101, 'truck': howo}, set())
+    assert _where(got, 101) == [howo] and got.locks == {101: howo}
