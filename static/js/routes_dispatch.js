@@ -419,12 +419,12 @@
         if ($('dpSameDayDlg').open) { if (sdData()) renderSdDialog(); else $('dpSameDayDlg').close(); }
         $('dpStep3').hidden = !plan;
         if (plan) renderPlan(plan);
-        renderInbox();
-        renderTabs();
-        layoutWs();
         $('dpAnalysis').hidden = !plan && !d.is_past;
         $('dpFact').hidden = !d.is_past;
         if (!d.is_past) $('dpFactOut').textContent = '';
+        renderInbox();
+        renderTabs();
+        layoutWs();      // и пункты меню «⋯» (syncMenu) — по уже отрисованным блокам
         renderFresh();
     }
 
@@ -567,6 +567,7 @@
             + '<div class="dp-todo-body"><p class="dp-todo-k">Ի՞նչ անել հիմա</p><h2 class="dp-todo-t"></h2>'
             + '<div class="dp-todo-lines"></div><div class="dp-todo-btns"></div></div>';
         box.querySelector('.dp-todo-t').textContent = title;
+        box.querySelector('.dp-todo-t').title = lines.join(' ');   // Tesla+: на низком окне пояснение — только в подсказке
         const lb = box.querySelector('.dp-todo-lines');
         lines.forEach(t => { const p = document.createElement('p'); p.textContent = t; lb.appendChild(p); });
         const bb = box.querySelector('.dp-todo-btns');
@@ -1035,7 +1036,11 @@
     // часть рейсов (не поместились, ещё не в рейсах): на телефоне — сначала вкладка «Երթեր»
     function showPlanPart(find) {
         if (state.tab !== 'trips' && tabsOn()) setTab('trips');
-        goTo(find());
+        const el = find();
+        // Tesla+: на рабочем экране «не поместилось» и «Դեռ ոչ մի երթում չեն» — в выдвижной панели
+        const part = el && el.closest('.dp-sheet-part');
+        if (part) openSheet(part.dataset.part);
+        goTo(el);
     }
     function openFold(id) {
         if (id === 'dpBacklog') { openBacklog(); return; }   // список прошлых дней — в большом окне
@@ -3049,6 +3054,7 @@
         renderOverflow(plan);
         renderUnassigned(plan);
         renderTruckCards(plan);
+        renderWsList(plan);
         renderBaseline(plan);
         if (!$('dpMapBox').open) return;
         drawMap();
@@ -3374,10 +3380,13 @@
         $('dpBoard').querySelectorAll('.dp-blabel').forEach(b => b.setAttribute('aria-pressed', String(!!f && f.truck === b.dataset.truck && f.trip == null)));
         $('dpBoard').querySelectorAll('.dp-bar').forEach(b => b.setAttribute('aria-pressed', String(!!f && f.trip != null && String(f.trip) === b.dataset.trip)));
         $('dpTruckCards').querySelectorAll('.dp-tcard').forEach(c => c.classList.toggle('is-focus', !!f && f.truck === c.dataset.truck));
+        $('dpWsRows').querySelectorAll('.dp-wl-row').forEach(b => b.setAttribute('aria-pressed', String(!!f && f.truck === b.dataset.truck)));
         if ($('rtDispatch').classList.contains('is-ws')) {
-            // карточка машины — под рабочим экраном (№89): карта и шкала своего размера не меняют
+            // Tesla+: карточка машины — стеклянной панелью справа поверх карты; карта своего размера не меняет
             $('dpWsSide').hidden = !f;
             $('dpWs').classList.toggle('has-side', !!f);
+            const row = f && $('dpWsRows').querySelector('.dp-wl-row[aria-pressed="true"]');
+            if (row) row.scrollIntoView({ block: 'nearest' });
         }
     }
 
@@ -4379,7 +4388,7 @@
             const top = document.createElement('div');
             top.className = 'dp-ttop';
             top.append(h, waybillActs(t));
-            card.append(top, body);
+            card.append(top, truckSum(t, seat), body);
             box.appendChild(card);
         });
         // отмеченные машины без водителя сегодня (№77) — серой карточкой с причиной, без рейсов
@@ -4395,6 +4404,90 @@
             card.appendChild(h);
             box.appendChild(card);
         });
+        syncFocus();
+    }
+    // Tesla+ (макет): шапка выбранной машины на рабочем экране — экипаж двумя колонками и четыре числа (կետ · կմ · տ и
+    // загрузка самого полного рейса · ավարտ); в прежнем виде блок скрыт стилями (там те же цифры — строкой в шапке)
+    const fullPct = (t) => Math.max(0, ...t.trips.map(tr => num(tr.load_pct) || 0));
+    function truckSum(t, seat) {
+        const box = document.createElement('div');
+        box.className = 'dp-tsum';
+        const crew = document.createElement('div');
+        crew.className = 'dp-tsum-crew';
+        const warn = seat && seat.warn !== 'none' ? CREW_WARN_HY[seat.warn] : '';
+        [['Վարորդ', seat && seat.name ? seat.name : driverOf(t.car_code)], ['Առաքիչ', driverOf(t.car_code, 'helper')]].forEach(([k, v], i) => {
+            const cell = document.createElement('div');
+            cell.innerHTML = '<span></span><b></b>';
+            cell.firstChild.textContent = k;
+            cell.lastChild.textContent = v || '—';
+            if (!i && warn) { cell.lastChild.textContent = v ? v + ' · ' + warn : warn; cell.lastChild.className = 'is-bad'; }
+            crew.appendChild(cell);
+        });
+        const nums = document.createElement('div');
+        nums.className = 'dp-tsum-nums';
+        const pct = fullPct(t);
+        [[fmt(t.stops), 'կետ', ''], ['≈ ' + fmt(t.km), 'կմ', ''], [fmt((num(t.kg) || 0) / 1000, 1), 'տ · ' + pct + '%', pct > 100 ? 'is-bad' : ''],
+            [t.return || '—', 'ավարտ', t.over_time ? 'is-bad' : t.late ? 'is-late' : '']].forEach(([v, k, cls]) => {
+            const cell = document.createElement('div');
+            cell.innerHTML = '<b></b><span></span>';
+            cell.firstChild.textContent = v;
+            cell.lastChild.textContent = k;
+            if (cls) cell.firstChild.className = cls;
+            nums.appendChild(cell);
+        });
+        box.append(crew, nums);
+        return box;
+    }
+    // Tesla+: левая панель «Մեքենաներ» рабочего экрана — строка на машину плана (цветная полоска — цвет её линии на карте,
+    // номер, кто за рулём, км крупно, район · точки, возвращение — красным, если не успевает, полоска загрузки «տ · %»);
+    // внизу — машины, которые сегодня свободны, и «+ Մեքենա» (шаг 1 в выдвижной панели)
+    function areaOf(t) {   // самый частый город в адресах точек («Աբովյան, Սևանի 3» → «Աբովյան»); непонятно — пусто
+        const n = new Map();
+        t.trips.forEach(tr => tr.stops.forEach(s => {
+            const a = String(s.address || '').split(',')[0].replace(/^\s*(ք\.|գ\.|г\.)\s*/, '').trim();
+            if (a && a.length <= 22 && !/\d/.test(a)) n.set(a, (n.get(a) || 0) + 1);
+        }));
+        let best = '', k = 0;
+        n.forEach((c, a) => { if (c > k) { best = a; k = c; } });
+        return best;
+    }
+    function renderWsList(plan) {
+        const box = $('dpWsRows'), d = state.data;
+        box.textContent = '';
+        const drivers = plan.trucks.filter(t => (crewTruck(t.car_code) || {}).name || driverOf(t.car_code)).length;
+        $('dpWsListN').textContent = pl(plan.trucks.length, 'մեքենա') + ' · ' + pl(drivers, 'վարորդ');
+        plan.trucks.forEach(t => {
+            const color = truckColor(t.car_code), pct = fullPct(t), seat = crewTruck(t.car_code);
+            const row = document.createElement('button');
+            row.type = 'button';
+            row.className = 'dp-wl-row' + (t.trips.some(tripBad) ? ' has-bad' : '');
+            row.dataset.truck = t.car_code;
+            row.style.setProperty('--dp-c', color);
+            row.innerHTML = '<span class="dp-wl-c" aria-hidden="true"></span>'
+                + '<span class="dp-wl-top"><b class="dp-wl-plate"></b><span class="dp-wl-who"></span></span>'
+                + '<span class="dp-wl-km"><b></b><small> կմ</small></span>'
+                + '<span class="dp-wl-sub"></span><span class="dp-wl-end"></span>'
+                + '<span class="dp-wl-load"><i aria-hidden="true"><em></em></i><small></small></span>';
+            row.querySelector('.dp-wl-plate').textContent = t.car_code;
+            row.querySelector('.dp-wl-who').textContent = [t.name, seat && seat.name ? seat.name : driverOf(t.car_code)].filter(Boolean).join(' · ');
+            row.querySelector('.dp-wl-km b').textContent = fmt(t.km);
+            const area = areaOf(t);
+            row.querySelector('.dp-wl-sub').textContent = (area ? area + ' · ' : '') + pl(t.stops, 'կետ') + (t.trips.length > 1 ? ' · ' + pl(t.trips.length, 'երթ') : '');
+            const end = row.querySelector('.dp-wl-end');
+            end.textContent = t.return + (t.over_time ? ' · ռիսկ' : '');
+            if (t.over_time) end.classList.add('is-bad'); else if (t.late) end.classList.add('is-late');
+            const em = row.querySelector('.dp-wl-load em');
+            em.style.width = Math.min(100, pct) + '%';
+            row.querySelector('.dp-wl-load').classList.toggle('is-over', pct > 100);
+            row.querySelector('.dp-wl-load small').textContent = kgText(t.kg) + ' · ' + pct + '%';
+            row.setAttribute('aria-label', truckLabel(t) + ', ' + pl(t.stops, 'կետ') + ', ≈ ' + fmt(t.km) + ' կմ, վերադարձ ' + t.return
+                + (t.over_time ? ', ուշանում է' : '') + ', բեռնված ' + pct + '%');
+            box.appendChild(row);
+        });
+        const used = new Set(plan.trucks.map(t => t.car_code));
+        const free = d.trucks.filter(t => t.ready && !used.has(t.car_code));
+        $('dpWsFree').textContent = free.length ? 'Ազատ՝ ' + free.map(t => t.car_code).join(', ') : 'Բոլոր մեքենաները երթում են';
+        $('dpWsAddTruck').hidden = !!d.is_past;
         syncFocus();
     }
     const CREW_WARN_HY = { absent: 'Վարորդը չի եկել — նշեք այլ վարորդ («Վարորդ»)',
@@ -4619,7 +4712,9 @@
     // Вписать точки программно — не считается, что логист двигал карту
     function fitMap(map, b) {
         state.mapFitting = true;
-        try { map.fitBounds(b, MAP_FIT); } finally { state.mapFitting = false; }
+        // рабочий экран: точки — в видимой части карты между стеклянными панелями (covers), а не под ними
+        const c = map === state.map ? covers() : null;
+        try { map.fitBounds(b, c ? { ...MAP_FIT, padding: undefined, ...wsPad(c, 24) } : MAP_FIT); } finally { state.mapFitting = false; }
     }
     // Leaflet не замечает, что его блок стал видимым или сменил размер (свёртка, скрытый шаг, поворот телефона):
     // тогда грузит одну плитку и центрирует не туда. Следим за размером сами; из 0×0 в видимый — снова вписать точки.
@@ -5209,8 +5304,11 @@
         // Esc с фокусом на кнопке карточки (клавиатура Leaflet слушает только саму карту)
         box.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.stopPropagation(); closeStopCard(); } });
         // низкий экран (карта ниже из-за карточки машины) — карточка прокручивается, «Հանել երթից» не обрезана
-        state.stopCard = L.popup({ className: 'dp-stoppop', maxWidth: 320, minWidth: 240, maxHeight: Math.max(140, state.map.getSize().y - 100),
-                                   autoPanPadding: [16, 16], offset: [0, -8] })
+        // рабочий экран: карточка не уходит под стеклянные панели — сдвиг карты считает их (covers)
+        const c = covers(), pad = c ? { autoPanPaddingTopLeft: [c.l + 12, c.t + 12], autoPanPaddingBottomRight: [c.r + 12, c.b + 12] } : {};
+        state.stopCard = L.popup({ className: 'dp-stoppop', maxWidth: 320, minWidth: 240,
+                                   maxHeight: Math.max(140, state.map.getSize().y - 100 - (c ? c.t + c.b : 0)),
+                                   autoPanPadding: [16, 16], ...pad, offset: [0, -8] })
             .setLatLng([s.lat, s.lon]).setContent(box).openOn(state.map);
         const mk = state.mapMarks && state.mapMarks.get(tr.id + ':' + s.customer_id);
         if (mk) mk.closeTooltip();   // подпись точки не поверх карточки
@@ -5367,26 +5465,39 @@
         state.mapMarks = new Map();   // «рейс:магазин» → маркер (подсветка со шкалы и из карточки)
         state.mapLines = new Map();   // рейс → его линия на карте (цели переноса)
         state.hoverRing = null;
+        // Tesla+ (макет): на рабочем экране выбранный рейс — акцентом 4,5 px с мягким ореолом и номерами точек (как в карточке),
+        // остальные рейсы видны приглушёнными (60 %, 3 px) — их точки так же нажимаются и перетаскиваются; магазин под
+        // риском (окно приёма, центр, допуск машины) — жёлтое кольцо
+        const risky = (s) => !!(s.window_miss || s.window_tight || s.center_miss || s.vehicle_miss);
         plan.trucks.forEach(t => {
             const color = truckColor(t.car_code);
             t.trips.forEach((tr, ti) => {
-                if (!shown(t, tr)) return;
+                const sel = shown(t, tr);
+                if (!sel && !ws) return;
+                const muted = !sel, hot = sel && !!state.mapFocus && ws;
+                const ink = hot ? tc('--rt-acc-fill') : color;
                 const pts = tr.stops.filter(s => s.lat !== null).map(s => [s.lat, s.lon]);
                 const line = depot ? [depot, ...pts, depot] : pts;
                 if (line.length > 1) {
-                    const pl = L.polyline(line, { color, weight: state.mapFocus ? 4 : 3, opacity: .85, dashArray: ti % 2 ? '6 6' : null }).addTo(state.layers);
+                    if (hot) {   // ореол под линией выбранного рейса — та же дорога (roadLines заменяет обе)
+                        const halo = L.polyline(line, { ...paint({ color: '--rt-acc-fill' }), weight: 12, opacity: .18, interactive: false }).addTo(state.layers);
+                        routes.push([halo, line]);
+                    }
+                    const pl = L.polyline(line, hot ? { ...paint({ color: '--rt-acc-fill' }), weight: 4.5, opacity: 1, dashArray: ti % 2 ? '8 6' : null }
+                        : { color, weight: muted || !state.mapFocus ? 3 : 4, opacity: muted ? .6 : .85, dashArray: ti % 2 ? '6 6' : null }).addTo(state.layers);
                     routes.push([pl, line]);
                     state.mapLines.set(tr.id, pl);
                 }
                 tr.stops.forEach((s, si) => {
                     if (s.lat === null) return;
-                    bounds.push([s.lat, s.lon]);
+                    if (sel) bounds.push([s.lat, s.lon]);
                     // одна машина или рейс — точки с номерами по порядку объезда (у машины с несколькими рейсами — «рейс.точка»)
-                    const label = state.mapFocus ? (state.mapFocus.trip == null && t.trips.length > 1 ? (ti + 1) + '.' : '') + (si + 1) : null;
+                    const label = state.mapFocus && sel ? (state.mapFocus.trip == null && t.trips.length > 1 ? (ti + 1) + '.' : '') + (si + 1) : null;
+                    const ring = ws && risky(s) ? ' is-risk' : '';
                     const m = label !== null
-                        ? L.marker([s.lat, s.lon], { icon: L.divIcon({ className: 'dp-npin', html: '<span' + (String(label).length > 3 ? ' class="is-long"' : '') + ' data-trip="' + tr.id + '" style="background:' + color + '">' + label + '</span>', iconSize: [26, 26] }), keyboard: false, draggable: canDrag })
+                        ? L.marker([s.lat, s.lon], { icon: L.divIcon({ className: 'dp-npin' + (hot ? ' is-hot' : ''), html: '<span class="' + (String(label).length > 3 ? 'is-long' : '') + ring + '" data-trip="' + tr.id + '" style="background:' + ink + '">' + label + '</span>', iconSize: [26, 26] }), keyboard: false, draggable: canDrag, zIndexOffset: 500 })
                         : ws   // перетащить можно только маркер, не кружок на canvas
-                            ? L.marker([s.lat, s.lon], { icon: L.divIcon({ className: 'dp-dpin', html: '<span data-trip="' + tr.id + '" style="background:' + color + '"></span>', iconSize: [16, 16] }), keyboard: false, draggable: canDrag })
+                            ? L.marker([s.lat, s.lon], { icon: L.divIcon({ className: 'dp-dpin' + (muted && state.mapFocus ? ' is-muted' : ''), html: '<span class="' + ring.trim() + '" data-trip="' + tr.id + '" style="background:' + color + '"></span>', iconSize: [16, 16] }), keyboard: false, draggable: canDrag })
                             : L.circleMarker([s.lat, s.lon], { radius: 7, ...paint({ color: '--rt-map-ink', fillColor: color }), weight: 2, fillOpacity: 1 });
                     const tip = esc(truckLabel(t)) + ' · երթ ' + (ti + 1) + ' · №' + (si + 1) + '<br>' + esc(s.name || s.code);
                     m.bindTooltip(tip + (canDrag ? MAP_HINT : ''));
@@ -5906,9 +6017,14 @@
         const c = node && wsHome.get(node);
         if (c && c.parentNode && node.previousSibling !== c) c.parentNode.insertBefore(node, c.nextSibling);
     }
+    // Tesla+: подсказка дня и счётчики — в верхней стеклянной панели над картой; не поместилось, «как посчитано» и
+    // «для руководителя» — в выдвижной панели #dpSheet (открывают счётчики, «Ցույց տալ» и меню «⋯»)
     const wsNodes = () => [[$('dpApprove'), 'dpWsActs'], [document.querySelector('#rtDispatch .dp-summary-cta'), 'dpWsActs'],
-        [$('dpPlanStats'), 'dpWsKpi'], [$('dpMapBox'), 'dpWsMap'], [$('dpBoard'), 'dpWsBottom'], [$('dpTruckCards'), 'dpWsSide'],
-        [$('dpWhy'), 'dpWsSide'], [document.querySelector('#rtDispatch .dp-prep'), 'dpDrawerBody'], [$('dpRun'), 'dpDrawerBody']];
+        [$('dpPlanStats'), 'dpWsKpi'], [$('dpTodo'), 'dpWsTop'], [$('dpInbox'), 'dpWsTop'], [$('dpMapBox'), 'dpWsMap'],
+        [$('dpBoard'), 'dpWsBottom'], [$('dpTruckCards'), 'dpWsSide'],
+        [$('dpOverflow'), 'dpSheetTrips'], [$('dpUnassigned'), 'dpSheetTrips'], [$('dpMainLead'), 'dpSheetCalc'], [$('dpWhy'), 'dpSheetCalc'],
+        [$('dpAnalysis'), 'dpSheetBoss'],
+        [document.querySelector('#rtDispatch .dp-prep'), 'dpDrawerBody'], [$('dpRun'), 'dpDrawerBody']];
     function layoutWs() {
         const on = wsOn(), root = $('rtDispatch'), was = root.classList.contains('is-ws');
         const setup = !(state.data && state.data.plan);
@@ -5927,6 +6043,7 @@
         if (!on) openMenu(false);
         syncMenu();
         if (!on && !$('dpDrawer').hidden) { $('dpDrawer').hidden = true; $('dpPrepOpen').setAttribute('aria-expanded', 'false'); renderSteps(); }
+        if (!on) openSheet(null);
         $('dpWsSide').hidden = !on || !state.mapFocus;
         if (on && !$('dpMapBox').open) $('dpMapBox').open = true;
         const fab = $('dpAiOpen');
@@ -5953,14 +6070,52 @@
             bar.classList.add(c);
         }
     }
-    // высота рабочего экрана — до низа окна от его верха (шапка дашборда, день, подсказка и счётчики — выше)
+    // высота рабочего экрана — до низа окна от его верха (верхняя панель раздела и строка дня — выше); стеклянные панели
+    // слева и справа — между верхней (итоги, подсказка, счётчики) и нижней (шкала дня): их высоты — в переменные
     function sizeWs() {
         const ws = $('dpWs');
         if (ws.hidden) return;
         const top = ws.getBoundingClientRect().top + window.scrollY;
-        $('rtDispatch').style.setProperty('--ws-h', Math.max(440, Math.round(window.innerHeight - top - 12)) + 'px');
+        const root = $('rtDispatch');
+        root.style.setProperty('--ws-h', Math.max(480, Math.round(window.innerHeight - top - 16)) + 'px');
+        root.style.setProperty('--ws-top-h', Math.round(ws.querySelector('.dp-ws-top').offsetHeight) + 'px');
+        root.style.setProperty('--ws-bot-h', Math.round(ws.querySelector('.dp-ws-low').offsetHeight) + 'px');
+        if (state.map) state.map.invalidateSize({ pan: false });
+    }
+    // сколько карты закрыто стеклянными панелями (рабочий экран): точки дня и выбранный рейс вписываются в видимую часть
+    // карты между панелями, а не под ними (как «Մեքենաները առցանց»)
+    function covers() {
+        if (!$('rtDispatch').classList.contains('is-ws')) return null;
+        const m = $('dpWsMap').getBoundingClientRect();
+        const r = (el) => (el && !el.hidden && el.offsetParent ? el.getBoundingClientRect() : null);
+        const top = r(document.querySelector('#dpWs .dp-ws-top')), low = r(document.querySelector('#dpWs .dp-ws-low'));
+        const list = r($('dpWsList')), side = r($('dpWsSide'));
+        return { t: top ? Math.max(0, top.bottom - m.top) : 0, b: low ? Math.max(0, m.bottom - low.top) : 0,
+                 l: list ? Math.max(0, list.right - m.left) : 0, r: side ? Math.max(0, m.right - side.left) : 0 };
+    }
+    const wsPad = (c, gap) => ({ paddingTopLeft: [c.l + gap, c.t + gap], paddingBottomRight: [c.r + gap, c.b + gap] });
+    // Tesla+: второстепенное рабочего экрана — выдвижная панель с одной частью: trips (не поместилось, «Դեռ ոչ մի երթում
+    // չեն»), calc (как посчитано), boss (для руководителя); null — закрыть. Шаги 1–2 (#dpDrawer) и она — не одновременно
+    const SHEET_T = { trips: 'Ինչը չի տեղավորվել երթերում', calc: 'Ինչպես է հաշված ճանապարհը և ծախսը', boss: 'Ղեկավարի համար' };
+    function openSheet(part, refocus) {
+        const sh = $('dpSheet'), was = !sh.hidden;
+        if (!part) {
+            sh.hidden = true;
+            delete sh.dataset.part;
+            if (was && refocus && refocus.isConnected) refocus.focus();
+            return;
+        }
+        if (!$('dpDrawer').hidden) openDrawer(false);
+        sh.dataset.part = part;
+        $('dpSheetTitle').textContent = SHEET_T[part];
+        sh.hidden = false;
+        // «Ինչպես է հաշված…» — сразу раскрыт (в сводке он свёрнут одной строкой)
+        if (part === 'calc') sh.querySelectorAll('details.dp-costnote').forEach(x => { x.open = true; });
+        state.sheetFrom = document.activeElement;
+        $('dpSheetClose').focus();
     }
     function openDrawer(open) {
+        if (open) openSheet(null);
         $('dpDrawer').hidden = !open;
         $('dpPrepOpen').setAttribute('aria-expanded', String(open));
         renderSteps();   // в панели шаги открыты (renderSteps смотрит на панель), закрыли — снова свёрнуты в строку
@@ -5980,6 +6135,8 @@
         $('dpMenuUnapprove').hidden = !$('dpUnapprove');
         $('dpMenuDiscard').hidden = !$('dpDiscardBtn');
         $('dpMenuCompare').hidden = !(state.data && state.data.plan);
+        $('dpMenuTrips').hidden = !($('dpOverflow').children.length || $('dpUnassigned').children.length);
+        $('dpMenuBoss').hidden = $('dpAnalysis').hidden;
         // перерисовка спрятала пункт с фокусом — фокус на первый видимый, а не на <body> (иначе Esc не сработает)
         if (!$('dpWsMenu').hidden && !$('dpWsMenu').contains(document.activeElement)) {
             const f = $('dpWsMenu').querySelector('[role="menuitem"]:not([hidden])');
@@ -5998,6 +6155,20 @@
         };
         $('dpWsClose').addEventListener('click', closeSide);
         $('dpWsSide').addEventListener('keydown', (e) => { if (e.key === 'Escape' && !e.target.closest('select')) closeSide(); });
+        // Tesla+: левая панель «Մեքենաներ» — строка машины выбирает её (как подпись шкалы); «+ Մեքենա» — шаг 1 в панели
+        $('dpWsRows').addEventListener('click', (e) => {
+            const row = e.target.closest('.dp-wl-row');
+            const t = row && state.data && state.data.plan && state.data.plan.trucks.find(x => x.car_code === row.dataset.truck);
+            if (t) focusFromBoard(t, null);
+        });
+        $('dpWsAddTruck').addEventListener('click', () => { openDrawer(true); unfoldStep('dpStep1'); });
+        $('dpSheetClose').addEventListener('click', () => openSheet(null, state.sheetFrom));
+        $('dpSheet').addEventListener('keydown', (e) => { if (e.key === 'Escape' && !e.target.closest('select')) openSheet(null, state.sheetFrom); });
+        [['dpMenuTrips', 'trips'], ['dpMenuCalc', 'calc'], ['dpMenuBoss', 'boss']].forEach(([id, part]) => $(id).addEventListener('click', () => {
+            openMenu(false);
+            openSheet(part);
+            state.sheetFrom = $('dpWsMore');   // закрыли панель — фокус на «⋯» (пункт меню уже скрыт)
+        }));
         // AI в шапке рабочего экрана и в панели дня до сборки (№99) — та же панель, что у плавающей кнопки
         ['dpWsAi', 'dpSetAi'].forEach(id => $(id).addEventListener('click', () => { const fab = $('dpAiOpen'); if (fab) fab.click(); }));
         $('dpHelpBtn').addEventListener('click', () => {
@@ -6041,7 +6212,8 @@
             const ro = new ResizeObserver(() => { if ($('rtDispatch').classList.contains('is-ws')) sizeWs(); });
             // ширина шапки меняется и без resize окна (полоса прокрутки, масштаб) — подписи кнопок следом; классы ширину не меняют
             new ResizeObserver(() => window.requestAnimationFrame(fitToolbar)).observe(document.querySelector('#rtDispatch .dp-dayboard'));
-            [document.querySelector('#rtDispatch .dp-mast'), $('dpTodo'), $('dpInbox'), $('dpSameDay'), $('dpActionError')].forEach(el => el && ro.observe(el));
+            [document.querySelector('#rtDispatch .dp-mast'), $('dpTodo'), $('dpInbox'), $('dpSameDay'), $('dpActionError'),
+                document.querySelector('#dpWs .dp-ws-top'), document.querySelector('#dpWs .dp-ws-low')].forEach(el => el && ro.observe(el));
         }
     }
 

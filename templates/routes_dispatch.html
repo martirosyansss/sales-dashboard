@@ -14,7 +14,7 @@
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=27">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes_ui.css') }}?v=3">
 <!-- Страница на армянском (ответ владельца №31). Цвета — тема Tesla+ из routes.css (☀/☾), свои стили поверх routes.css -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=79">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=80">
 {% endblock %}
 
 {% block content %}
@@ -59,6 +59,10 @@
                         title="Այլ գործողություններ" aria-label="Այլ գործողություններ"><i class="fas fa-ellipsis" aria-hidden="true"></i></button>
                     <div class="dp-menu" id="dpWsMenu" role="menu" aria-label="Այլ գործողություններ" hidden>
                         <button type="button" role="menuitem" id="dpMenuCompare"><i class="fas fa-code-compare" aria-hidden="true"></i><span>Համեմատել տարբերակները</span></button>
+                        <!-- Tesla+: второстепенные блоки рабочего экрана — в выдвижной панели #dpSheet -->
+                        <button type="button" role="menuitem" id="dpMenuTrips" hidden><i class="fas fa-inbox" aria-hidden="true"></i><span>Ինչը չի տեղավորվել երթերում</span></button>
+                        <button type="button" role="menuitem" id="dpMenuCalc"><i class="fas fa-calculator" aria-hidden="true"></i><span>Ինչպես է հաշված ճանապարհը և ծախսը</span></button>
+                        <button type="button" role="menuitem" id="dpMenuBoss"><i class="fas fa-chart-simple" aria-hidden="true"></i><span>Ղեկավարի համար</span></button>
                         <button type="button" role="menuitem" id="dpMenuUnapprove" hidden><i class="fas fa-lock-open" aria-hidden="true"></i><span>Չեղարկել հաստատումը</span></button>
                         <button type="button" role="menuitem" id="dpMenuDiscard" hidden><i class="fas fa-rotate-left" aria-hidden="true"></i><span>Չեղարկել չուղարկված փոփոխությունները</span></button>
                         <button type="button" role="menuitem" id="dpViewList"><i class="fas fa-list" aria-hidden="true"></i><span>Ցուցակով (նախկին տեսք)</span></button>
@@ -120,16 +124,46 @@
 
         <!-- №82 вариант А: рабочий экран на высоту окна — карта (итоги поверх), снизу машины и шкала дня; выбранная машина —
              карточкой под рабочим экраном, на всю ширину (владелец №89, 07.10: «в самый низ страницы») -->
+        <!-- Tesla+ (макет TeslaPlus.dc.html): карта — во всю «сцену» до низа окна, поверх неё стеклянные панели: сверху итоги дня,
+             подсказка и счётчики «требует внимания», слева машины, справа выбранная машина, снизу шкала дня (layoutWs паркует узлы) -->
         <div class="dp-ws" id="dpWs" hidden>
             <div class="dp-ws-main">
-                <div class="dp-ws-map" id="dpWsMap"><div class="dp-ws-kpi" id="dpWsKpi"></div></div>
+                <div class="dp-ws-map" id="dpWsMap"></div>
             </div>
+            <section class="dp-ws-top" id="dpWsTop" aria-label="Օրը մի հայացքով">
+                <div class="dp-ws-kpi" id="dpWsKpi"></div>
+            </section>
+            <section class="dp-ws-list" id="dpWsList" aria-labelledby="dpWsListTitle">
+                <div class="dp-wl-head">
+                    <h2 class="dp-wl-t" id="dpWsListTitle">Մեքենաներ</h2>
+                    <span class="dp-wl-n" id="dpWsListN"></span>
+                </div>
+                <div class="dp-wl-rows" id="dpWsRows"></div>
+                <div class="dp-wl-foot">
+                    <span class="dp-wl-free" id="dpWsFree"></span>
+                    <button type="button" class="dp-wl-add" id="dpWsAddTruck" aria-controls="dpDrawer" title="Մեքենաներ և վարորդներ՝ նշել, թե որ մեքենաներն են այսօր դուրս գալիս">+ Մեքենա</button>
+                </div>
+            </section>
+            <aside class="dp-ws-side" id="dpWsSide" aria-label="Ընտրված մեքենան" hidden>
+                <button type="button" class="dp-ws-close" id="dpWsClose" aria-label="Փակել մեքենայի քարտը" title="Փակել"><i class="fas fa-xmark" aria-hidden="true"></i></button>
+            </aside>
             <div class="dp-ws-low">
                 <div class="dp-ws-bottom" id="dpWsBottom"></div>
             </div>
         </div>
-        <aside class="dp-ws-side" id="dpWsSide" aria-label="Ընտրված մեքենան" hidden>
-            <button type="button" class="dp-ws-close" id="dpWsClose" aria-label="Փակել մեքենայի քարտը" title="Փակել"><i class="fas fa-xmark" aria-hidden="true"></i></button>
+
+        <!-- Tesla+: всё второстепенное рабочего экрана — выдвижная панель (открывают счётчики, «Ցույց տալ» и меню «⋯»):
+             не поместилось и «Դեռ ոչ մի երթում չեն», как посчитано, для руководителя -->
+        <aside class="dp-drawer dp-sheet" id="dpSheet" aria-labelledby="dpSheetTitle" hidden>
+            <div class="dp-drawer-head">
+                <h2 class="dp-drawer-t" id="dpSheetTitle"></h2>
+                <button type="button" class="dp-ws-close" id="dpSheetClose" aria-label="Փակել"><i class="fas fa-xmark" aria-hidden="true"></i></button>
+            </div>
+            <div class="dp-drawer-body">
+                <div class="dp-sheet-part" id="dpSheetTrips" data-part="trips"></div>
+                <div class="dp-sheet-part" id="dpSheetCalc" data-part="calc"></div>
+                <div class="dp-sheet-part" id="dpSheetBoss" data-part="boss"></div>
+            </div>
         </aside>
 
         <!-- №82: шаги 1–2 и пересборка на широком экране — выдвижная панель «Մեքենաներ, պատվերներ» -->
@@ -370,11 +404,12 @@
         </section>
     </div>
 
-    <!-- №81: на телефоне — вкладки внизу (день · рейсы · карта), вместо одной длинной страницы -->
+    <!-- №81, Tesla+: на телефоне — вкладки внизу «Քարտեզ · Մեքենաներ · Երթ» вместо одной длинной страницы:
+         карта; день, машины и заказы (шаги 1–2); шкала дня и карточки машин -->
     <nav class="dp-tabs" id="dpTabs" aria-label="Էջի բաժիններ" hidden>
-        <button type="button" class="dp-tab" data-tab="day" aria-pressed="true"><i class="fas fa-calendar-day" aria-hidden="true"></i><span>Օր</span></button>
-        <button type="button" class="dp-tab" data-tab="trips" aria-pressed="false"><i class="fas fa-truck-fast" aria-hidden="true"></i><span>Երթեր</span></button>
         <button type="button" class="dp-tab" data-tab="map" aria-pressed="false"><i class="fas fa-map" aria-hidden="true"></i><span>Քարտեզ</span></button>
+        <button type="button" class="dp-tab" data-tab="day" aria-pressed="true"><i class="fas fa-truck" aria-hidden="true"></i><span>Մեքենաներ</span></button>
+        <button type="button" class="dp-tab" data-tab="trips" aria-pressed="false"><i class="fas fa-route" aria-hidden="true"></i><span>Երթ</span></button>
         {% if ai_enabled %}<button type="button" class="dp-tab" data-tab="ai" id="dpTabAi" hidden><i class="fas fa-wand-magic-sparkles" aria-hidden="true"></i><span>AI</span></button>{% endif %}
     </nav>
 
@@ -653,5 +688,5 @@
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=4" data-yandex-key="{{ yandex_tiles_key }}"></script>
 <!-- панель «Հարցրու AI-ին» — до страницы: init подключает её (RoutesDispatchAI.attach) -->
 <script src="{{ url_for('static', filename='js/routes_dispatch_ai.js') }}?v=4"></script>
-<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=122"></script>
+<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=123"></script>
 {% endblock %}
