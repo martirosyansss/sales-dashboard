@@ -1,19 +1,21 @@
 # -*- coding: utf-8 -*-
-"""Рабочий экран «Развоз» (/routes/dispatch): карточка выбранной машины внизу, а не поверх карты; точка на карте —
-карточка магазина с «Հանել երթից» (владелец 07.10). Настоящий браузер.
+"""Рабочий экран «Развоз» (/routes/dispatch): карточка выбранной машины — стеклянной панелью справа поверх карты (Tesla+,
+макет TeslaPlus.dc.html; прежде №89 — под рабочим экраном), карта своего размера не меняет; точка на карте — карточка
+магазина с «Հանել երթից» (владелец 07.10). Настоящий браузер.
 
 Запуск из корня проекта:  python tests/routes_dispatch_bottom_card_browser_check.py
 Имя без префикса test_: pytest его не собирает (нужны Playwright с Chromium). Приложение и синтетический день —
 как в tests/routes_dispatch_browser_check.py; порт 8774 на 127.0.0.1.
 
 A рабочий экран, рейсы собраны: карточки машины нет, карта на всю ширину;
-B нажали машину на шкале: карточка — под рабочим экраном на всю ширину (№89), карта своего размера не меняет;
+B нажали машину на шкале: карточка — панелью справа внутри рабочего экрана, под верхней панелью итогов (Tesla+), карта
+  своего размера не меняет;
 C нажали точку на карте: строка магазина в карточке подсвечена, у точки — карточка магазина (название, машина, заказы)
   с «Հանել երթից»;
 D «Հանել երթից» → карточка магазина закрыта, окно «Ինչու՞» (причина обязательна, ничего не отправлено); «Միայն այսօր»
   → одна правка trip_stops remove [cid] этого рейса, подсказка «հանվեց», магазин — в «Դեռ երթերում չեն»;
 E «×» карточки машины → она закрыта, карта снова до шкалы;
-F все машины (ничего не выбрано): точка → карточка машины внизу и карточка магазина;
+F все машины (ничего не выбрано): точка → карточка машины справа и карточка магазина;
 P прошедший день: у карточки магазина нет «Հանել երթից».
 Ошибки страницы и консоли — провал (кроме внешних ресурсов, как в основной проверке).
 """
@@ -74,6 +76,13 @@ def main() -> int:
             edits = lambda n: [p[1] for p in posts[n:] if p[0] == 'edit']  # noqa: E731
             rect = lambda s: page.evaluate(RECT, s)  # noqa: E731
 
+            # Tesla+: приглушённые рейсы других машин видны под стеклянными панелями — нажимаем точку, которую ничто не закрывает
+            def open_pin():
+                i = page.evaluate('''() => [...document.querySelectorAll('.dp-ws-map .dp-npin, .dp-ws-map .dp-dpin')].findIndex(p => {
+                    const b = p.getBoundingClientRect(), e = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2);
+                    return !!e && p.contains(e); })''')
+                page.locator('.dp-ws-map .dp-npin, .dp-ws-map .dp-dpin').nth(max(i, 0)).click(force=True)
+
             def trip_of(d, cid):
                 return next((tr['id'] for t in d['plan']['trucks'] for tr in t['trips']
                              if any(s['customer_id'] == cid for s in tr['stops'])), None)
@@ -93,16 +102,14 @@ def main() -> int:
             check(map0 and abs(map0[2] - ws[2]) < 3, f'A map spans the full width {map0} / {ws}')
             page.screenshot(path=str(SHOTS / 'a-ws.png'))
 
-            # B — машина на шкале: карточка внизу справа от шкалы, не над картой
+            # B — машина на шкале: карточка — стеклянной панелью справа поверх карты (Tesla+), карта не меньше
             page.locator('#dpBoard .dp-blabel').first.click()
             page.wait_for_selector('#dpWsSide:not([hidden]) .dp-tcard.is-focus', timeout=5000)
             page.wait_for_timeout(500)
-            side, mp, ws1 = rect('#dpWsSide'), rect('#dpWsMap'), rect('#dpWs')
-            # №89 (владелец 07.10 «в самый низ страницы»): карточка — под рабочим экраном, на всю ширину; карта не меньше
-            check(page.locator('#dpWs #dpWsSide').count() == 0 and page.evaluate("document.getElementById('dpWs').nextElementSibling.id") == 'dpWsSide',
-                  'B truck card is below the work screen, not inside it')
-            check(side[1] >= ws1[3] - 1 and abs(side[0] - ws1[0]) < 3 and abs(side[2] - ws1[2]) < 3,
-                  f'B card spans the full width under the work screen {side} / {ws1}')
+            side, mp, ws1, top = rect('#dpWsSide'), rect('#dpWsMap'), rect('#dpWs'), rect('#dpWs .dp-ws-top')
+            check(page.locator('#dpWs #dpWsSide').count() == 1, 'B truck card is a panel inside the work screen (over the map)')
+            check(ws1[2] - 24 <= side[2] <= ws1[2] and side[1] >= top[3] - 1 and side[3] <= ws1[3] and side[2] - side[0] <= 400,
+                  f'B card on the right, under the top panel, inside the stage {side} / {ws1}')
             check(abs((mp[3] - mp[1]) - (map0[3] - map0[1])) < 3, f'B map keeps its size ({mp[3] - mp[1]:.0f} px, was {map0[3] - map0[1]:.0f})')
             size = page.evaluate("(() => { const m = document.getElementById('dpMap'); return [m.clientWidth, m.clientHeight]; })()")
             check(abs(size[1] - (mp[3] - mp[1])) < 3, f'B Leaflet container follows the new map height {size}')
@@ -164,12 +171,12 @@ def main() -> int:
             check(page.locator('#dpWsSide').is_hidden() and page.locator('#dpWs.has-side').count() == 0
                   and abs(share1 - share0) < .02, f'E card closed, map back to its share ({share0:.2f} → {share1:.2f})')
 
-            # F — все машины: точка → карточка машины внизу и карточка магазина
+            # F — все машины: точка → карточка машины справа и карточка магазина
             page.locator('.dp-ws-map .dp-dpin').first.click(force=True)
             page.wait_for_selector('#dpWsSide:not([hidden]) .dp-tcard.is-focus', timeout=5000)
             page.wait_for_selector('.leaflet-popup .dp-stopcard', timeout=5000)
             check(page.locator('.leaflet-popup .dp-stopcard .dp-stopcard-x').is_visible() and page.locator('#dpWsSide .dp-stop.is-flash').count() == 1,
-                  'F all trucks: point → truck card below and the store card')
+                  'F all trucks: point → truck card on the right and the store card')
             page.keyboard.press('Escape')
             page.wait_for_timeout(200)
             check(page.locator('.leaflet-popup .dp-stopcard').count() == 0, 'F Esc closes the store card')
@@ -177,7 +184,7 @@ def main() -> int:
             # S — низкий экран ноутбука: карта ниже, но кнопка карточки видна целиком внутри карты; Esc на кнопке закрывает
             page.set_viewport_size({'width': 1366, 'height': 768})
             page.wait_for_timeout(500)
-            page.locator('.dp-ws-map .dp-npin, .dp-ws-map .dp-dpin').first.click(force=True)
+            open_pin()
             page.wait_for_selector('.leaflet-popup .dp-stopcard-x', timeout=5000)
             page.wait_for_timeout(500)
             btn, mp = rect('.leaflet-popup .dp-stopcard-x'), rect('#dpWsMap')
@@ -190,7 +197,7 @@ def main() -> int:
             page.wait_for_timeout(400)
             check(page.locator('.leaflet-popup .dp-stopcard').count() == 0, 'S Esc on the card button closes the card')
             # другой день — карточка закрыта и не держит автообновление
-            page.locator('.dp-ws-map .dp-npin, .dp-ws-map .dp-dpin').first.click(force=True)
+            open_pin()
             page.wait_for_selector('.leaflet-popup .dp-stopcard', timeout=5000)
             page.click('#dpDayNext')
             page.wait_for_timeout(1500)
