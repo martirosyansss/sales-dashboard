@@ -17,6 +17,7 @@
 """
 import json
 import sys
+from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
 
@@ -24,7 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from route_optimizer import dispatch as dp  # noqa: E402
-from test_route_optimizer import EAST, WEST, _dorder, _dp_ctx, _dp_stops, _info, _isn  # noqa: E402
+from test_route_optimizer import EAST, WEST, _dorder, _dp_ctx, _dp_stops, _info, _isn, client  # noqa: E402,F401
 
 TRUCKS = ['991AT61', '333DO33']
 
@@ -98,3 +99,151 @@ def test_split_of_sent_trip_into_two_trips_is_unsent():
     # и обратно: два рейса слили в один
     draft.trips = [dp.DraftTrip(1, 'A', [101, 102])]
     assert dp.unsent(draft) == {'trucks': ['A'], 'orders': False}
+
+
+# ============================== 2. магазин нескольких машин — заказ одной машине ==============================
+
+def _view(trips):
+    from courier import routes_link as rl
+    return rl.RoutesView(plan_exists=True, released=True, trips=trips)
+
+
+def _terminal_of(orders, view, cars=('A', 'B')):
+    from courier import routes_link as rl
+    return {car: [o.isn for o in rl.pick_orders(orders, D, view, car)] for car in cars}
+
+
+D = date(2026, 10, 1)
+
+
+def test_split_store_two_orders_each_truck_gets_one():
+    orders = [_dorder(1, 101, 600.0), _dorder(2, 101, 500.0)]
+    trucks, warn = dp.order_trucks([('A', [101]), ('B', [101])], orders)
+    assert trucks == {_isn(1): 'A', _isn(2): 'B'} and warn == []
+    # терминалы (снимок без заказов — отбор по плану): каждый заказ — одной машине (до правки обе получали оба)
+    got = _terminal_of(orders, _view((('A', (101,)), ('B', (101,)))))
+    assert got == {'A': [_isn(1)], 'B': [_isn(2)]}
+
+
+def test_split_store_single_order_goes_wholly_to_bigger_share_with_warning():
+    orders = [_dorder(1, 101, 900.0)]
+    # у B два рейса к магазину из трёх — его доля больше
+    trucks, warn = dp.order_trucks([('A', [101]), ('B', [101]), ('B', [102, 101])], orders)
+    assert trucks == {_isn(1): 'B'} and warn == [{'customer_id': 101, 'trucks': ['A', 'B'], 'empty': ['A']}]
+    got = _terminal_of(orders, _view((('A', (101,)), ('B', (101,)), ('B', (102, 101)))))
+    assert got == {'A': [], 'B': [_isn(1)]}
+    # равные доли — машина, что раньше в плане; детерминированно
+    assert dp.order_trucks([('B', [101]), ('A', [101])], orders)[0] == {_isn(1): 'B'}
+
+
+def test_split_store_warning_on_page_and_in_published_snapshot():
+    ctx = _dp_ctx()
+    stops, orders = _dp_stops([(101, (40.200, 44.640), 900.0), (102, (40.205, 44.650), 200.0)])
+    draft = dp.Draft(TRUCKS, trips=[dp.DraftTrip(1, TRUCKS[0], [101]), dp.DraftTrip(2, TRUCKS[1], [101, 102])], next_id=3)
+    view = dp.plan_view(ctx, stops, draft, _info, explain=False)
+    assert view['order_split'] == [{'customer_id': 101, 'trucks': sorted(TRUCKS), 'empty': [TRUCKS[1]]}]
+    pub = dp.published_orders(draft, stops)
+    assert pub == {orders[0].isn: [TRUCKS[0], 900.0, 10000.0], orders[1].isn: [TRUCKS[1], 200.0, 10000.0]}
+    assert len({isn for isn in pub}) == len(orders)                                  # инвариант: заказ — одной машине
+    # без разделённых магазинов ключа нет — план прежний до байта
+    one = dp.Draft(TRUCKS, trips=[dp.DraftTrip(1, TRUCKS[0], [101, 102])], next_id=2)
+    assert 'order_split' not in dp.plan_view(ctx, stops, one, _info, explain=False)
+
+
+# ============================== 4. снимок отправки фиксирует заказы ==============================
+
+def _page(client, monkeypatch):
+    from test_route_dispatch_send import NOW
+    from test_route_dispatch_same_day import _page_setup
+    state, _ = _page_setup(client, monkeypatch, now=NOW)
+    return state
+
+
+def _post(client, url, body):
+    return client.post(url, json={'date': '2026-10-01', **body})
+
+
+def _ok(r):
+    assert r.status_code == 200, r.get_json()
+    return r.get_json()
+
+
+def _erp_orders(state, change):
+    """ERP изменилась: загрузчик заказов отдаёт change(заказы окна); кэш заказов дня сброшен (как через TTL)."""
+    base = state.dispatch_loader
+    state.dispatch_loader = lambda since, until, day: (lambda d: replace(d, orders=tuple(change(d.orders, since, until))))(
+        base(since, until, day))
+    state.dispatch_cache.clear()
+
+
+def test_order_added_in_erp_after_send_not_on_terminal_until_resent(client, monkeypatch):
+    from courier import routes_link as rl
+    from test_route_dispatch_send import ORDERS
+    state = _page(client, monkeypatch)
+    d = _ok(_post(client, '/api/routes/dispatch/build', {'trucks': ['CAR1', 'CAR2']}))
+    d = _ok(_post(client, '/api/routes/dispatch/edit', {'rev': d['rev'], 'action': 'approve'}))
+    assert d['unsent'] is None
+    owner = {s['customer_id']: tr['truck'] for t in d['plan']['trucks'] for tr in t['trips'] for s in tr['stops']}
+    late = _dorder(40, 101, 120.0)                                   # магазин 101 уже в плане; заказ — после отправки
+    _erp_orders(state, lambda orders, since, until: [*orders, *(o for o in [late] if since <= o.order_date < until)])
+    every = [*ORDERS, late]
+
+    def terminal():
+        view = rl.routes_view(state, D)
+        return {car: sorted(o.isn for o in rl.pick_orders(every, D, view, car)) for car in ('CAR1', 'CAR2')}
+    # водитель его не видит (до правки — видел сразу: терминал перечитывал ERP по клиентам рейсов)
+    assert late.isn not in sum(terminal().values(), [])
+    # логист видит: план не отправлен — у машины магазина изменились заказы
+    d = _ok(client.get('/api/routes/dispatch?date=2026-10-01'))
+    assert d['unsent']['trucks'] == [owner[101]] and d['unsent']['orders_changed'] == 1
+    d = _ok(_post(client, '/api/routes/dispatch/edit', {'rev': d['rev'], 'action': 'send'}))
+    assert d['unsent'] is None and late.isn in terminal()[owner[101]]
+    # изменился вес отправленного заказа — снова «не отправлено»
+    heavier = _dorder(40, 101, 300.0)
+    _erp_orders(state, lambda orders, since, until: [heavier if o.isn == heavier.isn else o for o in orders])
+    d = _ok(client.get('/api/routes/dispatch?date=2026-10-01'))
+    assert d['unsent']['orders_changed'] == 1
+
+
+# ============================== 10. экипаж перед отправкой и после неё ==============================
+
+def test_send_asks_confirmation_on_crew_problems_and_crew_change_marks_unsent(client, monkeypatch):
+    state = _page(client, monkeypatch)
+    state.store.save_truck_driver('CAR1', '2026-10-01', 'Արամ', 'qa')
+    state.store.save_truck_driver('CAR2', '2026-10-01', 'Կարեն', 'qa')
+    d = _ok(_post(client, '/api/routes/dispatch/build', {'trucks': ['CAR1', 'CAR2']}))
+    car = sorted({t['car_code'] for t in d['plan']['trucks'] if t['trips']})[0]
+    name = d['crew']['trucks'][car]['name']
+    # водитель машины плана не вышел до утверждения — утверждение спрашивает, со списком (не запрещает)
+    state.store.save_driver_absence(name, '2026-10-01', None, 'qa')
+    d = _ok(client.get('/api/routes/dispatch?date=2026-10-01'))
+    assert {'truck': car, 'kind': 'absent'} in d['crew_problems']
+    r = _post(client, '/api/routes/dispatch/edit', {'rev': d['rev'], 'action': 'approve'})
+    assert r.status_code == 400 and r.get_json()['crew_confirm'] is True
+    assert {'truck': car, 'kind': 'absent'} in r.get_json()['problems']
+    assert 'sent' not in _ok(client.get('/api/routes/dispatch?date=2026-10-01'))      # без подтверждения — не сохранено
+    d = _ok(_post(client, '/api/routes/dispatch/edit', {'rev': d['rev'], 'action': 'approve', 'confirm_crew': True}))
+    assert d['sent'] and d['unsent'] is None
+    # вышел снова — экипаж отправленного плана другой: «не отправлено» по экипажу машины, пока логист не отправит
+    state.store.save_driver_present(name, '2026-10-01', 'qa')
+    d = _ok(client.get('/api/routes/dispatch?date=2026-10-01'))
+    assert d['unsent']['crew'] == [car] and 'crew_problems' not in d
+    d = _ok(_post(client, '/api/routes/dispatch/edit', {'rev': d['rev'], 'action': 'send'}))
+    assert d['unsent'] is None
+    # машину сняли в настройках после отправки — план требует внимания, отправка — с подтверждением
+    trucks = [{'car_code': 'CAR1', 'capacity_kg': 10000, 'fuel_l_per_100km': 30, 'active': car != 'CAR1', 'center_ok': True},
+              {'car_code': 'CAR2', 'capacity_kg': 3500, 'fuel_l_per_100km': 16, 'active': car != 'CAR2'}]
+    _ok(client.post('/api/routes/settings', json={'trucks': trucks}))
+    d = _ok(client.get('/api/routes/dispatch?date=2026-10-01'))
+    assert car in d['unsent']['crew'] and {'truck': car, 'kind': 'off'} in d['crew_problems']
+    r = _post(client, '/api/routes/dispatch/edit', {'rev': d['rev'], 'action': 'send'})
+    assert r.status_code == 400 and r.get_json()['crew_confirm'] is True
+
+
+def test_crew_not_tracked_means_no_driver_check(client, monkeypatch):
+    """Водителей дня не записано ни у одной машины — экипаж не ведут: машина без водителя едет, как до №77, без вопроса."""
+    _page(client, monkeypatch)
+    d = _ok(_post(client, '/api/routes/dispatch/build', {'trucks': ['CAR1', 'CAR2']}))
+    assert 'crew_problems' not in d
+    d = _ok(_post(client, '/api/routes/dispatch/edit', {'rev': d['rev'], 'action': 'approve'}))
+    assert d['unsent'] is None

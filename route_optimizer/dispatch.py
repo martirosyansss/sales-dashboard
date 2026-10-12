@@ -1081,12 +1081,36 @@ def _released(raw: Any) -> dict[str, Any] | None:
 
 
 def _sent(raw: Any) -> dict[str, Any] | None:
-    """Отправленный водителям снимок из черновика (№81); битый — None (from_json возьмёт сам черновик)."""
+    """Отправленный водителям снимок из черновика (№81); битый — None (from_json возьмёт сам черновик). orders — заказы,
+    отправленные каждой машине (published_orders; нет — снимок до ревью логики 12.10: терминал отбирает заказы по плану),
+    crew — кто вёл машины рейсов при отправке (send); битые — как их нет."""
     if not isinstance(raw, dict) or not isinstance(raw.get('at'), str) or not isinstance(raw.get('plan'), dict) \
             or not isinstance(raw['plan'].get('trips'), list):
         return None
     by = raw.get('by')
-    return {'at': raw['at'], 'by': by if isinstance(by, str) else None, 'plan': copy.deepcopy(raw['plan'])}
+    out = {'at': raw['at'], 'by': by if isinstance(by, str) else None, 'plan': copy.deepcopy(raw['plan'])}
+    orders = _sent_orders(raw.get('orders'))
+    if orders is not None:
+        out['orders'] = orders
+    crew = raw.get('crew')
+    if isinstance(crew, dict) and len(crew) <= MAX_TRIPS \
+            and all(isinstance(k, str) and isinstance(v, str) for k, v in crew.items()):
+        out['crew'] = dict(crew)
+    return out
+
+
+def _sent_orders(raw: Any) -> dict[str, list[Any]] | None:
+    """Заказы отправленного снимка: fISN → [машина, кг, сумма] (published_orders); не словарь или хоть одна битая строка —
+    None (отбор терминала — по плану, как до снимка заказов: половина списка хуже, чем никакого)."""
+    if not isinstance(raw, dict) or len(raw) > MAX_BUILT_ORDERS:
+        return None
+    out: dict[str, list[Any]] = {}
+    for k, v in raw.items():
+        if not (isinstance(k, str) and ISN_RE.match(k) and isinstance(v, list) and len(v) == 3 and isinstance(v[0], str)
+                and v[0] and _is_num(v[1]) and _is_num(v[2])):
+            return None
+        out[k] = [v[0], float(v[1]), float(v[2])]
+    return out
 
 
 def sent_json(raw: Any) -> Any:
@@ -3026,14 +3050,86 @@ def unapprove(draft: Draft) -> Draft:
 
 # --- Отправка плана водителям (ответ владельца №81) ---
 
-def send(draft: Draft, at: str, by: str | None) -> Draft:
+def send(draft: Draft, at: str, by: str | None, orders: Mapping[str, Sequence[Any]] | None = None,
+         crew: Mapping[str, str] | None = None) -> Draft:
     """Снимок черновика уходит водителям (Draft.sent). Зовётся последним перед сохранением — после prune и прогноза: и
     утверждением (views), и «Ուղարկել վարորդներին». Ещё не выпущен (ни разу не утверждён) — DispatchError: до
-    утверждения водители плана не видят (№80)."""
+    утверждения водители плана не видят (№80). orders — заказы каждой машины в момент отправки (published_orders: терминал
+    показывает ровно их, ревью логики 12.10 P1); crew — кто ведёт машины рейсов в момент отправки (views._sent_crew: смена
+    водителя после отправки — «не отправлено»). Без них — снимок как до ревью."""
     if draft.released is None:
         raise DispatchError('Նախ հաստատեք օրվա պլանը')
-    draft.sent = {'at': at, 'by': by, 'plan': draft.sent_plan()}
+    draft.sent = {'at': at, 'by': by, 'plan': draft.sent_plan(),
+                  **({'orders': {k: list(v) for k, v in sorted(orders.items())}} if orders is not None else {}),
+                  **({'crew': dict(sorted(crew.items()))} if crew is not None else {})}
     return draft
+
+
+def order_trucks(trips: Sequence[tuple[str, Sequence[int]]], orders: Sequence[DispatchOrder]
+                 ) -> tuple[dict[str, str], list[dict[str, Any]]]:
+    """Заказ ERP → машина, которая его везёт (ревью логики 12.10, P1). ИНВАРИАНТ: каждый fISN — не больше чем у одной машины:
+    магазин в рейсах нескольких машин (тяжёлый заказ на несколько поездок) иначе отдал бы каждой машине все заказы целиком —
+    двойная доставка и двойное требование оплаты.
+    trips — (машина, клиенты) в порядке плана; orders — заказы развоза (их клиенты вне рейсов — без машины). Магазин одной
+    машины — все его заказы ей. Магазин нескольких машин — заказы целиком, от тяжёлого к лёгкому (детерминированно: кг,
+    сумма, fISN), машине, которой по плану осталось больше всего кг (доля машины = её рейсы к магазину / все рейсы к нему,
+    как кг рейса в _shares); равенство — у кого больше рейсов, затем — кто раньше в плане. Один заказ на несколько машин
+    не делится: он целиком у машины с большей долей.
+    Ответ — (fISN → машина, предупреждения: [{'customer_id', 'trucks': машины магазина, 'empty': машины без единого
+    заказа — едут к магазину, а везти им по документам нечего}]) — логисту на странице (plan_view: order_split)."""
+    per: dict[int, dict[str, int]] = {}
+    for truck, cids in trips:
+        for c in cids:
+            per.setdefault(c, {})
+            per[c][truck] = per[c].get(truck, 0) + 1
+    by_cid: dict[int, list[DispatchOrder]] = {}
+    for o in orders:
+        by_cid.setdefault(o.customer_id, []).append(o)
+    out: dict[str, str] = {}
+    warn: list[dict[str, Any]] = []
+    for cid in sorted(per):
+        trucks, mine = per[cid], by_cid.get(cid, [])
+        if len(trucks) == 1:
+            (truck,) = trucks
+            out.update((o.isn, truck) for o in mine)
+            continue
+        n = sum(trucks.values())
+        total = math.fsum(o.kg for o in mine)
+        rank = {truck: i for i, truck in enumerate(trucks)}   # порядок первого появления в плане
+        left = {truck: total * k / n for truck, k in trucks.items()}
+        got = {truck: 0 for truck in trucks}
+        for o in sorted(mine, key=lambda o: (-o.kg, -o.revenue, o.isn)):
+            truck = max(trucks, key=lambda c: (left[c], trucks[c], -rank[c]))
+            out[o.isn] = truck
+            left[truck] -= o.kg
+            got[truck] += 1
+        empty = sorted(c for c in trucks if not got[c])
+        if empty and mine:
+            warn.append({'customer_id': cid, 'trucks': sorted(trucks), 'empty': empty})
+    return out, warn
+
+
+def published_orders(draft: Draft, stops: Sequence[Stop]) -> dict[str, list[Any]]:
+    """Что получает каждая машина (снимок отправки, Draft.sent['orders']): fISN → [машина, кг, сумма] по order_trucks;
+    кг и сумма — отпечаток заказа: изменился в ERP после отправки — логисту «не отправлено» (views._unsent_json)."""
+    orders = [o for s in stops for o in s.orders]
+    trucks, _ = order_trucks([(t.truck, t.stops) for t in draft.trips], orders)
+    return {o.isn: [trucks[o.isn], round(o.kg, 3), round(o.revenue, 2)] for o in orders if o.isn in trucks}
+
+
+def orders_unsent(sent: Mapping[str, Sequence[Any]] | None, now: Mapping[str, Sequence[Any]]) -> tuple[list[str], int]:
+    """Заказы машин после отправки: (машины, у которых отправленные заказы не те — заказ пришёл, ушёл, перешёл к другой
+    машине или изменился в ERP; сколько таких заказов). Снимка заказов нет (отправлен до ревью логики 12.10) — ([], 0)."""
+    if sent is None:
+        return [], 0
+    trucks: set[str] = set()
+    n = 0
+    for isn in {*sent, *now}:
+        a, b = sent.get(isn), now.get(isn)
+        if a is None or b is None or a[0] != b[0] or abs(a[1] - b[1]) > 0.5 or abs(a[2] - b[2]) > 0.5:
+            n += 1
+            trucks.update(x[0] for x in (a, b) if x is not None)
+    return sorted(trucks), n
 
 
 def discard(draft: Draft) -> Draft:
@@ -3511,7 +3607,11 @@ def plan_view(ctx: DayContext, stops: Sequence[Stop], draft: Draft,
                   for s in stops if s.point is not None and s.customer_id not in in_trips]
     over = [t for t in trips_json if t['over_time'] or t['over_capacity'] or t['no_truck'] or t['vehicle_miss']]
     km_total = math.fsum(t['km'] for t in trips_json)
+    # магазин в рейсах нескольких машин, а заказ один (ревью логики 12.10, order_trucks): он целиком у одной машины — логисту
+    # предупреждение; ключ только при таких магазинах (план прежний до байта)
+    _, split = order_trucks([(t.truck, t.stops) for t in draft.trips], [o for s in routable.values() for o in s.orders])
     return {
+        **({'order_split': split} if split else {}),
         'trucks': trucks_json,
         'unassigned': unassigned,
         'overflow': {'trips': len(over), 'kg': sum(t['kg'] for t in over),

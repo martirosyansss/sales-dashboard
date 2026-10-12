@@ -2075,16 +2075,32 @@ def _dispatch_page_body(dd: _DispatchDay) -> dict[str, Any]:
             # №81: когда план ушёл водителям (кто — имя человека, только странице) и что с тех пор не отправлено
             **({'sent': {'at': dd.draft.sent['at'], 'by': dd.draft.sent['by']}, 'unsent': _unsent_json(dd)}
                if dd.draft is not None and dd.draft.sent is not None else {}),
+            # ревью логики 12.10, P2 №10: машины плана без работы или без водителя — плашка, пока не решено (не прошедший день)
+            **({'crew_problems': problems} if dd.draft is not None and dd.day >= _same_day_now().date()
+               and (problems := _crew_problems(_state(), dd, dd.draft)) else {}),
             # №97: запись в ERP включена — что сайт записал по машинам (только странице)
             **_erp_write_page(_state(), dd)}
 
 
 def _unsent_json(dd: _DispatchDay) -> dict[str, Any] | None:
     """Неотправленные правки (№81, dp.unsent) и on_road — машины из них, чей рейс по отправленному плану уже грузится или
-    в пути (сегодня): водитель увидит правку в дороге — страница предупреждает перед «Ուղարկել»."""
+    в пути (сегодня): водитель увидит правку в дороге — страница предупреждает перед «Ուղարկել».
+    Ревью логики 12.10: заказы машин сверяются со снимком отправки (dp.orders_unsent) — заказ, пришедший в ERP после
+    отправки, ушедший или изменённый, водитель не видит, пока логист не отправит снова: машины — в trucks, сколько заказов —
+    orders_changed; кто ведёт машины рейсов — с отправленным (crew: машины, чей водитель с тех пор другой, или машина больше
+    не работает)."""
     out = dp.unsent(_with_carry(dd))   # №98: и новое недовезённое вчера в рейсах
-    if out is None:
+    sent = dd.draft.sent or {}
+    moved, changed = dp.orders_unsent(sent.get('orders'), dp.published_orders(dd.draft, dd.stops))
+    crew = _crew_unsent(dd, sent.get('crew'))
+    if out is None and not moved and not crew:
         return None
+    out = dict(out or {'trucks': [], 'orders': False})
+    out['trucks'] = sorted({*out['trucks'], *moved})
+    if changed:
+        out['orders_changed'] = changed
+    if crew:
+        out['crew'] = crew
     now = _same_day_now()
     road: set[str] = set()
     if dd.ctx is not None and dd.day == now.date() and out['trucks']:
@@ -2121,6 +2137,53 @@ def _same_day_summary(orders: Sequence[dp.DispatchOrder]) -> dict[str, Any]:
     return {**_totals_of([o for o in orders if o.shipped is None]),
             'invoiced': _totals_of([o for o in orders if o.shipped is not None]),
             'sig': hashlib.sha1(raw.encode('utf-8')).hexdigest()[:16]}
+
+
+def _sent_crew(state: RoutesState, dd: _DispatchDay, draft: dp.Draft) -> dict[str, str]:
+    """Кто ведёт машины рейсов плана (dp.crew_view: водитель дня или посаженный сборкой; нет или не вышел — ''); машина,
+    которой нет среди готовых к расчёту (ctx.trucks: снята в настройках, не заполнена), — CREW_OFF. Снимок отправки (dp.send
+    crew) и сверка с ним (_crew_unsent). Имена людей — только черновику и странице."""
+    view = dp.crew_view(draft, _crew(state, dd.day, dd.bundle.trucks)[0])
+    ready = dd.ctx.trucks if dd.ctx is not None else {}
+
+    def who(c: str) -> str:
+        v = view.get(c) or {}
+        return CREW_OFF if c not in ready else '' if v.get('warn') == 'absent' else v.get('name') or ''
+    return {c: who(c) for c in sorted({t.truck for t in draft.trips})}
+
+
+def _crew_unsent(dd: _DispatchDay, sent: Mapping[str, str] | None) -> list[str]:
+    """Машины отправленного плана, чей экипаж с отправки другой (ревью логики 12.10, P2 №10): водитель сменился, его не стало
+    или машина больше не работает. Снимка экипажа нет (отправлен до ревью) — пусто."""
+    if sent is None:
+        return []
+    now = _sent_crew(_state(), dd, dd.draft.for_drivers())
+    return sorted(c for c in {*sent, *now} if sent.get(c) != now.get(c))
+
+
+def _crew_problems(state: RoutesState, dd: _DispatchDay, draft: dp.Draft) -> list[dict[str, str]]:
+    """Что мешает плану перед утверждением и отправкой (ревью логики 12.10, P2 №10): у каждой машины с рейсами — машина
+    работает (среди готовых к расчёту), есть водитель, он вышел и не ведёт другую машину дня: [{'truck', 'kind': 'off' |
+    'none' | 'absent' | 'twice'}]. Не запрет — логист подтверждает (confirm_crew), владелец блокировки не просил. Водителей
+    дня не записано ни у одной машины (экипаж не ведут) — машина без водителя едет, как до №77 (dp.Crew): 'none' не в счёт."""
+    crew = _crew(state, dd.day, dd.bundle.trucks)[0]
+    view = dp.crew_view(draft, crew)
+    ready = dd.ctx.trucks if dd.ctx is not None else {}
+    out = []
+    for c in sorted({t.truck for t in draft.trips if t.stops}):
+        warn = 'off' if c not in ready else (view.get(c) or {}).get('warn')
+        if warn == 'none' and not crew.own:
+            continue
+        if warn:
+            out.append({'truck': c, 'kind': warn})
+    return out
+
+
+def _crew_confirm(problems: Sequence[Mapping[str, str]]) -> Any:
+    """Ответ «у плана проблемы экипажа» (ревью логики 12.10, P2 №10): страница показывает список и повторяет утверждение или
+    отправку с confirm_crew — как «товар уже в машине» (_loaded_confirm)."""
+    return jsonify({'success': False, 'error': CREW_CONFIRM, 'errors': {'_': CREW_CONFIRM}, 'crew_confirm': True,
+                    'problems': list(problems)}), 400
 
 
 def _today_min(dd: _DispatchDay) -> float | None:
@@ -2249,6 +2312,9 @@ AGENTS_RULE_ONLY = 'Այսօրվա և հաջորդ օրերի համար մեն�
 # №80: выпущенный план (утверждён хотя бы раз) не стирается — водители уже везут его точки; пересборка — можно
 PLAN_RELEASED = 'Պլանն արդեն ուղարկված է վարորդներին․ ամբողջը նորից կազմելու համար օգտագործեք «Վերակազմել երթերը»։'
 PAST_DAY_APPROVE = 'Անցած օրվա պլանը չի հաստատվում և չի չեղարկվում'
+# ревью логики 12.10, P2 №10: экипаж плана перед утверждением и отправкой (_crew_problems) — подтвердить
+CREW_CONFIRM = 'Պլանի մեքենաներից մի քանիսի վարորդի կամ մեքենայի հետ խնդիր կա։ Միևնույն է ուղարկե՞լ։'
+CREW_OFF = '\x00off'   # _sent_crew: машины нет среди готовых к расчёту (не имя человека — его не бывает с \x00)
 
 
 def _approve_edit(dd: _DispatchDay, payload: Mapping[str, Any]) -> dp.Draft:
@@ -3170,7 +3236,14 @@ def api_dispatch_edit() -> Any:
     draft.overtime = dp.runs_late(dd.ctx, dd.stops, draft)
     _capture_prediction(dd, draft)
     if payload.get('action') in ('approve', 'send'):   # №81: водителям — план в том виде, в каком он сохраняется
-        dp.send(draft, _same_day_now().isoformat(timespec='seconds'), session.get('username'))
+        # ревью логики 12.10, P2 №10: машина не работает, без водителя, водитель не вышел или ведёт две машины — только с
+        # подтверждением логиста (не запрет)
+        problems = _crew_problems(state, dd, draft)
+        if problems and payload.get('confirm_crew') is not True:
+            return _crew_confirm(problems)
+        # P1: снимок фиксирует заказы каждой машины (терминал показывает ровно их, каждый заказ — одной машине) и экипаж
+        dp.send(draft, _same_day_now().isoformat(timespec='seconds'), session.get('username'),
+                orders=dp.published_orders(draft, dd.stops), crew=_sent_crew(state, dd, draft))
     try:
         rev = state.store.save_dispatch(day.isoformat(), draft.to_json(), session.get('username'), expected_rev=dd.rev,
                                         also=rule.also if rule is not None else None)

@@ -14,6 +14,11 @@ RoadProvider.get); запись — только экипаж машины из 
 После выпуска терминал видит отправленный снимок плана (№81, Draft.sent): правки логиста — после «Ուղարկել վարորդներին».
 Офис (courier.views.plan_mismatches) видит план и до выпуска.
 
+Заказы машины (ревью логики 12.10, P1) — ровно те, что отправлены ей (Draft.sent['orders'], dp.published_orders): заказ,
+заведённый в ERP после отправки, терминал не берёт, пока логист не отправит план снова (страница показывает его как «не
+отправлено»). Каждый заказ — одной машине (dp.order_trucks): магазин в рейсах нескольких машин не даёт каждой все заказы
+целиком. Снимок отправлен до ревью (без orders) — отбор по плану, как раньше, но тоже заказ — одной машине.
+
 Срок магазина у водителя (ответ владельца №93, контракт v1.8 §12): вид несёт окна приёма дня (Bundle.windows_on), запас
 до срока (настройка until_buffer_min), плановый выезд рейсов машин (прогноз сборки) и дорожную модель «Развоза» для матрицы
 рейса (route_optimizer.views.trip_road — вызывается только при сборке /day).
@@ -79,6 +84,9 @@ class RoutesView:
     road: TripRoad | None = None                           # дорожная модель для матрицы рейса; нет — матрицы нет
     # телефоны менеджеров (09.10): agent_id → номер из настройки agent_phones — кнопка звонка менеджеру магазина в /day
     agent_phones: Mapping[int, str] = field(default_factory=dict)
+    # заказы отправленного снимка (ревью логики 12.10): fISN → машина (dp.published_orders, без доставленного позже №98);
+    # None — снимок без заказов (отправлен до ревью): отбор по плану (pick_orders)
+    published: Mapping[str, str] | None = None
 
     def car_customers(self, car_code: str) -> list[int]:
         """Клиенты машины по плану: порядок рейсов черновика, внутри — порядок объезда; повтор (тяжёлый
@@ -144,6 +152,9 @@ def routes_view(state: Any, day: date) -> RoutesView:
     draft = dp.Draft.from_json(stored[0]).for_drivers()
     # №98: недовезённое вчера — из отправленного снимка, без доставленного позже
     auto = set(draft.auto_carried) - _released(state, day, draft.auto_carried, workdays, holidays)
+    sent_orders = (draft.sent or {}).get('orders')
+    published = None if sent_orders is None else {
+        isn: v[0] for isn, v in sent_orders.items() if isn not in set(draft.auto_carried) - auto}
     return RoutesView(depot=bundle.depot, geo_overrides=base.geo_overrides, workdays=workdays, holidays=holidays,
                       plan_exists=bool(draft.trips), released=bool(draft.trips) and draft.released is not None,
                       trips=tuple((t.truck, tuple(t.stops)) for t in draft.trips),
@@ -151,7 +162,7 @@ def routes_view(state: Any, day: date) -> RoutesView:
                       carried=frozenset(carried | auto), carried_since=carried_since, dropped=frozenset(draft.dropped),
                       agents_off=frozenset(dp.agents_off_of(draft, bundle.settings)), same_day=frozenset(draft.same_day),
                       taken=frozenset(taken - auto), fleet=dp.fleet_rule_of(draft, bundle.settings), roads=roads, seen=seen,
-                      departs=_departs(draft), agent_phones=phones, **timing)
+                      departs=_departs(draft), agent_phones=phones, published=published, **timing)
 
 
 def _trip_road(state: Any, day: date, customers: Mapping[int, Point], car: str) -> Any:
@@ -355,9 +366,13 @@ def pick_orders(orders: Sequence[DispatchOrder], day: date, view: RoutesView, ca
     самого дня, взятые в его развоз (№72), без заказов менеджеров, снятых фильтром; только заказы для машин парка по
     правилу дня, №74 — places: клиенты → (адрес, название) для городов-исключений, спрашивается только когда нужен;
     None — города не проверяются); клиенты рейсов машины в плане на дату. План не выпущен (не утверждён ни разу, №80) или
-    его нет — ничего: терминал ждёт утверждения (прежний запасной отбор по машине заказа ORDERS.fDELIVERYCAR снят)."""
+    его нет — ничего: терминал ждёт утверждения (прежний запасной отбор по машине заказа ORDERS.fDELIVERYCAR снят).
+    Ревью логики 12.10: снимок с заказами (view.published) — ровно отправленные этой машине заказы, ещё не отгруженные до
+    дня; без него — отбор выше, и заказ магазина нескольких машин — только одной из них (dp.order_trucks)."""
     if not view.released:
         return []
+    if view.published is not None:
+        return [o for o in orders if view.published.get(o.isn) == car_code and (o.shipped is None or o.shipped >= day)]
     since, _ = dp.order_window(day, view.workdays, view.holidays)
     need = sorted({o.customer_id for o in orders if view.fleet.needs_place(o)})
     texts = places(need) if need and places is not None else {}
@@ -369,8 +384,8 @@ def pick_orders(orders: Sequence[DispatchOrder], day: date, view: RoutesView, ca
     active = [o for o in sel.main + same if o.isn not in view.excluded and o.isn not in view.taken
               and o.agent_id not in view.agents_off] \
         + [o for o in sel.backlog if dp.backlog_delivered(o, inside, view.added, view.agents_off)]
-    mine = set(view.car_customers(car_code))
-    return [o for o in active if o.customer_id in mine]
+    owner, _ = dp.order_trucks(view.trips, active)
+    return [o for o in active if owner.get(o.isn) == car_code]
 
 
 def invoice_owner(view: RoutesView, car_code: str) -> Callable[[int], bool]:
