@@ -9,7 +9,10 @@ tests/routes_cost_browser_check.py (поддельная ERP, роль адми�
 A «Աշխատավարձ»: шапка страницы (заголовок, строка, «Ինչպե՞ս օգտվել» свёрнут), 4 показателя месяца — те же числа, что
   в строке «Ընդամենը» (Վճարել, առաքիչներ, կետեր, տարբերություն), таблица и итог; формула — под таблицей;
 B «Առաքիչների KPI»: шапка страницы, 4 плитки команды выше таблиц, балл по плану и таблица объёма;
-C обе страницы в обеих темах на 390 / 1366 / 1920 — без горизонтальной прокрутки (tesla_layout_check).
+C обе страницы в обеих темах на 390 / 1366 / 1920 — без горизонтальной прокрутки (tesla_layout_check);
+D «Ակնարկ» /routes (макет Overview.dc.html): шапка страницы с «Թարմացնել» и главной кнопкой, «Գլխավորը հիմա» и
+  «Ինչ դեռ պետք է կարգավորել» рядом, 4 показателя, «Ըստ շաբաթվա օրերի» выше карты, фильтры карты — поверх карты,
+  сортировка рискованных — сегментами; обе темы на 390 / 1366 / 1920.
 Ошибки страницы (pageerror) и консоли — провал (кроме сетевых для внешних ресурсов).
 """
 from __future__ import annotations
@@ -111,9 +114,23 @@ def main() -> int:
             check(b['head'] and b['tiles'] == 4 and b['first'] and b['rows'] == 3 and b['w'] == '300',
                   f'B шапка, 4 плитки выше таблиц, 3 строки объёма ({b})')
 
+            # D «Ակնարկ»
+            ov_ready = lambda pg: pg.wait_for_selector('#rtBody:not(.d-none) #rtKpis .rt-kpi', timeout=60000)   # noqa: E731
+            page.goto(f'{BASE}/routes')
+            ov_ready(page)
+            d = page.evaluate("""() => { const r = (s) => document.querySelector(s).getBoundingClientRect();
+                const main = r('#rtOverview .rt-main'), todo = r('#rtTodo'), heat = r('#rtHeat'), map = r('#rtMap'), tools = r('.rt-maptools');
+                return { head: !!document.querySelector('#rtOverview header.rt-pagehead .rt-btn--primary[href="/routes/optimize"]'),
+                         side: Math.abs(main.top - todo.top) < 2 && todo.left > main.right,
+                         kpis: document.querySelectorAll('#rtKpis .rt-kpi').length, heatFirst: heat.bottom < map.top,
+                         toolsOver: tools.top >= map.top - 1 && tools.bottom <= map.bottom,
+                         seg: document.querySelector('#rtRiskSort').classList.contains('rt-seg--tabs') }; }""")
+            check(d == {'head': True, 'side': True, 'kpis': 4, 'heatFirst': True, 'toolsOver': True, 'seg': True}, f'D «Ակնարկ» по макету ({d})')
+
             # C темы и ширины
             tl.themes_and_widths(browser, f'{BASE}/routes/pay', pay_ready, check, errors, 'C pay')
             tl.themes_and_widths(browser, f'{BASE}/routes/araqich', kp_ready, check, errors, 'C araqich')
+            tl.themes_and_widths(browser, f'{BASE}/routes', ov_ready, check, errors, 'D overview')
             browser.close()
     finally:
         server.shutdown()

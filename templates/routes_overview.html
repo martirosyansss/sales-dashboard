@@ -1,5 +1,5 @@
 {% extends "routes_base.html" %}
-{#- пункт меню раздела слева (routes_base.html) -#}
+{#- текущая страница в верхней панели раздела (routes_base.html) -#}
 {% set rt_nav = '/routes' %}
 
 {% block title %}Երթուղիներ — Sales Dashboard{% endblock %}
@@ -20,27 +20,63 @@
         #rtOverview .rt-main-cta .rt-btn-lg { max-width: 100%; height: auto; min-height: 52px; padding-top: 8px; padding-bottom: 8px;
             white-space: normal; text-align: center; line-height: 1.25; }
     }
+
+    /* Tesla+ (макет mockups/Overview.dc.html): «Գլխավորը հիմա» и «Ինչ դեռ պետք է կարգավորել» — рядом; тепловая карта —
+       клетки мягкими фонами без полосы слева, числа шрифтом интерфейса; фильтры карты — стеклом поверх карты */
+    #rtOverview .ov-row { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); gap: 16px; margin-bottom: 16px; align-items: start; }
+    #rtOverview .ov-row > * { margin: 0; }
+    #rtOverview .rt-main { border: 0; box-shadow: var(--rt-shadow); padding: 18px 20px; }
+    #rtOverview .rt-main-title { color: var(--rt-fg); font-size: 15px; font-weight: 600; letter-spacing: 0; text-transform: none; }
+    #rtOverview .rt-main-title > i { display: none; }
+    #rtOverview .rt-todo { border: 0; box-shadow: var(--rt-shadow); padding: 18px 20px; }
+    #rtOverview .rt-todo-title { font-size: 15px; font-weight: 600; }
+    #rtOverview .rt-todo-title > i { display: none; }
+    #rtOverview .rt-shead h2 { font-size: 15px; font-weight: 600; }
+    #rtOverview .rt-panel { border: 0; }
+    #rtOverview .rt-hc { border: 0; border-radius: 10px; }
+    #rtOverview .rt-hc.s-empty { border: 1px dashed var(--rt-line); }
+    #rtOverview .rt-hc.is-off { border: 1px dashed var(--rt-fg-mute); }
+    #rtOverview .rt-hc-v { font-family: var(--rt-font); font-variant-numeric: tabular-nums; font-weight: 500; }
+    #rtOverview .rt-heat thead th, #rtOverview .rt-heat thead .rt-heat-mgr { background: var(--rt-panel); }
+    #rtOverview .rt-mapcol { position: relative; }
+    #rtOverview .rt-map { height: 560px; border-radius: var(--rt-radius) 0 0 var(--rt-radius); }
+    #rtOverview .rt-maptools {
+        position: absolute; z-index: 500; top: 12px; left: 12px; right: 12px; border: 0; padding: 8px 10px;
+        border-radius: var(--rt-radius-sm); background: var(--rt-glass); box-shadow: var(--rt-shadow-sm);
+        -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+    }
+    #rtOverview .rt-maptools ~ .rt-map .leaflet-top { top: 64px; }
+    #rtOverview .rt-side { border-left: 1px solid var(--rt-line); }
+    #rtOverview #rtRiskSort { display: inline-flex; }
+    @media (max-width: 991px) {
+        #rtOverview .ov-row { grid-template-columns: minmax(0, 1fr); }
+        #rtOverview .rt-maptools { position: static; border-radius: 0; box-shadow: none; background: transparent; }
+        #rtOverview .rt-maptools ~ .rt-map .leaflet-top { top: 0; }
+        #rtOverview .rt-map { border-radius: 0; }
+    }
 </style>
 {% endblock %}
 
 {% block content %}
-<div class="rt-page" id="rtOverview" lang="hy">
+<div class="rt-page rt-tesla" id="rtOverview" lang="hy">
 
-    <!-- ШАПКА -->
-    <header class="rt-head">
-        <div class="rt-head-row">
-            <div class="rt-head-title">
-                <h1 class="rt-title">Ընթացիկ երթուղիներ</h1>
-                <span id="rtFresh" class="rt-pill d-none"></span>
-            </div>
-            <div class="rt-head-tools">
-                <button id="rtRefreshBtn" type="button" class="rt-btn rt-btn-ghost" title="Կրկին կարդալ տվյալները ERP-ից և վերահաշվել">
-                    <i class="fas fa-rotate" aria-hidden="true"></i><span>Թարմացնել</span>
-                </button>
-            </div>
+    <!-- ШАПКА (Tesla+): заголовок, дата данных ERP, пояснение по раскрытию; справа «Թարմացնել» и главная кнопка -->
+    <header class="rt-pagehead">
+        <div>
+            <h1 class="rt-pagehead__title">Ընթացիկ երթուղիներ</h1>
+            <p class="rt-pagehead__sub">Մենեջերների շաբաթական այցերը ըստ ERP-ի <span id="rtFresh" class="rt-pill d-none"></span></p>
+            <details class="rt-howto">
+                <summary><i class="fas fa-circle-question" aria-hidden="true"></i>Ինչ է այս էջը</summary>
+                <p>Ինչպես են մենեջերներն աշխատում ERP-ի ընթացիկ պլանով՝ որքան հասույթ է բերում յուրաքանչյուր օրը,
+                    քանի կիլոմետր են նրանք անցնում և որ խանութներն են դադարել գնել։</p>
+            </details>
         </div>
-        <p class="rt-head-lead">Ինչպես են մենեջերներն աշխատում ERP-ի ընթացիկ պլանով՝ որքան հասույթ է բերում յուրաքանչյուր օրը,
-            քանի կիլոմետր են նրանք անցնում և որ խանութներն են դադարել գնել։</p>
+        <div class="rt-pagehead__actions">
+            <button id="rtRefreshBtn" type="button" class="rt-btn rt-btn--secondary" title="Կրկին կարդալ տվյալները ERP-ից և վերահաշվել">
+                <i class="fas fa-rotate" aria-hidden="true"></i><span>Թարմացնել</span>
+            </button>
+            <a href="/routes/optimize" class="rt-btn rt-btn--primary" title="Օպտիմալացումը կառաջարկի, թե որ օրերին որ խանութներ այցելել">Տեսնել, թե ինչ կարելի է բարելավել<i class="fas fa-arrow-right" aria-hidden="true"></i></a>
+        </div>
     </header>
 
     <!-- Объявления для скринридеров -->
@@ -59,15 +95,12 @@
 
     <div id="rtBody" class="d-none">
 
-        <!-- ГЛАВНОЕ СЕЙЧАС -->
+        <!-- ГЛАВНОЕ СЕЙЧАС и ЧТО ЕЩЁ НАСТРОИТЬ — рядом (макет) -->
+        <div class="ov-row">
         <div class="rt-main ov-main" aria-labelledby="rtMainTitle">
             <h2 class="rt-main-title" id="rtMainTitle"><i class="fas fa-lightbulb" aria-hidden="true"></i>Գլխավորը հիմա</h2>
             <ul class="rt-main-list" id="rtMainList"></ul>
             <p class="rt-main-note" id="rtMainNote" hidden></p>
-            <div class="rt-main-cta">
-                <a href="/routes/optimize" class="rt-btn rt-btn-primary rt-btn-lg">Տեսնել, թե ինչ կարելի է բարելավել<i class="fas fa-arrow-right" aria-hidden="true"></i></a>
-                <span class="rt-cta-note">Օպտիմալացումը կառաջարկի, թե որ օրերին որ խանութներ այցելել</span>
-            </div>
         </div>
 
         <!-- ЧТО ЕЩЁ НАСТРОИТЬ: не больше трёх строк -->
@@ -79,44 +112,10 @@
                 <ul id="rtTodoMoreList" class="rt-todo-list"></ul>
             </details>
         </section>
+        </div>
 
         <!-- ЧЕТЫРЕ ПОКАЗАТЕЛЯ -->
         <div class="rt-kpis is-4" id="rtKpis" role="group" aria-label="Ընթացիկ պլանի հիմնական ցուցանիշները"></div>
-
-        <!-- КАРТА + ПАНЕЛЬ ДНЯ -->
-        <section class="rt-section" id="rtMapSection" aria-labelledby="rtMapTitle">
-            <div class="rt-shead">
-                <h2 id="rtMapTitle">Խանութների քարտեզ</h2>
-                <span class="rt-shead-note" id="rtCoordsNote"></span>
-            </div>
-            <div class="rt-panel">
-                <div class="rt-maptools">
-                    <label for="rtMgrFilter">Մենեջեր
-                        <select id="rtMgrFilter" class="rt-select">
-                            <option value="">Բոլոր մենեջերները</option>
-                        </select>
-                    </label>
-                    <div class="rt-chips" id="rtDayChips" role="group" aria-label="Շաբաթվա օրերը քարտեզում"></div>
-                    <span class="rt-maptools-note" id="rtNoCoords" aria-live="polite"></span>
-                    <div class="rt-routebar" id="rtRouteBar" hidden>
-                        <i class="fas fa-route" aria-hidden="true"></i>
-                        <span id="rtRouteBarText"></span>
-                        <button type="button" class="rt-btn rt-btn-ghost rt-btn-sm" id="rtRouteClear">
-                            <i class="fas fa-xmark" aria-hidden="true"></i>Ցույց տալ բոլոր խանութները
-                        </button>
-                    </div>
-                </div>
-                <div class="rt-mapgrid">
-                    <div class="rt-mapcol">
-                        <div id="rtMap" class="rt-map" role="region" aria-label="Խանութների, մենեջերների տների և պահեստի քարտեզ"></div>
-                        <div id="rtMapLegend" class="rt-maplegend" aria-label="Պայմանական նշաններ"></div>
-                    </div>
-                    <aside class="rt-side" aria-label="Մենեջերի օրը">
-                        <div class="rt-side-inner" id="rtSide"></div>
-                    </aside>
-                </div>
-            </div>
-        </section>
 
         <!-- ПО ДНЯМ НЕДЕЛИ -->
         <section class="rt-section" aria-labelledby="rtHeatTitle">
@@ -137,6 +136,41 @@
             </div>
         </section>
 
+
+        <!-- КАРТА + ПАНЕЛЬ ДНЯ -->
+        <section class="rt-section" id="rtMapSection" aria-labelledby="rtMapTitle">
+            <div class="rt-shead">
+                <h2 id="rtMapTitle">Խանութների քարտեզ</h2>
+                <span class="rt-shead-note" id="rtCoordsNote"></span>
+            </div>
+            <div class="rt-panel">
+                <div class="rt-mapgrid">
+                    <div class="rt-mapcol">
+                        <div class="rt-maptools">
+                            <label for="rtMgrFilter">Մենեջեր
+                                <select id="rtMgrFilter" class="rt-select">
+                                    <option value="">Բոլոր մենեջերները</option>
+                                </select>
+                            </label>
+                            <div class="rt-chips" id="rtDayChips" role="group" aria-label="Շաբաթվա օրերը քարտեզում"></div>
+                            <span class="rt-maptools-note" id="rtNoCoords" aria-live="polite"></span>
+                            <div class="rt-routebar" id="rtRouteBar" hidden>
+                                <i class="fas fa-route" aria-hidden="true"></i>
+                                <span id="rtRouteBarText"></span>
+                                <button type="button" class="rt-btn rt-btn-ghost rt-btn-sm" id="rtRouteClear">
+                                    <i class="fas fa-xmark" aria-hidden="true"></i>Ցույց տալ բոլոր խանութները
+                                </button>
+                            </div>
+                        </div>
+                        <div id="rtMap" class="rt-map" role="region" aria-label="Խանութների, մենեջերների տների և պահեստի քարտեզ"></div>
+                        <div id="rtMapLegend" class="rt-maplegend" aria-label="Պայմանական նշաններ"></div>
+                    </div>
+                    <aside class="rt-side" aria-label="Մենեջերի օրը">
+                        <div class="rt-side-inner" id="rtSide"></div>
+                    </aside>
+                </div>
+            </div>
+        </section>
         <!-- РАЗВОЗ ПО ДНЯМ: парк машин (fleet-plan §4) -->
         <section class="rt-section" id="rtFleetSection" aria-labelledby="rtFleetTitle" hidden>
             <div class="rt-shead">
@@ -158,14 +192,14 @@
             <div class="rt-panel rt-panel-pad">
                 <p class="rt-lead" id="rtRiskLead"></p>
                 <div class="rt-risk-tools">
-                    <div class="rt-chips" id="rtRiskSort" role="group" aria-label="Ցուցակի հերթականությունը">
+                    <div class="rt-chips rt-seg--tabs" id="rtRiskSort" role="group" aria-label="Ցուցակի հերթականությունը">
                         <button type="button" class="rt-chip" data-sort="rev" aria-pressed="true">Սկզբում՝ խոշորները</button>
                         <button type="button" class="rt-chip" data-sort="days" aria-pressed="false">Սկզբում՝ վաղուց չգնողները</button>
                     </div>
                     <span class="rt-risk-count" id="rtRiskCount" role="status" aria-live="polite"></span>
                 </div>
                 <div class="rt-table-scroll rt-risk-scroll">
-                    <table class="rt-table rt-risk-table">
+                    <table class="rt-table rt-table--lined rt-risk-table">
                         <caption class="rt-sr-only">Խանութներ, որոնք դադարել են գնել՝ մենեջեր, ինչ է պատահել, քանի օր առանց պատվերի, որքան հաճախ էր պատվիրում, պատվերներ և գնումներ վերջին տարում, վերջին պատվեր</caption>
                         <thead>
                             <tr>
