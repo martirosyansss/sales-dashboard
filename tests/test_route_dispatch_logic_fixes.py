@@ -395,3 +395,25 @@ def test_order_added_after_send_not_loaded_by_warehouse_and_truck_changing(clien
     asked.clear()
     assert _wb(client, car, w['rev']).status_code == 200 and any(late.isn in isns for isns in asked)
 
+
+# ============================== ручное решение и автоматический выбор машин (ревью ветки, P2) ==============================
+
+def test_lock_survives_automatic_fleet_choice_by_crew():
+    """Магазин перенесён логистом в машину, чей водитель не вышел: подбор машин по водителям (build_crewed, №77) машину
+    не выбрасывает молча вместе с решением логиста (до правки — пробная сборка без неё стирала locks). Машина остаётся, как
+    машина с закреплённым рейсом (страница предупредит об экипаже); снять решение — только логисту."""
+    ctx = _dp_ctx()
+    stops, orders = _dp_stops(EAST + WEST)
+    ids = {o.isn for o in orders}
+    draft = dp.build(ctx, stops, None, TRUCKS, 'now')
+    src = next(t for t in draft.trips if 104 in t.stops)
+    other = next(c for c in TRUCKS if c != src.truck)
+    draft = dp.apply_edit(ctx, stops, draft, {'action': 'move', 'customer_id': 104, 'from_trip': src.id,
+                                              'to_trip': None, 'truck': other}, ids)
+    crew = dp.Crew({src.truck: 'Արամ', other: 'Կարեն'}, frozenset(), frozenset({'Կարեն'}))   # водитель other не вышел
+    got = dp.build_crewed(ctx, stops, draft, TRUCKS, 'now2', crew)
+    assert got.locks == {104: other} and _where(got, 104) == [other]
+    # без решения логиста та же сборка машину без водителя не берёт — правило №77 не изменилось
+    plain = dp.build_crewed(ctx, stops, dp.apply_edit(ctx, stops, dp.Draft.from_json(draft.to_json()),
+                                                      {'action': 'unlock_all'}, ids), TRUCKS, 'now3', crew)
+    assert {t.truck for t in plain.trips} == {src.truck} and plain.locks == {}

@@ -1637,7 +1637,8 @@ def build_crewed(ctx: DayContext, stops: Sequence[Stop], old: Draft | None, truc
     больше, чем вышло водителей. trucks — отмеченные машины (исправны и могут выйти, №70–71), crew — водители дня.
     - отмеченная машина, чей водитель вышел, едет с ним (seating); машина без водителя в «Վարորդ» — едет, как до №77;
     - свободные водители (вышли, а их машины не отмечены) садятся на отмеченные машины без своего водителя: сначала на
-      машины с закреплёнными рейсами (рейсы остаются; водителя не хватило — машина едет, страница предупреждает), затем на
+      машины с закреплёнными рейсами и с ручными решениями логиста (Draft.locks: рейсы и решения остаются; водителя не
+      хватило — машина едет, страница предупреждает), затем на
       лучшие для заказов дня — по пробной сборке с коротким решателем (SEAT_TRIAL_ITERATIONS): меньше магазинов вне
       рейсов, затем меньше ֏ расхода (_shortfall). Наборов (одинаковые машины — один, _profile) не больше
       SEAT_EXHAUSTIVE_MAX — перебор всех, иначе по одной машине; водители по именам садятся на выбранные машины по кодам;
@@ -1655,7 +1656,9 @@ def build_crewed(ctx: DayContext, stops: Sequence[Stop], old: Draft | None, truc
     old = old or Draft()
     codes = sorted(set(trucks) & set(ctx.trucks))
     own, orphans, free = seating(crew, codes)
-    pinned = {t.truck for t in old.trips if t.pinned}
+    # машины с закреплёнными рейсами и с ручными решениями логиста (Draft.locks, ревью логики 12.10): подбор машин их не
+    # выбрасывает и их водителя не пересаживает — иначе решение логиста молча стёрла бы пробная сборка без машины
+    pinned = {t.truck for t in old.trips if t.pinned} | {t for t in old.locks.values() if t in codes}
     forced = [c for c in orphans if c in pinned]
     rest = [c for c in orphans if c not in pinned]
     seats = dict(zip(forced, free))
@@ -1770,7 +1773,7 @@ def _spare_solo_truck(ctx: DayContext, stops: Sequence[Stop], old: Draft, draft:
         return draft, 0                                  # машина отдельного рейса другие магазины дня не возит
     base = _shortfall(ctx, routable, draft)
     used = sorted({t.truck for t in draft.trips})
-    held = {t.truck for t in old.trips if t.pinned}
+    held = {t.truck for t in old.trips if t.pinned} | set(old.locks.values())   # и машины ручных решений логиста
     kg = {c: math.fsum(routable[x].kg for t in draft.trips if t.truck == c for x in t.stops if x in routable) for c in used}
     limit = base[2] * (1.0 + ctx.solo_spare_max_pct / 100.0)
     trials, best, best_pct = 0, None, None
