@@ -74,6 +74,9 @@
     --rt-route-8:   #d98a64;
     --rt-route-9:   #b77fd0;
     --rt-route-10:  #8cc260;
+    /* цифры на цвете машины (номера точек шкалы и карты): контраст ≥ 4.5:1 — на светлых цветах тёмной темы всё тёмное */
+    --rt-route-2-ink: #0b0f15; --rt-route-3-ink: #0b0f15; --rt-route-4-ink: #0b0f15; --rt-route-5-ink: #0b0f15; --rt-route-6-ink: #0b0f15;
+    --rt-route-7-ink: #0b0f15; --rt-route-8-ink: #0b0f15; --rt-route-9-ink: #0b0f15; --rt-route-10-ink: #0b0f15;
     /* Шрифты и ритм */
     --rt-font:      'Noto Sans Armenian', 'Google Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
     --rt-mono:      'IBM Plex Mono', ui-monospace, monospace;
@@ -159,6 +162,9 @@ html[data-rt-theme="light"] .rt-page {
     --rt-route-8:   #b9592f;
     --rt-route-9:   #8e44ad;
     --rt-route-10:  #4f8a24;
+    /* цифры на цвете машины: белые или почти чёрные — что даёт ≥ 4.5:1 (5, 6, 8, 9 — белые) */
+    --rt-route-2-ink: #0b0f15; --rt-route-3-ink: #0b0f15; --rt-route-4-ink: #0b0f15; --rt-route-5-ink: #ffffff; --rt-route-6-ink: #ffffff;
+    --rt-route-7-ink: #0b0f15; --rt-route-8-ink: #ffffff; --rt-route-9-ink: #ffffff; --rt-route-10-ink: #0b0f15;
     color-scheme: light;
 }
 /* Фон под страницей — --rt-bg темы (иначе ниже первого экрана виден тёмный градиент body из base.css). body лежит вне
