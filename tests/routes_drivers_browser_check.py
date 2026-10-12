@@ -18,7 +18,8 @@ C сортировка по «Արագություն»: меньше превы�
 D «Гараж»: вкладок нет, есть «Ավտոտնակ», столбца «Կանխիկ» нет ни в шапке, ни в строках, ни в разбивке по дням; в
   ответе API — cash: false;
 E телефон 390×860: у страницы нет горизонтальной прокрутки (таблица прокручивается внутри своей рамки);
-F «Ուսուցում» за 02–05.10: ряд плиток точности ETA виден и согласован с «Վարորդներ».
+F «Ուսուցում» за 02–05.10: ряд плиток точности ETA виден и согласован с «Վարորդներ»;
+G Tesla+: шапка страницы, плитки — карточки; обе темы на 390 / 1366 / 1920 без горизонтальной прокрутки (tesla_layout_check).
 Ошибки страницы (pageerror) и консоли — провал (кроме сетевых для внешних ресурсов — шрифты, CDN).
 """
 from __future__ import annotations
@@ -249,6 +250,17 @@ def main() -> int:
             tiles = page.locator('#lrEta .rt-kpi').count()
             first = page.inner_text('#lrEta .rt-kpi >> nth=0')
             check(tiles == 4 and 'ETA' in first and '%' in first, f'F «Ուսուցում»: 4 плитки ETA — {first!r}')
+
+            # G Tesla+
+            import tesla_layout_check as tl
+            page.goto(f'{BASE}/routes/drivers')
+            page.wait_for_selector('#drRows tr.dr-row', timeout=30000)
+            card = page.evaluate("""() => { const k = getComputedStyle(document.querySelector('#drKpis .dr-kpi'));
+                return { head: !!document.querySelector('header.rt-pagehead h1.rt-pagehead__title'), w: k.fontWeight,
+                         r: k.borderRadius, v: getComputedStyle(document.querySelector('#drKpis .dr-kpi-val')).fontWeight }; }""")
+            check(card['head'] and card['r'] == '18px' and card['v'] == '300', f'G шапка страницы и карточки-плитки ({card})')
+            tl.themes_and_widths(browser, f'{BASE}/routes/drivers',
+                                 lambda pg: pg.wait_for_selector('#drRows tr.dr-row', timeout=30000), check, errors, 'G')
             browser.close()
     finally:
         server.shutdown()

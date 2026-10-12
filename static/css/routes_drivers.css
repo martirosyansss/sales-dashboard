@@ -4,17 +4,14 @@
 
 #drPage { max-width: 1640px; margin: 0 auto; padding-bottom: 48px; font-variant-numeric: tabular-nums; }
 
-/* Шапка: название слева, период справа */
-.dr-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 14px 24px; padding: 16px 20px; margin-bottom: 12px; }
+/* Шапка страницы (Tesla+, routes_ui.css .rt-pagehead): название слева, период справа */
+.dr-head { margin-bottom: 14px; }
 .dr-head-main { flex: 1 1 380px; display: flex; align-items: center; gap: 14px; min-width: 0; }
-.dr-head-ico {
-    flex: 0 0 auto; display: grid; place-items: center; width: 44px; height: 44px; border-radius: 12px;
-    background: var(--rt-acc-glow); color: var(--rt-acc); box-shadow: inset 0 0 0 1px var(--rt-acc-dim); font-size: 1.125rem;
-}
 .dr-head-text { min-width: 0; }
-#drPage .dr-head .rt-title { font-size: 1.625rem; }
-.dr-head-sub { margin: 2px 0 0; font-size: .9375rem; color: var(--rt-fg-dim); line-height: 1.4; }
-.dr-garage { margin-left: 8px; }
+/* период — сегменты как .rt-seg--tabs (radio внутри label: старые .rt-seg перекрыты только на этой странице) */
+#drPage .dr-seg { border: 0; border-radius: 999px; background: var(--rt-chip); padding: 3px; gap: 0; }
+#drPage .dr-seg label { height: 34px; padding: 0 14px; border-radius: 999px; background: transparent; color: var(--rt-fg-dim); font-weight: 400; }
+#drPage .dr-seg label:has(input:checked) { background: var(--rt-panel); color: var(--rt-fg); font-weight: 600; box-shadow: 0 1px 3px var(--rt-shadow-c); }
 
 .dr-period { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; margin: 0; }
 .dr-quick { border: 0; margin: 0; padding: 0; min-width: 0; }
@@ -23,30 +20,27 @@
 .dr-field .rt-input { width: 152px; height: 38px; padding-top: 0; padding-bottom: 0; }
 .dr-dash { color: var(--rt-fg-mute); }
 #drApply { height: 38px; }
+.dr-field .rt-input { border-radius: var(--rt-radius-sm); }
 
-/* Итоги периода: парк и точность ETA — одна панель, плитки через тонкие разделители */
-.dr-summary {
-    display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); margin-bottom: 12px;
-    background: var(--rt-panel); border: 1px solid var(--rt-line); border-radius: var(--rt-radius); overflow: hidden;
-}
-.dr-sum-group { min-width: 0; padding: 12px 0 14px; }
-.dr-sum-group + .dr-sum-group { border-left: 1px solid var(--rt-line); }
+/* Итоги периода (Tesla+ KPI-карточки): группа — серая подпись, под ней карточки: подпись, большое тонкое число, заметка */
+.dr-summary { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; margin-bottom: 16px; }
+.dr-sum-group { min-width: 0; }
 .dr-sum-group[hidden] { display: none; }
-.dr-summary:has(#drEtaBox[hidden]) { grid-template-columns: minmax(0, 1fr); }
-#drPage .dr-sum-title {
-    margin: 0 0 6px; padding: 0 18px; font-size: .75rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
-    color: var(--rt-fg-mute);
-}
-.dr-kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+#drPage .dr-sum-title { margin: 0 0 8px; padding: 0 4px; font-size: 12.5px; font-weight: 500; color: var(--rt-fg-dim); }
+.dr-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
 .dr-kpis[hidden] { display: none; }
-.dr-kpi { min-width: 0; padding: 4px 18px; }
-.dr-kpi + .dr-kpi { border-left: 1px solid var(--rt-line-soft); }
-.dr-kpi-label { font-size: .8125rem; color: var(--rt-fg-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.dr-kpi-val { font-size: 1.625rem; font-weight: 700; letter-spacing: -.02em; line-height: 1.25; color: var(--rt-fg); white-space: nowrap; }
-.dr-kpi-sub { font-size: .8125rem; color: var(--rt-fg-mute); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dr-kpi {
+    min-width: 0; display: flex; flex-direction: column; gap: 4px; padding: 16px 20px;
+    background: var(--rt-panel); border-radius: var(--rt-radius); box-shadow: var(--rt-shadow);
+}
+.dr-kpi-label { font-size: 12.5px; color: var(--rt-fg-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dr-kpi-val { font-size: 34px; font-weight: 300; letter-spacing: -.8px; line-height: 1.1; color: var(--rt-fg); white-space: nowrap; }
+.dr-kpi-sub { font-size: 12px; color: var(--rt-fg-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-/* Карточка рейтинга */
-.dr-card { padding: 0; overflow: hidden; }
+/* Карточка рейтинга — панель Tesla+: surface без рамки, тень; таблица — строки линиями */
+#drPage .dr-card { padding: 0; overflow: hidden; border: 0; box-shadow: var(--rt-shadow); }
+#drPage .dr-card .rt-card-title { font-size: 15px; font-weight: 600; }
+#drPage .dr-card .rt-card-title i { display: none; }
 .dr-card-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 16px; padding: 14px 18px 12px; }
 .dr-card-hint { margin: 0; font-size: .8125rem; color: var(--rt-fg-mute); }
 .dr-card-hint i { margin-right: 6px; }
@@ -62,12 +56,12 @@
 .dr-table .c-name { width: 210px; }
 .dr-table th, .dr-table td { background: var(--rt-panel); }
 
-.dr-table thead th, .dr-table thead td { background: var(--rt-panel-2); }
+.dr-table thead th, .dr-table thead td { background: var(--rt-panel); }
 .dr-groups > * { padding: 8px 10px 0; border: 0; }
 .dr-groups th { text-align: center; font-size: .6875rem; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--rt-fg-mute); }
 .dr-groups th span { display: block; padding-bottom: 6px; border-bottom: 1px solid var(--rt-line); white-space: nowrap; }
 .dr-table thead tr:last-child th {
-    padding: 0; border-bottom: 1px solid var(--rt-line); font-size: .75rem; font-weight: 600; color: var(--rt-fg-dim);
+    padding: 0; border-bottom: 1px solid var(--rt-line); font-size: 12px; font-weight: 500; color: var(--rt-fg-dim);
     text-align: left; vertical-align: bottom;
 }
 .dr-table thead th.num { text-align: right; }
@@ -91,7 +85,7 @@ th[aria-sort="descending"] .dr-sort::after { content: "\2193"; opacity: 1; }
 .dr-table tbody tr:is(.dr-row, .dr-day) > :first-child { position: sticky; left: 0; z-index: 1; }
 .dr-table tbody tr:is(.dr-row, .dr-day) > :first-child { box-shadow: inset -1px 0 0 var(--rt-line-soft); }
 
-.dr-table tbody td, .dr-table tbody th { padding: 10px 10px; border-bottom: 1px solid var(--rt-line-soft); font-size: .9375rem; vertical-align: middle; }
+.dr-table tbody td, .dr-table tbody th { padding: 11px 10px; border-bottom: 1px solid var(--rt-line); font-size: .9375rem; vertical-align: middle; }
 .dr-table tbody th { text-align: left; font-weight: 600; }
 .dr-table td.num { text-align: right; white-space: nowrap; }
 .dr-table td .v { font-weight: 600; }
@@ -122,7 +116,7 @@ th[aria-sort="descending"] .dr-sort::after { content: "\2193"; opacity: 1; }
 
 /* Балл: число, шкала 0–100, место */
 .dr-table td.dr-score { padding-top: 8px; padding-bottom: 8px; }
-.dr-score-val { font-size: 1.25rem; font-weight: 700; letter-spacing: -.01em; line-height: 1.2; }
+.dr-score-val { font-size: 1.25rem; font-weight: 300; letter-spacing: -.01em; line-height: 1.2; }
 .dr-meter { display: block; width: 64px; height: 4px; margin: 4px 0 0 auto; border-radius: 2px; background: var(--rt-line); overflow: hidden; }
 .dr-meter i { display: block; height: 100%; border-radius: 2px; background: currentColor; }
 .dr-few {
@@ -193,17 +187,12 @@ th[aria-sort="descending"] .dr-sort::after { content: "\2193"; opacity: 1; }
 .dr-rules { margin: 0; padding-left: 18px; display: grid; gap: 6px; font-size: .9rem; color: var(--rt-fg-dim); max-width: 110ch; }
 .dr-rules b { color: var(--rt-fg); }
 
-@media (max-width: 1199px) {
-    .dr-summary { grid-template-columns: minmax(0, 1fr); }
-    .dr-sum-group + .dr-sum-group { border-left: 0; border-top: 1px solid var(--rt-line); }
-}
 @media (max-width: 767px) {
-    .dr-head { padding: 14px 16px; }
     .dr-period { width: 100%; }
     .dr-dates { flex-wrap: wrap; }
-    .dr-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 10px; }
-    .dr-kpi:nth-child(odd) { border-left: 0; }
-    .dr-kpi-val { font-size: 1.375rem; }
+    .dr-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .dr-kpi { padding: 12px 14px; }
+    .dr-kpi-val { font-size: 26px; }
     .dr-table .c-name { width: 170px; }
     .dr-table th.dr-cell-name { min-width: 160px; }
     .dr-detail > td > .dr-parts, .dr-extra > td > .dr-late-box { max-width: calc(var(--dr-vw, 100vw) - 32px); }
@@ -213,8 +202,6 @@ th[aria-sort="descending"] .dr-sort::after { content: "\2193"; opacity: 1; }
     .dr-card-head { padding: 12px 16px 10px; }
 }
 @media (max-width: 575px) {
-    #drPage .dr-head .rt-title { font-size: 1.375rem; }
-    .dr-head-ico { width: 38px; height: 38px; }
     .dr-field .rt-input { width: 140px; }
     .dr-late-days { grid-template-columns: minmax(0, 1fr); }
 }
