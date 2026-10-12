@@ -549,7 +549,8 @@
             const [baseLabel, cls] = STATE[t.state] || STATE.standing;
             const label = stateLabel(t, baseLabel);
             const pos = t.position;
-            const meta = [h('span', { text: 'Խանութներ՝ ' + t.stores.done + '/' + t.stores.total
+            const meta = [h('span', { class: 'lv-item-state ' + cls, text: label }),
+                h('span', { text: 'Խանութներ՝ ' + t.stores.done + '/' + t.stores.total
                 + (t.stores.gps_visited ? ' · GPS-ով՝ ' + t.stores.gps_visited : '') })];
             if (pos) meta.push(h('span', { class: ageClass(pos.age_s), text: ago(pos.age_s) }));
             // нет связи — не опоздание «как будто машина ещё там», а сколько её не слышно
@@ -567,7 +568,7 @@
                 h('div', { class: 'lv-item-main' }, h('div', { class: 'lv-item-plate' }, t.car_code,
                     a.sev ? h('i', { class: 'fas ' + SEV[a.sev][0] + ' lv-sev-ico', 'aria-hidden': 'true', title: SEV[a.sev][1] }) : null,
                     a.sev ? h('span', { class: 'rt-sr-only', text: SEV[a.sev][1] + (a.fresh ? ', նոր' : '') }) : null),
-                    h('div', { class: 'lv-item-name', text: [t.name, t.driver].filter(Boolean).join(' · ') || label })),
+                    h('div', { class: 'lv-item-name', text: [t.name, t.driver].filter(Boolean).join(' · ') })),   // состояние — своей строкой ниже
                 h('div', { class: 'lv-item-right' },
                     // Tesla+: «закрыто / всего» магазинов — крупно справа (те же числа, что в строке ниже)
                     t.stores.total ? h('span', { class: 'lv-item-done', 'aria-hidden': 'true' }, String(t.stores.done), h('small', { text: '/' + t.stores.total })) : null,
@@ -1250,6 +1251,7 @@
                 h('td', { class: 'lv-stop-status' }, dot, h('span', { text: status })));
         }));
         renderReplayControls(t);
+        renderNext(t);
         const log = t.alerts_log || [];
         $('lvLogBox').hidden = !t.stops;
         $('lvLog').replaceChildren(...(log.length ? log.map(a => {
@@ -1468,6 +1470,44 @@
         r.max = String(last);
         r.value = String(last);
         $('lvReplayTime').textContent = clockOf(last);
+        renderTicks(t, Number(r.min), last);
+    }
+
+    // отметки тревог дня на шкале повтора (t.alerts_log): красная / жёлтая — по важности, «փոքր» и объяснённая — серая;
+    // подпись — текст тревоги, нажатие — перемотка повтора к её началу
+    function renderTicks(t, min, max) {
+        const span = max - min;
+        const ticks = (t.alerts_log || []).map(a => [a, epoch(a.from)]).filter(([, x]) => x !== null && span > 0 && x >= min && x <= max);
+        $('lvTicks').replaceChildren(...ticks.map(([a, x]) => {
+            const sev = a.minor || a.explained ? 3 : alarmSev(a.kind, t.late);
+            const [text, when] = alertText(a);
+            const b = h('button', { type: 'button', class: 'lv-tick lv-tick-' + sev, title: when + ' · ' + text,
+                'aria-label': 'Անցնել ' + hm(a.from) + '-ին՝ ' + text, 'data-t': String(x) });
+            b.style.left = ((x - min) / span * 100).toFixed(2) + '%';
+            return b;
+        }));
+    }
+    $('lvTicks').addEventListener('click', (e) => {
+        const b = e.target.closest('button[data-t]');
+        if (!b) return;
+        setPlaying(false);
+        if (startReplay()) setReplay(Number(b.dataset.t));
+    });
+
+    // «ՀԱՋՈՐԴԸ»: следующие 3 незакрытых магазина плана (t.stops по рейсу и порядку), ожидаемое время — прогноз, иначе план;
+    // «մինչև ЧЧ:ММ» — срок окна приёма из прогноза «не успеет» (t.late, late_kind window)
+    function renderNext(t) {
+        const open = (t.stops || []).filter(s => !DONE.includes(s.status)).slice(0, 3);
+        $('lvNextBox').hidden = !open.length;
+        const win = new Map((t.late || []).filter(x => x.late_kind === 'window' && x.stop_id).map(x => [x.stop_id, x]));
+        $('lvNext').replaceChildren(...open.map((s, i) => {
+            const w = win.get(s.stop_id);
+            const at = s.eta ? '≈ ' + hm(s.eta) : s.planned_eta ? hm(s.planned_eta) : '—';
+            return h('li', {}, h('span', { class: 'lv-next-no', text: String(num(s.plan_no) ?? num(s.seq) ?? i + 1) }),
+                h('span', { class: 'lv-next-name', text: s.name || s.stop_id }),
+                w ? h('span', { class: 'lv-next-until', text: 'մինչև ' + hm(w.limit) }) : null,
+                h('span', { class: 'lv-next-at', text: at }));
+        }));
     }
 
     // положение на треке в момент x — между соседними точками по времени; и индекс последней точки не позже x

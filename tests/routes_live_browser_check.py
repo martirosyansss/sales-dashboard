@@ -379,8 +379,21 @@ def alarm_checks(page, cars, check) -> None:
     base = page.title()
     n = count()
     check(n >= 4 and 'is-new lv-sev1' in (page.get_attribute('#lvAlarm', 'class') or '')
-          and page.evaluate("document.getElementById('lvAlarm').getAnimations().length") > 0,
-          f'тревоги: баннер красный, мигает — «{n} նոր խնդիր» ({page.inner_text("#lvAlarm")!r})')
+          and page.evaluate("document.getElementById('lvAlarm').getAnimations({ subtree: true }).length") > 0,
+          f'тревоги: баннер новых (красный по важности), мигает его значок — «{n} նոր խնդիր» ({page.inner_text("#lvAlarm")!r})')
+    # Tesla+ (DESIGN.md п. 9, макет Live.dc.html): список машин тихий даже при тревогах — без полосы слева и заливки,
+    # полоса прогресса нейтральная (акцент); баннер новых — стеклянная панель, мигает не вся панель, «Տեսա բոլորը» — вторичная
+    quiet = page.evaluate("""() => { const cs = (e) => getComputedStyle(e), items = [...document.querySelectorAll('.lv-item')];
+        const bars = items.map(e => e.querySelector('.lv-item-bar > i')).filter(Boolean);
+        return { n: items.length, alarmed: items.filter(e => /lv-sev[12]/.test(e.className)).length,
+                 border: items.every(e => parseFloat(cs(e).borderLeftWidth) === 0),
+                 fill: items.filter(e => e.getAttribute('aria-selected') !== 'true').every(e => cs(e).backgroundColor === 'rgba(0, 0, 0, 0)'),
+                 bar: bars.length > 0 && bars.every(b => cs(b).backgroundColor === cs(document.querySelector('#rtTop .rt-top-logo')).backgroundColor),
+                 glass: cs(document.getElementById('lvAlarm')).backgroundColor === cs(document.querySelector('.lv-side')).backgroundColor,
+                 panelAnim: document.getElementById('lvAlarm').getAnimations().length,
+                 ack: cs(document.getElementById('lvAlarmAck')).backgroundColor === cs(document.querySelector('#rtTop .rt-top-user')).backgroundColor }; }""")
+    check(quiet['alarmed'] >= 2 and quiet['border'] and quiet['fill'] and quiet['bar'] and quiet['glass'] and quiet['panelAnim'] == 0
+          and quiet['ack'], f'Tesla+: список тихий при тревогах, баннер — стекло, мигает только значок, «Տեսա բոլորը» — chip ({quiet})')
     check(base.startswith(f'({n}) ⚠ '), f'тревоги: заголовок вкладки — «({n}) ⚠ …» ({base!r})')
     if fast:
         check('lv-sev1' in prob(cars[4], 'speed') and 'is-new' in prob(cars[4], 'speed'),
@@ -789,6 +802,25 @@ def main() -> int:
                       'план — факт: 3 строки, у посещённых — прибытие и отъезд по GPS')
                 check(page.is_visible('#lvReplay') and page.get_attribute('#lvReplayRange', 'step') == '60',
                       'воспроизведение дня: есть у выбранной машины, шаг ползунка — минута')
+                # «ՀԱՋՈՐԴԸ»: следующие (до 3) незакрытые магазины из того же плана/факта, что и таблица точек
+                nxt = page.eval_on_selector_all('#lvNext li .lv-next-name', 'els => els.map(e => e.textContent)')
+                stops_txt = page.inner_text('#lvStops')
+                check(1 <= len(nxt) <= 3 and all(x in stops_txt for x in nxt) and page.is_visible('#lvNextBox'),
+                      f'«ՀԱՋՈՐԴԸ»: {len(nxt)} следующих магазина из плана ({nxt})')
+                # отметки тревог дня на шкале: по одной на тревогу журнала в пределах шкалы, подпись — текст, нажатие — перемотка
+                tk = page.evaluate("""() => { const r = document.getElementById('lvReplayRange');
+                    const ts = [...document.querySelectorAll('#lvTicks .lv-tick')];
+                    return { n: ts.length, labels: ts.every(t => (t.getAttribute('aria-label') || '').startsWith('Անցնել ') && t.title),
+                             inside: ts.every(t => Number(t.dataset.t) >= Number(r.min) && Number(t.dataset.t) <= Number(r.max)),
+                             log: [...document.querySelectorAll('#lvLog li')].filter(li => li.querySelector('i')).length,
+                             sev: ts.some(t => /lv-tick-[12]/.test(t.className)) }; }""")
+                check(tk['n'] >= 1 and tk['n'] <= tk['log'] and tk['labels'] and tk['inside'] and tk['sev'],
+                      f'шкала повтора: отметки тревог дня с подписью и цветом важности ({tk})')
+                t0 = page.get_attribute('#lvTicks .lv-tick >> nth=-1', 'data-t')   # близкие отметки перекрываются — верхняя
+                page.locator('#lvTicks .lv-tick').last.click()
+                page.wait_for_timeout(300)
+                check(page.is_visible('#lvReplayExit') and abs(float(page.input_value('#lvReplayRange')) - float(t0)) <= 60,
+                      f'шкала повтора: нажатие на отметку — перемотка к её моменту ({t0} → {page.input_value("#lvReplayRange")})')
                 page.eval_on_selector('#lvReplayRange', "r => { r.value = String((Number(r.min) + Number(r.max)) / 2); "
                                                         "r.dispatchEvent(new Event('input')); }")
                 page.wait_for_timeout(300)

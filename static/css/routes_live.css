@@ -156,8 +156,12 @@ button.lv-prob:focus-visible { outline: 2px solid var(--rt-acc); outline-offset:
 .lv-item-done { display: block; font-size: 19px; font-weight: 300; line-height: 1; text-align: right; }
 .lv-item-done small { font-size: 12px; color: var(--rt-fg-dim); }
 .lv-item-bar { grid-column: 1 / -1; display: block; height: 3px; border-radius: 3px; background: var(--rt-line); overflow: hidden; }
-.lv-item-bar > i { display: block; height: 100%; border-radius: inherit; background: var(--rt-ok); }
-.lv-item.lv-sev1 .lv-item-bar > i, .lv-item.lv-sev2 .lv-item-bar > i { background: var(--lv-c); }
+.lv-item-bar > i { display: block; height: 100%; border-radius: inherit; background: var(--rt-acc-fill); }   /* прогресс — нейтральный */
+/* состояние строкой цвета состояния (точка — того же цвета) */
+.lv-item-meta .lv-item-state { color: var(--rt-fg-dim); }
+.lv-item-meta .lv-item-state.is-moving { color: var(--lv-moving); }
+.lv-item-meta .lv-item-state.is-alert { color: var(--lv-alert); }
+.lv-item-meta .lv-item-state.is-offline, .lv-item-meta .lv-item-state.is-nodata, .lv-item-meta .lv-item-state.is-closed { color: var(--rt-fg-mute); }
 .lv-item-name { color: var(--rt-fg-mute); font-size: .8125rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lv-item-main { min-width: 0; }
 .lv-item-meta { grid-column: 2 / 4; display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: .8125rem; color: var(--rt-fg-dim); }
@@ -166,9 +170,9 @@ button.lv-prob:focus-visible { outline: 2px solid var(--rt-acc); outline-offset:
 .lv-item-meta .is-mute { color: var(--rt-fg-mute); }
 .lv-item-right { text-align: right; font-variant-numeric: tabular-nums; }
 .lv-item-speed { font-weight: 700; }
-.lv-badge {
-    display: inline-flex; align-items: center; gap: 5px; padding: 1px 8px; border-radius: 999px; font-size: .75rem; font-weight: 700;
-    color: var(--lv-alert); background: var(--rt-danger-bg); border: 1px solid var(--rt-danger-line);
+.lv-badge {   /* счётчик тревог машины — маленькая таблетка risk-soft */
+    display: inline-flex; align-items: center; gap: 4px; padding: 0 7px; border-radius: 999px; font-size: 11px; font-weight: 600;
+    line-height: 18px; color: var(--lv-alert); background: var(--rt-danger-bg); border: 0;
 }
 .lv-empty { color: var(--rt-fg-mute); margin: 8px 2px; }
 
@@ -313,6 +317,25 @@ button.lv-prob:focus-visible { outline: 2px solid var(--rt-acc); outline-offset:
 .lv-stops tr.is-late .lv-stop-status span { color: var(--rt-danger); }
 .lv-stops tr.is-unmarked .lv-stop-status span { color: var(--lv-unmarked); }
 
+/* шкала повтора и отметки тревог дня под ней */
+.lv-replay-track { position: relative; flex: 1 1 160px; min-width: 0; display: flex; flex-direction: column; padding-bottom: 10px; }
+.lv-replay-track .lv-replay-range { width: 100%; flex: none; }
+.lv-ticks { position: absolute; left: 8px; right: 8px; bottom: 0; height: 10px; }
+.lv-tick { position: absolute; top: 0; width: 6px; height: 10px; margin-left: -3px; padding: 0; border: 0; border-radius: 2px; cursor: pointer;
+    background: var(--rt-fg-mute); }
+.lv-tick-1 { background: var(--rt-danger); }
+.lv-tick-2 { background: var(--rt-warn); }
+.lv-tick:hover, .lv-tick:focus-visible { transform: scaleY(1.4); outline: none; box-shadow: 0 0 0 2px var(--rt-acc); }
+/* «ՀԱՋՈՐԴԸ»: следующие магазины — номер кружком акцента, название, «մինչև» жёлтым, время */
+.lv-next { margin: 4px 0 12px; }
+.lv-next-list { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.lv-next-list li { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.lv-next-no { flex: none; display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--rt-acc-fill);
+    color: var(--rt-acc); font-size: 11px; font-weight: 600; box-sizing: border-box; }
+.lv-next-name { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lv-next-until { flex: none; padding: 1px 8px; border-radius: 999px; background: var(--rt-warn-bg); color: var(--rt-warn); font-size: 12px; }
+.lv-next-at { flex: none; font-size: 12.5px; color: var(--rt-fg-dim); font-variant-numeric: tabular-nums; }
+
 /* Воспроизведение дня — в полосе снизу (выбрана машина с треком): ▶, шкала времени, ×30 / ×60 / ×120 */
 .lv-replay { flex: 1 1 420px; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
 .lv-replay[hidden] { display: none; }
@@ -409,17 +432,21 @@ button.lv-prob:focus-visible { outline: 2px solid var(--rt-acc); outline-offset:
 }
 
 /* полоса новых проблем над страницей */
+/* полоса новых проблем — стеклянная панель, как остальные: красный только у значка, числа и метки «ՆՈՐ» */
 .lv-alarm {
-    display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin: 0; padding: 10px 14px;
-    border-radius: var(--rt-radius); border: 0; box-shadow: inset 4px 0 0 var(--lv-c), var(--rt-shadow); background: var(--lv-bg); color: var(--rt-fg);
+    display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin: 0; padding: 12px 14px;
+    border-radius: var(--rt-radius); border: 0; box-shadow: var(--rt-shadow); background: var(--rt-glass); color: var(--rt-fg);
 }
+.lv-alarm-count { color: var(--lv-c); }
+.lv-alarm .lv-new-tag { display: inline-block; }
+.lv-alarm-list { color: var(--rt-fg-dim); }
 .lv-alarm[hidden] { display: none; }
 .lv-alarm-ico { font-size: 1.375rem; color: var(--lv-c); }
 .lv-alarm-main { flex: 1 1 220px; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
 .lv-alarm-count { font-size: 1.0625rem; font-weight: 700; white-space: nowrap; }
 /* эскалация (круг 2): новая красная без ответа 5 мин — рамка толще, внешнее кольцо и «N րոպե առանց պատասխանի» (без своей
    анимации: «меньше движения» — как раньше) */
-.lv-alarm.is-escalated { border-width: 3px; box-shadow: 0 0 0 3px var(--lv-alert-hi); }
+.lv-alarm.is-escalated { box-shadow: inset 0 0 0 2px var(--lv-alert-hi), var(--rt-shadow); }
 .lv-alarm-wait {
     padding: 1px 10px; border-radius: 999px; font-size: .875rem; font-weight: 700; white-space: nowrap;
     color: var(--rt-status-ink); background: var(--lv-alert);
@@ -432,8 +459,8 @@ button.lv-prob:focus-visible { outline: 2px solid var(--rt-acc); outline-offset:
     display: inline-flex; align-items: center; justify-content: center; gap: 6px; font: inherit; font-weight: 700; cursor: pointer;
     white-space: nowrap; border-radius: 999px;
 }
-.lv-alarm-ack { min-height: 38px; padding: 0 16px; border: 0; background: var(--lv-c); color: var(--rt-status-ink); }
-.lv-alarm-ack:hover { filter: brightness(1.08); }
+.lv-alarm-ack { min-height: 36px; padding: 0 14px; border: 0; border-radius: var(--rt-radius-sm); background: var(--rt-chip); color: var(--rt-fg); font-weight: 500; }   /* вторичная */
+.lv-alarm-ack:hover { background: var(--rt-line); }
 .lv-ack { min-height: 32px; padding: 2px 12px; background: transparent; border: 1px solid var(--lv-line, var(--rt-line)); color: var(--rt-fg); font-size: .8125rem; }
 .lv-prob-row:has(.lv-sev1) .lv-ack { --lv-line: var(--rt-danger-line); }
 .lv-prob-row:has(.lv-sev2) .lv-ack { --lv-line: var(--rt-warn-line); }
@@ -444,14 +471,12 @@ button.lv-prob:focus-visible { outline: 2px solid var(--rt-acc); outline-offset:
 /* звук включён, но браузер ждёт касания страницы (после перезагрузки) — жёлтая точка и подсказка в title */
 .lv-sound.is-locked::after { content: ''; width: 8px; height: 8px; border-radius: 50%; background: var(--lv-warn); }
 
-/* машина в списке: полоса важности слева 4px и фон */
-.lv-item.lv-sev1, .lv-item.lv-sev2, .lv-item.lv-sev3 { border-left: 4px solid var(--lv-c); }
-.lv-item.lv-sev1, .lv-item.lv-sev2 { background: var(--lv-bg); }
+/* машина в списке (Tesla+, DESIGN.md п. 9): тихие строки без рамок и заливки — даже если все в тревоге; важность — значком у
+   номера и точкой (новая — точка пульсирует), выбранная — только accent-soft */
+.lv-item.lv-sev1, .lv-item.lv-sev2, .lv-item.lv-sev3 { border: 0; background: transparent; }
+.lv-item[aria-selected="true"]:is(.lv-sev1, .lv-sev2, .lv-sev3) { background: var(--rt-acc-glow); box-shadow: none; }
+.lv-item.lv-sev1 .lv-dot { background: var(--lv-alert); }
 .lv-sev-ico { margin-left: 7px; font-size: .8125rem; color: var(--lv-c); }
-/* выбранная машина с тревогой: рамка и кольцо выбора поверх фона тревоги (полоса слева — цвет важности) */
-.lv-item[aria-selected="true"]:is(.lv-sev1, .lv-sev2, .lv-sev3) {
-    border-color: var(--rt-acc); border-left-color: var(--lv-c); box-shadow: 0 0 0 2px var(--rt-acc);
-}
 
 /* маркер машины: кольцо важности (::after — ровное, ::before — волна новой); жёлтый корпус у «ահազանգ» из жёлтых тревог.
    Кольца — на самом маркере, не на корпусе: полупрозрачность «нет связи» их не гасит; клики не перехватывают */
@@ -466,13 +491,17 @@ button.lv-prob:focus-visible { outline: 2px solid var(--rt-acc); outline-offset:
 .lv-ring { display: inline-block; width: 12px; height: 12px; border-radius: 50%; border: 3px solid var(--lv-alert); box-sizing: border-box; }
 
 @media (prefers-reduced-motion: no-preference) {
-    .lv-alarm.is-new, .lv-prob.is-new, .lv-item.is-new, .lv-sum.is-new { animation: lv-blink 1s ease-in-out infinite; }
+    /* мягко: в полосе новых — пульс значка и «ՆՈՐ», в списке машин — точки; строки «Խնդիրներ հիմա» и плитка — как раньше */
+    .lv-prob.is-new, .lv-sum.is-new { animation: lv-blink 1s ease-in-out infinite; }
+    .lv-alarm.is-new .lv-alarm-ico, .lv-alarm.is-new .lv-new-tag, .lv-item.is-new .lv-dot { animation: lv-pulse-soft 1.2s ease-in-out infinite; }
     .lv-marker.is-new::before { content: ''; border: 3px solid var(--lv-nc); animation: lv-halo 1s ease-out infinite; }
 }
 @keyframes lv-blink { 50% { background-color: var(--lv-hi); } }
+@keyframes lv-pulse-soft { 50% { opacity: .35; transform: scale(.85); } }
 @keyframes lv-halo { from { transform: scale(1); opacity: .95; } to { transform: scale(2.1); opacity: 0; } }
 @media (prefers-reduced-motion: reduce) {
-    .lv-alarm.is-new, .lv-prob.is-new, .lv-item.is-new, .lv-sum.is-new { outline: 3px solid var(--lv-nc); outline-offset: -3px; }
+    .lv-prob.is-new, .lv-sum.is-new { outline: 3px solid var(--lv-nc); outline-offset: -3px; }
+    .lv-alarm.is-new .lv-alarm-ico, .lv-item.is-new .lv-dot { outline: 2px solid var(--lv-nc); outline-offset: 2px; border-radius: 50%; }
     .lv-marker.is-new::before { content: ''; inset: -5px; border: 3px solid var(--lv-nc); }   /* двойное кольцо — новая */
     .lv-alarm .lv-new-tag, .lv-prob.is-new .lv-new-tag { display: inline-block; }
 }

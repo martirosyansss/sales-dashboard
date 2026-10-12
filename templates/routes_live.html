@@ -15,7 +15,7 @@
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=27">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes_ui.css') }}?v=3">
 <!-- Машины на карте сейчас (№76): тема «Развоза», свои классы .lv-*; новые файлы статики — и в _PUBLIC_STATIC app_v2 -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_live.css') }}?v=17">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_live.css') }}?v=18">
 {% endblock %}
 
 {% block content %}
@@ -81,6 +81,12 @@
             </div>
             <div class="lv-active" id="lvActive" hidden></div>
             <dl class="lv-grid" id="lvGrid"></dl>
+            <!-- «ՀԱՋՈՐԴԸ» (макет Live.dc.html): следующие 3 незакрытых магазина — номер по плану, название, ожидаемое время;
+                 «մինչև ЧЧ:ММ» — срок окна приёма, когда прогноз его уже считает (t.late, late_kind window) -->
+            <div class="lv-next" id="lvNextBox" hidden>
+                <h3 class="lv-sec-title">ՀԱՋՈՐԴԸ</h3>
+                <ol class="lv-next-list" id="lvNext"></ol>
+            </div>
             <!-- Показатели дня (08.10): плановая линия, км факт / план, отклонение, скорость, время в движении -->
             <h3 class="lv-sec-title">Օրվա ցուցանիշներ</h3>
             <dl class="lv-grid" id="lvStats"></dl>
@@ -167,7 +173,11 @@
                     <button id="lvReplayPlay" type="button" class="rt-btn rt-btn-ghost rt-btn-sm">
                         <i class="fas fa-play" aria-hidden="true"></i><span>Նվագարկել</span></button>
                     <label class="rt-sr-only" for="lvReplayRange">Օրվա ժամը</label>
-                    <input id="lvReplayRange" class="lv-replay-range" type="range" min="0" max="0" step="60" value="0">
+                    <!-- шкала дня: под ползунком — отметки тревог дня (цвет — важность; нажатие — перемотка к моменту) -->
+                    <div class="lv-replay-track">
+                        <input id="lvReplayRange" class="lv-replay-range" type="range" min="0" max="0" step="60" value="0">
+                        <div class="lv-ticks" id="lvTicks" role="group" aria-label="Օրվա ահազանգերը շկալայի վրա"></div>
+                    </div>
                     <output id="lvReplayTime" class="lv-replay-time" for="lvReplayRange">—</output>
                     <label class="rt-sr-only" for="lvReplaySpeed">Արագություն</label>
                     <select id="lvReplaySpeed" class="rt-select lv-replay-speed">
@@ -239,5 +249,5 @@
         integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
 <!-- подложка — Яндекс, как на остальных картах (решение владельца 06.10, см. live_page) -->
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=4" data-yandex-key="{{ yandex_tiles_key }}"></script>
-<script src="{{ url_for('static', filename='js/routes_live.js') }}?v=26"></script>
+<script src="{{ url_for('static', filename='js/routes_live.js') }}?v=27"></script>
 {% endblock %}
