@@ -27,6 +27,9 @@ from test_route_optimizer import _dorder, _isn  # noqa: E402
 APPROVED = 'Պլանը հաստատված է։ Ամբողջական վերակազմման համար նախ չեղարկեք հաստատումը։'
 
 
+REAL_CLOCK = views._clock   # до подмен тестов: часы раздела, выведенные из часов Еревана (_yerevan_now)
+
+
 def _two_trips():
     """Рейс FORD (логист закрепил), рейс HOWO (не закреплён) и рейс взятия заказа дня (закреплён взятием)."""
     ctx, base, orders, new, draft = _base((FORD, HOWO))
@@ -257,11 +260,12 @@ def test_approver_name_goes_to_page_but_not_to_ai(client, monkeypatch):
 
 
 def test_approve_past_day_by_yerevan_date(client, monkeypatch):
-    """Сервер ещё 30.09 (часы сервера), а в Ереване уже 01.10: прошедший день 30.09 — по Еревану."""
+    """Сервер ещё 30.09 (часы сервера в UTC), а в Ереване уже 01.10: прошедший день 30.09 — по Еревану. Часы сервера
+    раздел не читает (ревью логики 12.10, P2 №8: _clock — тоже Ереван), поэтому подменяются только часы Еревана."""
     _page_setup(client, monkeypatch, now=datetime(2026, 9, 30, 8, 0, tzinfo=ac.YEREVAN))
     d = client.post('/api/routes/dispatch/build', json={'date': '2026-09-30', 'trucks': ['CAR2']}).get_json()
     monkeypatch.setattr(views, '_yerevan_now', lambda: datetime(2026, 10, 1, 0, 30, tzinfo=ac.YEREVAN))
-    monkeypatch.setattr(views, '_clock', lambda: datetime(2026, 9, 30, 20, 30))
+    monkeypatch.setattr(views, '_clock', REAL_CLOCK)       # часы раздела — настоящие: из часов Еревана
     r = client.post('/api/routes/dispatch/edit', json={'date': '2026-09-30', 'rev': d['rev'], 'action': 'approve'})
     assert r.status_code == 400 and 'Անցած օրվա' in r.get_json()['error']
 

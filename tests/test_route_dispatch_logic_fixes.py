@@ -286,3 +286,80 @@ def test_rebuild_from_stale_tab_is_conflict(client, monkeypatch):
     d = _ok(client.get('/api/routes/dispatch?date=2026-10-01'))
     assert d['rev'] == b['rev'] and any(tr['pinned'] for t in d['plan']['trucks'] for tr in t['trips'])
     assert _ok(_post(client, '/api/routes/dispatch/build', {'trucks': ['CAR1', 'CAR2'], 'rev': b['rev']}))['rev'] > b['rev']
+
+
+# ============================== 8. одно «сегодня» — по Еревану ==============================
+
+def test_one_today_by_yerevan_when_server_clock_is_utc(client, monkeypatch):
+    """00:30 01.10 в Ереване = 20:30 30.09 по UTC (часы сервера). До правки страница считала сегодняшним 30.09 (часы
+    сервера), а утверждение — уже прошедшим (Ереван): страница предлагала то, что сервер отказывал."""
+    from datetime import timezone
+    from route_optimizer import views
+    _page(client, monkeypatch)
+    d = _ok(_post(client, '/api/routes/dispatch/build', {'date': '2026-09-30', 'trucks': ['CAR2']}))
+
+    class ServerUtc(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            at = datetime(2026, 9, 30, 20, 30, tzinfo=timezone.utc)
+            return at.replace(tzinfo=None) if tz is None else at.astimezone(tz)
+    monkeypatch.setattr(views, 'datetime', ServerUtc)
+    monkeypatch.setattr(views, '_clock', REAL['_clock'])
+    monkeypatch.setattr(views, '_yerevan_now', REAL['_yerevan_now'])
+    monkeypatch.setattr(views, '_same_day_now', REAL['_same_day_now'])
+    page = _ok(client.get('/api/routes/dispatch?date=2026-09-30'))
+    assert page['is_past'] is True and page['today'] == '2026-10-01'
+    r = _post(client, '/api/routes/dispatch/edit', {'date': '2026-09-30', 'rev': d['rev'], 'action': 'approve'})
+    assert r.status_code == 400 and r.get_json()['errors']['_'] == views.PAST_DAY_APPROVE
+    # день по умолчанию — следующий рабочий после сегодняшнего по Еревану (01.10 → 02.10), не после 30.09
+    assert _ok(client.get('/api/routes/dispatch'))['day'] == '2026-10-02'
+
+
+def _real_clocks():
+    from route_optimizer import views
+    return {k: getattr(views, k) for k in ('_clock', '_yerevan_now', '_same_day_now')}
+
+
+REAL = _real_clocks()   # до подмен тестов
+
+
+# ============================== 9. ERP не ответила при обновлении ==============================
+
+def test_same_day_erp_failure_is_explicit_on_page_and_status(client, monkeypatch):
+    import time as _time
+    from route_optimizer.erp import ErpError
+    state = _page(client, monkeypatch)
+    d = _ok(client.get('/api/routes/dispatch?date=2026-10-01'))
+    assert 'erp_ok' not in d and d['same_day']['count'] == 3                      # прочитано — ответ прежний
+    good = state.same_day_cache[D][1]
+
+    def down(day):
+        raise ErpError('ERP недоступна')
+    state.same_day_loader = down
+    state.same_day_cache[D] = (_time.monotonic() - 3600, good)                    # кэш устарел — читать снова
+    d = _ok(client.get('/api/routes/dispatch?date=2026-10-01'))
+    # до правки: ответ без same_day и без признака — страница не отличала «новых нет» от «не прочитаны»
+    assert d['erp_ok'] is False and d['erp_last_ok'] == '2026-10-01T12:00:00' and 'same_day' not in d
+    s = _ok(client.get('/api/routes/dispatch/status?date=2026-10-01'))
+    assert s['erp_ok'] is False and s['erp_last_ok'] == '2026-10-01T12:00:00'
+
+
+# ============================== 7. бумага — из отправленного плана ==============================
+
+def test_waybill_of_unsent_plan_is_marked_draft(client, monkeypatch):
+    from route_optimizer import waybill as wb
+    state = _page(client, monkeypatch)
+    state.waybill_loader = lambda isns: wb.Lines({}, frozenset(), {})
+    d = _ok(_post(client, '/api/routes/dispatch/build', {'trucks': ['CAR1', 'CAR2']}))
+    car = next(t['car_code'] for t in d['plan']['trucks'] if t['trips'])
+
+    def waybill(d):
+        return _ok(client.get('/api/routes/dispatch/waybill', query_string={'date': '2026-10-01', 'truck': car, 'rev': d['rev']}))
+    # первый черновик (до правки печатался как рабочий документ — водитель при этом плана ещё не видел)
+    assert waybill(d)['draft'] is True
+    d = _ok(_post(client, '/api/routes/dispatch/edit', {'rev': d['rev'], 'action': 'approve'}))
+    assert 'draft' not in waybill(d)                                        # отправлен — бумага рабочая
+    trip = next(tr for t in d['plan']['trucks'] for tr in t['trips'] if tr['truck'] == car)
+    d = _ok(_post(client, '/api/routes/dispatch/edit', {'rev': d['rev'], 'action': 'move', 'customer_id': trip['stops'][0]['customer_id'],
+                                                        'from_trip': trip['id'], 'to_trip': None, 'truck': None}))
+    assert car in d['unsent']['trucks'] and waybill(d)['draft'] is True     # правка не отправлена — снова черновик

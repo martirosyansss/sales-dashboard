@@ -503,7 +503,7 @@ def _post_driver(client, **body):
 
 
 def test_api_driver_saved_from_day_and_printed(client, day, monkeypatch):
-    monkeypatch.setattr(views, '_clock', lambda: views.datetime(2026, 9, 30, 18, 0))   # 01.10 — завтра: «с этого дня»
+    monkeypatch.setattr(views, '_yerevan_now', lambda: views.datetime(2026, 9, 30, 18, 0).replace(tzinfo=views.ac.YEREVAN))   # 01.10 — завтра: «с этого дня»
     page, _ = day
     erp_list = [{'name': n, 'erp': True} for n in ERP_DRIVERS]
     assert page['drivers'] == {} and page['substitutes'] == [] and page['driver_list'] == erp_list
@@ -530,7 +530,7 @@ def test_api_driver_saved_from_day_and_printed(client, day, monkeypatch):
 
 
 def test_api_driver_past_day_only_that_day(client, day, monkeypatch):
-    monkeypatch.setattr(views, '_clock', lambda: views.datetime(2026, 10, 3, 10, 0))
+    monkeypatch.setattr(views, '_yerevan_now', lambda: views.datetime(2026, 10, 3, 10, 0).replace(tzinfo=views.ac.YEREVAN))
     assert _post_driver(client, name='Արամ').get_json()['only_day'] == {'driver': True}       # 01.10 уже прошёл
     get = lambda d: client.get(f'/api/routes/dispatch?date={d}').get_json()['drivers']      # noqa: E731
     assert (get('2026-10-01'), get('2026-10-02')) == ({'CAR1': 'Արամ'}, {})
@@ -540,7 +540,7 @@ def test_api_driver_past_day_only_that_day(client, day, monkeypatch):
 
 def test_api_driver_substitute_only_today(client, day, monkeypatch):
     """Вопрос владельца: «а если прикреплён водитель, но сегодня везёт другой?» — only_day на сегодняшний/будущий день."""
-    monkeypatch.setattr(views, '_clock', lambda: views.datetime(2026, 9, 30, 18, 0))
+    monkeypatch.setattr(views, '_yerevan_now', lambda: views.datetime(2026, 9, 30, 18, 0).replace(tzinfo=views.ac.YEREVAN))
     get = lambda d: client.get(f'/api/routes/dispatch?date={d}').get_json()['drivers']      # noqa: E731
     assert _post_driver(client, name='Արամ', date='2026-09-30').get_json()['only_day'] == {'driver': False}   # с 30.09
     r = _post_driver(client, name='Կարեն', only_day=True).get_json()                            # 01.10 — подмена
@@ -583,7 +583,7 @@ def test_api_driver_bad_request(client, day):
 
 def test_api_driver_list_erp_then_own(client, day, monkeypatch):
     """Ответ владельца: «из ERP + добавить своих» — ERP за 90 дней, затем вписанные в программе за тот же срок и не из ERP."""
-    monkeypatch.setattr(views, '_clock', lambda: views.datetime(2026, 9, 30, 18, 0))
+    monkeypatch.setattr(views, '_yerevan_now', lambda: views.datetime(2026, 9, 30, 18, 0).replace(tzinfo=views.ac.YEREVAN))
     assert _post_driver(client, name='Սամվել Նոր', date='2026-06-01').status_code == 200        # давно — не в списке
     assert _post_driver(client, name='Լևոն Ավելացված', only_day=True).status_code == 200
     assert _post_driver(client, name='Վարդանյան Գարիկ', date='2026-10-02').status_code == 200   # есть в ERP
@@ -600,7 +600,7 @@ def test_erp_driver_list_cached_and_erp_down(client, day, monkeypatch):
         calls.append((since, until))
         return ['Ա']
     state.driver_list_loader, state.driver_list_cache = loader, None
-    monkeypatch.setattr(views, '_clock', lambda: views.datetime(2026, 10, 4, 9, 0))
+    monkeypatch.setattr(views, '_yerevan_now', lambda: views.datetime(2026, 10, 4, 9, 0).replace(tzinfo=views.ac.YEREVAN))
     assert _post_driver(client, name='Արամ', date='2026-10-04').get_json()['driver_list'] == \
         [{'name': 'Արամ', 'erp': False}] and calls == []                              # POST ERP не ждёт
     for _ in range(3):
@@ -631,7 +631,7 @@ def test_erp_driver_list_cached_and_erp_down(client, day, monkeypatch):
 
 def test_driver_list_keeps_current_driver_older_than_window(client, day, monkeypatch):
     """Ревью: свой водитель, закреплённый давно (запись старше 90 дней), остаётся в выборе для других машин."""
-    monkeypatch.setattr(views, '_clock', lambda: views.datetime(2026, 10, 4, 9, 0))
+    monkeypatch.setattr(views, '_yerevan_now', lambda: views.datetime(2026, 10, 4, 9, 0).replace(tzinfo=views.ac.YEREVAN))
     state = client.application.extensions['route_optimizer']
     state.store.save_truck_driver('CAR2', '2026-05-01', 'Հին Վարորդ', 'qa')
     state.store.save_truck_driver('CAR2', '2026-10-01', 'Ուրիշ', 'qa', only_day=True)   # в открытый день — подмена
@@ -726,7 +726,7 @@ def test_store_migration_adds_truck_helper_keeps_all_rows(tmp_path):
 
 
 def test_api_crew_helper(client, day, monkeypatch):
-    monkeypatch.setattr(views, '_clock', lambda: views.datetime(2026, 9, 30, 18, 0))
+    monkeypatch.setattr(views, '_yerevan_now', lambda: views.datetime(2026, 9, 30, 18, 0).replace(tzinfo=views.ac.YEREVAN))
     page, _ = day
     assert page['helpers'] == {} and page['helper_substitutes'] == []
     r = _post_driver(client, name='Արամ', helper='Կարեն')
@@ -772,7 +772,7 @@ def test_store_substitute_equal_to_usual_is_no_row(tmp_path):
 
 def test_api_crew_scope_per_role(client, day, monkeypatch):
     """Ревью: у каждого свой срок — постоянный առաքիչ «с этого дня» не делает сегодняшнюю подмену водителя постоянной."""
-    monkeypatch.setattr(views, '_clock', lambda: views.datetime(2026, 9, 30, 18, 0))
+    monkeypatch.setattr(views, '_yerevan_now', lambda: views.datetime(2026, 9, 30, 18, 0).replace(tzinfo=views.ac.YEREVAN))
     get = lambda d: client.get(f'/api/routes/dispatch?date={d}').get_json()      # noqa: E731
     assert _post_driver(client, name='Արամ', date='2026-09-30').status_code == 200
     assert _post_driver(client, name='Սամվել', only_day=True).status_code == 200   # 01.10 — подменный водитель

@@ -459,7 +459,7 @@ def test_api_past_day_and_stale_rev_save_nothing(client, monkeypatch):
                                                        'customer_id': 104, 'time': '09:40', 'scope': 'always'})
     assert r.status_code == 409 and _bundle(client).windows == {}
     from route_optimizer import views
-    monkeypatch.setattr(views, '_clock', lambda: datetime(2026, 10, 2, 9, 0))
+    monkeypatch.setattr(views, '_yerevan_now', lambda: datetime(2026, 10, 2, 9, 0).replace(tzinfo=views.ac.YEREVAN))
     r = _until(client, body)
     assert r.status_code == 400 and r.get_json()['errors']['_'] == 'Անցած օրվա պլանում ժամը չի փոխվում'
     assert _bundle(client).day_until == {}

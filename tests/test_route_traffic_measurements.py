@@ -133,7 +133,7 @@ def test_own_journal_and_prediction_retained(client):
 
 def test_prospective_prediction_is_saved_on_build(client, monkeypatch):
     from route_optimizer import views
-    monkeypatch.setattr(views, '_clock', lambda: datetime.combine(DP_DAY-timedelta(days=1), datetime.min.time())+timedelta(hours=17))
+    monkeypatch.setattr(views, '_yerevan_now', lambda: (datetime.combine(DP_DAY-timedelta(days=1), datetime.min.time())+timedelta(hours=17)).replace(tzinfo=views.ac.YEREVAN))
     _dispatch_setup(client, [_dorder(1, 101, 400)])
     r = client.post('/api/routes/dispatch/build', json={'date':DP_DAY.isoformat(),'trucks':['CAR1']})
     assert r.status_code == 200, r.get_json()

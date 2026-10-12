@@ -62,7 +62,7 @@ def test_api_dispatch_skips_holiday(client, monkeypatch):
     """Завтра (02.10, пт) нерабочее: «Развоз» по умолчанию открывает субботу 03.10, её окно заказов — с 01.10;
     сам праздник открыть можно — со знаком day_off."""
     from route_optimizer import views
-    monkeypatch.setattr(views, '_clock', lambda: datetime(2026, 10, 1, 10, 0))
+    monkeypatch.setattr(views, '_yerevan_now', lambda: datetime(2026, 10, 1, 10, 0).replace(tzinfo=views.ac.YEREVAN))
     calls = _dispatch_setup(client, [_dorder(1, 101, 400.0, day=date(2026, 10, 1))])
     r = client.post('/api/routes/settings', json={'settings': {'holidays': ['2026-10-02']}})
     assert r.status_code == 200, r.get_json()
@@ -79,12 +79,15 @@ def test_api_dispatch_skips_holiday(client, monkeypatch):
 
 def test_api_dispatch_holidays_with_agents_filter(client, monkeypatch):
     """Праздник и фильтр «Մենեջերներ» вместе: день, окно, «с прошлых дней» и «везти завтра» — по нерабочим датам,
-    а не по снятым менеджерам (в ответе дня это две разные вещи)."""
+    а не по снятым менеджерам (в ответе дня это две разные вещи). Сегодня 01.10, день 03.10 — будущий: менеджеров снимает
+    правило настроек (№98; до единых часов ревью 12.10 тест проходил только потому, что часы «сегодня» правила менеджеров
+    были настоящими, а не подменёнными)."""
     from route_optimizer import views
-    monkeypatch.setattr(views, '_clock', lambda: datetime(2026, 10, 1, 10, 0))
+    monkeypatch.setattr(views, '_yerevan_now', lambda: datetime(2026, 10, 1, 10, 0).replace(tzinfo=views.ac.YEREVAN))
     _dispatch_setup(client, [_dorder(1, 101, 400.0, day=date(2026, 10, 1)),
                              _dorder(2, 102, 300.0, day=date(2026, 10, 1), agent=2)])
-    assert client.post('/api/routes/settings', json={'settings': {'holidays': ['2026-10-02', '2026-10-05']}}).status_code == 200
+    assert client.post('/api/routes/settings', json={'settings': {'holidays': ['2026-10-02', '2026-10-05'],
+                                                                  'dispatch_agents_off': [2]}}).status_code == 200
     r = client.post('/api/routes/dispatch/build', json={'date': '2026-10-03', 'trucks': ['CAR1', 'CAR2'], 'agents_off': [2]})
     assert r.status_code == 200 and r.get_json()['agents_off'] == [2], r.get_json()
     d = client.get('/api/routes/dispatch?date=2026-10-03').get_json()

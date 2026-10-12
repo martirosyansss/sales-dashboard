@@ -5447,7 +5447,7 @@ def test_api_dispatch_defer_trip_goes_to_next_day(client, monkeypatch):
     """«Везти завтра» на 01.10 — заказы сразу в развозе 02.10 (до первой сборки и в ней), без ручного
     «добавить» среди заказов прошлых дней."""
     from route_optimizer import views
-    monkeypatch.setattr(views, '_clock', lambda: datetime(2026, 10, 1, 10, 0))   # 01.10 — сегодня, 02.10 — завтра
+    monkeypatch.setattr(views, '_yerevan_now', lambda: (datetime(2026, 10, 1, 10, 0)).replace(tzinfo=views.ac.YEREVAN))   # 01.10 — сегодня, 02.10 — завтра
     _dispatch_setup(client, [_dorder(1, 101, 400.0), _dorder(2, 102, 300.0, agent=2)])
     assert client.post('/api/routes/settings', json={'settings': {'min_trip_revenue': 150000}}).status_code == 200
     d = client.post('/api/routes/dispatch/build', json={'date': '2026-10-01', 'trucks': ['CAR1', 'CAR2']}).get_json()
@@ -5474,7 +5474,7 @@ def test_api_dispatch_defer_when_next_day_already_built_and_undo(client, monkeyp
     чтобы не повезли дважды. Логист следующего дня может убрать перенесённый заказ — это запоминается.
     Слишком давний заказ на завтра не переносится; прошедший день перенос не меняет."""
     from route_optimizer import views
-    monkeypatch.setattr(views, '_clock', lambda: datetime(2026, 10, 1, 10, 0))   # 01.10 — сегодня, 02.10 — завтра
+    monkeypatch.setattr(views, '_yerevan_now', lambda: (datetime(2026, 10, 1, 10, 0)).replace(tzinfo=views.ac.YEREVAN))   # 01.10 — сегодня, 02.10 — завтра
     _dispatch_setup(client, [_dorder(1, 101, 400.0), _dorder(2, 102, 300.0, agent=2),
                              _dorder(6, 104, 70.0, agent=2, day=date(2026, 9, 28)),
                              _dorder(9, 104, 30.0, agent=2, day=date(2026, 9, 18))])
@@ -5617,7 +5617,7 @@ def test_store_dispatch_ready_time_setting(store):
 
 def test_api_dispatch_freshness_hint_and_new_since_build(client, monkeypatch):
     from route_optimizer import views
-    monkeypatch.setattr(views, '_clock', lambda: datetime(2026, 9, 30, 11, 27))   # среда, заказы на чт ещё идут
+    monkeypatch.setattr(views, '_yerevan_now', lambda: (datetime(2026, 9, 30, 11, 27)).replace(tzinfo=views.ac.YEREVAN))   # среда, заказы на чт ещё идут
     orders = [_dorder(1, 101, 400.0), _dorder(2, 102, 300.0, agent=2), _dorder(3, 104, 1200.0, agent=2),
               _dorder(6, 102, 70.0, day=date(2026, 9, 28))]
     _dispatch_setup(client, orders)
@@ -5640,7 +5640,7 @@ def test_api_dispatch_freshness_hint_and_new_since_build(client, monkeypatch):
         (True, {'count': 3, 'kg': 1900, 'revenue': 30000}, 0, d['orders_sig'])
     assert len(calls) == 1                                              # статус — из того же кэша, без ERP
     assert 'plan' not in s and 'trucks' not in s                        # лёгкий ответ: рейсы не считаются
-    monkeypatch.setattr(views, '_clock', lambda: datetime(2026, 9, 30, 17, 5))
+    monkeypatch.setattr(views, '_yerevan_now', lambda: (datetime(2026, 9, 30, 17, 5)).replace(tzinfo=views.ac.YEREVAN))
     assert client.get('/api/routes/dispatch/status?date=2026-10-01').get_json()['orders_still_coming'] is False
     assert client.get('/api/routes/dispatch/status?date=2026-10-02').get_json()['orders_still_coming'] is False
     assert client.get('/api/routes/dispatch/status?date=x').status_code == 400

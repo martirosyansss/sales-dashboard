@@ -261,8 +261,10 @@ def _now() -> str:
 
 
 def _clock() -> datetime:
-    """Местное время сервера для «заказы ещё поступают» (тесты подменяют)."""
-    return datetime.now()
+    """Сейчас по Еревану без пояса (тесты подменяют). Не часы сервера (ревью логики 12.10, P2 №8): сервер в UTC в 00:30
+    Еревана считал бы «сегодня» вчерашней датой, а утверждение (по Еревану) — уже прошедшей. «Развоз» берёт «сегодня» и
+    «сейчас» только из _same_day_now — та же точка."""
+    return _yerevan_now().replace(tzinfo=None)
 
 
 def _state() -> RoutesState:
@@ -1232,8 +1234,23 @@ def _same_day_data(state: RoutesState, day: date, refresh: bool) -> dp.SameDayDa
     return data
 
 
+def _same_day_last_ok(state: RoutesState, day: date) -> str | None:
+    """Когда новые заказы дня day последний раз прочитаны из ERP (кэш _same_day_data, ISO до секунд); не читали — None."""
+    with state.dispatch_lock:
+        hit = state.same_day_cache.get(day)
+    return hit[1].loaded_at.isoformat(timespec='seconds') if hit is not None else None
+
+
+def _erp_flag(failed: bool, last_ok: str | None) -> dict[str, Any]:
+    """Ревью логики 12.10, P2 №9: часть ERP не прочитана — {'erp_ok': False, 'erp_last_ok': ISO | None}; всё прочитано —
+    пусто (ответ прежний до байта)."""
+    return {'erp_ok': False, 'erp_last_ok': last_ok} if failed else {}
+
+
 def _same_day_now() -> datetime:
-    """Сейчас по Еревану без пояса — «сегодня» и «сейчас» новых заказов дня (№72): какие рейсы уже грузятся."""
+    """Сейчас по Еревану без пояса — единые часы «Развоза» (ревью логики 12.10, P2 №8): «сегодня» страницы (is_past, день
+    по умолчанию), прошедший день для утверждения, отправки и правок, «заказы ещё поступают», новые заказы дня (№72) и какие
+    рейсы уже грузятся. Из часов Еревана (_yerevan_now), как и _clock: одна точка времени раздела."""
     return _yerevan_now().replace(tzinfo=None)
 
 
@@ -1397,6 +1414,10 @@ class _DispatchDay:
     # недовезённое вчера (№98, _day_auto): заказы, перенесённые сюда сами (прошлых дней — и в carried; взятые в развоз дня их
     # приёма, №72, — среди заказов дня) — плашка «Երեկվանից», приоритет при сборке, снимок Draft.auto_carried
     auto: set[str] = field(default_factory=set)
+    # ревью логики 12.10, P2 №9: новые заказы дня (№72) не прочитаны — ERP не ответила; когда их читали удачно в последний раз
+    # (SameDayData.loaded_at из кэша, ISO; None — ни разу): страница не говорит «новых заказов нет», когда данных нет
+    same_day_failed: bool = False
+    same_day_last_ok: str | None = None
 
 
 def _sent_plan(state: RoutesState, d: date) -> dp.Draft | None:
@@ -1766,7 +1787,7 @@ def _freshness(day: date, bundle: Bundle, data: dp.DispatchData, deliver: list[d
         changes = dp.since_build(built, [o for o in (*deliver, *moved_in) if o.agent_id not in draft.agents_off],
                                  [*deliver, *(o for o in backlog if o.isn in inside)], draft.excluded)
     return {
-        'orders_still_coming': dp.orders_still_coming(day, s['workdays'], _clock(), s['dispatch_ready_time'],
+        'orders_still_coming': dp.orders_still_coming(day, s['workdays'], _same_day_now(), s['dispatch_ready_time'],
                                                       dp.holidays_of(s)),
         'ready_time': s['dispatch_ready_time'],
         'built_at': draft.built_at if draft is not None else None,
@@ -1796,12 +1817,14 @@ def _load_day(state: RoutesState, bundle: Bundle, day: date, refresh: bool = Fal
     # нет — ERP не ответила: день без подсказки о новых заказах (план от них не зависит); есть — ошибка, как у заказов дня
     taken = draft is not None and bool(draft.same_day)
     same_data = None
+    same_failed = False
     if taken or day == _same_day_now().date():
         try:
             same_data = _same_day_data(state, day, refresh)
         except ErpError:
             if taken:
                 raise
+            same_failed = True   # P2 №9: странице — явно (erp_ok), а не «новых заказов нет»
             logger.warning('[Routes] Новые заказы дня %s не прочитаны — без подсказки', day, exc_info=True)
     today = dp.same_day_candidates(same_data.orders, day, rule, dp.place_of(same_data.customers, same_data.addresses)) \
         if same_data is not None else []
@@ -1823,7 +1846,8 @@ def _load_day(state: RoutesState, bundle: Bundle, day: date, refresh: bool = Fal
     return _DispatchDay(day, since, until, data, deliver, backlog, sel.shipped_before, sel.self_delivery, draft,
                         rev or 0, stops, ctx, ready, snap, bundle, carried, today, same_data, sel.same_day_taken,
                         sel.same_day_unread, other_vehicle=sel.other_vehicle, customers_off=sel.customers_off,
-                        later=later, auto=auto & {o.isn for o in (*deliver, *backlog)})
+                        later=later, auto=auto & {o.isn for o in (*deliver, *backlog)},
+                        same_day_failed=same_failed, same_day_last_ok=_same_day_last_ok(state, day) if same_failed else None)
 
 
 def _day_stops(dd: _DispatchDay, draft: dp.Draft) -> list[dp.Stop]:
@@ -1867,7 +1891,7 @@ def _stop_info(dd: _DispatchDay) -> Callable[[dp.Stop], dict[str, Any]]:
 def _dispatch_body(dd: _DispatchDay) -> dict[str, Any]:
     s = dd.bundle.settings
     holidays = dp.holidays_of(s)
-    today = _clock().date()
+    today = _same_day_now().date()
     info = _stop_info(dd)
     draft = dd.draft
     excluded = draft.excluded if draft is not None else set()
@@ -2079,7 +2103,9 @@ def _dispatch_page_body(dd: _DispatchDay) -> dict[str, Any]:
             **({'crew_problems': problems} if dd.draft is not None and dd.day >= _same_day_now().date()
                and (problems := _crew_problems(_state(), dd, dd.draft)) else {}),
             # №97: запись в ERP включена — что сайт записал по машинам (только странице)
-            **_erp_write_page(_state(), dd)}
+            **_erp_write_page(_state(), dd),
+            # P2 №9: новые заказы дня не прочитаны — плашка «ERP-ն չի պատասխանում»
+            **_erp_flag(dd.same_day_failed, dd.same_day_last_ok)}
 
 
 def _unsent_json(dd: _DispatchDay) -> dict[str, Any] | None:
@@ -2425,7 +2451,7 @@ def _stop_rule_edit(state: RoutesState, bundle: Bundle, dd: _DispatchDay, payloa
     kind, cid, tid = payload.get('rule'), payload.get('customer_id'), payload.get('trip')
     if kind not in STOP_RULES or not dp._is_int(cid) or not dp._is_int(tid):
         raise dp.DispatchError('Սերվերը չընդունեց հարցումը — թարմացրեք էջը')
-    if dd.day < _clock().date():   # те же часы, что у is_past страницы
+    if dd.day < _same_day_now().date():   # те же часы, что у is_past страницы
         raise dp.DispatchError(PAST_DAY_RULE)
     trip = dp.trip_of(dd.draft, tid)
     if cid not in trip.stops:
@@ -2467,7 +2493,7 @@ def _stop_rule_edit(state: RoutesState, bundle: Bundle, dd: _DispatchDay, payloa
             except ValueError as e:
                 raise dp.DispatchError(RULE_REFUSED + '՝ ' + str(e)) from e
             # сегодняшний план уже в работе — правило дня у него своё; следующие дни — все уже собранные
-            state.store.rewrite_dispatch_after(conn, _clock().date().isoformat(), later, user)
+            state.store.rewrite_dispatch_after(conn, _same_day_now().date().isoformat(), later, user)
             logger.info('[Routes] «Развоз» %s: клиент %d — машины не везут никогда (%s)', dd.day, cid, user)
         return _StopRule(draft, replace(bundle, settings=new_s), also, kept)
     old = bundle.vehicle_access.get(cid)
@@ -2524,7 +2550,7 @@ def _until_edit(state: RoutesState, bundle: Bundle, dd: _DispatchDay,
     cid, raw, scope = payload.get('customer_id'), payload.get('time'), payload.get('scope')
     if scope not in UNTIL_SCOPES or not dp._is_int(cid) or not (raw is None or isinstance(raw, str)):
         raise dp.DispatchError('Սերվերը չընդունեց հարցումը — թարմացրեք էջը')
-    if dd.day < _clock().date():   # те же часы, что у is_past страницы
+    if dd.day < _same_day_now().date():   # те же часы, что у is_past страницы
         raise dp.DispatchError(PAST_DAY_UNTIL)
     if all(s.customer_id != cid for s in dd.stops):
         raise dp.DispatchError('Խանութն այս օրվա պատվերներում չէ — թարմացրեք էջը')
@@ -2619,7 +2645,7 @@ def _check_defer_same_day(dd: _DispatchDay, trip_id: Any) -> None:
 def _defer_days(dd: _DispatchDay) -> list[date]:
     """Куда «Երբ տանել» переносит заказы магазина (dp.defer_days); прошедший день — никуда (как defer_days страницы)."""
     s = dd.bundle.settings
-    return [] if dd.day < _clock().date() else dp.defer_days(dd.day, s['workdays'], dp.holidays_of(s))
+    return [] if dd.day < _same_day_now().date() else dp.defer_days(dd.day, s['workdays'], dp.holidays_of(s))
 
 
 def _check_defer_store(dd: _DispatchDay, cid: Any) -> None:
@@ -2743,7 +2769,7 @@ def _drivers_json(state: RoutesState, day: date) -> dict[str, Any]:
     helpers, helper_subs = store.truck_drivers(day.isoformat(), 'helper')
     erp_names = _erp_drivers(state)
     in_erp = set(erp_names)
-    today = _clock().date()
+    today = _same_day_now().date()
     since = (today - timedelta(days=DRIVER_LIST_DAYS)).isoformat()
     # свои — вписанные за срок и все, кто в машинах сейчас или в этот день (давно закреплённый не пропадает из выбора)
     current = {n for role in CREW_TABLES for n in store.truck_drivers(today.isoformat(), role)[0].values()}
@@ -2889,7 +2915,7 @@ def api_dispatch() -> Any:
     state = _state()
     bundle = _bundle(state)
     raw = request.args.get('date')
-    day = _parse_day(raw) if raw else dp.next_workday(_clock().date(), bundle.settings['workdays'],
+    day = _parse_day(raw) if raw else dp.next_workday(_same_day_now().date(), bundle.settings['workdays'],
                                                       dp.holidays_of(bundle.settings))
     if day is None:
         return _bad_request({'date': 'дата в формате ГГГГ-ММ-ДД'})
@@ -2926,6 +2952,7 @@ def api_dispatch_status() -> Any:
         except ErpError:
             logger.warning('[Routes] Новые заказы дня %s не прочитаны — без подсказки', day, exc_info=True)
             sd = None
+            same = _erp_flag(True, _same_day_last_ok(state, day))   # P2 №9: не «новых нет», а «не прочитаны»
         if sd is not None:
             today = dp.same_day_candidates(sd.orders, day, rule, dp.place_of(sd.customers, sd.addresses))
             if day == _same_day_now().date():
@@ -2962,7 +2989,7 @@ def _planned_lunch(tr: Mapping[str, Any]) -> dict[str, Any]:
 
 def _capture_prediction(dd, draft):
     view = dp.plan_view(dd.ctx, dd.stops, draft, _stop_info(dd), explain=False)
-    now = _clock()
+    now = _same_day_now()
     start = datetime.combine(dd.day, datetime.strptime(dd.bundle.settings['truck_work_start'], '%H:%M').time())
     # depart/return — выезд первого рейса и возвращение последнего (HH:MM): «время работы» отчёта «план — факт»;
     # trips — начало загрузки, выезд, возвращение и ETA точек каждого рейса: плановое ожидание на складе (обучение
@@ -3215,7 +3242,7 @@ def api_dispatch_edit() -> Any:
         return _loaded_confirm()
     except dp.DispatchError as e:
         return _bad_request({'_': str(e)})
-    if day < _clock().date() and (draft.deferred != deferred_before or draft.later != later_before):
+    if day < _same_day_now().date() and (draft.deferred != deferred_before or draft.later != later_before):
         # перенос с прошедшего дня меняет развоз уже другого дня — задним числом нельзя
         return _bad_request({'_': 'Прошедший день — перенос на другой день не меняется'})
     # точки дня после правки («не везём сегодня», фильтр «Մենեջերներ», вернуть меняют точки и вес): по ним — рейсы
@@ -3224,7 +3251,7 @@ def api_dispatch_edit() -> Any:
     dd = _load_day(state, bundle, day, draft=draft, rev=dd.rev)
     dp.prune(draft, dd.stops)
     # «Տանել այսօր» заказа прошлых дней — сразу в рейс (владелец 08.10); прошедший день — как было: рейсы уже проехали
-    if payload.get('action') == 'include' and day >= _clock().date():
+    if payload.get('action') == 'include' and day >= _same_day_now().date():
         dp.place_added(dd.ctx, dd.stops, draft, [o.customer_id for o in dd.backlog if o.isn in picked],
                        now_min=_today_min(dd))
     # №78: груз загруженного рейса изменился (любая правка: фильтр менеджеров, настройки дня, заказы дня, перенос тяжёлого
@@ -3514,7 +3541,7 @@ def api_dispatch_fact() -> Any:
     машины — рейсы закреплённой за ним ручной машины."""
     state = _state()
     day = _parse_day(request.args.get('date'))
-    if day is None or day >= _clock().date():
+    if day is None or day >= _same_day_now().date():
         return _bad_request({'date': 'прошедшая дата в формате ГГГГ-ММ-ДД'})
     if state.fact_loader is None:
         raise ErpError('Загрузчик факта не подключён')
@@ -3548,7 +3575,10 @@ def api_dispatch_waybill() -> Any:
     порядку плана, в каждом — что грузить на складе (waybill.truck_waybill; строки накладных и заказов — из ERP, только
     чтение). rev не совпал с черновиком или машины нет в плане — 409 stale: накладная разошлась бы с планом на экране
     (состав рейсов страница сверяет сама по basis). Водитель — кто сегодня за рулём (№77, dispatch.crew_view). Ничего не
-    сохраняет."""
+    сохраняет.
+    draft: true — бумага не того плана, что у водителя (ревью логики 12.10, P2 №7; правило владельца №81 «сначала
+    отправить, потом печатать»): план не отправлен или у этой машины (её рейсы, заказы, экипаж) либо в отборе заказов есть
+    неотправленные правки — страница печатает с пометкой «ՍԵՎԱԳԻՐ» (или сначала отправляет)."""
     state = _state()
     day = _parse_day(request.args.get('date'))
     car = (request.args.get('truck') or '').strip()
@@ -3574,7 +3604,19 @@ def api_dispatch_waybill() -> Any:
     if truck is None:
         return jsonify({'success': False, 'error': WAYBILL_NO_TRUCK, 'stale': True}), 409
     logger.info('[Routes] Բեռնագիր %s на %s (%s)', car, day, session.get('username'))
-    return jsonify(_waybill_body(state, dd, plan, truck))
+    body = _waybill_body(state, dd, plan, truck)
+    if _paper_draft(dd, car):
+        body['draft'] = True
+    return jsonify(body)
+
+
+def _paper_draft(dd: _DispatchDay, car: str) -> bool:
+    """Бумага машины car — не отправленный водителям план (ревью логики 12.10, P2 №7): плана у водителей нет или у машины
+    (рейсы, заказы, экипаж) либо в отборе заказов есть неотправленные правки (_unsent_json)."""
+    if dd.draft is None or dd.draft.sent is None:
+        return True
+    u = _unsent_json(dd)
+    return u is not None and (car in u['trucks'] or bool(u['orders']) or car in u.get('crew', ()))
 
 
 def _waybill_body(state: RoutesState, dd: _DispatchDay, plan: Mapping[str, Any],
@@ -4047,7 +4089,7 @@ def api_dispatch_driver() -> Any:
         role: name for role, (name, _) in people.items()}
     if crew['driver'] and crew['driver'] == crew['helper']:
         return _bad_request({'helper': CREW_SAME})
-    past = day < _clock().date()                    # прошедший день — всегда только он
+    past = day < _same_day_now().date()                    # прошедший день — всегда только он
     people = {role: (name, one_day or past) for role, (name, one_day) in people.items()}
     state.store.save_truck_crew(car, day.isoformat(), people, session.get('username'))
     logger.info('[Routes] Машина %s на %s: %s (%s)', car, day,
