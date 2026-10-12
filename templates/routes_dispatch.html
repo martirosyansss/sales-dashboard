@@ -11,10 +11,10 @@
 <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400..700&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+Armenian:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=28">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_ui.css') }}?v=4">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=29">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_ui.css') }}?v=5">
 <!-- Страница на армянском (ответ владельца №31). Цвета — тема Tesla+ из routes.css (☀/☾), свои стили поверх routes.css -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=83">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=84">
 {% endblock %}
 
 {% block content %}
@@ -66,6 +66,8 @@
                         <button type="button" role="menuitem" id="dpMenuTrips" hidden><i class="fas fa-inbox" aria-hidden="true"></i><span>Ինչը չի տեղավորվել երթերում</span></button>
                         <button type="button" role="menuitem" id="dpMenuCalc"><i class="fas fa-calculator" aria-hidden="true"></i><span>Ինչպես է հաշված ճանապարհը և ծախսը</span></button>
                         <button type="button" role="menuitem" id="dpMenuBoss"><i class="fas fa-chart-simple" aria-hidden="true"></i><span>Ղեկավարի համար</span></button>
+                        <!-- нормы машин не заполнены — настройка, не предупреждение дня: здесь, а не чипом рядом с предупреждениями -->
+                        <a role="menuitem" id="dpMenuNorms" href="/routes/settings#trucks" hidden><i class="fas fa-gear" aria-hidden="true"></i><span>Լրացնել մեքենաների նորմերը</span></a>
                         <button type="button" role="menuitem" id="dpMenuUnapprove" hidden><i class="fas fa-lock-open" aria-hidden="true"></i><span>Չեղարկել հաստատումը</span></button>
                         <button type="button" role="menuitem" id="dpMenuDiscard" hidden><i class="fas fa-rotate-left" aria-hidden="true"></i><span>Չեղարկել չուղարկված փոփոխությունները</span></button>
                         <button type="button" role="menuitem" id="dpViewList"><i class="fas fa-list" aria-hidden="true"></i><span>Ցուցակով (նախկին տեսք)</span></button>
@@ -109,6 +111,10 @@
 
         <!-- №81 (как у профессиональных систем): всё, что требует внимания, — одной строкой счётчиков; нажатие ведёт к месту -->
         <nav class="dp-inbox" id="dpInbox" aria-label="Ինչին ուշադրություն դարձնել" hidden></nav>
+
+        <!-- телефон (обзор 12.10): во вкладке «Մեքենաներ» — машины плана сразу на первом экране; renderTabs переносит сюда
+             левую панель рабочего экрана (#dpWsList), нажатие машины — её рейсы во вкладке «Երթ» -->
+        <div class="dp-phone-trucks" id="dpPhoneTrucks"></div>
 
         <!-- машины без водителя в «Վարորդ» (ответ владельца №77, 4): одна строка вместо предупреждения у каждой карточки -->
         <div id="dpNoDriver" class="dp-nodriver" hidden>
@@ -704,5 +710,5 @@
 <script src="{{ url_for('static', filename='js/routes_dispatch_ai.js') }}?v=4"></script>
 <!-- Tesla+: стеклянные панели поверх карты сворачиваются (общий модуль с «Մեքենաները առցանց») -->
 <script src="{{ url_for('static', filename='js/rt_panels.js') }}?v=1"></script>
-<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=128"></script>
+<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=129"></script>
 {% endblock %}
