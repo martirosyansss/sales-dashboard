@@ -1724,6 +1724,18 @@
         lab.append(pc, dot, tx);
         return lab;
     }
+    // Правило владельца 12.10 (сервер: away — день позже сегодняшнего, машина → последняя точка GPS 'HH:MM'): машина ещё
+    // в сегодняшнем дне — «Դեռ ճանապարհին». Только сведение: склад её рейсы этого дня не грузит, логисту ничего не запрещено
+    function awayTag(code) {
+        const at = state.data && state.data.away ? state.data.away[code] : undefined;
+        if (at === undefined) return null;
+        const tag = document.createElement('span');
+        tag.className = 'dp-away';
+        tag.textContent = 'Դեռ ճանապարհին';
+        tag.title = 'Մեքենան դեռ չի վերադարձել այսօրվա երթերից' + (at ? ' (վերջին տվյալը՝ ժ. ' + at + ')' : '')
+            + '․ պահեստը չի բեռնի այս օրվա երթերը, մինչև մեքենան վերադառնա։';
+        return tag;
+    }
     function renderTrucks(keep) {
         const d = state.data, body = $('dpFleetRows');
         const was = keep ? new Map([...body.querySelectorAll('input.dp-tkpick')].map(cb => [cb.value, cb.checked])) : new Map();
@@ -1759,7 +1771,7 @@
             const plate = document.createElement('span');
             plate.className = 'dp-plate';
             plate.textContent = t.name ? t.car_code : t.ready ? '' : '«' + t.car_code + '»';
-            td('dp-fl-truck').append(nm, plate);
+            td('dp-fl-truck').append(nm, plate, ...[awayTag(t.car_code)].filter(Boolean));
             const cap = td('dp-fl-cap dp-h-m');
             if (t.ready) {
                 const kg = document.createElement('span');
@@ -4699,6 +4711,8 @@
             // водителя нет — та же жёлтая пометка, что в списке машин (назначить — кнопка «Վարորդ» карточки)
             if (!crew.includes('driver') && !warn && !state.data.is_past)
                 head.querySelector('.dp-thead-name').insertAdjacentHTML('beforeend', '<span class="dp-wl-nodrv">Վարորդ չկա</span>');
+            const away = awayTag(t.car_code);
+            if (away) head.querySelector('.dp-thead-name').appendChild(away);
             const st = head.querySelector('.dp-tstats');
             st.textContent = pl(t.trips.length, 'երթ') + ' · ' + pl(t.stops, 'խանութ') + ' · ' + kgText(t.kg) + ' · ≈ ' + fmt(t.km) + NB + 'կմ'
                 + (num(t.liters) !== null ? ' · ≈ ' + fmt(t.liters, 1) + NB + 'լ' : '');

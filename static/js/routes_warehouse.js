@@ -141,7 +141,10 @@
                 h('span', { class: 'wh-done' }, icon('fa-check'), 'Բեռնված է ժ.' + NB + tr.loaded.at,
                     tr.loaded.by ? h('small', { text: '(' + tr.loaded.by + ')' }) : null), u);
         } else {
-            const b = h('button', { type: 'button', class: 'wh-load' }, icon('fa-truck-ramp-box'), 'Բեռնված է');
+            // правило владельца 12.10: машина ещё в сегодняшнем дне — рейс следующего дня не грузится (сервер тоже откажет)
+            const away = isAway(truck);
+            const b = h('button', { type: 'button', class: 'wh-load', disabled: away,
+                'aria-describedby': away ? 'whRet' + truck.car_code : null }, icon('fa-truck-ramp-box'), 'Բեռնված է');
             b.setAttribute('aria-label', 'Բեռնված է՝ ' + (truck.name || truck.car_code) + ', ' + title.textContent);
             b.addEventListener('click', () => mark(tr, true, b));
             act = b;
@@ -158,7 +161,7 @@
     // отправил (changing — то же правило, что у «Բեռնված է», ответы владельца 07.10) — кнопка выключена, сервер тоже
     // откажет (409 changing).
     async function printWaybill(truck, btn) {
-        if (truck.changing || state.busy || state.stale || !state.data || btn.getAttribute('aria-busy') === 'true') return;
+        if (truck.changing || isAway(truck) || state.busy || state.stale || !state.data || btn.getAttribute('aria-busy') === 'true') return;
         const d = state.data;
         let w = null;
         try { w = window.open('', '_blank'); } catch (e) { w = null; }
@@ -179,7 +182,8 @@
             if (!same) throw Object.assign(new Error('Պլանը փոխվել է — թարմացրեք էջը'), { status: 409 });
         } catch (e) {
             if (w) { try { w.close(); } catch (x) { /* уже закрыто */ } }
-            if (e.status === 409 && e.body && e.body.changing) showAlert(e.message, true);   // правки после открытия страницы
+            // правки логиста или машина ещё не вернулась (правило 12.10) — после открытия страницы: причина и «Թարմացնել»
+            if (e.status === 409 && e.body && (e.body.changing || e.body.away)) showAlert(e.message, true);
             else if (e.status === 409) markStale(); else showAlert(e.message, false);
             return;
         } finally {
@@ -246,8 +250,10 @@
         $('whKpis').hidden = false;
         d.trucks.forEach(t => {
             // машину логист меняет — печати нет; подсказка — у рейсов (вместо «Բեռնված է»), кнопка ссылается на первую
+            const away = isAway(t);
             const pr = h('button', { type: 'button', class: 'wh-print', 'aria-label': 'Տպել բեռնագիրը՝ ' + (t.name || t.car_code),
-                disabled: !!t.changing, 'aria-describedby': t.changing && t.trips.length ? 'whChg' + t.trips[0].id : null },
+                disabled: !!t.changing || away, 'aria-describedby': t.changing && t.trips.length ? 'whChg' + t.trips[0].id
+                    : away ? 'whRet' + t.car_code : null },
                 icon('fa-print'), 'Տպել բեռնագիրը');
             pr.addEventListener('click', () => printWaybill(t, pr));
             list.append(h('section', { class: 'wh-truck', 'aria-label': t.name || t.car_code },
@@ -255,8 +261,30 @@
                     t.name ? h('span', { class: 'wh-truck-code', text: t.car_code }) : null),
                 h('div', { class: 'wh-truck-meta' },
                     h('p', { class: 'wh-driver' }, icon('fa-id-card'), t.driver ? t.driver : 'վարորդը նշված չէ'), pr),
+                returnNote(t),
                 t.trips.map(tr => tripRow(d, t, tr))));
         });
+    }
+
+    // Правило владельца 12.10 (день позже сегодняшнего, сервер: return {state, at}): машина ещё в сегодняшнем дне ('out') —
+    // «Բեռնված է» и Բեռնագիր выключены, причина и последнее известное время; данных нет или по ним не понять ('unknown') —
+    // нейтральная пометка, склад решает сам; вернулась ('back') — когда. Сегодня без работы — поля нет, пометки нет.
+    const isAway = (t) => !!t.return && t.return.state === 'out';
+    function returnNote(t) {
+        const r = t.return;
+        if (!r) return null;
+        const at = r.at ? 'ժ.' + NB + r.at : '';
+        if (r.state === 'out') {
+            return h('p', { class: 'wh-return is-away', id: 'whRet' + t.car_code }, icon('fa-route'),
+                h('span', { text: 'Մեքենան դեռ չի վերադարձել՝ բեռնել հնարավոր չէ' }),
+                at ? h('small', { text: 'վերջին տվյալը՝ ' + at }) : null);
+        }
+        if (r.state === 'unknown') {
+            return h('p', { class: 'wh-return', id: 'whRet' + t.car_code }, icon('fa-circle-question'),
+                h('span', { text: 'Վերադարձը հայտնի չէ' }), at ? h('small', { text: 'վերջին տվյալը՝ ' + at }) : null);
+        }
+        return h('p', { class: 'wh-return is-back', id: 'whRet' + t.car_code }, icon('fa-warehouse'),
+            h('span', { text: 'Վերադարձել է' + (at ? ' ' + at : '') }));
     }
 
     function markStale() {
@@ -295,7 +323,8 @@
             announce(loaded ? 'Նշված է՝ բեռնված է' : 'Նշումը հանված է');
         } catch (e) {
             btn.disabled = false;
-            if (e.status === 409) markStale(); else showAlert(e.message, false);
+            if (e.status === 409 && e.body && e.body.away) showAlert(e.message, true);   // машина ещё не вернулась (12.10)
+            else if (e.status === 409) markStale(); else showAlert(e.message, false);
         } finally {
             state.busy = false;
         }

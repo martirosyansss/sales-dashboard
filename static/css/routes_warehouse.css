@@ -108,6 +108,19 @@ main:has(> #whPage) { padding-top: 12px !important; }
     .wh-days button, .wh-load, .wh-print { transition: none; }
     .wh-load:active { transform: none; }
 }
+/* правило владельца 12.10: машина ещё не вернулась из сегодняшнего дня — рейс следующего дня не грузится (кнопки выключены,
+   причина и последнее известное время); вернулась ли — неизвестно: нейтрально, склад решает; вернулась — когда */
+.wh-return { display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 8px; margin: 0 0 6px; color: var(--rt-fg-dim);
+    font-size: .9375rem; }
+.wh-return i { color: var(--rt-fg-mute); }
+.wh-return small { color: var(--rt-fg-mute); font-variant-numeric: tabular-nums; }
+.wh-return.is-away { padding: 8px 12px; border: 1px solid var(--rt-warn-line); border-radius: 12px; background: var(--rt-warn-bg);
+    color: var(--rt-warn); font-weight: 600; }
+.wh-return.is-away { display: block; }   /* длинная причина — текстом рядом со значком, время — строкой ниже */
+.wh-return.is-away i { margin-right: 6px; color: var(--rt-warn); }
+.wh-return.is-away small { display: block; margin-top: 2px; font-weight: 400; }
+.wh-return.is-back i { color: var(--rt-ok); }
+.wh-load:disabled[aria-describedby] { cursor: not-allowed; }
 /* №81: рейс водителей логист изменил и не отправил — без кнопки «Բեռնված է» */
 .wh-changing { display: inline-flex; align-items: center; gap: 8px; color: var(--rt-warn); font-weight: 600; }
 

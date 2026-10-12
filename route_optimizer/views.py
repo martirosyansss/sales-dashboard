@@ -2130,6 +2130,11 @@ def _dispatch_page_body(dd: _DispatchDay) -> dict[str, Any]:
             **_erp_write_page(_state(), dd),
             # P2 №9: новые заказы дня не прочитаны — плашка «ERP-ն չի պատասխանում»
             **_erp_flag(dd.same_day_failed, dd.same_day_last_ok),
+            # правило владельца 12.10: машины, ещё не вернувшиеся из сегодняшнего дня, — «Դեռ ճանապարհին» (только сведение:
+            # склад их рейсы этого дня не грузит, логисту — не запрет); машина → последняя точка GPS 'HH:MM'
+            **({'away': away} if (away := {car: r['at'][11:16] for car, r in _truck_returns(
+                _state(), dd.bundle, dd.day, sorted(set(dd.ready) | set(dd.bundle.trucks))).items()
+                if r['state'] == 'out'}) else {}),
             'crew_sig': _crew_sig(_state(), dd.day)}
 
 
@@ -7477,9 +7482,45 @@ def _warehouse_day(bundle: Bundle, raw: Any) -> date | None:
     return day if day in days else None
 
 
+def _truck_returns(state: RoutesState, bundle: Bundle, day: date, cars: Collection[str]) -> dict[str, dict[str, Any]]:
+    """Правило владельца 12.10 «машина ещё не вернулась — заказы следующего дня ей не отдаём» (решение: склад её не
+    грузит): вернулась ли машина из сегодняшнего рабочего дня — машина → live.return_status ('free' | 'back' | 'out' |
+    'unknown', at — ISO). Только для дня позже сегодняшнего по Еревану: рейсы сегодняшнего дня (второй рейс после первого)
+    правило не трогает. Сигнал — факт терминала «Առաքիչ» за сегодня (state.live_facts: закрытие дня, точки, трек GPS) и
+    выпущенный водителям план сегодня (№80: рейсы у машины были). Раздела «Առաքիչ» нет — пусто (правило выключено); план
+    сегодня не прочитан — у каждой машины могла быть работа; факт не прочитан — «unknown» (в журнал): не запрещает."""
+    now = _yerevan_now()
+    today = now.date()
+    if day <= today or state.live_facts is None or not cars:
+        return {}
+    try:
+        plan = _sent_plan(state, today)
+        planned: set[str] | None = ({t.truck for t in plan.trips if t.stops}
+                                    if plan is not None and plan.released is not None else set())
+    except StoreError:
+        logger.warning('[Routes] План %s не прочитан — возвращение машин для склада на %s без него', today, day,
+                       exc_info=True)
+        planned = None
+    try:
+        fleet = state.live_facts.fleet(today.isoformat())
+    except Exception:   # факт терминалов — дополнение: без него «вернулась ли» неизвестно, склад решает сам
+        logger.warning('[Routes] Факт терминалов на %s не прочитан — возвращение машин неизвестно', today, exc_info=True)
+        fleet = {}
+    return {car: live.return_status(row if isinstance(row := fleet.get(car), Mapping) else None,
+                                    planned is None or car in planned, bundle.depot, now) for car in cars}
+
+
+def _away(returns: Mapping[str, Mapping[str, Any]], car: str) -> bool:
+    """Машина ещё в сегодняшнем дне (_truck_returns: 'out') — склад не грузит её рейс следующего дня и не печатает его
+    Բեռնագիր (правило владельца 12.10)."""
+    return (returns.get(car) or {}).get('state') == 'out'
+
+
 def _warehouse_body(state: RoutesState, bundle: Bundle, day: date) -> dict[str, Any]:
     """Машины и рейсы утверждённого плана дня для склада: машина, водитель, рейс N, кг, точки, загрузка/выезд, отметка
-    «Բեռնված է» (время по Еревану, кто, своя ли и до какого времени её можно снять). Не утверждён — без машин."""
+    «Բեռնված է» (время по Еревану, кто, своя ли и до какого времени её можно снять). Не утверждён — без машин. День позже
+    сегодняшнего — у машины ещё return (правило владельца 12.10, _truck_returns): {'state': 'out' | 'unknown' | 'back',
+    'at': 'HH:MM' | None}; 'out' — «Բեռնված է» и Բեռնագիր выключены; сегодня без работы ('free') — поля нет."""
     draft, rev = _stored_draft(state, day)   # без утверждённого плана заказы ERP не нужны — не читаются
     head = {'success': True, 'day': day.isoformat(), 'days': [d.isoformat() for d in _warehouse_days(bundle)],
             'rev': rev}
@@ -7497,6 +7538,7 @@ def _warehouse_body(state: RoutesState, bundle: Bundle, day: date) -> dict[str, 
     by_id = {t.id: t for t in dd.draft.trips}
     marks = {t.id: t.loaded for t in draft.trips}
     changing = _changing_now(state, bundle, day, draft, rev)   # логист меняет машину и не отправил — ни отметки, ни печати
+    returns = _truck_returns(state, bundle, day, [t['car_code'] for t in plan['trucks']])   # правило владельца 12.10
     trucks = []
     for t in plan['trucks']:
         trips = []
@@ -7509,7 +7551,9 @@ def _warehouse_body(state: RoutesState, bundle: Bundle, day: date) -> dict[str, 
                           **({'changing': True} if t['car_code'] in changing else {})})
         trucks.append({'car_code': t['car_code'], 'name': t['name'], 'capacity_kg': t['capacity_kg'],
                        'driver': (seats.get(t['car_code']) or {}).get('name'), 'trips': trips,
-                       **({'changing': True} if t['car_code'] in changing else {})})
+                       **({'changing': True} if t['car_code'] in changing else {}),
+                       **({'return': {'state': ret['state'], 'at': ret['at'][11:16] if ret['at'] else None}}
+                          if (ret := returns.get(t['car_code'])) is not None and ret['state'] != 'free' else {})})
     return {**head, 'approved': True, 'planned': True, 'trucks': trucks}
 
 
@@ -7593,7 +7637,8 @@ def api_warehouse_waybill() -> Any:
     """Բեռնագիր машины для склада (?date=&truck=&rev=): тот же ответ, что у «Развоза» (_waybill_body), — страница печатает
     тот же документ; плюс weekday (у склада дня недели нет). План — как у всей страницы склада: утверждённый (ответ 15),
     отправленный водителям (№81; не отправляли — он и есть черновик «Развоза»). rev не тот или машины нет — 409; у машины
-    неотправленные правки логиста — 409 с changing (ответы владельца 07.10, _changing_trucks); отказы — без ERP. Без basis
+    неотправленные правки логиста — 409 с changing (ответы владельца 07.10, _changing_trucks); машина ещё не вернулась из
+    сегодняшнего дня — 409 с away (правило владельца 12.10, _truck_returns); отказы — без ERP. Без basis
     (сверка «Развоза»: номера заказов ERP). API «Развоза» складу закрыт (app_v2: default-deny) — Բեռնագիր только здесь."""
     state = _state()
     bundle = _bundle(state)
@@ -7611,6 +7656,8 @@ def api_warehouse_waybill() -> Any:
         return jsonify({'success': False, 'error': WAREHOUSE_WAYBILL_CHANGING, 'conflict': True, 'changing': True}), 409
     if all(t.truck != car for t in draft.for_drivers().trips):
         return _conflict(WAREHOUSE_STALE)
+    if _away(_truck_returns(state, bundle, day, [car]), car):   # правило владельца 12.10: машина ещё в сегодняшнем дне
+        return _away_conflict()
     dd = _as_sent(_load_day(state, bundle, day, draft=draft.for_drivers(), rev=cur, live=False))   # №81, №98: план водителей
     if dd.ctx is None:
         return _bad_request({'_': WAREHOUSE_NO_SETUP})
@@ -7632,6 +7679,12 @@ def api_warehouse_waybill() -> Any:
 WAREHOUSE_CHANGING = 'Լոգիստը փոխել է այս երթը և դեռ չի ուղարկել վարորդին — զանգահարեք լոգիստին'
 WAREHOUSE_WAYBILL_CHANGING = ('Լոգիստը փոխել է այս մեքենայի երթերը և դեռ չի ուղարկել վարորդին — բեռնագիրը կարելի է տպել '
                               'ուղարկելուց հետո, զանգահարեք լոգիստին')
+WAREHOUSE_AWAY = 'Մեքենան դեռ չի վերադարձել՝ բեռնել հնարավոր չէ'
+
+
+def _away_conflict() -> Any:
+    """Отказ склада по правилу владельца 12.10 (_away): 409 с away — страница показывает причину, а не «план изменился»."""
+    return jsonify({'success': False, 'error': WAREHOUSE_AWAY, 'conflict': True, 'away': True}), 409
 
 
 @bp.post('/api/routes/warehouse/loaded')
@@ -7639,7 +7692,8 @@ WAREHOUSE_WAYBILL_CHANGING = ('Լոգիստը փոխել է այս մեքենա�
 def api_warehouse_loaded() -> Any:
     """«Բեռնված է» со склада: {"date", "rev", "trip", "loaded": true | false}. Отметить — только по утверждённому плану
     (иначе 409, dispatch.mark_loaded); снять — в любое время, любой пользователь склада (ответ №78, 19). rev — номер
-    плана на странице: план изменился — 409 «թարմացրեք էջը» (как у правок «Развоза»). В ответе — день склада заново."""
+    плана на странице: план изменился — 409 «թարմացրեք էջը» (как у правок «Развоза»); отметить рейс машины, которая ещё не
+    вернулась из сегодняшнего дня, — 409 с away (правило владельца 12.10). В ответе — день склада заново."""
     payload, error = _json_body()
     if error is not None:
         return error
@@ -7661,6 +7715,9 @@ def api_warehouse_loaded() -> Any:
     car = next((t.truck for d in (draft.for_drivers(), draft) for t in d.trips if t.id == payload.get('trip')), None)
     if car is not None and car in _changing_now(state, bundle, day, draft, rev, car):
         return _conflict(WAREHOUSE_CHANGING)
+    # правило владельца 12.10: машина ещё в сегодняшнем дне — рейс следующего дня не отмечается (снять отметку — можно)
+    if payload['loaded'] and car is not None and _away(_truck_returns(state, bundle, day, [car]), car):
+        return _away_conflict()
     me = session.get('username')
     now = _same_day_now()
     try:

@@ -1604,6 +1604,45 @@ def late_forecast(day: date, stops: Sequence[Mapping[str, Any]], arrive: Mapping
     return out
 
 
+# --- вернулась ли машина (правило владельца 12.10: склад не грузит её рейс следующего дня, пока она не вернулась) ---
+
+def day_finished(stops: Sequence[Mapping[str, Any]], closed_at: datetime | None, last: Fix | None,
+                 depot: Point | None) -> bool:
+    """День машины кончился — состояние «closed» карты (car_view) и правило самого APK (TrackDayRules, ответ владельца
+    №46: запись кончается, когда водитель закрыл день, или все точки дня закрыты и машина стоит в зоне склада): водитель
+    закрыл день (day_closed), или точки на терминале есть, все закрыты (DONE) и последняя точка GPS — в DEPOT_RADIUS_M
+    склада."""
+    return closed_at is not None or (bool(stops) and all(s.get('status') in DONE for s in stops)
+                                     and last is not None and _near(last.point, depot, ac.DEPOT_RADIUS_M))
+
+
+def return_status(facts: Mapping[str, Any] | None, planned: bool, depot: Point | None, now: datetime) -> dict[str, Any]:
+    """Вернулась ли машина из своего рабочего дня сегодня — факт терминала машины за сегодня (LiveFacts.fleet; None — его
+    нет), planned — у машины есть рейсы в выпущенном водителям плане сегодня (№80), now — сейчас (Ереван). Ответ —
+    {'state', 'at'}: at — момент (ISO, Ереван), на который известно состояние (закрытия дня или последней точки GPS), или None.
+    - 'free' — сегодня у машины работы нет: ни рейсов плана, ни точек на терминале;
+    - 'back' — день кончился (day_finished): водитель закрыл день или все точки закрыты и машина в зоне склада;
+    - 'out' — день не кончился и положение свежее: точки на терминале есть, последняя точка GPS не старше NO_CONTACT_MAX и
+      получена после 20:00 или сейчас ещё нет 20:00 (машина в рейсе, едет на склад или на складе между рейсами дня);
+    - 'unknown' — данных нет или по ним не понять: терминал не присылал ни точек дня, ни GPS (не пользовались), GPS нет,
+      положение старше NO_CONTACT_MAX (телефон выключен — где машина, неизвестно) или уже 20:00, а точка — раньше (APK
+      сам перестаёт писать трек в 20:00 — возвращения позже не видно). Склад решает сам: «unknown» не запрещает."""
+    stops = list((facts or {}).get('stops') or ())
+    if not planned and not stops:
+        return {'state': 'free', 'at': None}
+    pts = ac.clean_track(track_fixes((facts or {}).get('track') or ()))
+    last = pts[-1] if pts else None
+    closed_at = _moment((facts or {}).get('closed_at'))
+    if day_finished(stops, closed_at, last, depot):
+        return {'state': 'back', 'at': _iso(closed_at or last.at)}   # type: ignore[union-attr]
+    if not stops or last is None:
+        return {'state': 'unknown', 'at': _iso(last.at) if last is not None else None}
+    cutoff = now.astimezone(YEREVAN).replace(hour=NO_CONTACT_END_H, minute=0, second=0, microsecond=0)
+    if now - last.at > NO_CONTACT_MAX or last.at < cutoff <= now:
+        return {'state': 'unknown', 'at': _iso(last.at)}
+    return {'state': 'out', 'at': _iso(last.at)}
+
+
 def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[PlanTrip], truck: TruckSpec,
              depot: Point | None, rules: Rules, road: Road, detail: bool = False,
              windows: Mapping[int, tuple[float, float]] | None = None,
@@ -1730,7 +1769,7 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
     closed_at = _moment(facts.get('closed_at'))
     done = sum(1 for s in stops if s.get('status') in DONE)
     at_depot = last is not None and _near(last.point, depot, ac.DEPOT_RADIUS_M)
-    finished = closed_at is not None or (bool(stops) and done == len(stops) and at_depot)
+    finished = day_finished(stops, closed_at, last, depot)
     started = contacts[0] if contacts else (pts[0].at if pts else None)
     end = closed_at or (last.at if finished and last is not None else None)
     open_now = live and started is not None and not finished

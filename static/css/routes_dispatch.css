@@ -2172,6 +2172,9 @@ html:has(body[data-dp-tab]) { scroll-padding-bottom: 92px; }
 .dp-nodrv:hover { background: color-mix(in srgb, var(--rt-warn) 24%, transparent); }
 .dp-nodrv:focus-visible { outline: 2px solid var(--rt-acc); outline-offset: 2px; }
 .dp-wl-nodrv { flex: none; padding: 1px 8px; border-radius: 999px; background: var(--rt-warn-bg); color: var(--rt-warn); font-size: .71875rem; font-weight: 600; white-space: nowrap; }
+/* правило владельца 12.10: машина ещё в сегодняшнем дне — «Դեռ ճանապարհին» (сведение, без запрета) */
+.dp-away { display: inline-block; flex: none; margin-left: 6px; padding: 1px 8px; border-radius: 999px; background: var(--rt-warn-bg);
+    color: var(--rt-warn); font-size: .71875rem; font-weight: 600; white-space: nowrap; vertical-align: middle; }
 /* свободные машины — «Ազատ՝ N» и номера по раскрытию */
 .dp-wl-freebox > summary { cursor: pointer; min-height: 36px; display: list-item; padding: 8px 0; color: var(--rt-fg-dim); }
 .dp-wl-freebox > summary:hover { color: var(--rt-acc); }
