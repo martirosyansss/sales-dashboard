@@ -130,11 +130,12 @@ def _trip(tid, stops, depart='09:30'):
 
 def _plan():
     """Машина A: рейс 1 (магазины 101, 102), рейс 2 (101 — второй раз); машина B: рейс 3 (101 — третий раз).
-    Тяжёлый магазин 101 — три рейса на двух машинах."""
+    Тяжёлый магазин 101 — три рейса на двух машинах; один заказ ERP — одна машина (решение владельца 12.10 «Запрещать»,
+    dispatch.plan_view / order_trucks): у A — заказ o1 (её два рейса, share 2), у B — o2 (share 1)."""
     return {'trucks': [
-        {'car_code': 'A', 'name': 'HOWO', 'trips': [_trip(1, [_stop(101, ['o1', 'o2'], 3), _stop(102, ['o3'])]),
-                                                    _trip(2, [_stop(101, ['o1', 'o2'], 3)], depart='13:30')]},
-        {'car_code': 'B', 'name': None, 'trips': [_trip(3, [_stop(101, ['o1', 'o2'], 3)])]}]}
+        {'car_code': 'A', 'name': 'HOWO', 'trips': [_trip(1, [_stop(101, ['o1'], 2), _stop(102, ['o3'])]),
+                                                    _trip(2, [_stop(101, ['o1'], 2)], depart='13:30')]},
+        {'car_code': 'B', 'name': None, 'trips': [_trip(3, [_stop(101, ['o2'], 1)])]}]}
 
 
 def _lines():
@@ -151,22 +152,26 @@ def test_truck_waybill_trips_rows_and_counts():
     assert (got['car_code'], got['name'], [t['no'] for t in got['trips']], [t['id'] for t in got['trips']]) == \
         ('A', 'HOWO', [1, 2], [1, 2])
     t1, t2 = got['trips']
-    # рейс 1: 101 — первая из трёх долей (вода 50 + 4 = 27 упаковок по 2 → 9/9/9; кола 60 → 10 упаковок → 3/3/3 и одна —
-    # самому лёгкому, при равенстве первому); 102 — целиком; товар 99 в ERP не найден
-    assert _qty(t1) == {10: 18, 11: 24 + 7, 12: 3, 99: 2}
+    # рейс 1: 101 — первая из двух долей заказа o1 машины A (вода 50 = 25 упаковок по 2 → 12/12 и одна — самому лёгкому,
+    # при равенстве первому; кола 60 → 10 упаковок → 5/5), заказ o2 — у машины B, не здесь; 102 — целиком; товар 99 в ERP
+    # не найден
+    assert _qty(t1) == {10: 26, 11: 30 + 7, 12: 3, 99: 2}
     assert [r['code'] for r in t1['rows']] == ['1113', '2801', '', 'A-1']        # числовые коды по числу, затем прочие
     cola = next(r for r in t1['rows'] if r['product_id'] == 11)
-    assert (cola['unit'], cola['pack'], cola['packs'], cola['loose'], cola['kg']) == ('հատ', 6, 5, 1, round(31 * 1.65, 1))
+    assert (cola['unit'], cola['pack'], cola['packs'], cola['loose'], cola['kg']) == ('հատ', 6, 6, 1, round(37 * 1.65, 1))
     cup = next(r for r in t1['rows'] if r['product_id'] == 12)
     assert (cup['pack'], cup['packs'], cup['loose']) == (None, None, None)
     unknown = next(r for r in t1['rows'] if r['product_id'] == 99)
     assert (unknown['unknown'], unknown['code'], unknown['name'], unknown['kg'], t1['unknown']) == (True, '', '', 0.0, 1)
     assert not any(r['unknown'] for r in t1['rows'] if r['product_id'] != 99)
-    assert (t1['stops'], t1['orders'], t1['invoiced'], t1['mixed'], t1['split']) == (2, 3, 2, 0, 1)
-    assert t1['kg'] == round(18 * 6.03 + 31 * 1.65 + 3 * 0.2)
-    assert t1['basis'] == [[101, 3, ['o1', 'o2']], [102, 1, ['o3']]]
+    assert (t1['stops'], t1['orders'], t1['invoiced'], t1['mixed'], t1['split']) == (2, 2, 2, 0, 1)
+    assert t1['kg'] == round(26 * 6.03 + 37 * 1.65 + 3 * 0.2)
+    assert t1['basis'] == [[101, 2, ['o1']], [102, 1, ['o3']]]
     assert (t1['loading_start'], t1['depart'], t1['return']) == ('09:00', '09:30', '13:00')
-    assert _qty(t2) == {10: 18, 11: 18} and (t2['orders'], t2['invoiced'], t2['split']) == (2, 1, 1)
+    assert _qty(t2) == {10: 24, 11: 30} and (t2['orders'], t2['invoiced'], t2['split']) == (1, 1, 1)
+    # машина B везёт свой заказ o2 целиком — товар между машинами не делится
+    (t3,) = wb.truck_waybill(_plan(), 'B', _lines())['trips']
+    assert _qty(t3) == {10: 4} and (t3['orders'], t3['split']) == (1, 0)
 
 
 def test_truck_waybill_split_sums_to_documents_across_trucks():
@@ -185,15 +190,16 @@ def test_truck_waybill_split_sums_to_documents_across_trucks():
 
 def test_truck_waybill_loading_order_is_reverse_visit_and_sums_to_trip():
     """№87 п. 4 (LIFO): данные погрузки (с №94 не печатаются, остаются в API) — магазины рейса в обратном порядке объезда (последняя точка —
-    no 1, грузится первой), у каждого — его доля товаров (тяжёлый 101 — своя треть); Σ по магазинам = итоги рейса."""
+    no 1, грузится первой), у каждого — его доля товаров (тяжёлый 101 — половина заказа своей машины); Σ по магазинам = итоги
+    рейса."""
     plan = _plan()
     for s, code, name in zip(plan['trucks'][0]['trips'][0]['stops'], ('C101', 'C102'), ('Խանութ <1>', 'Խանութ 2')):
         s['code'], s['name'] = code, name
     t1, t2 = wb.truck_waybill(plan, 'A', _lines())['trips']
     assert [(x['no'], x['stop'], x['code'], x['name'], x['split']) for x in t1['loading']] == \
         [(1, 2, 'C102', 'Խանութ 2', False), (2, 1, 'C101', 'Խանութ <1>', True)]
-    assert _qty(t1['loading'][0]) == {11: 7, 12: 3, 99: 2} and _qty(t1['loading'][1]) == {10: 18, 11: 24}
-    assert [x['kg'] for x in t1['loading']] == [12, 148]          # 12.15 и 148.14: целые, Σ = кг рейса (160)
+    assert _qty(t1['loading'][0]) == {11: 7, 12: 3, 99: 2} and _qty(t1['loading'][1]) == {10: 26, 11: 30}
+    assert [x['kg'] for x in t1['loading']] == [12, 206]          # 12.15 и 206.28: целые, Σ = кг рейса (218)
     assert sum(x['kg'] for x in t1['loading']) == t1['kg']
     for t in (t1, t2):
         total: dict = {}
@@ -202,7 +208,7 @@ def test_truck_waybill_loading_order_is_reverse_visit_and_sums_to_trip():
                 total[pid] = total.get(pid, 0) + q
         assert total == _qty(t)
     assert [(x['no'], x['stop'], x['code'], x['name']) for x in t2['loading']] == [(1, 1, '', '')]   # без кода — пусто
-    assert t1['basis'] == [[101, 3, ['o1', 'o2']], [102, 1, ['o3']]]                     # порядок плана не меняется
+    assert t1['basis'] == [[101, 2, ['o1']], [102, 1, ['o3']]]                           # порядок плана не меняется
 
 
 def test_whole_kg_sums_to_trip_by_largest_remainder():
@@ -831,12 +837,12 @@ def test_truck_waybill_gifts_in_qty_kg_and_marked():
 
 
 def test_truck_waybill_gifts_of_split_store_sum_exactly():
-    """Магазин на три рейса: товар (строки + подарки) делится как раньше, подарки помечаются по рейсам по порядку плана —
-    не больше товара в рейсе, сумма по рейсам = подаркам документов."""
+    """Магазин на три рейса двух машин: товар (строки + подарки) каждой машины — её заказы, между её рейсами делится как
+    раньше; подарки помечаются по рейсам по порядку плана — не больше товара в рейсе, сумма по рейсам = подаркам документов."""
     lines = replace(_lines(), gifts={'O1': ((10, 5.0),), 'O2': ((11, 1.0),)})
     trips = [t for car in ('A', 'B') for t in wb.truck_waybill(_plan(), car, lines)['trips']]
     shop = [{r['product_id']: (r['qty'], r.get('gift', 0)) for r in x['rows']}
-            for t in trips for x in t['loading'] if x['split']]            # магазин 101 — в каждом из трёх рейсов
+            for t in trips for x in t['loading'] if x['split'] or x['stop'] == 1 and t['id'] == 3]   # 101 — в трёх рейсах
     assert len(shop) == 3
     total = {p: sum(s[p][0] for s in shop if p in s) for p in (10, 11)}
     gifts = {p: sum(s[p][1] for s in shop if p in s) for p in (10, 11)}

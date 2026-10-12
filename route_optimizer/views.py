@@ -2229,6 +2229,22 @@ def _crew_problems(state: RoutesState, dd: _DispatchDay, draft: dp.Draft) -> lis
     return out
 
 
+SPLIT_BLOCK = ('Մեկ պատվերը կարող է տանել միայն մեկ մեքենա։ Այս խանութները բաժանված են մի քանի մեքենայի միջև, բայց '
+               'պատվերը մեկն է՝ {stores}։ ERP-ում բաժանեք պատվերը մի քանի պատվերի կամ ամբողջ խանութը տվեք մեկ մեքենայի '
+               '(«Տանել ամբողջը»)։ Մինչ այդ պլանը չի հաստատվում և չի ուղարկվում։')
+
+
+def _split_block(dd: _DispatchDay, split: Sequence[Mapping[str, Any]]) -> Any:
+    """Ответ «магазин нескольких машин с одним заказом» (решение владельца 12.10 «Запрещать», dp.order_trucks): утверждение и
+    отправка закрыты; страница показывает магазины и «Տանել ամբողջը <машина>» (правка whole_store)."""
+    def name(cid: int) -> str:
+        code, nm = dd.data.customers.get(cid) or (str(cid), '')
+        return nm or code
+    stores = [{'customer_id': x['customer_id'], 'name': name(x['customer_id']), 'trucks': list(x['trucks'])} for x in split]
+    text = SPLIT_BLOCK.format(stores=', '.join(f"«{x['name']}» ({', '.join(x['trucks'])})" for x in stores))
+    return jsonify({'success': False, 'error': text, 'errors': {'_': text}, 'split_block': stores}), 400
+
+
 def _crew_confirm(problems: Sequence[Mapping[str, str]]) -> Any:
     """Ответ «у плана проблемы экипажа» (ревью логики 12.10, P2 №10): страница показывает список и повторяет утверждение или
     отправку с confirm_crew — как «товар уже в машине» (_loaded_confirm)."""
@@ -3292,6 +3308,12 @@ def api_dispatch_edit() -> Any:
     draft.overtime = dp.runs_late(dd.ctx, dd.stops, draft)
     _capture_prediction(dd, draft)
     if payload.get('action') in ('approve', 'send'):   # №81: водителям — план в том виде, в каком он сохраняется
+        # решение владельца 12.10 «Запрещать»: один заказ ERP — одна машина; магазин нескольких машин, которому одной из них
+        # по заказам везти нечего (заказ один), — утверждение и отправка закрыты, пока логист не решит («Տանել ամբողջը» или
+        # разделить заказ в ERP)
+        _, split = dp.order_trucks([(t.truck, t.stops) for t in draft.trips], [o for x in dd.stops for o in x.orders])
+        if split:
+            return _split_block(dd, split)
         # ревью логики 12.10, P2 №10: машина не работает, без водителя, водитель не вышел или ведёт две машины — только с
         # подтверждением логиста (не запрет)
         problems = _crew_problems(state, dd, draft)

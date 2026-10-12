@@ -2223,7 +2223,7 @@ def _guard_loaded(draft: Draft, edit: Mapping[str, Any], routable: Mapping[int, 
         isn = isn.upper() if isinstance(isn, str) else None
         cids = {c for c, s in routable.items() if any(o.isn == isn for o in s.orders)}
         touched = any(cids & set(t.stops) for t in loaded.values())
-    elif action == 'defer_store':   # все заказы магазина — как exclude каждого
+    elif action in ('defer_store', 'whole_store'):   # все заказы магазина — как exclude каждого; весь магазин — одной машине
         touched = any(edit.get('customer_id') in t.stops for t in loaded.values())
     if touched:
         raise LoadedEdit(LOADED_EDIT)
@@ -2363,6 +2363,9 @@ def apply_edit(ctx: DayContext, stops: Sequence[Stop], draft: Draft, edit: Mappi
           других рейсов; одна правка — одна «Չեղարկել» (Draft.undo, как resize);
       {"action": "pin", "trip": id, "truck": код} — закрепить машину за рейсом (рейс уходит к ней);
       {"action": "unpin", "trip": id};
+      {"action": "whole_store", "customer_id", "truck": код} — «Տանել ամբողջը»: магазин, который план везёт несколькими
+          машинами, — целиком машине truck (одна из его машин): из рейсов других машин он уходит, решение — ручное (Draft.locks;
+          один заказ ERP — одна машина, решение владельца 12.10 «Запрещать»);
       {"action": "unlock", "customer_id"} / {"action": "unlock_all"} — снять ручное решение логиста о машине магазина
           (Draft.locks; ставят move, trip_stops и «Մինչև ժամը») у одного магазина / у всех: пересборка снова решает сама;
       {"action": "resize", "trip": id, "return": минут от полуночи} — конец рейса потянули на шкале дня (_resize);
@@ -2457,6 +2460,8 @@ def apply_edit(ctx: DayContext, stops: Sequence[Stop], draft: Draft, edit: Mappi
     if action == 'unlock_all':
         draft.locks = {}
         return draft
+    if action == 'whole_store':
+        return _whole_store(ctx, draft, routable, edit)
     if action == 'unlock':
         cid = edit.get('customer_id')
         if not _is_int(cid) or cid not in draft.locks:
@@ -2545,6 +2550,30 @@ def apply_edit(ctx: DayContext, stops: Sequence[Stop], draft: Draft, edit: Mappi
     for t in (src, dst):
         if t is not None and t.stops:
             # выезд рейса — для окон приёма при 2-opt; заново после перестановки src (та же машина — другой выезд)
+            start = _timeline(ctx, draft.trips, routable, shares)[t.id][0]
+            t.stops, *_ = _route(ctx, t.stops, routable, shares, reorder=True, start=start, truck=t.truck)
+    return draft
+
+
+def _whole_store(ctx: DayContext, draft: Draft, routable: Mapping[int, Stop], edit: Mapping[str, Any]) -> Draft:
+    """«Տանել ամբողջը <машина>» (решение владельца 12.10 «Запрещать»: один заказ ERP — одна машина): магазин уходит из рейсов
+    других машин и остаётся только в рейсах машины truck — её ручное решение (Draft.locks), пересборка его не разделит снова;
+    рейсы, откуда он ушёл, — 2-opt, как у move. Машины нет среди машин магазина — DispatchError."""
+    cid, truck = edit.get('customer_id'), edit.get('truck')
+    if not _is_int(cid) or cid not in routable:
+        raise DispatchError('Խանութը չի գտնվել այս օրվա պատվերներում — թարմացրեք էջը')
+    on = [t for t in draft.trips if cid in t.stops]
+    if not isinstance(truck, str) or all(t.truck != truck for t in on):
+        raise DispatchError('Խանութն այդ մեքենայի երթերում չէ — թարմացրեք էջը')
+    touched = [t for t in on if t.truck != truck]
+    for t in touched:
+        t.stops.remove(cid)
+    draft.trips = [t for t in draft.trips if t.stops]
+    draft.locks[cid] = truck
+    shares = _shares(draft.trips)
+    gone = {t.id for t in touched}
+    for t in draft.trips:
+        if t.id in gone or (t.truck == truck and cid in t.stops):
             start = _timeline(ctx, draft.trips, routable, shares)[t.id][0]
             t.stops, *_ = _route(ctx, t.stops, routable, shares, reorder=True, start=start, truck=t.truck)
     return draft
@@ -3465,6 +3494,18 @@ def _in_reserve(ctx: DayContext, end: float, buffer: float) -> bool:
             and end <= ctx.tn.work_minutes + _EPS)
 
 
+def _stop_of(base: Mapping[str, Any], part: tuple[float, float, set[str], int] | None, kg: int, share: int
+             ) -> dict[str, Any]:
+    """Точка рейса для страницы: base — info(точки); part — магазин нескольких машин (own_part plan_view: кг и ֏ доли, fISN
+    заказов машины, её рейсов к магазину) — заказы, кг, ֏ (всей машины: страница делит на share) и share — этой машины;
+    None — как раньше: доля share всех рейсов магазина, кг kg."""
+    if part is None:
+        return {**base, 'kg': kg, 'share': share}
+    pkg, prev, isns, n = part
+    return {**base, 'orders': [o for o in base.get('orders', ()) if o.get('isn') in isns], 'revenue': round(prev * n),
+            'kg': round(pkg), 'share': n}
+
+
 def plan_view(ctx: DayContext, stops: Sequence[Stop], draft: Draft,
               info: Callable[[Stop], dict[str, Any]], explain: bool = True, crew: Crew | None = None) -> dict[str, Any]:
     """Рейсы черновика с цифрами по текущим заказам: машины → рейсы по порядку (выезд, возвращение,
@@ -3484,6 +3525,24 @@ def plan_view(ctx: DayContext, stops: Sequence[Stop], draft: Draft,
     routable = {s.customer_id: s for s in stops if s.point is not None}
     _clean(draft, routable)
     shares = _shares(draft.trips)
+    # ОДИН ЗАКАЗ ERP — ОДНА МАШИНА (решение владельца 12.10 «Запрещать»): магазин в рейсах нескольких машин везёт каждая
+    # машина ровно свои заказы (order_trucks — то же, что получает терминал, published_orders, и грузит склад,
+    # waybill.truck_waybill): у точки — заказы машины, их кг и ֏ поровну между её рейсами к магазину; кг и загрузка рейса —
+    # по ним (перегруз — по настоящему весу). Время и путь — расчёт плана (доли поровну). Таких магазинов нет — прежний план
+    owner, split = order_trucks([(t.truck, t.stops) for t in draft.trips], [o for x in routable.values() for o in x.orders])
+    on_trucks: dict[int, set[str]] = {}
+    visits: dict[tuple[str, int], int] = {}
+    for t in draft.trips:
+        for c in t.stops:
+            on_trucks.setdefault(c, set()).add(t.truck)
+            visits[(t.truck, c)] = visits.get((t.truck, c), 0) + 1
+    multi = {c for c, ts in on_trucks.items() if len(ts) > 1}
+
+    def own_part(truck_code: str, c: int) -> tuple[float, float, set[str], int]:
+        """Магазин нескольких машин в рейсе машины truck_code: (кг, ֏ доли рейса, fISN заказов машины, её рейсов к нему)."""
+        mine = [o for o in routable[c].orders if owner.get(o.isn) == truck_code]
+        n = visits[(truck_code, c)]
+        return math.fsum(o.kg for o in mine) / n, math.fsum(o.revenue for o in mine) / n, {o.isn for o in mine}, n
     window = ctx.tn.work_minutes
     # принятая переработка: «опаздывает» — только позже предела; позже конца дня — пометка late
     limit = ctx.overtime_minutes if draft.overtime_ok and ctx.overtime_minutes is not None else window
@@ -3496,7 +3555,9 @@ def plan_view(ctx: DayContext, stops: Sequence[Stop], draft: Draft,
         cids, km, _, kg = _route(ctx, t.stops, routable, shares, reorder=False)
         truck = ctx.trucks.get(t.truck)
         cap = truck.capacity_kg if truck else None
-        kgs = [routable[c].kg / shares[c] for c in cids]
+        kgs = [own_part(t.truck, c)[0] if c in multi else routable[c].kg / shares[c] for c in cids]
+        if any(c in multi for c in cids):   # кг рейса — по заказам машины (один заказ — одна машина)
+            kg = math.fsum(kgs)
         cost = fl.trip_running_cost([routable[c].point for c in cids], kgs, ctx.depot, ctx.norms, truck) if truck else None
         slot = per_truck.setdefault(t.truck, {'used': 0.0, 'trips': []})
         free = slot['used']
@@ -3506,7 +3567,7 @@ def plan_view(ctx: DayContext, stops: Sequence[Stop], draft: Draft,
         preloaded = parts[t.id].get('preloaded', False)
         if preloaded:   # №78: загружен с вечера — выезд там, где по расчёту кончилась бы загрузка; в дне машины её нет
             depart, minutes, load_min = depart + load_min, minutes - load_min, 0.0
-        revenue = math.fsum(routable[c].revenue / shares[c] for c in cids)
+        revenue = math.fsum(own_part(t.truck, c)[1] if c in multi else routable[c].revenue / shares[c] for c in cids)
         marks = []
         # у точки — и слагаемые её времени (езда от предыдущей точки, ожидание окна, разгрузка), приезд (eta минус
         # ожидание окна) и запас до конца окна
@@ -3551,9 +3612,11 @@ def plan_view(ctx: DayContext, stops: Sequence[Stop], draft: Draft,
                     and math.fsum(routable[c].revenue for c in cids) < ctx.min_trip_revenue,
             'over_capacity': cap is not None and kg > cap + 0.5,
             'no_truck': truck is None,
-            # locked — магазин здесь по ручному решению логиста (Draft.locks): пересборка его не переставит
-            'stops': [{**info(routable[c]), 'kg': round(routable[c].kg / shares[c]),
-                       'share': shares[c], **mark, **({'locked': True} if draft.locks.get(c) == t.truck else {})}
+            # locked — магазин здесь по ручному решению логиста (Draft.locks): пересборка его не переставит; магазин
+            # нескольких машин — только заказы этой машины (_stop_of)
+            'stops': [{**_stop_of(info(routable[c]), own_part(t.truck, c) if c in multi else None,
+                                  round(routable[c].kg / shares[c]), shares[c]),
+                       **mark, **({'locked': True} if draft.locks.get(c) == t.truck else {})}
                       for c, mark in zip(cids, marks)],
             'window_miss': sum(1 for x in marks if x['window_miss']),
             **({'window_tight': n} if (n := sum(1 for x in marks if x.get('window_tight'))) else {}),
@@ -3610,9 +3673,9 @@ def plan_view(ctx: DayContext, stops: Sequence[Stop], draft: Draft,
                   for s in stops if s.point is not None and s.customer_id not in in_trips]
     over = [t for t in trips_json if t['over_time'] or t['over_capacity'] or t['no_truck'] or t['vehicle_miss']]
     km_total = math.fsum(t['km'] for t in trips_json)
-    # магазин в рейсах нескольких машин, а заказ один (ревью логики 12.10, order_trucks): он целиком у одной машины — логисту
-    # предупреждение; ключ только при таких магазинах (план прежний до байта)
-    _, split = order_trucks([(t.truck, t.stops) for t in draft.trips], [o for s in routable.values() for o in s.orders])
+    # магазин в рейсах нескольких машин, которому одной из них по заказам везти нечего (order_trucks: заказ один или заказов
+    # меньше, чем машин) — логисту предупреждение, утверждение и отправка закрыты (views: SPLIT_BLOCK); ключ только при таких
+    # магазинах (план прежний до байта)
     return {
         **({'order_split': split} if split else {}),
         'trucks': trucks_json,

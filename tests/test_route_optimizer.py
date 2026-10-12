@@ -4919,16 +4919,21 @@ def test_dispatch_build_capacity_time_all_stops_deterministic():
     assert dp.build(ctx, list(reversed(stops)), None, ['333DO33', '123AV61', '991AT61'], 'now').to_json()['trips'] == \
         draft.to_json()['trips']                                       # детерминизм
     view = dp.plan_view(ctx, stops, draft, _info)
-    assert view['unassigned'] == [] and view['overflow']['trips'] == 0
+    # заказ 12 т > 10 т сборка везёт двумя поездками по 6 т — здесь на двух HOWO; один заказ ERP — одна машина (решение
+    # владельца 12.10 «Запрещать»): весь заказ у одной из них — её рейс перегружен по настоящему весу, магазин — в
+    # order_split (утверждение и отправка закрыты, пока логист не решит)
+    assert view['unassigned'] == [] and view['overflow']['trips'] == 1
+    assert [x['customer_id'] for x in view['order_split']] == [200]
     caps = {t.car_code: t.capacity_kg for t in ctx.trucks.values()}
     trips = [t for tr in view['trucks'] for t in tr['trips']]
-    assert all(t['kg'] <= caps[t['truck']] + 0.5 and not t['over_time'] for t in trips)
+    assert all((t['kg'] <= caps[t['truck']] + 0.5 or any(s['customer_id'] == 200 for s in t['stops']))
+               and not t['over_time'] for t in trips)
     for tr in view['trucks']:                                           # время машины — последовательно, в пределах дня
         assert tr['minutes'] <= TN.work_minutes and tr['trips'][0]['depart'] == '09:00'
         assert all(a['return'] == b['depart'] for a, b in zip(tr['trips'], tr['trips'][1:]))
-    heavy = _trip_of(view, 200)                                         # 12 т > 10 т — две поездки по 6 т
-    assert len(heavy) == 2 and all(s['kg'] == 6000 and s['share'] == 2
-                                  for t in heavy for s in t['stops'] if s['customer_id'] == 200)
+    heavy = _trip_of(view, 200)                                         # 12 т > 10 т — две поездки (план: по 6 т)
+    assert len(heavy) == 2 and len({t['truck'] for t in heavy}) == 2
+    assert sorted((s['kg'], s['share']) for t in heavy for s in t['stops'] if s['customer_id'] == 200) == [(0, 1), (12000, 1)]
     kg = Counter()
     for t in trips:
         for s in t['stops']:

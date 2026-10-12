@@ -653,4 +653,6 @@ def test_api_build_changing_share_of_loaded_trip_needs_confirmation(client, monk
                               if s['customer_id'] == 104)
     r = client.post('/api/routes/dispatch/build', json={'date': DAY, 'trucks': ['CAR1', 'CAR2']})
     assert r.status_code == 200, r.get_json()
-    assert shares(r.get_json()) == [2, 2]
+    # 104 — снова в двух рейсах (CAR1 и CAR2); share страницы — рейсы своей машины к магазину (решение владельца 12.10
+    # «Запрещать»: один заказ ERP — одна машина, dispatch.plan_view), у каждой машины — один
+    assert shares(r.get_json()) == [1, 1]
