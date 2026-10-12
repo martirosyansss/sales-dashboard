@@ -8,7 +8,8 @@
 - склад, день позже сегодняшнего: машина 'out' — «Բեռնված է» и Բեռնագիր её рейсов — 409 с away и армянской причиной, на
   странице — return {state, at}; снять отметку — можно; вернулась, без работы сегодня, данных нет — как раньше;
 - сегодняшний день склада (второй рейс после первого) правило не трогает;
-- «Развоз» дня позже сегодняшнего — away (машина → последняя точка GPS), без запрета логисту.
+- «Развоз» дня позже сегодняшнего — away (машина → последняя точка GPS); логист отмечает «Բեռնված է» и печатает
+  Բեռնագիր такой машины только с явным согласием (ответ владельца 12.10, п. 2): без confirm_away — 409 с away_confirm.
 
 Синтетические данные, без ERP.  Запуск:  python -m pytest tests/test_route_truck_return.py -q
 """
@@ -154,11 +155,7 @@ def test_warehouse_refuses_tomorrow_while_truck_is_out_then_allows_after_return(
     cars = {t['car_code'] for t in w['trucks']}
     assert 'CAR1' in cars, w
     car1 = _truck(w, 'CAR1')
-    assert car1['return'] == {'state': 'out', 'at': '14:31'}
-    # (c) CAR2 сегодня без работы — поля нет, всё как раньше
-    for t in w['trucks']:
-        if t['car_code'] != 'CAR1':
-            assert 'return' not in t
+    assert car1['return'] == {'state': 'out', 'at': '14:31'}   # (c) машина без работы сегодня — отдельный тест ниже
     # (a) «Բեռնված է» и Բեռնագիր машины в пути — 409 с away и армянской причиной; ничего не записано
     trip = car1['trips'][0]['id']
     r = _mark(client, w, trip)
@@ -168,13 +165,6 @@ def test_warehouse_refuses_tomorrow_while_truck_is_out_then_allows_after_return(
     assert all('loaded' not in t for t in state.store.load_dispatch(DAY)[0]['trips'])
     r = _wb(client, w, 'CAR1')
     assert r.status_code == 409 and r.get_json()['away'] is True and r.get_json()['error'] == views.WAREHOUSE_AWAY
-    # другая машина плана (сегодня без работы) — грузится и печатается
-    for t in w['trucks']:
-        if t['car_code'] != 'CAR1':
-            assert _wb(client, w, t['car_code']).status_code == 200
-            r = _mark(client, w, t['trips'][0]['id'])
-            assert r.status_code == 200, r.get_json()
-            w = r.get_json()
     # «Развоз» завтра: «Դեռ ճանապարհին» — машина → последняя точка, правки логиста не запрещены
     d = client.get('/api/routes/dispatch?date=' + DAY).get_json()
     assert d['away'] == {'CAR1': '14:31'}
@@ -231,6 +221,8 @@ def test_today_second_trip_loading_is_not_affected(client, monkeypatch):
     следующего дня)."""
     now = datetime(2026, 10, 1, 15, 0, tzinfo=Y)
     state = _setup(client, monkeypatch, now=now)
+    products = {10: wb.Product(10, '0101', 'Կաթ 1լ', 'հատ', 1.05, 12)}
+    state.waybill_loader = lambda isns: wb.Lines({i.upper(): ((10, 30.0),) for i in isns}, frozenset(), products)
     d = _build(client, ('CAR1', 'CAR2'))
     d = client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': d['rev'], 'action': 'approve'}).get_json()
     state.live_facts = _Facts({DAY: {'CAR1': _row(stops=('full', 'pending'), track=_track(STORE, (14, 30)))}})
@@ -239,4 +231,53 @@ def test_today_second_trip_loading_is_not_affected(client, monkeypatch):
     car1 = _truck(w, 'CAR1')
     r = _mark(client, w, car1['trips'][-1]['id'])
     assert r.status_code == 200, r.get_json()
-    assert 'away' not in client.get('/api/routes/dispatch?date=' + DAY).get_json()
+    d = client.get('/api/routes/dispatch?date=' + DAY).get_json()
+    assert 'away' not in d
+    # логист сегодня — без вопроса «դեռ ճանապարհին» (правило — только для следующего дня)
+    assert client.get('/api/routes/dispatch/waybill', query_string={'date': DAY, 'truck': 'CAR1',
+                                                                    'rev': d['rev']}).status_code == 200
+    r = client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': d['rev'], 'action': 'unloaded',
+                                                       'trip': car1['trips'][-1]['id']})
+    assert r.status_code == 200, r.get_json()
+    r = client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': r.get_json()['rev'], 'action': 'loaded',
+                                                       'trip': car1['trips'][-1]['id']})
+    assert r.status_code == 200, r.get_json()
+
+
+def test_logist_marks_and_prints_away_truck_only_with_confirmation(client, monkeypatch):
+    """Ответ владельца 12.10, п. 2: логист может, но после вопроса «Մեքենան դեռ ճանապարհին է (վերջին տվյալը՝ ժ. HH:MM)։
+    Միևնույն է նշե՞լ / տպե՞լ»; склад — по-прежнему жёсткий отказ."""
+    state, w = _tomorrow(client, monkeypatch, {'CAR1': _row(stops=('full', 'pending'), track=_track(STORE, (14, 30)))})
+    _as_logist = client.session_transaction
+    with _as_logist() as s:
+        s['username'] = 'logist'
+    d = client.get('/api/routes/dispatch?date=' + DAY).get_json()
+    trip = _truck(w, 'CAR1')['trips'][0]['id']
+    # Բեռնագիր: без согласия — 409 с вопросом, ERP не читается; с confirm_away=1 — лист
+    q = {'date': DAY, 'truck': 'CAR1', 'rev': d['rev']}
+    r = client.get('/api/routes/dispatch/waybill', query_string=q)
+    assert r.status_code == 409 and r.get_json() == {
+        'success': False, 'away_confirm': True, 'away': {'car': 'CAR1', 'at': '14:31'},
+        'error': 'Մեքենան դեռ ճանապարհին է (վերջին տվյալը՝ ժ. 14:31)։ Միևնույն է տպե՞լ'}
+    r = client.get('/api/routes/dispatch/waybill', query_string={**q, 'confirm_away': '1'})
+    assert r.status_code == 200 and r.get_json()['success'], r.get_json()
+    # «Բեռնված է»: без согласия — 409 с вопросом, ничего не записано; с confirm_away — отмечено
+    body = {'date': DAY, 'rev': d['rev'], 'action': 'loaded', 'trip': trip}
+    r = client.post('/api/routes/dispatch/edit', json=body)
+    assert r.status_code == 409 and r.get_json()['away_confirm'] is True
+    assert r.get_json()['error'] == 'Մեքենան դեռ ճանապարհին է (վերջին տվյալը՝ ժ. 14:31)։ Միևնույն է նշե՞լ'
+    assert all('loaded' not in t for t in state.store.load_dispatch(DAY)[0]['trips'])
+    r = client.post('/api/routes/dispatch/edit', json={**body, 'confirm_away': True})
+    assert r.status_code == 200, r.get_json()
+    assert next(t for t in state.store.load_dispatch(DAY)[0]['trips'] if t['id'] == trip)['loaded']['by'] == 'logist'
+    # вернулась — без вопроса
+    state.live_facts.rows[TODAY]['CAR1'] = _row(stops=('full', 'full'), track=_track(DP_DEPOT, (14, 50)))
+    assert client.get('/api/routes/dispatch/waybill', query_string={**q, 'rev': r.get_json()['rev']}).status_code == 200
+    # склад — по-прежнему жёсткий отказ, пока в пути (согласия у склада нет)
+    state.live_facts.rows[TODAY]['CAR1'] = _row(stops=('full', 'pending'), track=_track(STORE, (14, 30)))
+    with _as_logist() as s:
+        s['username'] = 'sklad'
+    w = client.get('/api/routes/warehouse?date=' + DAY).get_json()
+    r = client.get('/api/routes/warehouse/waybill', query_string={'date': DAY, 'truck': 'CAR1', 'rev': w['rev'],
+                                                                   'confirm_away': '1'})
+    assert r.status_code == 409 and r.get_json()['away'] is True

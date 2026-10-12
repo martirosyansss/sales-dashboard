@@ -6239,6 +6239,12 @@
             return data;
         } catch (e) {
             setBusy(false);
+            // ответ владельца 12.10, п. 2: «Բեռնված է» рейса машины, которая ещё не вернулась, — только с согласия логиста
+            if (e.data && e.data.away_confirm === true && !body.confirm_away) {
+                if (window.confirm(e.message)) return edit({ ...body, confirm_away: true }, okText);
+                render();
+                return null;
+            }
             // №78: правка загруженного рейса — товар уже в машине: спросить и повторить с подтверждением
             if (e.data && e.data.loaded_confirm === true && !body.confirm_loaded && window.confirm(e.message)) {
                 return edit({ ...body, confirm_loaded: true }, okText);
@@ -7350,13 +7356,22 @@
     const wbTruck = (d, code) => (d && d.plan ? d.plan.trucks.find(x => x.car_code === code) : null);
     // Занята ли кнопка: не disabled (фокус клавиатуры остаётся на ней, setBusy страницы её состояние не путает)
     const wbBusy = (btn) => btn.getAttribute('aria-busy') === 'true';
-    async function fetchWaybill(code, btn) {
+    // ask — где спросить согласие (ответ владельца 12.10, п. 2: машина ещё не вернулась — печать только после «OK»): у печати —
+    // в её окне (оно уже впереди), у Excel — здесь. Отказ — ошибка с cancelled (показывать нечего)
+    async function fetchWaybill(code, btn, ask) {
         const d = state.data;
         if (!wbTruck(d, code)) throw wbStale();
         btn.setAttribute('aria-busy', 'true');
         let wb;
+        const q = { date: d.day, truck: code, rev: String(d.rev) };
         try {
-            wb = await api('GET', '/api/routes/dispatch/waybill?' + new URLSearchParams({ date: d.day, truck: code, rev: String(d.rev) }));
+            try {
+                wb = await api('GET', '/api/routes/dispatch/waybill?' + new URLSearchParams(q));
+            } catch (e) {
+                if (!(e.data && e.data.away_confirm === true)) throw e;
+                if (!(ask ? ask(e.message) : window.confirm(e.message))) throw Object.assign(new Error(''), { cancelled: true });
+                wb = await api('GET', '/api/routes/dispatch/waybill?' + new URLSearchParams({ ...q, confirm_away: '1' }));
+            }
         } finally {
             btn.removeAttribute('aria-busy');
         }
@@ -7383,9 +7398,9 @@
         // №81: сначала отправить правки водителям — накладная по плану, который у водителя
         if (send && !(await sendForPaper())) { try { w.close(); } catch (e) { /* уже закрыто */ } return; }
         let res;
-        try { res = await fetchWaybill(code, btn); } catch (e) {
+        try { res = await fetchWaybill(code, btn, (msg) => w.confirm(msg)); } catch (e) {
             try { w.close(); } catch (x) { /* уже закрыто */ }
-            showActionError(e);
+            if (!e.cancelled) showActionError(e);
             return;
         }
         if (w.closed) return;
@@ -7401,7 +7416,7 @@
         hideActionError();
         if (typeof window.XLSX === 'undefined') { showActionError(new Error('Excel-ի գրադարանը չբեռնվեց (cdn.jsdelivr.net-ը հասանելի չէ)։')); return; }
         let res;
-        try { res = await fetchWaybill(code, btn); } catch (e) { showActionError(e); return; }
+        try { res = await fetchWaybill(code, btn); } catch (e) { if (!e.cancelled) showActionError(e); return; }
         const { t, d, wb } = res;
         const book = XLSX.utils.book_new();
         wb.trips.forEach(tr => {

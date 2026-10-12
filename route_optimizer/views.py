@@ -3281,6 +3281,11 @@ def api_dispatch_edit() -> Any:
     trips_before = {t.id for t in dd.draft.trips}   # №73: рейсы, появившиеся при правке утверждённого плана, — закрепить
     cargo = dp.loaded_cargo(dd.draft, dd.stops)     # №78: что уже в машинах — до правки (правки меняют черновик на месте)
     confirmed = payload.get('confirm_loaded') is True
+    # ответ владельца 12.10, п. 2: «Բեռնված է» рейса машины, ещё не вернувшейся из сегодняшнего дня, — с согласия логиста
+    if payload.get('action') == 'loaded' and payload.get('confirm_away') is not True and (ask := _away_ask(
+            state, bundle, day, next((t.truck for t in dd.draft.trips if t.id == payload.get('trip')), None),
+            'նշե՞լ')) is not None:
+        return ask
     rule: _StopRule | None = None   # «×» с правилом: правило пишется в транзакции черновика
     until: dict[str, Any] | None = None   # «Մինչև ժամը»: успевает ли магазин, подсказка машины (dp.fit_until)
     if payload.get('action') == 'agents' and day >= _same_day_now().date():
@@ -3657,7 +3662,8 @@ def api_dispatch_waybill() -> Any:
     порядку плана, в каждом — что грузить на складе (waybill.truck_waybill; строки накладных и заказов — из ERP, только
     чтение). rev не совпал с черновиком или машины нет в плане — 409 stale: накладная разошлась бы с планом на экране
     (состав рейсов страница сверяет сама по basis). Водитель — кто сегодня за рулём (№77, dispatch.crew_view). Ничего не
-    сохраняет.
+    сохраняет. Машина ещё не вернулась из сегодняшнего дня (день позже сегодняшнего, ответ владельца 12.10) — без
+    confirm_away=1 409 с away_confirm (_away_ask): страница спрашивает логиста и повторяет.
     draft: true — бумага не того плана, что у водителя (ревью логики 12.10, P2 №7; правило владельца №81 «сначала
     отправить, потом печатать»): план не отправлен или у этой машины (её рейсы, заказы, экипаж) либо в отборе заказов есть
     неотправленные правки — страница печатает с пометкой «ՍԵՎԱԳԻՐ» (или сначала отправляет)."""
@@ -3679,6 +3685,9 @@ def api_dispatch_waybill() -> Any:
         return jsonify({'success': False, 'error': WAYBILL_STALE, 'stale': True}), 409
     if dd.draft is None:
         return jsonify({'success': False, 'error': WAYBILL_NO_PLAN}), 409
+    # ответ владельца 12.10, п. 2: машина ещё в сегодняшнем дне — печать следующего дня только с confirm_away=1
+    if request.args.get('confirm_away') != '1' and any(t.truck == car for t in dd.draft.trips)             and (ask := _away_ask(state, dd.bundle, day, car, 'տպե՞լ')) is not None:
+        return ask
     if dd.ctx is None:      # склад или машины не настроены — рейсы не посчитать
         return _bad_request({'_': WAYBILL_NO_SETUP})
     plan = dp.plan_view(dd.ctx, dd.stops, dd.draft, _stop_info(dd), explain=False)
@@ -7685,6 +7694,21 @@ WAREHOUSE_AWAY = 'Մեքենան դեռ չի վերադարձել՝ բեռնել
 def _away_conflict() -> Any:
     """Отказ склада по правилу владельца 12.10 (_away): 409 с away — страница показывает причину, а не «план изменился»."""
     return jsonify({'success': False, 'error': WAREHOUSE_AWAY, 'conflict': True, 'away': True}), 409
+
+
+def _away_ask(state: RoutesState, bundle: Bundle, day: date, car: str | None, verb: str) -> Any:
+    """Логист на «Развозе» (ответ владельца 12.10, п. 2): отметить «Բեռնված է» или напечатать Բեռնագիր рейса дня позже
+    сегодняшнего у машины, ещё не вернувшейся из сегодняшнего дня (_truck_returns: 'out'), — можно, но только после явного
+    согласия: без confirm_away — 409 с away_confirm и away {car, at 'HH:MM'}, страница спрашивает и повторяет с ним. verb —
+    «նշե՞լ» или «տպե՞լ». Машина не в пути — None (как раньше). Склад так не может (_away_conflict)."""
+    if car is None:
+        return None
+    ret = _truck_returns(state, bundle, day, [car]).get(car)
+    if ret is None or ret['state'] != 'out':
+        return None
+    at = ret['at'][11:16]
+    return jsonify({'success': False, 'error': f'Մեքենան դեռ ճանապարհին է (վերջին տվյալը՝ ժ. {at})։ Միևնույն է {verb}',
+                    'away_confirm': True, 'away': {'car': car, 'at': at}}), 409
 
 
 @bp.post('/api/routes/warehouse/loaded')
