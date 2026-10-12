@@ -412,7 +412,7 @@ curl.exe -i https://araqich.orix.am/api/courier/v1/ping
        path: '^/api/routes/((garage|live|warehouse)(/[a-z0-9_-]+)*|drivers/scorecard)$'
        service: <как у правила ^/api/courier/v1/>
      - hostname: araqich.orix.am
-       path: '^/static/(css/(tokens|base|routes|routes_ui|routes_garage|routes_live|routes_warehouse|routes_drivers)\.css|js/(base|routes_top|routes_garage|routes_basemap|routes_live|routes_warehouse|routes_drivers)\.js|img/yandex_maps_logo_ru\.svg)$'
+       path: '^/static/(css/(tokens|base|routes|routes_ui|routes_garage|routes_live|routes_warehouse|routes_drivers)\.css|js/(base|routes_top|rt_panels|routes_garage|routes_basemap|routes_live|routes_warehouse|routes_drivers)\.js|img/yandex_maps_logo_ru\.svg)$'
        service: <как у правила ^/api/courier/v1/>
    ```
    Проверка и перезапуск: `cloudflared tunnel --config <config.yml> ingress validate`;

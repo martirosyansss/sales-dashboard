@@ -372,6 +372,19 @@ def test_public_allowlist_covers_norm_and_basemap_only():
         '/static/js/rt_panels.js'))                                              # Tesla+: сворачиваемые панели карты машин
 
 
+def test_public_static_matches_tunnel_rules():
+    """Каждый файл _PUBLIC_STATIC открыт и в nginx (location =), и в правиле Cloudflare для статики (deploy/COURIER_TUNNEL.md):
+    иначе роли «Гараж» / «Склад» снаружи получают страницу без скрипта или стиля (12.10: rt_panels.js не было в правиле)."""
+    import re
+    import app_v2
+    doc = (ROOT / 'deploy' / 'COURIER_TUNNEL.md').read_text(encoding='utf-8')
+    rule = re.search(r"path: '(" + re.escape('^/static/') + r"[^']*)'", doc)
+    assert rule, 'правило Cloudflare для /static/'
+    for path in sorted(app_v2._PUBLIC_STATIC - {'/favicon.ico'}):
+        assert re.fullmatch(rule.group(1), path), f'Cloudflare: {path}'
+        assert re.search(r'location = ' + re.escape(path) + r'\s', doc), f'nginx: {path}'
+
+
 def test_garage_page_tab_and_basemap_without_yandex_key(dashboard, monkeypatch):
     monkeypatch.setenv('ROUTES_YANDEX_TILES_KEY', '0b6a3f1c-5d2e-4f7a-9c8b-1e2d3c4b5a69')
     _login_as(dashboard, 'garage1')
