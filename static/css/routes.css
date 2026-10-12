@@ -69,9 +69,18 @@
     --rt-route-4:   #5fb58a;
     --rt-route-5:   #c9738f;
     --rt-route-6:   #9c8ad6;
+    /* машины «Առաքում» сверх шести (2…10 — серия машин, 1 — акцент выбранной) */
+    --rt-route-7:   #b5b55c;
+    --rt-route-8:   #d98a64;
+    --rt-route-9:   #b77fd0;
+    --rt-route-10:  #8cc260;
     /* Шрифты и ритм */
     --rt-font:      'Noto Sans Armenian', 'Google Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
     --rt-mono:      'IBM Plex Mono', ui-monospace, monospace;
+    /* числа — крупные и тонкие (DESIGN.md: --fs-num-s / --fw-num), заголовки и номера машин — не жирнее 600 */
+    --rt-fs-num-s:  22px;
+    --rt-fw-num:    300;
+    --rt-fw-strong: 600;
     --rt-radius:    18px;   /* панель */
     --rt-radius-sm: 12px;   /* кнопка, поле */
     color-scheme: dark;
@@ -146,6 +155,10 @@ html[data-rt-theme="light"] .rt-page {
     --rt-route-4:   #3f8f67;
     --rt-route-5:   #b4566f;
     --rt-route-6:   #7a68b8;
+    --rt-route-7:   #85851f;
+    --rt-route-8:   #b9592f;
+    --rt-route-9:   #8e44ad;
+    --rt-route-10:  #4f8a24;
     color-scheme: light;
 }
 /* Фон под страницей — --rt-bg темы (иначе ниже первого экрана виден тёмный градиент body из base.css). body лежит вне

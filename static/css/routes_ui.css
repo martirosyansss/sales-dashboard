@@ -143,6 +143,9 @@
     display: grid; place-items: center; background: var(--rt-chip); color: var(--rt-fg-dim); font-size: .75rem; cursor: pointer;
 }
 .rt-pmin:hover { color: var(--rt-fg); background: var(--rt-line); }
+/* зона нажатия «—» — 36×36 (на телефоне 44×44) при прежнем круге 30 px */
+.rt-pmin::after { content: ""; position: absolute; inset: -3px; border-radius: 50%; }
+@media (max-width: 767px) { .rt-pmin::after { inset: -7px; } }
 .rt-pmin[hidden] { display: none; }
 .rt-pmin:focus-visible, .rt-ppill:focus-visible, .rt-mapbtn:focus-visible { outline: 2px solid var(--rt-acc); outline-offset: 2px; }
 .rt-panels-on .rt-is-min { display: none !important; }
@@ -168,8 +171,10 @@
 .rt-is-opening { animation: rt-panel-in .15s ease-out; }
 @keyframes rt-panel-in { from { opacity: 0; transform: scale(.985); } }
 .rt-mapctl[hidden] { display: none; }
+/* кнопки карты под панелями — 36×36 (DESIGN.md: нажатие ≥ 36 px), +/− Leaflet — того же размера */
+.rt-panels-on .leaflet-bar a { width: 36px; height: 36px; line-height: 36px; }
 .rt-page .rt-mapctl .rt-mapbtn {
-    width: 30px; height: 30px; padding: 0; border: 0; border-radius: 4px; display: grid; place-items: center;
+    width: 36px; height: 36px; padding: 0; border: 0; border-radius: 4px; display: grid; place-items: center;
     background: var(--rt-panel-2); color: var(--rt-fg); font-size: .8125rem; cursor: pointer;
 }
 .rt-page .rt-mapctl .rt-mapbtn:hover { background: var(--rt-panel); color: var(--rt-acc); }
