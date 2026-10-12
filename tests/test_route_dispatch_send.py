@@ -92,15 +92,16 @@ def test_order_selection_change_is_unsent_without_stop_change():
     assert dp.unsent(draft) == {'trucks': [], 'orders': True}
 
 
-def test_reorder_inside_truck_counts_split_into_trips_does_not():
+def test_reorder_inside_truck_and_split_into_trips_both_count():
     *_, draft = _base((FORD,))
     dp.approve(draft, 'a', 'u')
     stops = list(draft.trips[0].stops)
     assert len(stops) >= 2
-    # тот же порядок, но двумя рейсами — терминал видит то же (порядок клиентов машины)
+    # тот же порядок, но двумя рейсами — другая погрузка и другой выезд у терминала (ревью логики 12.10; до правки здесь
+    # было «не изменилось»: сравнивался склеенный список клиентов машины)
     split = dp.Draft.from_json(draft.to_json())
     split.trips = [dp.DraftTrip(1, FORD.car_code, stops[:1]), dp.DraftTrip(2, FORD.car_code, stops[1:])]
-    assert dp.unsent(split) is None
+    assert dp.unsent(split) == {'trucks': [FORD.car_code], 'orders': False}
     draft.trips[0].stops = list(reversed(stops))
     assert dp.unsent(draft) == {'trucks': [FORD.car_code], 'orders': False}
 
