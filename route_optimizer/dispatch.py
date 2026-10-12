@@ -165,6 +165,9 @@ class DispatchOrder:
     shipped: date | None
     van_agent_id: int = 0  # кто везёт (ORDERS.fVANAGENTID): сам менеджер — не для машин парка
     entered: date | None = None
+    # проведённая накладная заказа (наименьший fISN SALES по DOCPARENTS), '' — нет: заказы одной накладной везёт одна машина
+    # (order_trucks) — накладная, общая для двух заказов, иначе грузилась бы на обе машины целиком
+    invoice: str = ''
 
     @property
     def self_delivery(self) -> bool:
@@ -1100,16 +1103,17 @@ def _sent(raw: Any) -> dict[str, Any] | None:
 
 
 def _sent_orders(raw: Any) -> dict[str, list[Any]] | None:
-    """Заказы отправленного снимка: fISN → [машина, кг, сумма] (published_orders); не словарь или хоть одна битая строка —
+    """Заказы отправленного снимка: fISN → [машина, кг, сумма, клиент] (published_orders; клиента нет у снимков первых правок
+    ветки); не словарь или хоть одна битая строка —
     None (отбор терминала — по плану, как до снимка заказов: половина списка хуже, чем никакого)."""
     if not isinstance(raw, dict) or len(raw) > MAX_BUILT_ORDERS:
         return None
     out: dict[str, list[Any]] = {}
     for k, v in raw.items():
-        if not (isinstance(k, str) and ISN_RE.match(k) and isinstance(v, list) and len(v) == 3 and isinstance(v[0], str)
-                and v[0] and _is_num(v[1]) and _is_num(v[2])):
+        if not (isinstance(k, str) and ISN_RE.match(k) and isinstance(v, list) and len(v) in (3, 4) and isinstance(v[0], str)
+                and v[0] and _is_num(v[1]) and _is_num(v[2]) and (len(v) == 3 or _is_int(v[3]))):
             return None
-        out[k] = [v[0], float(v[1]), float(v[2])]
+        out[k] = [v[0], float(v[1]), float(v[2]), *v[3:]]
     return out
 
 
@@ -1909,7 +1913,7 @@ def overtime(ctx: DayContext, stops: Sequence[Stop], draft: Draft) -> Draft:
 def runs_late(ctx: DayContext, stops: Sequence[Stop], draft: Draft) -> bool:
     """Хоть одна машина плана работает дольше рабочего дня (рейсы подряд с ожиданием у окон и обедом, как в plan_view)."""
     routable = {s.customer_id: s for s in stops if s.point is not None}
-    tl = _timeline(ctx, draft.trips, routable, _shares(draft.trips))
+    tl = _timeline(ctx, draft.trips, routable, _shares(draft.trips), kg_of=trip_kgs(draft, routable)[0])
     return any(depart + minutes > ctx.tn.work_minutes + _EPS for depart, minutes, _ in tl.values())
 
 
@@ -2842,7 +2846,8 @@ def _same_day_base(ctx: DayContext, base: Sequence[Stop], draft: Draft, now_min:
     tmp = Draft(trips=[replace(t, stops=list(t.stops)) for t in draft.trips])
     _clean(tmp, routable0)
     shares0 = _shares(tmp.trips)
-    tl0 = _timeline(ctx, tmp.trips, routable0, shares0)
+    # время рейсов — как у плана на странице и у водителей: по настоящему грузу точек (trip_kgs, один заказ — одна машина)
+    tl0 = _timeline(ctx, tmp.trips, routable0, shares0, kg_of=trip_kgs(replace(draft, trips=tmp.trips), routable0)[0])
     return tmp.trips, routable0, shares0, tl0, {tid for tid, (depart, _, _) in tl0.items() if depart <= now_min + _EPS}
 
 
@@ -3119,6 +3124,8 @@ def order_trucks(trips: Sequence[tuple[str, Sequence[int]]], orders: Sequence[Di
     сумма, fISN), машине, которой по плану осталось больше всего кг (доля машины = её рейсы к магазину / все рейсы к нему,
     как кг рейса в _shares); равенство — у кого больше рейсов, затем — кто раньше в плане. Один заказ на несколько машин
     не делится: он целиком у машины с большей долей.
+    Заказы одной проведённой накладной ERP (DispatchOrder.invoice) — одна единица: накладную не делят, её везёт одна машина
+    (ревью ветки 12.10, P1: общая накладная двух заказов иначе печаталась бы целиком в Բեռնագիր обеих машин).
     fixed — заказы, которые уже в машине (fISN → машина, assign: загруженный рейс по отправленному плану): они остаются у
     своей машины, если она ещё среди машин магазина, остальные заказы делятся между машинами по остатку их долей — правка
     рейсов других машин не меняет то, что уже погружено (ревью ветки 12.10, P1).
@@ -3146,16 +3153,23 @@ def order_trucks(trips: Sequence[tuple[str, Sequence[int]]], orders: Sequence[Di
         rank = {truck: i for i, truck in enumerate(trucks)}   # порядок первого появления в плане
         left = {truck: total * k / n for truck, k in trucks.items()}
         got = {truck: 0 for truck in trucks}
-        for o in mine:                                    # уже в машине — у неё
-            if fixed.get(o.isn) in trucks:
-                out[o.isn] = fixed[o.isn]
-                left[fixed[o.isn]] -= o.kg
-                got[fixed[o.isn]] += 1
-        for o in sorted((o for o in mine if o.isn not in out), key=lambda o: (-o.kg, -o.revenue, o.isn)):
-            truck = max(trucks, key=lambda c: (left[c], trucks[c], -rank[c]))
-            out[o.isn] = truck
-            left[truck] -= o.kg
-            got[truck] += 1
+        units: dict[str, list[DispatchOrder]] = {}       # единица распределения: заказ или заказы одной накладной
+        for o in mine:
+            units.setdefault(o.invoice or o.isn, []).append(o)
+
+        def give(unit: Sequence[DispatchOrder], truck: str) -> None:
+            for o in unit:
+                out[o.isn] = truck
+            left[truck] -= math.fsum(o.kg for o in unit)
+            got[truck] += len(unit)
+        for unit in units.values():                      # уже в машине — у неё (вся накладная)
+            held = next((fixed[o.isn] for o in unit if fixed.get(o.isn) in trucks), None)
+            if held is not None:
+                give(unit, held)
+        rest = [u for u in units.values() if u[0].isn not in out]
+        for unit in sorted(rest, key=lambda u: (-math.fsum(o.kg for o in u), -math.fsum(o.revenue for o in u),
+                                                min(o.isn for o in u))):
+            give(unit, max(trucks, key=lambda c: (left[c], trucks[c], -rank[c])))
         empty = sorted(c for c in trucks if not got[c])
         if empty and mine:
             warn.append({'customer_id': cid, 'trucks': sorted(trucks), 'empty': empty})
@@ -3194,11 +3208,11 @@ def trip_kgs(draft: Draft, routable: Mapping[int, Stop]) -> tuple[dict[tuple[int
 
 
 def published_orders(draft: Draft, stops: Sequence[Stop]) -> dict[str, list[Any]]:
-    """Что получает каждая машина (снимок отправки, Draft.sent['orders']): fISN → [машина, кг, сумма] по assign;
+    """Что получает каждая машина (снимок отправки, Draft.sent['orders']): fISN → [машина, кг, сумма, клиент] по assign;
     кг и сумма — отпечаток заказа: изменился в ERP после отправки — логисту «не отправлено» (views._unsent_json)."""
     orders = [o for s in stops for o in s.orders]
     trucks, _ = assign(draft, orders)
-    return {o.isn: [trucks[o.isn], round(o.kg, 3), round(o.revenue, 2)] for o in orders if o.isn in trucks}
+    return {o.isn: [trucks[o.isn], round(o.kg, 3), round(o.revenue, 2), o.customer_id] for o in orders if o.isn in trucks}
 
 
 def orders_unsent(sent: Mapping[str, Sequence[Any]] | None, now: Mapping[str, Sequence[Any]]) -> tuple[list[str], int]:
@@ -3257,12 +3271,23 @@ def loaded_changed(draft: Draft, stops: Sequence[Stop] = ()) -> bool:
         return False
     orders = [o for x in stops for o in x.orders]
     owner, _ = assign(draft, orders)
-    was, _ = assign(sent, orders)            # что машина получила по отправленному плану — по нему грузил склад
-    for t in draft.trips:
-        if t.loaded is None:
-            continue
-        mine = {o.isn for x in stops if x.customer_id in t.stops for o in x.orders}
-        if {i for i in mine if owner.get(i) == t.truck} != {i for i in mine if was.get(i) == t.truck}:
+    snap = draft.sent.get('orders')
+    customer = {o.isn: o.customer_id for o in orders}
+    customer.update({i: v[3] for i, v in (snap or {}).items() if len(v) > 3})   # клиент заказа снимка, которого уже нет
+    kg = {o.isn: round(o.kg, 3) for o in orders}
+    for truck in sorted({t.truck for t in draft.trips if t.loaded is not None}):
+        held = {c for t in draft.trips if t.loaded is not None and t.truck == truck for c in t.stops}
+        now = {i: kg[i] for i, c in owner.items() if c == truck and customer.get(i) in held}
+        if snap is not None:
+            # ревью ветки 12.10, P1: груз до правки — ровно отправленный (по нему грузил склад): заказ, пришедший в ERP
+            # после отправки, — тоже другой груз, а не «как было» (распределение текущих заказов по старому плану его бы
+            # уже включило). Заказ снимка, которого в ERP больше нет, — у машины тоже был
+            was = {i: round(v[1], 3) for i, v in snap.items() if v[0] == truck and customer.get(i, -1) in held | {-1}}
+            # (-1 — клиент заказа неизвестен: снимок без клиента и заказа в ERP уже нет — считаем грузом машины)
+        else:   # снимок до ревью (без заказов) — по отправленному плану и текущим заказам
+            before, _ = assign(sent, orders)
+            was = {i: kg[i] for i, c in before.items() if c == truck and customer.get(i) in held}
+        if now != was:
             return True
     return False
 

@@ -143,7 +143,7 @@ def test_split_store_warning_on_page_and_in_published_snapshot():
     view = dp.plan_view(ctx, stops, draft, _info, explain=False)
     assert view['order_split'] == [{'customer_id': 101, 'trucks': sorted(TRUCKS), 'empty': [TRUCKS[1]]}]
     pub = dp.published_orders(draft, stops)
-    assert pub == {orders[0].isn: [TRUCKS[0], 900.0, 10000.0], orders[1].isn: [TRUCKS[1], 200.0, 10000.0]}
+    assert pub == {orders[0].isn: [TRUCKS[0], 900.0, 10000.0, 101], orders[1].isn: [TRUCKS[1], 200.0, 10000.0, 102]}
     assert len({isn for isn in pub}) == len(orders)                                  # инвариант: заказ — одной машине
     # без разделённых магазинов ключа нет — план прежний до байта
     one = dp.Draft(TRUCKS, trips=[dp.DraftTrip(1, TRUCKS[0], [101, 102])], next_id=2)
@@ -470,11 +470,13 @@ def test_split_store_with_two_orders_loads_exactly_what_each_terminal_gets(clien
     for car in ('CAR1', 'CAR2'):
         page = [tr for t in d['plan']['trucks'] if t['car_code'] == car for tr in t['trips']]
         assert sorted(o['isn'] for tr in page for s in tr['stops'] for o in s['orders']) == apk[car]   # страница = терминал
-        asked.clear()
-        _ok(client.get('/api/routes/dispatch/waybill', query_string={'date': '2026-10-01', 'truck': car, 'rev': d['rev']}))
-        assert asked == [apk[car]]                                               # Բեռնագիր логиста = терминал
-        asked.clear()
-        assert _wb(client, car, d['rev']).status_code == 200 and asked == [apk[car]]   # и склада
+        # Բեռնագիր логиста и склада — товар ровно заказов машины (у каждого заказа — 1 штука): строки читаются для всего
+        # плана (общая накладная — у одной машины), а грузит машина свои
+        qty = lambda wbill: sum(r['qty'] for tr in wbill['trips'] for r in tr['rows'])   # noqa: E731
+        got = _ok(client.get('/api/routes/dispatch/waybill', query_string={'date': '2026-10-01', 'truck': car, 'rev': d['rev']}))
+        assert qty(got) == len(apk[car])
+        r = _wb(client, car, d['rev'])
+        assert r.status_code == 200 and qty(r.get_json()) == len(apk[car])
         kg = sum(s['kg'] for tr in page for s in tr['stops'] if s['customer_id'] == 101)
         assert kg == round(sum(o.kg for o in every if o.isn in apk[car] and o.customer_id == 101))
 
@@ -513,9 +515,9 @@ def test_capacity_of_split_store_trip_uses_assigned_orders():
     assert trips[howo]['kg'] == 100
     shop = {tr['truck']: s for t in view['trucks'] for tr in t['trips'] for s in tr['stops'] if s['customer_id'] == 101}
     assert (shop[ford]['kg'], shop[ford]['share'], shop[howo]['kg']) == (3400, 1, 100)
-    assert dp.published_orders(draft, stops) == {orders[0].isn: [ford, 3400.0, 10000.0],
-                                                 orders[1].isn: [howo, 100.0, 10000.0],
-                                                 orders[2].isn: [ford, 200.0, 10000.0]}
+    assert dp.published_orders(draft, stops) == {orders[0].isn: [ford, 3400.0, 10000.0, 101],
+                                                 orders[1].isn: [howo, 100.0, 10000.0, 101],
+                                                 orders[2].isn: [ford, 200.0, 10000.0, 102]}
 
 
 # ============================== итоговое ревью ветки 12.10 ==============================
@@ -596,3 +598,101 @@ def test_driver_change_returns_publication_status_and_crew_sig(client, monkeypat
     s = _ok(client.get('/api/routes/dispatch/status?date=2026-10-01'))
     assert s['crew_sig'] == r['crew_sig'] and s['rev'] == d['rev']                 # план не тронут, экипаж — другой
     assert _ok(client.get('/api/routes/dispatch?date=2026-10-01'))['unsent']['crew'] == [car]
+
+
+# ============================== ревью ветки, раунд 3 ==============================
+
+def test_orders_of_one_invoice_go_to_one_truck():
+    """P1: два заказа магазина двух машин сделаны одной накладной ERP — одна единица распределения (иначе накладная целиком
+    печаталась бы в Բեռնագիր обеих машин)."""
+    o1 = replace(_dorder(1, 101, 600.0), invoice='S1')
+    o2 = replace(_dorder(2, 101, 500.0), invoice='S1')
+    o3 = _dorder(3, 101, 400.0)
+    trucks, warn = dp.order_trucks([('A', [101]), ('B', [101])], [o1, o2, o3])
+    assert trucks[o1.isn] == trucks[o2.isn] != trucks[o3.isn] and warn == []
+    # без накладной — по одному (как раньше)
+    plain, _ = dp.order_trucks([('A', [101]), ('B', [101])], [_dorder(1, 101, 600.0), _dorder(2, 101, 500.0)])
+    assert len(set(plain.values())) == 2
+
+
+def test_shared_invoice_printed_by_exactly_one_truck(client, monkeypatch):
+    """P1 (защита Բեռնագիր): накладная двух заказов разных машин, о которой план не знал, — её товар на листе ровно одной
+    машины (строки читаются для заказов всего плана, накладная — у наименьшего из них), а не целиком у обеих."""
+    from route_optimizer import waybill as wb
+    state = _page(client, monkeypatch)
+    second = _dorder(41, 101, 300.0)
+    _erp_orders(state, lambda orders, since, until: [*orders, *(o for o in [second] if since <= o.order_date < until)])
+    shared = {_isn(1), second.isn}
+    products = {10: wb.Product(10, '0101', 'Կաթ 1լ', 'հատ', 1.0, None)}
+
+    def loader(isns):                      # как waybill.load_lines: накладная — у наименьшего запрошенного её заказа
+        asked = {i.upper() for i in isns}
+        owner = min(shared & asked) if shared & asked else None
+        return wb.Lines({i: (((10, 10.0),) if i == owner else ()) if i in shared else ((10, 1.0),) for i in asked},
+                        frozenset(shared & asked), products)
+    state.waybill_loader = loader
+    d = _split_store(client, state, 101)
+    on = {tr['truck']: [o['isn'] for s in tr['stops'] if s['customer_id'] == 101 for o in s['orders']]
+          for t in d['plan']['trucks'] for tr in t['trips']}
+    assert sorted(i for v in on.values() for i in v) == sorted(shared)     # заказы — у разных машин
+    shop = 0
+    for car in ('CAR1', 'CAR2'):
+        got = _ok(client.get('/api/routes/dispatch/waybill', query_string={'date': '2026-10-01', 'truck': car, 'rev': d['rev']}))
+        shop += sum(r['qty'] for tr in got['trips'] for r in tr['rows']) - sum(
+            1 for t in d['plan']['trucks'] if t['car_code'] == car for tr in t['trips'] for s in tr['stops']
+            for o in s['orders'] if o['isn'] not in shared)
+    assert shop == 10                                                     # накладная 10 штук — один раз на две машины
+
+
+def test_loaded_baseline_is_sent_snapshot_not_current_erp():
+    """P1: после отправки в ERP пришёл заказ магазина загруженного рейса — у машины груз больше отправленного: «Ուղարկել»
+    спрашивает подтверждение (до правки обе стороны сравнения брали текущие заказы ERP — новый заказ был «и раньше»)."""
+    stops, orders = _dp_stops([(101, (40.200, 44.640), 300.0), (102, (40.205, 44.650), 200.0)])
+    draft = dp.Draft(TRUCKS, trips=[dp.DraftTrip(1, TRUCKS[0], [101]), dp.DraftTrip(2, TRUCKS[1], [102])], next_id=3)
+    dp.approve(draft, 'at', 'u')
+    dp.send(draft, 'at', 'u', orders=dp.published_orders(draft, stops))
+    dp.mark_loaded(draft, 1, '2026-10-01T08:00:00', 'sklad')
+    assert not dp.loaded_changed(draft, stops)
+    from test_route_optimizer import _coord_of
+    coord = _coord_of({101: (40.200, 44.640), 102: (40.205, 44.650)})
+    more = dp.build_stops([*orders, _dorder(9, 101, 120.0)], coord)
+    assert dp.loaded_changed(draft, more)
+    # заказ незагруженной машины пришёл — груз загруженной не меняется
+    other = dp.build_stops([*orders, _dorder(10, 102, 50.0)], coord)
+    assert not dp.loaded_changed(draft, other)
+
+
+def test_operational_timeline_uses_assigned_weight():
+    """P2: «уже грузится» и «опаздывает» считаются тем же временем, что план на странице и у водителей (trip_kgs): 3400/100 кг
+    магазина двух машин — второй рейс лёгкой машины начинается, как в плане, а не по долям поровну."""
+    ctx = _dp_ctx()
+    ford, howo = '333DO33', '991AT61'
+    stops, _ = _dp_stops([(101, (40.200, 44.640), 3400.0), (101, (40.200, 44.640), 100.0), (102, (40.205, 44.650), 200.0),
+                          (103, (40.210, 44.645), 200.0)])
+    draft = dp.Draft([ford, howo], trips=[dp.DraftTrip(1, ford, [101, 102]), dp.DraftTrip(2, howo, [101]),
+                                          dp.DraftTrip(3, howo, [103])], next_id=4)
+    view = dp.plan_view(ctx, stops, draft, _info, explain=False)
+    shown = {tr['id']: tr['loading_start'] for t in view['trucks'] for tr in t['trips']}
+    *_, tl0, _ = dp._same_day_base(ctx, stops, draft, 0.0)
+    assert {tid: dp._hhmm(ctx.work_start_min + dep) for tid, (dep, _, _) in tl0.items()} == shown
+    start3 = tl0[3][0]
+    assert 3 in dp.started_trips(ctx, stops, draft, start3 + 1) and 3 not in dp.started_trips(ctx, stops, draft, start3 - 1)
+
+
+def test_rebuilt_driver_seat_is_unsent_and_paper_is_draft(client, monkeypatch):
+    """P2: пересборка пересадила водителя (Draft.seats) при тех же рейсах — экипаж черновика другой, чем отправленный:
+    «не отправлено» по экипажу, Բեռնագիր — черновик (до правки сравнивался экипаж отправленного плана с ним же)."""
+    from route_optimizer import waybill as wb
+    state = _page(client, monkeypatch)
+    state.waybill_loader = lambda isns: wb.Lines({}, frozenset(), {})
+    d = _ok(_post(client, '/api/routes/dispatch/build', {'trucks': ['CAR1', 'CAR2']}))
+    d = _ok(_post(client, '/api/routes/dispatch/edit', {'rev': d['rev'], 'action': 'approve'}))
+    car = sorted({t['car_code'] for t in d['plan']['trucks'] if t['trips']})[0]
+    raw, rev = state.store.load_dispatch('2026-10-01')
+    raw['seats'] = {car: 'Կարեն'}                                         # сборка посадила водителя (рейсы те же)
+    assert state.store.save_dispatch('2026-10-01', raw, 'qa', expected_rev=rev) is not None
+    d = _ok(client.get('/api/routes/dispatch?date=2026-10-01'))
+    assert d['unsent']['crew'] == [car]
+    wbill = _ok(client.get('/api/routes/dispatch/waybill', query_string={'date': '2026-10-01', 'truck': car, 'rev': d['rev']}))
+    assert wbill['draft'] is True and wbill['driver'] == 'Կարեն'
+

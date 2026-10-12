@@ -353,7 +353,8 @@ GROUP BY LTRIM(RTRIM(s.fDELIVERYCAR)), CAST(s.fDATE AS date)
 #   в ORDERS их нет); fDELIVERYDATE и fDELIVERYADDRESSID в заказах не заполняются — день доставки
 #   считаем по дате заказа, адрес — адрес клиента по умолчанию;
 # - строки заказа — SALEDOCDETAILS по fISN заказа (PROVIDINGDELIVERIES ссылается на реализации);
-# - «уже отгружен» — первая проведённая реализация SALES по заказу (DOCPARENTS, fPARENTDOCTYPE = 1);
+# - «уже отгружен» — первая проведённая реализация SALES по заказу (DOCPARENTS, fPARENTDOCTYPE = 1); её fISN (наименьший
+#   из проведённых) — invoice: заказы одной накладной — одна единица распределения по машинам (dispatch.order_trucks);
 #   у заказа бывают и другие дочерние документы — берём только SALES;
 # - fVANAGENTID = fSALESAGENTID — менеджер развозит сам (A000, A008/6 «19 литров»): не для машин парка;
 # - день ввода заказа — DOCUMENTS.fCREATIONDATE того же fISN (SQL_ORDER_CREATED): заведён раньше своей даты — заказ на
@@ -361,13 +362,13 @@ GROUP BY LTRIM(RTRIM(s.fDELIVERYCAR)), CAST(s.fDATE AS date)
 SQL_DISPATCH_ORDERS = f"""
 SELECT CAST(o.fISN AS nvarchar(36)), RTRIM(o.fDOCNUM), CAST(o.fDATE AS date), o.fCUSTOMERID,
        o.fSALESAGENTID, LTRIM(RTRIM(ISNULL(o.fDELIVERYCAR, ''))), o.fTOTALSUM, ISNULL(k.kg, 0), sh.shipped,
-       o.fVANAGENTID, cr.entered
+       o.fVANAGENTID, cr.entered, sh.invoice
 FROM ORDERS o WITH (NOLOCK)
 OUTER APPLY (SELECT MIN(CAST(d.fCREATIONDATE AS date)) AS entered
              FROM DOCUMENTS d WITH (NOLOCK)
              WHERE d.fISN = o.fISN) cr
 {_KG_O}
-OUTER APPLY (SELECT MIN(CAST(s.fDATE AS date)) AS shipped
+OUTER APPLY (SELECT MIN(CAST(s.fDATE AS date)) AS shipped, MIN(CAST(s.fISN AS nvarchar(36))) AS invoice
              FROM DOCPARENTS p WITH (NOLOCK)
              JOIN SALES s WITH (NOLOCK) ON s.fISN = p.fISN
              WHERE p.fPARENTISN = o.fISN AND p.fPARENTDOCTYPE = 1 AND s.fSTATE = 2) sh
@@ -650,7 +651,8 @@ def dispatch_orders(conn: Any, since: date, until: date) -> list[DispatchOrder]:
                           customer_id=int(r[3]), agent_id=int(r[4] or 0), car_code=_str(r[5]),
                           revenue=float(r[6] or 0), kg=float(r[7] or 0),
                           shipped=_day(r[8]) if r[8] is not None else None, van_agent_id=int(r[9] or 0),
-                          entered=_day(r[10]) if r[10] is not None else None)
+                          entered=_day(r[10]) if r[10] is not None else None,
+                          invoice=_str(r[11]).upper() if len(r) > 11 and r[11] is not None else '')
             for r in _select(conn, SQL_DISPATCH_ORDERS, (since, until))]
 
 

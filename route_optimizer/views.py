@@ -2204,11 +2204,14 @@ def _sent_crew(state: RoutesState, dd: _DispatchDay, draft: dp.Draft) -> dict[st
 
 
 def _crew_unsent(dd: _DispatchDay, sent: Mapping[str, str] | None) -> list[str]:
-    """Машины отправленного плана, чей экипаж с отправки другой (ревью логики 12.10, P2 №10): водитель сменился, его не стало
-    или машина больше не работает. Снимка экипажа нет (отправлен до ревью) — пусто."""
+    """Машины, чей экипаж с отправки другой (ревью логики 12.10, P2 №10): по нынешнему черновику (с посадками сборки) против
+    снимка отправки — водитель сменился, пересажен, его не стало или машина больше не работает. Снимка экипажа нет
+    (отправлен до ревью) — пусто."""
     if sent is None:
         return []
-    now = _sent_crew(_state(), dd, dd.draft.for_drivers())
+    # экипаж нынешнего черновика (его посадки сборки, Draft.seats): пересборка пересадила водителя — Բեռնագիր уже с другим
+    # водителем, чем у отправленного плана, — «не отправлено» (ревью ветки 12.10, P2)
+    now = _sent_crew(_state(), dd, dd.draft)
     return sorted(c for c in {*sent, *now} if sent.get(c) != now.get(c))
 
 
@@ -3692,6 +3695,13 @@ def _paper_draft(dd: _DispatchDay, car: str) -> bool:
     return u is not None and (car in u['trucks'] or bool(u['orders']) or car in u.get('crew', ()))
 
 
+def _plan_isns(plan: Mapping[str, Any]) -> list[str]:
+    """Заказы всего плана (все машины) — для строк Բեռնագիր (ревью ветки 12.10, P1): накладная, сделанная из заказов
+    разных машин, считается у одного заказа всего плана (waybill.load_lines: наименьший fISN) и печатается ровно у одной
+    машины; запрос только заказов машины отдал бы её целиком каждой."""
+    return sorted({o['isn'] for t in plan['trucks'] for tr in t['trips'] for s in tr['stops'] for o in s['orders']})
+
+
 def _waybill_body(state: RoutesState, dd: _DispatchDay, plan: Mapping[str, Any],
                   truck: Mapping[str, Any]) -> dict[str, Any]:
     """Ответ Բեռնագիր машины плана дня (общий у «Развоза» и склада): рейсы с товаром (waybill.truck_waybill; строки
@@ -3699,7 +3709,7 @@ def _waybill_body(state: RoutesState, dd: _DispatchDay, plan: Mapping[str, Any],
     if state.waybill_loader is None:
         raise ErpError('Загрузчик строк заказов не подключён')
     car = truck['car_code']
-    lines = state.waybill_loader([o['isn'] for tr in truck['trips'] for s in tr['stops'] for o in s['orders']])
+    lines = state.waybill_loader(_plan_isns(plan))   # строки — заказов всего плана: общая накладная — у одной машины
     seat = dp.crew_view(dd.draft, _crew(state, dd.day, dd.bundle.trucks)[0]).get(car) or {'name': None, 'seat': False,
                                                                                          'warn': None}
     # водитель — кто в этот день за рулём (№77: посаженный сборкой вместо водителя машины — с пометкой driver_seat); не
@@ -7567,7 +7577,7 @@ def api_warehouse_goods() -> Any:
         return _conflict(WAREHOUSE_STALE)
     if state.waybill_loader is None:
         raise ErpError('Загрузчик строк заказов не подключён')
-    lines = state.waybill_loader([o['isn'] for tr in truck['trips'] for s in tr['stops'] for o in s['orders']])
+    lines = state.waybill_loader(_plan_isns(plan))   # строки — заказов всего плана: общая накладная — у одной машины
     got = next(x for x in wb.truck_waybill(plan, car, lines)['trips'] if x['id'] == int(trip))
     # gift — только у строк с подарками ERP (№90)
     keys = ('code', 'name', 'unit', 'qty', 'pack', 'packs', 'loose', 'kg', 'unknown', 'gift')
