@@ -12,6 +12,9 @@ O «Օպտիմալացում»: шапка страницы (H1, «Վերահա�
   таблетками и «Փոխել» (раскрывает прежнюю форму), 4 карточки «было → стало» с разницей, «Բոլոր թվերը», менеджеры
   аккордеоном (раскрытый — предложения в его строке), карта дня справа с «Հիմա | Եթե ընդունեք» и днями;
   «Ընդունել» предложения → главная кнопка становится доступной;
+L «Ուսուցում»: шапка с периодом и «Ինչպե՞ս», 4 карточки «что выучено», таблицы линиями;
+W «Պահեստ» (утверждённый план 01.10): шапка, 3 карточки итога дня, выбор дня сегментами, машины панелями; «Բեռնված է» →
+  карточка «Բեռնված» обновилась;
 S «Կարգավորումներ»: шапка с поиском; оглавление по шагам (группы, состояние каждого блока, прогресс «n / 3»), нажатие —
   к блоку и aria-current; поиск «դիզել» оставляет только подходящие блоки и пункты, Esc — снова всё; жёлтая строка о
   незаполненных обязательных блоках со ссылкой; блоки-панели с таблеткой состояния, обязательный пустой — обводка;
@@ -27,7 +30,9 @@ import sys
 import tempfile
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -37,6 +42,8 @@ import routes_dispatch_browser_check as base  # noqa: E402
 from playwright.sync_api import sync_playwright  # noqa: E402
 from tesla_layout_check import themes_and_widths  # noqa: E402
 from werkzeug.serving import make_server  # noqa: E402
+
+from route_optimizer import views  # noqa: E402
 
 PORT = 8783
 BASE = f'http://127.0.0.1:{PORT}'
@@ -58,6 +65,13 @@ def build(tmp: str):
     deadline = time.monotonic() + 60
     while c.get(f'/api/routes/optimize/{job}').get_json()['job']['status'] == 'running' and time.monotonic() < deadline:
         time.sleep(0.1)
+    # «Պահեստ»: «сейчас» — утро 01.10, план дня собран и утверждён (склад видит только утверждённый)
+    now = datetime(2026, 10, 1, 8, 0)
+    views._clock = lambda: now
+    views._yerevan_now = lambda: now.replace(tzinfo=ZoneInfo('Asia/Yerevan'))
+    d = c.post('/api/routes/dispatch/build', json={'date': '2026-10-01', 'trucks': ['CAR1', 'CAR2']}).get_json()
+    d = c.post('/api/routes/dispatch/edit', json={'date': '2026-10-01', 'rev': d['rev'], 'action': 'approve'}).get_json()
+    assert d.get('approved'), d
     return app
 
 
@@ -180,6 +194,32 @@ def main() -> int:
             themes_and_widths(browser, f'{BASE}/routes/settings',
                               lambda p: p.wait_for_function("() => !document.getElementById('rsForm').classList.contains('d-none') && document.querySelector('#rsToc .rs-toc-i[data-state]')", timeout=30000),
                               check, errors, 'T settings')
+
+            # L — «Ուսուցում»
+            page.goto(f'{BASE}/routes/learning')
+            page.wait_for_selector('#lrLearnKpis .rt-kpi--card', timeout=30000)
+            check(page.inner_text('#lrPage .rt-pagehead__title') == 'Ուսուցում և փաստ' and page.locator('#lrPage .rt-pagehead #lrPeriod').is_visible()
+                  and page.locator('#lrPage .rt-howto').count() == 1, 'L head: H1, period in the head, «Ինչպե՞ս» folded')
+            check(page.locator('#lrLearnKpis .rt-kpi--card').count() == 4 and page.locator('#lrPage table.rt-table--lined').count() >= 5,
+                  'L KPI cards from the learning status, tables lined')
+            page.screenshot(path=str(SHOTS / 'learning.png'), full_page=True)
+            themes_and_widths(browser, f'{BASE}/routes/learning', lambda p: p.wait_for_selector('#lrLearnKpis .rt-kpi--card', timeout=30000),
+                              check, errors, 'T learning')
+
+            # W — «Պահեստ»
+            page.goto(f'{BASE}/routes/warehouse')
+            page.wait_for_selector('#whKpis:not([hidden]) .rt-kpi--card', timeout=30000)
+            kp = page.locator('#whKpis .rt-kpi--card')
+            check(page.inner_text('#whPage .rt-pagehead__title') == 'Պահեստ' and kp.count() == 3 and page.locator('#whPage .wh-truck').count() >= 1
+                  and page.locator('#whDays button[aria-selected="true"]').count() == 1, f'W head, {kp.count()} KPI cards, truck panels, day segments')
+            before = kp.nth(2).inner_text()
+            page.locator('#whList .wh-load').first.click()
+            page.wait_for_selector('#whList .wh-done', timeout=15000)
+            check(kp.nth(2).inner_text() != before and page.locator('#whList .wh-done').count() >= 1,
+                  f'W «Բեռնված է» → loaded card updates ({before.split()[0]} → {kp.nth(2).inner_text().split()[0]})')
+            page.screenshot(path=str(SHOTS / 'warehouse.png'), full_page=True)
+            themes_and_widths(browser, f'{BASE}/routes/warehouse', lambda p: p.wait_for_selector('#whKpis:not([hidden])', timeout=30000),
+                              check, errors, 'T warehouse')
 
             themes_and_widths(browser, f'{BASE}/routes/optimize',
                               lambda p: p.wait_for_selector('#roResult:not(.d-none) #roCards .ro-card', timeout=30000),

@@ -110,3 +110,31 @@ main:has(> #whPage) { padding-top: 12px !important; }
 }
 /* №81: рейс водителей логист изменил и не отправил — без кнопки «Բեռնված է» */
 .wh-changing { display: inline-flex; align-items: center; gap: 8px; color: var(--rt-warn); font-weight: 600; }
+
+/* Tesla+ (табличный образец Garage.dc.html, DESIGN.md «Table pages»): шапка страницы, итоги дня карточками, выбор дня —
+   сегменты-«таблетки», машины — панели --surface без рамки с тенью, рейсы через 1 px, «Բեռնված է ժ. …» — ok-soft таблеткой.
+   Кнопки на телефоне — по-прежнему ≥ 48 px */
+#whPage .rt-pagehead { margin-bottom: 8px; }
+.wh-kpis { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 0 0 12px; }
+.wh-kpis[hidden] { display: none; }
+.wh-kpis .rt-kpi__note.is-ok { color: var(--rt-ok); }
+.wh-kpis .rt-kpi__note.is-warn { color: var(--rt-warn); }
+#whPage .wh-days { border: 0; border-radius: 999px; background: var(--rt-chip); padding: 3px; }
+#whPage .wh-days button { border-radius: 999px; min-height: 48px; }
+#whPage .wh-days button[aria-selected="true"] { background: var(--rt-panel); color: var(--rt-fg); box-shadow: var(--rt-shadow-sm); }
+#whPage .wh-truck { border: 0; box-shadow: var(--rt-shadow); padding: 16px 20px 8px; }
+#whPage .wh-truck-name { font-size: 16px; font-weight: 600; }
+#whPage .wh-truck-code { font-family: var(--rt-font); }
+#whPage .wh-trip { border-top-color: var(--rt-line); }
+#whPage .wh-trip-t { font-weight: 600; }
+#whPage .wh-trip-meta b { font-family: var(--rt-font); font-variant-numeric: tabular-nums; }
+#whPage .wh-print { border: 0; background: var(--rt-chip); }
+#whPage .wh-load { border-radius: 999px; }
+#whPage .wh-done { border: 0; border-radius: 999px; }
+#whPage .wh-goods li { border-top-style: solid; border-top-color: var(--rt-line); }
+#whPage .wh-goods li span:last-child, #whPage .wh-goods li small { font-family: var(--rt-font); font-variant-numeric: tabular-nums; }
+@media (max-width: 480px) {
+    .wh-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+    .wh-kpis .rt-kpi.rt-kpi--card { padding: 10px 12px; }
+    .wh-kpis .rt-kpi__num { font-size: 22px; }
+}

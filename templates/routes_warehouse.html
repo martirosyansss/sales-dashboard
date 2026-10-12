@@ -13,15 +13,22 @@
 <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400..700&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+Armenian:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=27">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes_ui.css') }}?v=4">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_warehouse.css') }}?v=7">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_warehouse.css') }}?v=8">
 {% endblock %}
 
 {% block content %}
-<div class="rt-page" id="whPage" lang="hy">
-    <header class="rt-head">
-        <h1 class="rt-title">Պահեստ</h1>
-        <p class="rt-head-lead">Նշեք «Բեռնված է», երբ մեքենան բեռնված է։ Երթերը՝ միայն հաստատված պլանից։
-            Բեռնված երթը ծրագիրն այլևս չի փոխում։</p>
+<div class="rt-page rt-tesla" id="whPage" lang="hy">
+    <!-- Шапка страницы (Tesla+, табличный образец Garage.dc.html): заголовок, серая строка, пояснение по раскрытию -->
+    <header class="rt-pagehead">
+        <div>
+            <h1 class="rt-pagehead__title">Պահեստ</h1>
+            <p class="rt-pagehead__sub">Բեռնում՝ ըստ հաստատված պլանի</p>
+            <details class="rt-howto">
+                <summary><i class="fas fa-circle-question" aria-hidden="true"></i>Ինչպե՞ս օգտվել</summary>
+                <p>Նշեք «Բեռնված է», երբ մեքենան բեռնված է։ Երթերը՝ միայն հաստատված պլանից։
+                    Բեռնված երթը ծրագիրն այլևս չի փոխում։</p>
+            </details>
+        </div>
     </header>
 
     <div id="whStatus" class="rt-sr-only" role="status" aria-live="polite"></div>
@@ -35,7 +42,9 @@
             <i class="fas fa-rotate" aria-hidden="true"></i>Թարմացնել</button>
     </div>
 
-    <p id="whSummary" class="wh-summary"></p>
+    <!-- итог дня карточками: машины, рейсы, погружено, осталось (routes_warehouse.js render); строкой — для диктора -->
+    <div class="wh-kpis" id="whKpis" hidden></div>
+    <p id="whSummary" class="wh-summary rt-sr-only"></p>
     <div id="whList" class="wh-list" aria-busy="true">
         <p class="wh-empty">Բեռնվում է…</p>
     </div>
@@ -43,5 +52,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/routes_warehouse.js') }}?v=8"></script>
+<script src="{{ url_for('static', filename='js/routes_warehouse.js') }}?v=9"></script>
 {% endblock %}

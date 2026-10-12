@@ -225,6 +225,7 @@
         list.textContent = '';
         list.setAttribute('aria-busy', 'false');
         $('whSummary').textContent = '';
+        $('whKpis').hidden = true;
         if (!d) return;
         if (!d.planned) { list.append(h('p', { class: 'wh-empty', text: 'Այս օրվա պլանը դեռ կազմված չէ։' })); return; }
         if (!d.approved) {
@@ -234,6 +235,15 @@
         const trips = d.trucks.flatMap(t => t.trips);
         const done = trips.filter(t => t.loaded).length;
         $('whSummary').textContent = d.trucks.length + NB + 'մեքենա · ' + trips.length + NB + 'երթ · բեռնված՝ ' + done + ' / ' + trips.length;
+        // Tesla+: те же числа — карточками (подпись, крупное тонкое число, строка-пояснение; цвет — только со смыслом)
+        const card = (cap, num, note, tone) => h('div', { class: 'rt-kpi rt-kpi--card' }, h('span', { class: 'rt-kpi__cap', text: cap }),
+            h('span', { class: 'rt-kpi__val' }, h('span', { class: 'rt-kpi__num', text: num })),
+            h('span', { class: 'rt-kpi__note' + (tone ? ' ' + tone : ''), text: note }));
+        $('whKpis').replaceChildren(card('Մեքենաներ', String(d.trucks.length), 'հաստատված պլանում'),
+            card('Երթեր', String(trips.length), d.trucks.length ? 'միջինում ' + (trips.length / d.trucks.length).toFixed(1).replace('.', ',') + ' մեքենայի համար' : ''),
+            card('Բեռնված', done + ' / ' + trips.length, done === trips.length && trips.length ? 'բոլորը բեռնված են' : 'մնացել է՝ ' + (trips.length - done),
+                done === trips.length && trips.length ? 'is-ok' : (trips.length - done ? 'is-warn' : '')));
+        $('whKpis').hidden = false;
         d.trucks.forEach(t => {
             // машину логист меняет — печати нет; подсказка — у рейсов (вместо «Բեռնված է»), кнопка ссылается на первую
             const pr = h('button', { type: 'button', class: 'wh-print', 'aria-label': 'Տպել բեռնագիրը՝ ' + (t.name || t.car_code),
