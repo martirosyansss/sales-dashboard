@@ -269,3 +269,20 @@ def test_invoice_of_one_order_keeps_other_order_of_same_customer():
     # накладная заменила заказ, по которому shipped ещё не отметился — тоже не точка O:
     fresh = _dorder(4, 102, 70.0, day=D)
     assert pending_orders([fresh], [_sale(92, 102, [f'O:{fresh.isn}'])]) == []
+
+
+# ============================== 5. пересборка из устаревшей вкладки ==============================
+
+def test_rebuild_from_stale_tab_is_conflict(client, monkeypatch):
+    _page(client, monkeypatch)
+    a = _ok(_post(client, '/api/routes/dispatch/build', {'trucks': ['CAR1', 'CAR2'], 'rev': 0}))
+    # вкладка B правит план (rev растёт), вкладка A держит прежний rev
+    trip = next(tr for t in a['plan']['trucks'] for tr in t['trips'])
+    b = _ok(_post(client, '/api/routes/dispatch/edit', {'rev': a['rev'], 'action': 'pin', 'trip': trip['id'],
+                                                         'truck': trip['truck']}))
+    r = _post(client, '/api/routes/dispatch/build', {'trucks': ['CAR1', 'CAR2'], 'rev': a['rev']})
+    assert r.status_code == 409 and r.get_json()['conflict'] is True
+    # правка B цела
+    d = _ok(client.get('/api/routes/dispatch?date=2026-10-01'))
+    assert d['rev'] == b['rev'] and any(tr['pinned'] for t in d['plan']['trucks'] for tr in t['trips'])
+    assert _ok(_post(client, '/api/routes/dispatch/build', {'trucks': ['CAR1', 'CAR2'], 'rev': b['rev']}))['rev'] > b['rev']
