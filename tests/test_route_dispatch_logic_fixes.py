@@ -516,3 +516,83 @@ def test_capacity_of_split_store_trip_uses_assigned_orders():
     assert dp.published_orders(draft, stops) == {orders[0].isn: [ford, 3400.0, 10000.0],
                                                  orders[1].isn: [howo, 100.0, 10000.0],
                                                  orders[2].isn: [ford, 200.0, 10000.0]}
+
+
+# ============================== итоговое ревью ветки 12.10 ==============================
+
+def test_loaded_truck_keeps_its_orders_when_other_trips_change():
+    """P1: машины A, B, C у одного магазина, заказы 600/500/400 кг; рейс C загружен. Перенос рейса B на машину A менял
+    распределение — C получала заказ 500 вместо погруженного 400, а проверка груза сравнивала заказы магазина целиком и не
+    видела разницы. Теперь заказы загруженной машины закреплены (assign), а проверка груза — по заказам машины."""
+    from route_optimizer import fleet as fl
+    from test_route_optimizer import FORD, HOWO
+    howo2 = fl.FleetTruck('123AV61', 'HOWO', 10000.0, 30.0)
+    ctx = _dp_ctx((HOWO, howo2, FORD))
+    a, b, c = HOWO.car_code, howo2.car_code, FORD.car_code
+    p = (40.200, 44.640)
+    stops, orders = _dp_stops([(101, p, 600.0), (101, p, 500.0), (101, p, 400.0)])
+    draft = dp.Draft([a, b, c], trips=[dp.DraftTrip(1, a, [101]), dp.DraftTrip(2, b, [101]), dp.DraftTrip(3, c, [101])],
+                     next_id=4)
+    dp.approve(draft, 'at', 'u')
+    dp.send(draft, 'at', 'u', orders=dp.published_orders(draft, stops))
+    assert {isn: v[0] for isn, v in draft.sent['orders'].items()} == {orders[0].isn: a, orders[1].isn: b, orders[2].isn: c}
+    dp.mark_loaded(draft, 3, '2026-10-01T08:00:00', 'sklad')
+    cargo = dp.loaded_cargo(draft, stops)
+    legacy = dp.Draft.from_json(json.loads(json.dumps(draft.to_json())))
+    del legacy.sent['orders']                                       # снимок без заказов — закреплять не по чему
+    for d in (draft, legacy):
+        dp.apply_edit(ctx, stops, d, {'action': 'pin', 'trip': 2, 'truck': a}, {o.isn for o in orders})
+    # закреплено: у C — тот же погруженный заказ 400, груз не изменился, отправка не спрашивает
+    assert dp.published_orders(draft, stops)[orders[2].isn][0] == c
+    assert dp.loaded_cargo(draft, stops, cargo) == cargo and not dp.loaded_changed(draft, stops)
+    # без закрепления распределение у C другое — и проверка груза это видит (правка — только с подтверждением)
+    assert dp.published_orders(legacy, stops)[orders[2].isn][0] != c
+    assert dp.loaded_cargo(legacy, stops, cargo) != cargo
+
+
+def test_split_store_timeline_uses_assigned_weight():
+    """P2: время рейса — по настоящему грузу: точка не раньше выезда, разгрузка каждой машины — по её заказам (до правки
+    выезд 3400/100 кг считался по настоящему весу, а прибытие — по долям поровну: прибытие раньше выезда)."""
+    ctx = _dp_ctx()
+    ford, howo = '333DO33', '991AT61'
+    stops, _ = _dp_stops([(101, (40.200, 44.640), 3400.0), (101, (40.200, 44.640), 100.0), (102, (40.205, 44.650), 200.0)])
+    draft = dp.Draft([ford, howo], trips=[dp.DraftTrip(1, ford, [101, 102]), dp.DraftTrip(2, howo, [101])], next_id=3)
+    view = dp.plan_view(ctx, stops, draft, _info, explain=False)
+    shop = {}
+    for t in view['trucks']:
+        for tr in t['trips']:
+            assert all(s['arrive'] >= tr['depart'] for s in tr['stops']) and tr['return'] >= tr['depart']
+            shop.update({tr['truck']: s for s in tr['stops'] if s['customer_id'] == 101})
+    tn = ctx.tn
+    assert shop[ford]['unload_min'] > shop[howo]['unload_min']
+    assert shop[howo]['unload_min'] < tn.unload_min_per_stop + tn.unload_min_per_tonne * 1.0   # 100 кг, а не 1750
+
+
+def test_unassigned_store_keeps_its_lock_visible():
+    """P2: сборка не вместила магазин в машину ручного решения — он «ещё не в рейсах», но решение видно (машина) и снимается;
+    число решений плана — все сохранённые, не только у точек рейсов."""
+    ctx = _dp_ctx()
+    stops, _ = _dp_stops(EAST)
+    draft = dp.Draft(TRUCKS, trips=[dp.DraftTrip(1, TRUCKS[0], [101, 102])], next_id=2, locks={103: TRUCKS[1]})
+    view = dp.plan_view(ctx, stops, draft, _info, explain=False)
+    (u,) = view['unassigned']
+    assert (u['customer_id'], u['locked'], u['lock_truck']) == (103, True, TRUCKS[1]) and view['locks'] == 1
+    assert dp.apply_edit(ctx, stops, draft, {'action': 'unlock', 'customer_id': 103}, set()).locks == {}
+
+
+def test_driver_change_returns_publication_status_and_crew_sig(client, monkeypatch):
+    """P2: смена водителя отправленного плана: ответ /dispatch/driver несёт статус отправки (unsent с экипажем) — страница
+    применяет его; отпечаток экипажа crew_sig другой — другие вкладки перечитают день (/status)."""
+    state = _page(client, monkeypatch)
+    state.store.save_truck_driver('CAR1', '2026-10-01', 'Արամ', 'qa')
+    state.store.save_truck_driver('CAR2', '2026-10-01', 'Կարեն', 'qa')
+    d = _ok(_post(client, '/api/routes/dispatch/build', {'trucks': ['CAR1', 'CAR2']}))
+    d = _ok(_post(client, '/api/routes/dispatch/edit', {'rev': d['rev'], 'action': 'approve'}))
+    car = sorted({t['car_code'] for t in d['plan']['trucks'] if t['trips']})[0]
+    sig = d['crew_sig']
+    assert _ok(client.get('/api/routes/dispatch/status?date=2026-10-01'))['crew_sig'] == sig
+    r = _ok(_post(client, '/api/routes/dispatch/driver', {'car_code': car, 'name': 'Նոր Վարորդ', 'only_day': True}))
+    assert r['publication']['unsent']['crew'] == [car] and r['crew_sig'] != sig
+    s = _ok(client.get('/api/routes/dispatch/status?date=2026-10-01'))
+    assert s['crew_sig'] == r['crew_sig'] and s['rev'] == d['rev']                 # план не тронут, экипаж — другой
+    assert _ok(client.get('/api/routes/dispatch?date=2026-10-01'))['unsent']['crew'] == [car]

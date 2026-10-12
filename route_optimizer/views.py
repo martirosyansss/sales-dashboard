@@ -2129,7 +2129,8 @@ def _dispatch_page_body(dd: _DispatchDay) -> dict[str, Any]:
             # №97: запись в ERP включена — что сайт записал по машинам (только странице)
             **_erp_write_page(_state(), dd),
             # P2 №9: новые заказы дня не прочитаны — плашка «ERP-ն չի պատասխանում»
-            **_erp_flag(dd.same_day_failed, dd.same_day_last_ok)}
+            **_erp_flag(dd.same_day_failed, dd.same_day_last_ok),
+            'crew_sig': _crew_sig(_state(), dd.day)}
 
 
 def _unsent_json(dd: _DispatchDay) -> dict[str, Any] | None:
@@ -2209,6 +2210,31 @@ def _crew_unsent(dd: _DispatchDay, sent: Mapping[str, str] | None) -> list[str]:
         return []
     now = _sent_crew(_state(), dd, dd.draft.for_drivers())
     return sorted(c for c in {*sent, *now} if sent.get(c) != now.get(c))
+
+
+def _crew_sig(state: RoutesState, day: date) -> str:
+    """Отпечаток экипажа дня (ревью ветки 12.10, P2): водители и առաքիչ машин, кто не вышел. Сменили в другой вкладке (или
+    этой) — у страницы другой отпечаток: автообновление перечитывает день, «не отправлено» по экипажу видно сразу."""
+    d = day.isoformat()
+    raw = repr((sorted(state.store.truck_drivers(d, 'driver')[0].items()), sorted(state.store.truck_drivers(d, 'helper')[0].items()),
+                sorted(state.store.driver_absences(d).items())))
+    return hashlib.sha1(raw.encode('utf-8')).hexdigest()[:16]
+
+
+def _publication_json(state: RoutesState, bundle: Bundle, day: date) -> dict[str, Any]:
+    """Что видят водители после смены экипажа (ревью ветки 12.10, P2): у отправленного плана сегодня и дальше —
+    publication {unsent (с экипажем, _unsent_json), crew_problems}; плана нет, не отправлен или день прошёл — пусто. ERP не
+    ответила — пусто (в журнал): страница перечитает день по crew_sig."""
+    draft, rev = _stored_draft(state, day)
+    if draft is None or draft.sent is None or day < _same_day_now().date():
+        return {}
+    try:
+        dd = _load_day(state, bundle, day, draft=draft, rev=rev)
+    except ErpError:
+        logger.warning('[Routes] Заказы %s не прочитаны — статус отправки после смены экипажа — при обновлении', day,
+                       exc_info=True)
+        return {}
+    return {'publication': {'unsent': _unsent_json(dd), 'crew_problems': _crew_problems(state, dd, draft)}}
 
 
 def _crew_problems(state: RoutesState, dd: _DispatchDay, draft: dp.Draft) -> list[dict[str, str]]:
@@ -2887,8 +2913,9 @@ def api_dispatch_absence() -> Any:
         state.store.save_driver_present(name, day.isoformat(), session.get('username'))
     logger.info('[Routes] Водитель на %s: %s%s (%s)', day, 'не вышел' if absent else 'вышел',
                 f' по {until}' if until else '', session.get('username'))
-    return jsonify({'success': True, 'day': day.isoformat(),
-                    **_crew_json(state, day, _stored_draft(state, day)[0], state.store.load().trucks)})
+    bundle = state.store.load()
+    return jsonify({'success': True, 'day': day.isoformat(), 'crew_sig': _crew_sig(state, day),
+                    **_crew_json(state, day, _stored_draft(state, day)[0], bundle.trucks), **_publication_json(state, bundle, day)})
 
 
 SETTINGS_TRUCKS_URL = '/routes/settings#trucks'
@@ -2998,7 +3025,7 @@ def api_dispatch_status() -> Any:
             if day == _same_day_now().date():
                 same = {'same_day': _same_day_summary(_same_day_open(today, draft, bundle.settings))}
     active = _active_orders(sel.main, sel.backlog, draft, carried, bundle.settings, today)
-    return jsonify({'success': True, 'day': day.isoformat(), 'rev': rev,
+    return jsonify({'success': True, 'day': day.isoformat(), 'rev': rev, 'crew_sig': _crew_sig(state, day),
                     'orders': {'count': len(active), 'kg': round(sum(o.kg for o in active)),
                                'revenue': round(sum(o.revenue for o in active))},
                     **_freshness(day, bundle, data, sel.main, sel.backlog, draft, carried,
@@ -3301,7 +3328,7 @@ def api_dispatch_edit() -> Any:
     if not confirmed and payload.get('action') != 'discard' and dp.loaded_cargo(draft, dd.stops, cargo) != cargo:
         return _loaded_confirm()
     # №81 + №78: склад грузил по отправленному плану — отправка, меняющая состав загруженного рейса, только с подтверждением
-    if not confirmed and payload.get('action') == 'send' and dp.loaded_changed(draft):
+    if not confirmed and payload.get('action') == 'send' and dp.loaded_changed(draft, dd.stops):
         return _loaded_confirm()
     dp.release_same_day_trucks(draft)   # №72: машина, отмеченная взятием заказа дня, без рейсов — снова не отмечена
     dp.keep_approved(draft, trips_before)   # №73: пока план утверждён, новые рейсы тоже закреплены
@@ -3311,7 +3338,7 @@ def api_dispatch_edit() -> Any:
         # решение владельца 12.10 «Запрещать»: один заказ ERP — одна машина; магазин нескольких машин, которому одной из них
         # по заказам везти нечего (заказ один), — утверждение и отправка закрыты, пока логист не решит («Տանել ամբողջը» или
         # разделить заказ в ERP)
-        _, split = dp.order_trucks([(t.truck, t.stops) for t in draft.trips], [o for x in dd.stops for o in x.orders])
+        _, split = dp.assign(draft, [o for x in dd.stops for o in x.orders])
         if split:
             return _split_block(dd, split)
         # ревью логики 12.10, P2 №10: машина не работает, без водителя, водитель не вышел или ведёт две машины — только с
@@ -4141,9 +4168,10 @@ def api_dispatch_driver() -> Any:
     logger.info('[Routes] Машина %s на %s: %s (%s)', car, day,
                 ', '.join(f'{role} {"на день" if one_day else "с дня"}' for role, (_, one_day) in people.items()),
                 session.get('username'))
-    return jsonify({'success': True, 'day': day.isoformat(),
+    bundle = state.store.load()
+    return jsonify({'success': True, 'day': day.isoformat(), 'crew_sig': _crew_sig(state, day),
                     'only_day': {role: one_day for role, (_, one_day) in people.items()}, **_drivers_json(state, day),
-                    **_crew_json(state, day, _stored_draft(state, day)[0], state.store.load().trucks)})
+                    **_crew_json(state, day, _stored_draft(state, day)[0], bundle.trucks), **_publication_json(state, bundle, day)})
 
 
 @bp.get('/api/routes/measurements')

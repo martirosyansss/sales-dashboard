@@ -516,6 +516,7 @@ def test_api_driver_saved_from_day_and_printed(client, day, monkeypatch):
     r = _post_driver(client, name='  Վարդանյան  Գարիկ ')
     assert r.status_code == 200, r.get_json()
     body = r.get_json()
+    assert len(body.pop('crew_sig')) == 16                       # отпечаток экипажа дня (ревью ветки 12.10: другие вкладки)
     assert body.pop('crew') == {'drivers': [{'name': 'Վարդանյան Գարիկ', 'trucks': ['CAR1'], 'absent': False}], 'stale': False,
                                 'trucks': {'CAR1': {'name': 'Վարդանյան Գարիկ', 'seat': False, 'warn': None, 'stale': False},   # №77
                                            'CAR2': {'name': None, 'seat': False, 'warn': 'none', 'stale': False}}}

@@ -402,13 +402,15 @@ def test_warehouse_changing_trucks_rules():
     excl = edited(lambda x: x.excluded.add('X1'))                            # «այսօր չենք տանում» — груз любой машины
     assert all(_chg(excl, c) for c in cars)
 
-    # ревью: 102 в двух рейсах разных машин (доля 1/2 у каждой) — правка одной меняет долю у другой
+    # 102 в двух рейсах разных машин. Один заказ ERP — одна машина (решение владельца 12.10 «Запрещать»): заказ 102 целиком
+    # у FORD (dp.assign; HOWO везти нечего) — товар между машинами не делится, и правка рейса HOWO груз FORD не меняет.
+    # Переход заказов между машинами склад видит по снимку заказов (views._changing_now), не по долям
     split = edited(lambda x: dp.trip_of(x, 1).stops.append(102))             # FORD [101, 102], HOWO [102, 103]
     dp.send(split, 'at2', 'logist')
     assert not any(_chg(split, c) for c in cars)
-    merged = edited(lambda x: dp.trip_of(x, 2).stops.remove(102), split)     # убрали 102 у HOWO: у FORD доля стала целой
-    assert dp.unsent(merged)['trucks'] == [HOWO.car_code]                    # dp.unsent о FORD молчит
-    assert _chg(merged, FORD.car_code) and _chg(merged, HOWO.car_code)
+    merged = edited(lambda x: dp.trip_of(x, 2).stops.remove(102), split)     # убрали 102 у HOWO
+    assert dp.unsent(merged)['trucks'] == [HOWO.car_code]
+    assert _chg(merged, HOWO.car_code) and not _chg(merged, FORD.car_code)
     again = edited(lambda x: dp.trip_of(x, 3).stops.append(102), merged)     # 102 делится между рейсами FORD 1 и 3
     dp.send(again, 'at3', 'logist')
     assert not any(_chg(again, c) for c in cars)
@@ -418,8 +420,8 @@ def test_warehouse_changing_trucks_rules():
         x.trips[a], x.trips[b] = x.trips[b], x.trips[a]
     reorder = edited(swap, again)
     assert _chg(reorder, FORD.car_code) and not _chg(reorder, HOWO.car_code)
-    split_other = edited(lambda x: dp.trip_of(x, 2).stops.append(101), again)   # 101 FORD делится с рейсом HOWO
-    assert _chg(split_other, FORD.car_code) and _chg(split_other, HOWO.car_code)
+    split_other = edited(lambda x: dp.trip_of(x, 2).stops.append(101), again)   # 101 FORD — и в рейсе HOWO
+    assert _chg(split_other, HOWO.car_code) and not _chg(split_other, FORD.car_code)   # заказ 101 по-прежнему у FORD
 
 def test_reset_race_with_warehouse_mark_is_409(client, monkeypatch):
     """«Ջնջել երթերը» стирает ровно прочитанный черновик: склад успел отметить — 409, отметка цела."""
@@ -555,31 +557,31 @@ def _split_trips():
 
 
 def test_other_truck_edit_changing_loaded_share_is_seen():
-    """Ревью: правка рейса ДРУГОЙ машины (убрали 102 у HOWO) меняет долю 102 в загруженном рейсе FORD (1/2 → целый) —
-    груз (loaded_cargo) другой, отправка (loaded_changed) — с подтверждением, у склада рейс «changing»; обратное —
-    магазин загруженного рейса стал делиться с рейсом другой машины — так же. Правка без смены долей — без вопроса."""
+    """Правка рейсов ДРУГОЙ машины с магазином загруженного рейса. Один заказ ERP — одна машина (решение владельца 12.10
+    «Запрещать», dp.assign): 102 — в рейсах FORD (загружен) и HOWO, его заказ целиком у FORD. Убрали 102 у HOWO — груз FORD
+    тот же (вопроса нет). Добавили HOWO второй рейс с 102 — по долям заказ перешёл бы к HOWO: груз FORD другой (loaded_cargo,
+    loaded_changed со stops — с подтверждением). Правка без смены груза — без вопроса."""
     ctx, base, ids, draft = _split_trips()
     cargo = dp.loaded_cargo(draft, base)
-    assert cargo[1][3] == frozenset({(101, 1, 0), (102, 2, 0)})
-    assert not dp.loaded_changed(draft) and views._changing_trucks(draft) == set()
+    assert cargo[1][3] == frozenset({(101, 1, 0), (102, 1, 0)})        # доли — среди рейсов своей машины
+    assert _isn(2) in cargo[1][2]                                     # заказ 102 — у FORD
+    assert not dp.loaded_changed(draft, base) and views._changing_trucks(draft) == set()
     got = dp.apply_edit(ctx, base, dp.Draft.from_json(draft.to_json()),
                         {'action': 'move', 'customer_id': 102, 'from_trip': 2, 'to_trip': None, 'truck': None}, ids)
-    assert dp.trip_of(got, 1).stops == [101, 102]                     # сам рейс не тронут, правка прошла без LoadedEdit
-    assert dp.loaded_cargo(got, base, cargo) != cargo                 # но груз другой — views спросит (/edit, /build)
-    assert dp.loaded_changed(got)                                     # «Ուղարկել» — с подтверждением
-    assert views._changing_trucks(got) == {FORD.car_code, HOWO.car_code}   # склад: обе машины «меняются»
-    # обратное: 101 загруженного рейса теперь и в рейсе HOWO — его доля в машине FORD стала половиной
-    rev = dp.Draft.from_json(draft.to_json())
-    dp.trip_of(rev, 2).stops.append(101)
-    assert dp.loaded_cargo(rev, base, cargo) != cargo and dp.loaded_changed(rev) and _chg(rev, FORD.car_code)
-    # нейтрально: 103 (не делится, не в загруженном рейсе) — новым рейсом FORD; доли рейса 1 те же — вопроса нет
+    assert dp.trip_of(got, 1).stops == [101, 102]
+    assert dp.loaded_cargo(got, base, cargo) == cargo and not dp.loaded_changed(got, base)
+    # склад: HOWO «меняется» (рейс 2), FORD — из-за рейса 3 с заказом дня 201, которого нет в base (_clean убирает рейс)
+    assert views._changing_trucks(got) == {FORD.car_code, HOWO.car_code}
+    # заказ 102 переходит к HOWO (у неё теперь два рейса к магазину) — у загруженного FORD груз другой
+    moved = dp.Draft.from_json(draft.to_json())
+    moved.trips.append(dp.DraftTrip(moved.next_id, HOWO.car_code, [102]))
+    assert dp.loaded_cargo(moved, base, cargo) != cargo and dp.loaded_changed(moved, base)
+    # нейтрально: 103 (не делится, не в загруженном рейсе) — новым рейсом FORD; груз рейса 1 тот же — вопроса нет
     same = dp.apply_edit(ctx, base, dp.Draft.from_json(draft.to_json()),
                          {'action': 'move', 'customer_id': 103, 'from_trip': 2, 'to_trip': None, 'truck': FORD.car_code}, ids)
-    assert dp.loaded_cargo(same, base, cargo) == cargo and not dp.loaded_changed(same)
+    assert dp.loaded_cargo(same, base, cargo) == cargo and not dp.loaded_changed(same, base)
     assert views._changing_trucks(same) == {FORD.car_code, HOWO.car_code}   # склад: 103 переложили — обе «меняются»
-    # лист и проверки — одним расчётом: доли рейса 1 в плане (plan_view share) — те же, что в trip_parts
-    assert dp.trip_parts(got)[1] == {101: (1, 0), 102: (1, 0)} and dp.trip_parts(draft)[1][102] == (2, 0)
-
+    assert dp.trip_parts(got)[1] == {101: (1, 0), 102: (1, 0)}
 
 def _ok(client, d, **body):
     r = _edit(client, d, **body)
