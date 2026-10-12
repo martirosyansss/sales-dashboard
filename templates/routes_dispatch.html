@@ -11,10 +11,10 @@
 <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400..700&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+Armenian:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=29">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=30">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes_ui.css') }}?v=5">
 <!-- Страница на армянском (ответ владельца №31). Цвета — тема Tesla+ из routes.css (☀/☾), свои стили поверх routes.css -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=84">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=85">
 {% endblock %}
 
 {% block content %}
@@ -149,7 +149,7 @@
                 </div>
                 <div class="dp-wl-rows" id="dpWsRows"></div>
                 <div class="dp-wl-foot">
-                    <span class="dp-wl-free" id="dpWsFree"></span>
+                    <div class="dp-wl-free" id="dpWsFree"></div>
                     <button type="button" class="dp-wl-add" id="dpWsAddTruck" aria-controls="dpDrawer" title="Մեքենաներ և վարորդներ՝ նշել, թե որ մեքենաներն են այսօր դուրս գալիս">+ Մեքենա</button>
                 </div>
             </section>
@@ -183,6 +183,11 @@
             </div>
             <div class="dp-drawer-body" id="dpDrawerBody"></div>
         </aside>
+
+        <!-- телефон (обзор 12.10, раунд 2): во вкладке «Մեքենաներ» подготовка, пересборка, итоги и «Ղեկավարի համար» — свёрнуты
+             под этой кнопкой (раскрываются и сами, когда к ним ведёт чип или подсказка) -->
+        <button type="button" class="dp-phone-more" id="dpPhoneMore" aria-expanded="false" aria-controls="dpStep1 dpStep2 dpRun dpStep3 dpAnalysis">
+            <i class="fas fa-sliders" aria-hidden="true"></i><span>Պատրաստում, վերակազմում, ամփոփում</span><i class="fas fa-chevron-down dp-pm-chev" aria-hidden="true"></i></button>
 
         <!-- ПОДГОТОВКА: шаг 1 (машины) и шаг 2 (заказы) рядом; после сборки — свёрнуты в строку -->
         <div class="dp-prep">
@@ -710,5 +715,5 @@
 <script src="{{ url_for('static', filename='js/routes_dispatch_ai.js') }}?v=4"></script>
 <!-- Tesla+: стеклянные панели поверх карты сворачиваются (общий модуль с «Մեքենաները առցանց») -->
 <script src="{{ url_for('static', filename='js/rt_panels.js') }}?v=1"></script>
-<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=129"></script>
+<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=130"></script>
 {% endblock %}

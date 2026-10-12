@@ -97,13 +97,16 @@
     // для ☀ и ☾, при смене темы карта и полоски машин перерисовываются (rt-theme-change ниже). Литералы — только запас,
     // если токенов нет (страница без routes.css)
     const COLORS = ['#18c1fc', '#fe904d', '#b0a2ff', '#a77601', '#397be9', '#14cfa3', '#0d9298', '#b8b90c', '#ae55c1', '#37981b'];
-    let routePalette = null;   // цвета серии текущей темы; null — прочитать заново
+    let routePalette = null;   // цвета серии текущей темы и цифры на них ({ c, ink }); null — прочитать заново
     const truckPalette = () => {
         if (routePalette) return routePalette;
         const page = document.querySelector('.rt-page'), cs = page ? getComputedStyle(page) : null;
         const list = [];
-        for (let i = 2; cs && i <= 10; i++) { const v = cs.getPropertyValue('--rt-route-' + i).trim(); if (v) list.push(v); }
-        routePalette = list.length ? list : COLORS;
+        for (let i = 2; cs && i <= 10; i++) {
+            const v = cs.getPropertyValue('--rt-route-' + i).trim();
+            if (v) list.push({ c: v, ink: cs.getPropertyValue('--rt-route-' + i + '-ink').trim() || '' });
+        }
+        routePalette = list.length ? list : COLORS.map(c => ({ c, ink: '' }));   // ink '' — прежние чернила --dp-c-ink
         return routePalette;
     };
     // Цвета карты — из токенов темы (routes.css): Leaflet пишет цвет в SVG/canvas, var() туда не передать — берём значение.
@@ -1108,8 +1111,10 @@
             el.className = 'dp-inchip' + (tone ? ' ' + tone : '');
             if (id) el.id = id;
             if (href) el.href = href; else { el.type = 'button'; el.addEventListener('click', act); }
-            el.innerHTML = '<i class="fas ' + ico + '" aria-hidden="true"></i><span></span>' + (count ? '<b></b>' : '');
+            el.innerHTML = '<i class="fas ' + ico + '" aria-hidden="true"></i><span></span>' + (CHIP_SHORT[label] ? '<span class="dp-ich-s" aria-hidden="true"></span>' : '')
+                + (count ? '<b></b>' : '');
             el.querySelector('span').textContent = label;
+            if (CHIP_SHORT[label]) el.querySelector('.dp-ich-s').textContent = CHIP_SHORT[label];
             if (count) el.querySelector('b').textContent = fmt(count);
             // полное название — в подсказке и для диктора: в тесной строке чип сжимается до значка и числа (fitChips)
             const full = label + (count ? ' · ' + fmt(count) : '');
@@ -1144,8 +1149,8 @@
         }
         if (o.excluded) add('', 'fa-ban', 'Այսօր չենք տանում', o.excluded, () => openFold('dpExcluded'));
         // нормы погрузки, расхода и износа не заполнены — цифры дня приблизительные (раньше — только серым текстом под сводкой);
-        // на рабочем экране — пунктом меню «⋯» (настройка, не предупреждение дня: не спорит с чипами), иначе — тихой ссылкой
-        if (normsMissing() && !wsOn()) add('is-link', 'fa-gear', 'Լրացնել մեքենաների նորմերը', 0, null, '/routes/settings#trucks');
+        // на рабочем экране и телефоне — пунктом меню «⋯» (настройка, не предупреждение дня: не спорит с чипами), иначе — ссылкой
+        if (normsMissing() && !wsOn() && !tabsOn()) add('is-link', 'fa-gear', 'Լրացնել մեքենաների նորմերը', 0, null, '/routes/settings#trucks');
         syncLateChips();
         syncTodoChip();
     }
@@ -1158,10 +1163,13 @@
     // полным текстом — только если места с запасом. Порядок сжатия (первым сжимается первый):
     const CHIP_PRIO = ['Լրացնել մեքենաների նորմերը', 'Այսօր չենք տանում', 'Այսօրվա պատվերներ', 'Նոր պատվերներ', 'Նոր տեղ՝ վարորդներից',
         'Առանց կետի', 'Երթերում չեն', 'Խնդիր երթերում', 'Նախորդ օրերից', 'Առանց վարորդի'];
+    // обзор 12.10: тесно — сначала короткая армянская подпись (is-short: «⚡ Նոր 22», а не «⚡ 22»), только потом — значок
+    const CHIP_SHORT = { 'Առանց վարորդի': 'Վարորդ չկա', 'Նախորդ օրերից': 'Նախորդ', 'Առանց կետի': 'Կետ չկա', 'Խնդիր երթերում': 'Խնդիր',
+        'Նոր տեղ՝ վարորդներից': 'Նոր տեղ', 'Նոր պատվերներ': 'Նոր', 'Այսօրվա պատվերներ': 'Այսօր', 'Այսօր չենք տանում': 'Չենք տանում' };
     function fitChips() {
         const box = $('dpInbox');
         const chips = [...box.querySelectorAll('.dp-inchip')];
-        chips.forEach(c => c.classList.remove('is-compact'));
+        chips.forEach(c => c.classList.remove('is-compact', 'is-short'));
         if (!$('rtDispatch').classList.contains('is-ws') || !chips.length) return;
         // ширина содержимого — от левого края первого чипа до правого края последнего (строка прижата вправо: лишнее
         // уходит влево и scrollWidth его не видит)
@@ -1174,6 +1182,11 @@
         const order = chips.filter(c => c !== link).sort((a, b) => (+(a.dataset.prio || 50)) - (+(b.dataset.prio || 50)));
         for (const c of order) {
             if (!over(1)) break;
+            if (c.querySelector('.dp-ich-s')) c.classList.add('is-short');
+        }
+        for (const c of order) {
+            if (!over(1)) break;
+            c.classList.remove('is-short');
             c.classList.add('is-compact');
         }
     }
@@ -1223,7 +1236,7 @@
     const SD_OUTSIDE = 'գնում է այսօր պլանից դուրս (գրասենյակի որոշում)';
     const sdTaken = () => { const sd = sdData(); return sd ? sd.orders.filter(o => o.taken) : []; };
     const sdTotals = (os) => ({ kg: os.reduce((a, o) => a + (num(o.kg) || 0), 0), revenue: os.reduce((a, o) => a + (num(o.revenue) || 0), 0) });
-    const sdTruck = (code, name) => (name ? name + ' · ' : '') + code;
+    const sdTruck = (code, name) => code + (name ? ' · ' + name : '');
     function sdTruckName(code) {
         const t = (state.data.trucks || []).find(x => x.car_code === code);
         return sdTruck(code, t && t.name);
@@ -1552,14 +1565,22 @@
 
     const PROBLEM_HY = { no_depot: 'Նշեք պահեստը՝ որտեղից են մեկնում մեքենաները', no_trucks: 'Նշեք մեքենաների բեռնատարողությունը և ծախսը' };
 
+    // машина — номер первым (уникален), марка вторым: одинаково в списке, панели, шкале и подписях (обзор 12.10)
     function truckLabel(t) {
-        return (t.name ? t.name + ' · ' : '') + t.car_code;
+        return t.car_code + (t.name ? ' · ' + t.name : '');
     }
-    function truckColor(code) {
+    function truckSeries(code) {
         const list = state.data.trucks.filter(t => t.ready).map(t => t.car_code);
         const i = list.indexOf(code);
         const pal = truckPalette();
         return pal[i >= 0 ? i % pal.length : pal.length - 1];
+    }
+    const truckColor = (code) => truckSeries(code).c;
+    // цвет машины на элементе (--dp-c) и цифры на нём (--dp-c-ink: контраст ≥ 4.5:1, routes.css --rt-route-N-ink)
+    function setTruckColor(el, code) {
+        const s = truckSeries(code);
+        el.style.setProperty('--dp-c', s.c);
+        if (s.ink) el.style.setProperty('--dp-c-ink', s.ink);
     }
     const truckBy = (code) => state.data.trucks.find(t => t.car_code === code) || { car_code: code, name: null };
 
@@ -1745,6 +1766,7 @@
     }
     // чип статуса → фильтр шага 1 и сам шаг на экране
     function showFleet(f) {
+        phoneMore(true);
         state.fleetFilter = f;
         applyFleetFilter();
         $('dpStep1').scrollIntoView({ behavior: calm() ? 'auto' : 'smooth', block: 'start' });
@@ -1825,7 +1847,13 @@
         if (id === 'dpStep2' && state.stepsOpen.has(id)) { if ($('dpGeoSug').open) renderGeoSug(); }
     }
     // Открыть свёрнутый шаг (кнопка внутри него или «тут нужно поправить»)
+    // телефон: подготовка и итоги во вкладке «Մեքենաներ» свёрнуты кнопкой #dpPhoneMore — раскрыть, когда к ним ведут
+    function phoneMore(open) {
+        $('rtDispatch').classList.toggle('is-phone-more', open);
+        $('dpPhoneMore').setAttribute('aria-expanded', String(open));
+    }
     function unfoldStep(id) {
+        phoneMore(true);
         if (!state.data.plan || state.stepsOpen.has(id)) return;
         state.stepsOpen.add(id);
         renderSteps();
@@ -3229,9 +3257,9 @@
             lab.innerHTML = '<span class="rt-dot" aria-hidden="true"></span><span class="dp-blabel-t"><b></b><small></small>'
                 + '<span class="dp-blabel-x"><span class="dp-blx-t"></span><i class="dp-blfill"><em></em></i></span></span>';
             lab.querySelector('.rt-dot').style.background = color;
-            lab.querySelector('b').textContent = t.name || t.car_code;
-            lab.querySelector('small').textContent = t.name ? t.car_code : '';
-            lab.querySelector('b').dataset.plate = t.name ? ' · ' + t.car_code : '';
+            lab.querySelector('b').textContent = t.car_code;            // номер первым, марка — второй (как слева и справа)
+            lab.querySelector('small').textContent = t.name || '';
+            lab.querySelector('b').dataset.plate = t.name ? ' · ' + t.name : '';
             // №82: загрузка самого полного рейса машины (несколько рейсов — по рейсу, не сумма дня) и число бед
             const pct = Math.max(0, ...t.trips.map(tr => num(tr.load_pct) || 0));
             const bad = t.trips.filter(tripBad).length;
@@ -3260,7 +3288,7 @@
                 bar.dataset.trip = String(tr.id);
                 bar.style.left = x(dep);
                 bar.style.width = w(dep, ret);
-                bar.style.setProperty('--dp-c', color);
+                setTruckColor(bar, t.car_code);
                 bar.style.setProperty('--dp-delay', (ti * 70 + i * 40) + 'ms');
                 const info = (t.trips.length > 1 ? 'Երթ ' + (i + 1) + ' · ' : '') + pl(tr.stops.length, 'կետ') + ' · ' + kgText(tr.kg)
                     + (tr.load_pct !== null && tr.load_pct !== undefined ? ' · ' + tr.load_pct + '%' : '');
@@ -3282,6 +3310,7 @@
                     tick.textContent = String(k + 1);      // №82: в варианте А — кружок с номером магазина
                     tick.dataset.cid = String(s.customer_id);
                     tick.title = (k + 1) + '. ' + (s.name || s.code) + ' · ' + (s.eta || '');
+                    tick.dataset.p = ((e - dep) / (ret - dep)).toFixed(4);   // доля полосы — для fitTicks
                     tick.style.left = ((e - dep) / (ret - dep) * 100).toFixed(2) + '%';
                     bar.appendChild(tick);
                 });
@@ -3329,6 +3358,23 @@
         box.appendChild(scroll);
         paintProgress();
         syncFocus();
+        fitTicks();
+    }
+    // Обзор 12.10: на реальной плотности кружки с номерами налезают друг на друга. Точка всегда на своём времени;
+    // номер — только там, где до предыдущего номера ≥ TICK_PX (первая точка — всегда), остальные — малой отметкой без
+    // цифры (номер — при наведении и в подсказке). Пересчёт — при каждой ширине шкалы (окно, панель справа, свёртка)
+    const TICK_PX = 20;
+    function fitTicks() {
+        $('dpBoard').querySelectorAll('.dp-bar').forEach(bar => {
+            const w = bar.clientWidth;
+            if (!w) return;   // шкала не видна (другая вкладка) — посчитаем, когда появится
+            let last = -Infinity;
+            [...bar.querySelectorAll('i.dp-tick')].sort((a, b) => a.dataset.p - b.dataset.p).forEach(t => {
+                const px = t.dataset.p * w, room = px - last >= TICK_PX;
+                t.classList.toggle('is-mini', !room);
+                if (room) last = px;
+            });
+        });
     }
 
     // Конец полосы рейса тянут мышью (ответ владельца №59): отпустили раньше — магазины уходят другим машинам, позже —
@@ -4119,6 +4165,25 @@
         end.className = 'dp-stop-end';
         end.appendChild(kg);
         if (canQuickEdit(stop, tripId)) end.appendChild(quickRemoveButton(stop, tripId));
+        // обзор 12.10: в панели машины справа строка компактная (№ · магазин · время / адрес · кг); код, менеджер, сумма и
+        // справочные плашки — по «⌄» (стили показывают кнопку только там)
+        if (tripId !== null) {
+            const more = document.createElement('button');
+            more.type = 'button';
+            more.className = 'dp-stop-more';
+            more.innerHTML = '<i class="fas fa-chevron-down" aria-hidden="true"></i>';
+            more.setAttribute('aria-expanded', 'false');
+            more.setAttribute('aria-label', 'Մանրամասն՝ ' + (stop.name || stop.code));
+            more.title = 'Մանրամասն';
+            more.draggable = false;
+            more.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const open = !li.classList.contains('is-open');
+                li.classList.toggle('is-open', open);
+                more.setAttribute('aria-expanded', String(open));
+            });
+            end.appendChild(more);
+        }
         li.append(eta, no, main, end);
         draggableStop(li, stop, tripId);
         if (editing) li.appendChild(stopActs(stop, tripId));
@@ -4134,9 +4199,12 @@
         // окно приёма, центр, допуск машин и источник точки — плашками; нарушение (после ручной правки) — красным
         const tags = document.createElement('span');
         tags.className = 'dp-stop-tags';
-        const tag = (cls, text, ico) => {
+        // minor — справочная плашка (источник точки, своё время, «центр» без нарушения…): в компактной строке панели
+        // машины — по раскрытию; ограничения со сроком и ошибки — всегда видны
+        const tag = (cls, text, ico, minor) => {
             const bd = document.createElement('span');
             bd.className = 'rt-badge ' + cls;
+            if (minor) bd.dataset.minor = '1';
             if (ico) bd.innerHTML = '<i class="fas ' + ico + '" aria-hidden="true"></i>';
             bd.appendChild(document.createTextNode(text));
             tags.appendChild(bd);
@@ -4147,22 +4215,22 @@
         // своё время у магазина (№50) — только у магазинов, где оно задано; у остальных — общая норма
         const own = ownUnload(stop);
         if (own !== null) {
-            tag('dp-b-unload', 'Բեռնաթափում՝ ' + fmt(own) + NB + 'ր', 'fa-stopwatch');
+            tag('dp-b-unload', 'Բեռնաթափում՝ ' + fmt(own) + NB + 'ր', 'fa-stopwatch', true);
             tags.lastChild.title = 'խանութի հաստատուն մասը՝ առանց բեռի ժամանակի';
         }
-        if (stop.center) tag(stop.center_miss ? 'b-danger' : 'b-warn', stop.center_miss ? 'Կենտրոն — մեքենան չի կարող մտնել' : 'Կենտրոն', 'fa-city');
+        if (stop.center) tag(stop.center_miss ? 'b-danger' : 'b-warn', stop.center_miss ? 'Կենտրոն — մեքենան չի կարող մտնել' : 'Կենտրոն', 'fa-city', !stop.center_miss);
         // большая машина в зоне Еревана (№68): к разгрузке прибавлены минуты — они уже во времени точки и рейса
         if (num(stop.yerevan_min)) {
-            tag('b-warn', 'Մեծ մեքենա Երևանում՝ +' + fmt(stop.yerevan_min) + NB + 'ր', 'fa-truck-moving');
+            tag('b-warn', 'Մեծ մեքենա Երևանում՝ +' + fmt(stop.yerevan_min) + NB + 'ր', 'fa-truck-moving', true);
             tags.lastChild.title = 'մեծ մեքենան Երևանի գոտում ավելի երկար է կանգնում՝ կայանում, մանևր';
         }
         if (stop.vehicle_access) tag(stop.vehicle_miss ? 'b-danger' : 'b-warn',
-            (stop.vehicle_miss ? 'Մեքենան չի կարող սպասարկել · ' : '') + vehicleText(stop.vehicle_access, true), 'fa-truck');
+            (stop.vehicle_miss ? 'Մեքենան չի կարող սպասարկել · ' : '') + vehicleText(stop.vehicle_access, true), 'fa-truck', !stop.vehicle_miss);
         const src = COORD_HY[stop.coord_source];
-        if (src) tag(src[0], src[1], 'fa-location-dot');
+        if (src) tag(src[0], src[1], 'fa-location-dot', true);
         // новый заказ дня, взятый в сегодняшний развоз (№72)
         const sdIsns = new Set(sdTaken().map(o => o.isn));
-        if ((stop.orders || []).some(o => sdIsns.has(o.isn))) tag('b-ok', 'Այսօրվա նոր պատվեր', 'fa-bolt');
+        if ((stop.orders || []).some(o => sdIsns.has(o.isn))) tag('b-ok', 'Այսօրվա նոր պատվեր', 'fa-bolt', true);
         // №98: недовезённое вчера — само в развозе дня; сколько рабочих дней ждёт
         const late = Math.max(0, ...(stop.orders || []).map(o => num(o.carried_days) || 0));
         if (late) {
@@ -4447,7 +4515,7 @@
             const card = document.createElement('section');
             card.className = 'rt-card dp-tcard';
             card.dataset.truck = t.car_code;
-            card.style.setProperty('--dp-c', color);
+            setTruckColor(card, t.car_code);
             const h = document.createElement('h3');
             h.className = 'dp-thead-h';
             const head = document.createElement('button');
@@ -4459,12 +4527,13 @@
             head.innerHTML = '<span class="dp-thead-t"><span class="dp-thead-name"><b></b></span><span class="dp-tstats"></span></span>'
                 + '<span class="dp-tret"><small>վերադարձ</small><b></b></span>'
                 + '<span class="dp-chev" aria-hidden="true"><i class="fas fa-chevron-down"></i></span>';
-            head.querySelector('.dp-thead-name b').textContent = t.name || t.car_code;
+            // номер — заголовок (уникален), марка — второй строкой рядом (обзор 12.10: как в списке машин слева)
+            head.querySelector('.dp-thead-name b').textContent = t.car_code;
             if (t.name) {
-                const plate = document.createElement('span');
-                plate.className = 'dp-plate';
-                plate.textContent = t.car_code;
-                head.querySelector('.dp-thead-name').appendChild(plate);
+                const model = document.createElement('span');
+                model.className = 'dp-tmodel';
+                model.textContent = t.name;
+                head.querySelector('.dp-thead-name').appendChild(model);
             }
             // водитель — кто сегодня за рулём (№77: посаженный сборкой — «փոխարինում»), и առաքիչ — каждый своей строкой
             const seat = crewTruck(t.car_code);
@@ -4488,6 +4557,9 @@
                 }
                 head.querySelector('.dp-thead-name').appendChild(dr);
             }
+            // водителя нет — та же жёлтая пометка, что в списке машин (назначить — кнопка «Վարորդ» карточки)
+            if (!crew.includes('driver') && !warn && !state.data.is_past)
+                head.querySelector('.dp-thead-name').insertAdjacentHTML('beforeend', '<span class="dp-wl-nodrv">Վարորդ չկա</span>');
             const st = head.querySelector('.dp-tstats');
             st.textContent = pl(t.trips.length, 'երթ') + ' · ' + pl(t.stops, 'խանութ') + ' · ' + kgText(t.kg) + ' · ≈ ' + fmt(t.km) + NB + 'կմ'
                 + (num(t.liters) !== null ? ' · ≈ ' + fmt(t.liters, 1) + NB + 'լ' : '');
@@ -4542,6 +4614,18 @@
             cell.firstChild.textContent = k;
             cell.lastChild.textContent = v || '—';
             if (!i && warn) { cell.lastChild.textContent = v ? v + ' · ' + warn : warn; cell.lastChild.className = 'is-bad'; }
+            // обзор 12.10: водителя нет — не «—», а явное «Վարորդ չկա» и «Նշել» (тот же диалог, что «Վարորդ» внизу панели);
+            // отправку это не запрещает
+            if (!i && !v && !warn && !state.data.is_past) {
+                cell.lastChild.remove();
+                const b = document.createElement('button');
+                b.type = 'button';
+                b.className = 'dp-nodrv';
+                b.innerHTML = '<i class="fas fa-id-card" aria-hidden="true"></i><span>Վարորդ չկա</span><em>Նշել</em>';
+                b.setAttribute('aria-label', 'Վարորդ չկա՝ նշել վարորդին՝ ' + truckLabel(t));
+                b.addEventListener('click', () => openDriver(t.car_code));
+                cell.appendChild(b);
+            }
             crew.appendChild(cell);
         });
         const nums = document.createElement('div');
@@ -4590,14 +4674,17 @@
             row.type = 'button';
             row.className = 'dp-wl-row' + (t.trips.some(tripBad) ? ' has-bad' : '');
             row.dataset.truck = t.car_code;
-            row.style.setProperty('--dp-c', color);
+            setTruckColor(row, t.car_code);
             row.innerHTML = '<span class="dp-wl-c" aria-hidden="true"></span>'
                 + '<span class="dp-wl-top"><b class="dp-wl-plate"></b><span class="dp-wl-who"></span></span>'
                 + '<span class="dp-wl-km"><b></b><small> կմ</small></span>'
                 + '<span class="dp-wl-sub"></span><span class="dp-wl-end"></span>'
                 + '<span class="dp-wl-load"><i aria-hidden="true"><em></em></i><small></small></span>';
             row.querySelector('.dp-wl-plate').textContent = t.car_code;
-            row.querySelector('.dp-wl-who').textContent = [t.name, seat && seat.name ? seat.name : driverOf(t.car_code)].filter(Boolean).join(' · ');
+            const drvName = seat && seat.name ? seat.name : driverOf(t.car_code);
+            row.querySelector('.dp-wl-who').textContent = [t.name, drvName].filter(Boolean).join(' · ');
+            // водителя нет — тихая жёлтая пометка в строке (назначить — в панели машины справа)
+            if (!drvName && !d.is_past) row.querySelector('.dp-wl-top').insertAdjacentHTML('beforeend', '<span class="dp-wl-nodrv">Վարորդ չկա</span>');
             row.querySelector('.dp-wl-km b').textContent = fmt(t.km);
             const area = areaOf(t);
             row.querySelector('.dp-wl-sub').textContent = (area ? area + ' · ' : '') + pl(t.stops, 'կետ') + (t.trips.length > 1 ? ' · ' + pl(t.trips.length, 'երթ') : '');
@@ -4608,16 +4695,34 @@
             em.style.width = Math.min(100, pct) + '%';
             row.querySelector('.dp-wl-load').classList.toggle('is-over', pct > 100);
             row.querySelector('.dp-wl-load small').textContent = kgText(t.kg) + ' · ' + pct + '%';
-            row.setAttribute('aria-label', truckLabel(t) + ', ' + pl(t.stops, 'կետ') + ', ≈ ' + fmt(t.km) + ' կմ, վերադարձ ' + t.return
+            row.setAttribute('aria-label', truckLabel(t) + (drvName || d.is_past ? '' : ', վարորդ չկա') + ', ' + pl(t.stops, 'կետ') + ', ≈ ' + fmt(t.km) + ' կմ, վերադարձ ' + t.return
                 + (t.over_time ? ', ուշանում է' : '') + ', բեռնված ' + pct + '%');
             box.appendChild(row);
         });
         const used = new Set(plan.trucks.map(t => t.car_code));
         const free = d.trucks.filter(t => t.ready && !used.has(t.car_code));
-        $('dpWsFree').textContent = free.length ? 'Ազատ՝ ' + free.map(t => t.car_code).join(', ') : 'Բոլոր մեքենաները երթում են';
+        // обзор 12.10: свободные — одной строкой «Ազատ՝ N», номера — по раскрытию (на 1280×768 перечень занимал 3 строки)
+        const fb = $('dpWsFree');
+        fb.textContent = '';
+        if (free.length) {
+            const det = document.createElement('details');
+            det.className = 'dp-wl-freebox';
+            det.open = !!state.freeOpen;
+            det.innerHTML = '<summary></summary><span></span>';
+            det.firstChild.textContent = 'Ազատ՝ ' + pl(free.length, 'մեքենա');
+            det.lastChild.textContent = free.map(t => t.car_code).join(', ');
+            det.addEventListener('toggle', () => { state.freeOpen = det.open; wlFade(); });
+            fb.appendChild(det);
+        } else fb.textContent = 'Բոլոր մեքենաները երթում են';
         $('dpWsAddTruck').hidden = !!d.is_past;
         syncFocus();
         panelsRefresh();
+        wlFade();
+    }
+    // список машин длиннее панели — снизу мягкое затухание (есть ещё строки), долистали — его нет
+    function wlFade() {
+        const r = $('dpWsRows');
+        r.classList.toggle('has-more', r.scrollHeight - r.scrollTop - r.clientHeight > 2);
     }
 
     // ---------- Tesla+: «Խանութներ» внизу страницы (пользователь 12.10 «магазины покажи снизу страницы») ----------
@@ -4659,7 +4764,7 @@
                 const g = document.createElement('div');
                 g.className = 'dp-st-g';
                 g.setAttribute('role', 'row');
-                g.style.setProperty('--dp-c', color);
+                setTruckColor(g, t.car_code);
                 g.innerHTML = '<span role="cell"><button type="button" class="dp-st-gbtn"><i class="fas fa-chevron-down" aria-hidden="true"></i>'
                     + '<span class="rt-dot" aria-hidden="true"></span><b></b><span class="dp-st-gsum"></span></button></span>';
                 const btn = g.querySelector('button');
@@ -4677,7 +4782,7 @@
                 grp.className = 'dp-trip dp-st-trip' + (editing ? ' is-editing' : '');
                 grp.dataset.trip = String(tr.id);
                 grp.setAttribute('role', 'rowgroup');
-                grp.style.setProperty('--dp-c', color);
+                setTruckColor(grp, t.car_code);
                 grp.hidden = closed;
                 const lunch = tr.lunch;
                 if (lunch && lunch.after_stop === null) grp.appendChild(stopLunchRow(lunch));
@@ -5819,6 +5924,7 @@
                 if (!sel && !ws) return;
                 const muted = !sel, hot = sel && !!state.mapFocus && ws;
                 const ink = hot ? tc('--rt-acc-fill') : color;
+                const txt = hot ? '' : truckSeries(t.car_code).ink;   // цифры на цвете машины — контрастные (--rt-route-N-ink)
                 const pts = tr.stops.filter(s => s.lat !== null).map(s => [s.lat, s.lon]);
                 const line = depot ? [depot, ...pts, depot] : pts;
                 if (line.length > 1) {
@@ -5838,7 +5944,7 @@
                     const label = state.mapFocus && sel ? (state.mapFocus.trip == null && t.trips.length > 1 ? (ti + 1) + '.' : '') + (si + 1) : null;
                     const ring = ws && risky(s) ? ' is-risk' : '';
                     const m = label !== null
-                        ? L.marker([s.lat, s.lon], { icon: L.divIcon({ className: 'dp-npin' + (hot ? ' is-hot' : ''), html: '<span class="' + (String(label).length > 3 ? 'is-long' : '') + ring + '" data-trip="' + tr.id + '" style="background:' + ink + '">' + label + '</span>', iconSize: [26, 26] }), keyboard: true, draggable: canDrag, zIndexOffset: 500 })
+                        ? L.marker([s.lat, s.lon], { icon: L.divIcon({ className: 'dp-npin' + (hot ? ' is-hot' : ''), html: '<span class="' + (String(label).length > 3 ? 'is-long' : '') + ring + '" data-trip="' + tr.id + '" style="background:' + ink + (txt ? ';color:' + txt : '') + '">' + label + '</span>', iconSize: [26, 26] }), keyboard: true, draggable: canDrag, zIndexOffset: 500 })
                         : ws   // перетащить можно только маркер, не кружок на canvas
                             ? L.marker([s.lat, s.lon], { icon: L.divIcon({ className: 'dp-dpin' + (muted && state.mapFocus ? ' is-muted' : ''), html: '<span class="' + ring.trim() + '" data-trip="' + tr.id + '" style="background:' + color + '"></span>', iconSize: [16, 16] }), keyboard: true, draggable: canDrag })
                             : L.circleMarker([s.lat, s.lon], { radius: 7, ...paint({ color: '--rt-map-ink', fillColor: color }), weight: 2, fillOpacity: 1 });
@@ -6420,7 +6526,7 @@
         root.classList.toggle('is-ws', on);
         document.body.classList.toggle('dp-ws-on', on);
         $('dpWs').hidden = !on;
-        $('dpWsActs').hidden = !on;
+        $('dpWsActs').hidden = !on && !tabsOn();   // телефон: из шапки — только меню «⋯» (печать, Excel, сравнение)
         if (!on) openMenu(false);
         syncMenu();
         if (!on && !$('dpDrawer').hidden) { $('dpDrawer').hidden = true; $('dpPrepOpen').setAttribute('aria-expanded', 'false'); renderSteps(); }
@@ -6469,6 +6575,7 @@
         root.style.setProperty('--ws-top-h', h('.dp-ws-top', 'top') + 'px');
         root.style.setProperty('--ws-bot-h', h('.dp-ws-low', 'bottom') + 'px');
         if (state.map) state.map.invalidateSize({ pan: false });
+        wlFade();
     }
     // сколько карты закрыто стеклянными панелями (рабочий экран): точки дня и выбранный рейс вписываются в видимую часть
     // карты между панелями, а не под ними (как «Մեքենաները առցանց»)
@@ -6555,6 +6662,8 @@
             focusFromBoard(t, null);
         });
         $('dpWsAddTruck').addEventListener('click', () => { openDrawer(true); unfoldStep('dpStep1'); });
+        $('dpPhoneMore').addEventListener('click', () => phoneMore(!$('rtDispatch').classList.contains('is-phone-more')));
+        $('dpWsRows').addEventListener('scroll', wlFade, { passive: true });
         // точка в панели выбранной машины — к ней на карте (обведена, как из нижнего списка); кнопки и поля строки — своё
         $('dpWsSide').addEventListener('click', (e) => {
             if (e.target.closest('button, select, input, a, .dp-stop-acts')) return;
@@ -6613,6 +6722,8 @@
             new ResizeObserver(() => window.requestAnimationFrame(fitToolbar)).observe(document.querySelector('#rtDispatch .dp-dayboard'));
             // ширина верхней панели сменилась (окно, полоса прокрутки) — чипы заново по месту (без дёрганья: одно измерение)
             new ResizeObserver(() => window.requestAnimationFrame(fitChips)).observe(document.querySelector('#dpWs .dp-ws-top'));
+            // ширина шкалы дня (окно, панель машины справа открыта/закрыта, вкладка телефона) — номера точек по месту
+            new ResizeObserver(() => window.requestAnimationFrame(fitTicks)).observe($('dpBoard'));
             [document.querySelector('#rtDispatch .dp-mast'), $('dpTodo'), $('dpInbox'), $('dpSameDay'), $('dpActionError'),
                 document.querySelector('#dpWs .dp-ws-top'), document.querySelector('#dpWs .dp-ws-low')].forEach(el => el && ro.observe(el));
         }

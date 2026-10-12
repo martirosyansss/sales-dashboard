@@ -6,8 +6,8 @@
 #rtDispatch {
     --dp-acc-ink:   var(--rt-acc-ink);     /* текст на кнопке акцента */
     --dp-acc-hover: var(--rt-acc-hover);   /* ссылка под курсором */
-    /* Полосы, номера и значки машин — цвета машин (routes_dispatch.js COLORS: категориальный ряд, один в обеих темах).
-       На них — свои постоянные «чернила» и блик: литералы намеренно, тема их не меняет, как не меняет и цвет машины. */
+    /* Полосы, номера и значки машин — цвета машин (routes.css --rt-route-2…10). Цифры на них — --rt-route-N-ink (JS
+       setTruckColor ставит --dp-c-ink на элемент); здесь — запас для прежнего ряда COLORS и блик. */
     --dp-c-ink:     #0b0f15;
     --dp-c-hi:      #ffffff;
     --dp-top:       calc(var(--rt-nav-h, 64px) + 14px);   /* закреплённая карта — под шапкой (её нет — от верха окна) */
@@ -404,6 +404,8 @@
 .dp-thead-name { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; }
 .dp-thead-h { margin: 0; font-size: inherit; font-weight: inherit; }
 .dp-thead-name b { font-size: 1.125rem; font-weight: var(--rt-fw-strong); }
+/* марка — второй, тихой подписью рядом с номером (номер — заголовок карточки) */
+.dp-tmodel { color: var(--rt-fg-dim); font-size: .875rem; font-weight: 500; white-space: nowrap; }
 .dp-plate { font-family: var(--rt-mono); font-size: .8125rem; color: var(--rt-fg-dim); padding: 1px 7px; border-radius: 6px; border: 1px solid var(--rt-line); background: var(--rt-inset); letter-spacing: .02em; }
 .dp-tstats { margin: 0; font-size: .875rem; color: var(--rt-fg-dim); }
 .dp-tstats.is-bad { color: var(--rt-danger); }
@@ -514,7 +516,8 @@
     display: flex; align-items: center; justify-content: center; width: 26px; height: 26px; border-radius: 50%;
     border: 2px solid var(--rt-map-ink); color: var(--dp-c-ink); font: 700 12px/1 var(--rt-font); box-shadow: 0 1px 4px var(--rt-shadow-c);
 }
-.dp-npin span.is-long { font-size: 10px; letter-spacing: -.3px; }
+/* «2.13» — не мельче 11 px: кружок растягивается в таблетку по центру точки */
+.dp-npin span.is-long { position: relative; left: 50%; width: auto; min-width: 26px; padding: 0 4px; border-radius: 13px; transform: translateX(-50%); font-size: 11px; white-space: nowrap; }
 
 /* «Почему так» под картой (ответ владельца №49): разделы «заголовок — фразы», время по точкам */
 .dp-why { padding: 10px 14px 12px; border-top: 1px solid var(--rt-line); font-size: .9375rem; line-height: 1.5; }
@@ -1154,7 +1157,8 @@ body.dp-ws-on main.py-4 { padding-top: 8px !important; }
 /* короткая подпись кнопки машины (только номер) — для узкой кнопки; в прежнем виде — полная подпись */
 .rt-lg .n-short { display: none; }
 #rtDispatch .dp-ws-map .dp-npin span { width: 22px; height: 22px; margin: 2px; font-size: 11px; border-width: 1.5px; }
-#rtDispatch .dp-ws-map .dp-npin span.is-long { font-size: 9px; }
+/* «2.13» — не мельче 11 px: кружок растягивается в таблетку */
+#rtDispatch .dp-ws-map .dp-npin span.is-long { min-width: 22px; border-radius: 11px; font-size: 11px; }
 /* выбранный рейс — номера белым на акценте; магазин под риском — жёлтое кольцо; чужие рейсы — приглушены */
 #rtDispatch .dp-ws-map .dp-npin.is-hot span { color: var(--rt-acc-ink); border-color: var(--rt-map-ink); font-weight: 600; }
 #rtDispatch .dp-ws-map :is(.dp-npin, .dp-dpin) span.is-risk { box-shadow: 0 0 0 2.5px var(--rt-warn), 0 1px 3px var(--rt-shadow-c); }
@@ -1223,7 +1227,7 @@ body.dp-ws-on main.py-4 { padding-top: 8px !important; }
     color: var(--rt-fg-dim); font-size: .78125rem;
 }
 .dp-wl-free { min-width: 0; overflow-wrap: anywhere; }
-.dp-wl-add { flex: none; min-height: 32px; padding: 0 2px; border: 0; background: none; color: var(--rt-acc); font: 600 .78125rem var(--rt-font); cursor: pointer; }
+.dp-wl-add { flex: none; min-height: 36px; padding: 0 2px; border: 0; background: none; color: var(--rt-acc); font: 600 .78125rem var(--rt-font); cursor: pointer; }
 .dp-wl-add:hover { color: var(--rt-acc-hover); }
 .dp-wl-add:focus-visible { outline: 2px solid var(--rt-acc); outline-offset: 2px; border-radius: 6px; }
 .dp-wl-add[hidden] { display: none; }
@@ -1257,7 +1261,7 @@ body.dp-ws-on main.py-4 { padding-top: 8px !important; }
 #rtDispatch .dp-ws-side :is(.dp-tstats, .dp-tret, .dp-chev, .dp-tdriver) { display: none; }
 #rtDispatch .dp-ws-side .dp-thead-name { align-items: baseline; gap: 2px 10px; }
 #rtDispatch .dp-ws-side .dp-thead-name b { font-size: 1.375rem; font-weight: 600; letter-spacing: .02em; }
-#rtDispatch .dp-ws-side .dp-plate { padding: 0; border: 0; background: none; font-family: var(--rt-font); font-size: .9375rem; color: var(--rt-fg-dim); }
+#rtDispatch .dp-ws-side :is(.dp-plate, .dp-tmodel) { padding: 0; border: 0; background: none; font-family: var(--rt-font); font-size: .9375rem; color: var(--rt-fg-dim); }
 .dp-tsum { display: none; }
 #rtDispatch .dp-ws-side .dp-tsum { order: 2; display: flex; flex-direction: column; gap: 10px; padding: 4px 18px 12px; border-bottom: 1px solid var(--rt-line); }
 .dp-tsum-crew { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; font-size: .78125rem; }
@@ -1283,7 +1287,7 @@ body.dp-ws-on main.py-4 { padding-top: 8px !important; }
 #rtDispatch .dp-ws-side .dp-trip-t { font-size: .875rem; font-weight: 600; }
 #rtDispatch .dp-ws-side .dp-time { font-size: .875rem; font-weight: 600; }
 #rtDispatch .dp-ws-side .dp-trip-acts { margin: 0; width: 100%; gap: 6px; }
-#rtDispatch .dp-ws-side .dp-trip-acts .rt-btn { height: 32px; padding: 0 10px; font-size: .78125rem; border: 0; background: var(--rt-chip); color: var(--rt-fg); }
+#rtDispatch .dp-ws-side .dp-trip-acts .rt-btn { height: 36px; padding: 0 10px; font-size: .78125rem; border: 0; background: var(--rt-chip); color: var(--rt-fg); }
 #rtDispatch .dp-ws-side .dp-trip-acts .rt-btn.rt-btn-primary { background: var(--rt-acc-fill); color: var(--rt-acc-ink); }
 #rtDispatch .dp-ws-side .dp-trip-line { gap: 4px 12px; font-size: .78125rem; }
 #rtDispatch .dp-ws-side .dp-loadm-bar { width: 64px; height: 3px; }
@@ -1345,10 +1349,15 @@ body.dp-ws-on main.py-4 { padding-top: 8px !important; }
 #rtDispatch.is-ws .dp-bar.is-bad { box-shadow: 0 0 0 2px var(--rt-danger) inset; }
 #rtDispatch.is-ws .dp-bar .dp-bar-t { display: none; }
 #rtDispatch.is-ws .dp-bar i.dp-tick {
-    top: 50%; bottom: auto; width: 16px; height: 16px; margin: -8px 0 0 -8px; border-radius: 50%; z-index: 1;
+    top: 50%; bottom: auto; width: 18px; height: 18px; margin: -9px 0 0 -9px; border-radius: 50%; z-index: 1;
     display: grid; place-items: center; background: var(--dp-c); color: var(--dp-c-ink); border: 1.5px solid var(--rt-panel);
-    font: 600 9px/1 var(--rt-font); font-style: normal;
+    font: 600 11px/1 var(--rt-font); font-style: normal; font-variant-numeric: tabular-nums;
 }
+/* тесно (fitTicks): точка на своём времени — малой отметкой без цифры; наведение — номер в полном кружке */
+#rtDispatch.is-ws .dp-bar i.dp-tick.is-mini { width: 8px; height: 8px; margin: -4px 0 0 -4px; border-width: 1px; font-size: 0; z-index: 0; }
+#rtDispatch.is-ws .dp-bar i.dp-tick.is-mini::before { font-size: 0; }
+#rtDispatch.is-ws .dp-bar i.dp-tick.is-mini:hover { width: 18px; height: 18px; margin: -9px 0 0 -9px; border-width: 1.5px; font-size: 11px; z-index: 3; }
+#rtDispatch.is-ws .dp-bar i.dp-tick.is-mini:hover::before { font-size: 11px; }
 #rtDispatch.is-ws .dp-bar i.dp-tick.is-bad { background: var(--rt-danger); color: var(--rt-status-ink); }
 #rtDispatch.is-ws .dp-load { top: 10px; bottom: 10px; }
 #rtDispatch.is-ws .dp-bend b { font-size: .875rem; font-weight: 600; }
@@ -2132,3 +2141,101 @@ body.dp-ws-on .rt-page.rt-top { margin-bottom: 8px; }
 }
 /* панель вкладок внизу закреплена — прокрутка к блоку (scrollIntoView, фокус) не прячет его под ней */
 html:has(body[data-dp-tab]) { scroll-padding-bottom: 92px; }
+
+/* ==========================================================================
+   Обзор дизайна 12.10, раунд 2 (Codex): шкала по плотности, водитель не назначен, компактные строки, «Ազատ՝ N»,
+   короткие подписи чипов, 36/44 px
+   ========================================================================== */
+/* «Վարորդ չկա» — явный статус машины (warn-soft), в панели — кнопка назначения (тот же диалог «Վարորդ») */
+.dp-nodrv {
+    display: inline-flex; align-items: center; gap: 6px; min-height: 36px; margin-top: 2px; padding: 0 12px; border: 0; border-radius: 999px;
+    background: var(--rt-warn-bg); color: var(--rt-warn); font: 600 .8125rem var(--rt-font); cursor: pointer;
+}
+.dp-nodrv em { font-style: normal; text-decoration: underline; text-underline-offset: 2px; }
+.dp-nodrv:hover { background: color-mix(in srgb, var(--rt-warn) 24%, transparent); }
+.dp-nodrv:focus-visible { outline: 2px solid var(--rt-acc); outline-offset: 2px; }
+.dp-wl-nodrv { flex: none; padding: 1px 8px; border-radius: 999px; background: var(--rt-warn-bg); color: var(--rt-warn); font-size: .71875rem; font-weight: 600; white-space: nowrap; }
+/* свободные машины — «Ազատ՝ N» и номера по раскрытию */
+.dp-wl-freebox > summary { cursor: pointer; min-height: 36px; display: list-item; padding: 8px 0; color: var(--rt-fg-dim); }
+.dp-wl-freebox > summary:hover { color: var(--rt-acc); }
+.dp-wl-freebox > summary:focus-visible { outline: 2px solid var(--rt-acc); outline-offset: 2px; border-radius: 6px; }
+.dp-wl-freebox > span { display: block; padding-bottom: 4px; }
+#dpWs .dp-wl-foot { padding-top: 4px; padding-bottom: 6px; }
+/* строк больше, чем видно, — затухание снизу */
+.dp-wl-rows.has-more { -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 28px), transparent); mask-image: linear-gradient(to bottom, #000 calc(100% - 28px), transparent); }
+/* низкое окно (1280×768 и т. п.): строка машины ≈ 60 px — видны все четыре */
+@media (max-height: 820px) {
+    #dpWs .dp-wl-head { padding-top: 10px; padding-bottom: 2px; }
+    #dpWs .dp-wl-row { gap: 0 10px; padding: 5px 10px; line-height: 1.25; }
+    #dpWs .dp-wl-km b { font-size: 1.0625rem; }
+    #dpWs .dp-wl-load small { font-size: .6875rem; line-height: 1.1; }
+    #dpWs .dp-wl-foot { padding-top: 0; padding-bottom: 2px; }
+}
+/* точки в панели машины: строка 1 — №, магазин, время; строка 2 — адрес (одна строка) и кг; остальное — по «⌄» */
+.dp-stop-more { display: none; }
+#rtDispatch .dp-ws-side .dp-stop-more {
+    position: relative; display: grid; place-items: center; flex: none; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 8px;
+    background: transparent; color: var(--rt-fg-mute); cursor: pointer;
+}
+#rtDispatch .dp-ws-side .dp-stop-more::after { content: ""; position: absolute; inset: -4px; border-radius: 10px; }
+#rtDispatch .dp-ws-side .dp-stop-more:hover { color: var(--rt-fg); background: var(--rt-hl); }
+#rtDispatch .dp-ws-side .dp-stop-more:focus-visible { outline: 2px solid var(--rt-acc); outline-offset: 1px; }
+#rtDispatch .dp-ws-side .dp-stop-more i { font-size: .6875rem; transition: transform .15s; }
+#rtDispatch .dp-ws-side .dp-stop.is-open .dp-stop-more i { transform: rotate(180deg); }
+/* сетка строки: № | магазин / адрес | время / кг | × ⌄ — две строки текста, кнопки — в первой */
+#rtDispatch .dp-ws-side .dp-stop { grid-template-columns: 24px minmax(0, 1fr) auto 28px 28px; column-gap: 8px; row-gap: 0; padding-top: 6px; padding-bottom: 6px; }
+#rtDispatch .dp-ws-side .dp-stop.dp-lunch { grid-template-columns: 24px minmax(0, 1fr) auto; }
+#rtDispatch .dp-ws-side .dp-num { grid-row: 1 / span 2; align-self: start; }
+#rtDispatch .dp-ws-side .dp-stop-end { display: contents; }
+#rtDispatch .dp-ws-side .dp-stop-kg { grid-column: 3; grid-row: 2; text-align: right; }
+#rtDispatch .dp-ws-side .dp-stop-x { grid-column: 4; grid-row: 1; }
+#rtDispatch .dp-ws-side .dp-stop-more { grid-column: 5; grid-row: 1; }
+#rtDispatch .dp-ws-side .dp-stop-acts { grid-column: 2 / -1; grid-row: auto; }
+#rtDispatch .dp-ws-side .dp-stop:not(.is-open) :is(.dp-stop-main b, .dp-stop-addr) { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#rtDispatch .dp-ws-side .dp-stop:not(.is-open) .dp-stop-sub,
+#rtDispatch .dp-ws-side .dp-stop:not(.is-open) .dp-stop-tags [data-minor] { display: none; }
+#rtDispatch .dp-ws-side .dp-stop:not(.is-open) .dp-stop-tags:not(:has(.rt-badge:not([data-minor]))) { display: none; }
+
+/* кнопки рейса и машины — не ниже 36 px (на телефоне — 44, ниже) */
+#rtDispatch :is(.dp-trip-acts, .dp-tacts) .rt-btn { min-height: 36px; }
+@media (prefers-reduced-motion: reduce) { #rtDispatch .dp-ws-side .dp-stop-more i { transition: none; } }
+/* чипы: тесно — короткая подпись («Նոր»), только потом — значок и число */
+.dp-ich-s { display: none; }
+#rtDispatch.is-ws .dp-inchip.is-short > span:first-of-type { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+#rtDispatch.is-ws .dp-inchip.is-short > .dp-ich-s { display: inline; }
+#rtDispatch.is-ws .dp-inchip.is-short { padding: 0 10px; gap: 6px; }
+@media (max-width: 767px) {
+    #rtDispatch .dp-wl-add, #rtDispatch .dp-nodrv { min-height: 44px; }
+    #rtDispatch .dp-trip-acts .rt-btn { min-height: 44px; }
+}
+/* телефон, вкладка «Մեքենաներ» (раунд 2): статус, проблемы и машины; подготовка, пересборка, итоги и «Ղեկավարի համար» —
+   под кнопкой «Պատրաստում, վերակազմում, ամփոփում». Отправка — одна (в «Ի՞նչ անել հիմա»), печать, Excel и сравнение — в «⋯» */
+.dp-phone-more { display: none; }
+@media (max-width: 767px) {
+    #rtDispatch[data-tab="day"] .dp-phone-more {
+        display: flex; align-items: center; gap: 10px; width: 100%; min-height: 48px; margin: 0 0 10px; padding: 0 16px; border: 0;
+        border-radius: var(--rt-radius-sm); background: var(--rt-panel); box-shadow: var(--rt-shadow-sm); color: var(--rt-fg);
+        font: 600 .875rem var(--rt-font); text-align: left; cursor: pointer;
+    }
+    #rtDispatch .dp-phone-more > i:first-child { color: var(--rt-fg-dim); }
+    #rtDispatch .dp-phone-more .dp-pm-chev { margin-left: auto; color: var(--rt-fg-dim); transition: transform .15s; }
+    #rtDispatch .dp-phone-more[aria-expanded="true"] .dp-pm-chev { transform: rotate(180deg); }
+    #rtDispatch .dp-phone-more:focus-visible { outline: 2px solid var(--rt-acc); outline-offset: 2px; }
+    #rtDispatch[data-tab="day"]:not(.is-phone-more) :is(.dp-prep, #dpRun, .dp-summary, #dpAnalysis) { display: none !important; }
+    /* одна кнопка отправки: в «Ի՞նչ անել հիմա»; утверждение сводки и её кнопки — в меню «⋯» (снять утверждение — там же) */
+    #rtDispatch[data-tab] :is(#dpApprove, .dp-summary-cta) { display: none !important; }
+    #rtDispatch[data-tab] .dp-todo-btns :is([data-ico="fa-print"], [data-ico="fa-file-excel"]) { display: none; }
+    #rtDispatch[data-tab="day"]:has(#dpTodo [data-ico="fa-paper-plane"]) #dpSendBtn { display: none; }
+    /* «⋯» в строке дня; пункты, которые на телефоне ведут в панели рабочего экрана, — скрыты */
+    #rtDispatch[data-tab] .dp-wsacts { order: 3; flex: none; margin-left: 0; }
+    #rtDispatch[data-tab] .dp-wsacts > :not(#dpWsMoreBox) { display: none !important; }
+    #rtDispatch[data-tab] #dpWsMore { width: 44px; height: 44px; padding: 0; justify-content: center; }
+    #rtDispatch:not(.is-ws) :is(#dpMenuTrips, #dpMenuCalc, #dpMenuBoss, #dpViewList) { display: none !important; }
+}
+@media (prefers-reduced-motion: reduce) { #rtDispatch .dp-phone-more .dp-pm-chev { transition: none; } }
+/* «Վարորդ չկա» в узкой колонке экипажа — одной строкой */
+#rtDispatch .dp-tsum-crew .dp-nodrv { max-width: 100%; padding: 0 10px; font-size: .78125rem; white-space: nowrap; }
+#rtDispatch .dp-tsum-crew .dp-nodrv > i { display: none; }
+/* в панели машины справа «Վարորդ չկա» — кнопкой в строке экипажа; пометка шапки карточки — только в прежнем виде и на телефоне */
+#rtDispatch .dp-ws-side .dp-thead-name .dp-wl-nodrv { display: none; }
+#rtDispatch .dp-thead-name .dp-wl-nodrv { align-self: center; }
