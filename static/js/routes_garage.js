@@ -569,13 +569,17 @@
     // столбики по месяцам: ремонт — акцент, авария — risk, страховка и налог — серый; высота — от самого дорогого месяца
     function renderChart() {
         const months = state.data.months, max = Math.max(1, ...months.map(m => num(m.total) || 0));
-        const px = (v) => Math.round((num(v) || 0) / max * 150);
+        const px = (v) => Math.round((num(v) || 0) / max * 130);   // запас сверху — под подпись самого высокого столбика
+        // подпись — не шире колонки: от миллиона в месяц — все в «մլն ֏» с десятыми (1,2), иначе в тысячах (850)
+        const mln = max >= 1e6;
+        $('gjChartUnit').textContent = mln ? 'մլն ֏' : 'հազ. ֏';
+        const label = (v) => (num(v) ? (mln ? (v / 1e6).toLocaleString('ru-RU', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) : fmt(v / 1000)) : '');
         const top = months.reduce((a, m) => (num(m.total) || 0) > (num(a && a.total) || 0) ? m : a, null);
         $('gjChart').setAttribute('aria-label', 'Ծախսերը ըստ ամիսների' + (top && num(top.total) ? '՝ ամենաշատը '
             + monthHy(top.month) + '-ին, ' + short(top.total) : '՝ ծախս չկա'));
         $('gjChart').replaceChildren(...months.map(m => h('div', { class: 'gj-col', title: monthHy(m.month) + ': վերանորոգում ' + fmt(m.repair)
             + ' ֏, վթար ' + fmt(m.accident) + ' ֏, ապահովագրություն, հարկ ' + fmt(m.fixed) + ' ֏' },
-            h('span', { class: 'gj-col-v', text: num(m.total) ? fmt(m.total / 1000) : '' }),
+            h('span', { class: 'gj-col-v', text: label(m.total) }),
             h('span', { class: 'gj-col-b is-accident', style: 'height:' + px(m.accident) + 'px' }),
             h('span', { class: 'gj-col-b is-repair', style: 'height:' + px(m.repair) + 'px' }),
             h('span', { class: 'gj-col-b is-fixed', style: 'height:' + px(m.fixed) + 'px' }),

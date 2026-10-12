@@ -237,7 +237,7 @@
         <section class="rt-card" aria-labelledby="gjMonthsTitle">
             <div class="rt-card-head">
                 <h2 class="rt-card-title" id="gjMonthsTitle">Ըստ ամիսների</h2>
-                <span class="gj-unit">հազ. ֏</span>
+                <span class="gj-unit" id="gjChartUnit">հազ. ֏</span>
             </div>
             <div class="gj-chart" id="gjChart" role="img" aria-label="Ծախսերը ըստ ամիսների"></div>
             <div class="gj-chart-legend" aria-hidden="true">
@@ -324,5 +324,5 @@
         integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
 <!-- подложка карт раздела (№47) — без ключа Яндекса: страница открыта из интернета, ключ сюда не выдаётся → OpenStreetMap -->
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=4" data-yandex-key=""></script>
-<script src="{{ url_for('static', filename='js/routes_garage.js') }}?v=15"></script>
+<script src="{{ url_for('static', filename='js/routes_garage.js') }}?v=16"></script>
 {% endblock %}
