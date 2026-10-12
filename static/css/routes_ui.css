@@ -56,6 +56,7 @@
 
 /* KPI-карточка: подпись, большое тонкое число с единицей, заметка */
 .rt-kpi.rt-kpi--card { gap: 4px; padding: 16px 20px; border: 0; box-shadow: var(--rt-shadow); }
+.rt-page .rt-kpi.rt-kpi--card { flex-direction: column; flex-wrap: nowrap; align-items: stretch; justify-content: flex-start; }   /* и на телефоне — столбиком */
 .rt-kpi__cap { color: var(--rt-fg-dim); font-size: 12.5px; }
 .rt-kpi__val { display: flex; align-items: baseline; gap: 6px; }
 .rt-kpi__num { font-size: 34px; font-weight: 300; letter-spacing: -.8px; line-height: 1.1; color: var(--rt-fg); font-variant-numeric: tabular-nums; }
@@ -68,13 +69,30 @@
 /* таблица: строки через 1px line, числа справа, итог в tfoot */
 .rt-table.rt-table--lined { border-collapse: collapse; font-variant-numeric: tabular-nums; }
 .rt-table--lined thead th { padding: 8px; background: transparent; border: 0; color: var(--rt-fg-dim); font-size: 12px; font-weight: 500; text-align: left; }
-.rt-table--lined tbody td, .rt-table--lined tfoot td { padding: 11px 8px; border: 0; border-top: 1px solid var(--rt-line); vertical-align: middle; }
-.rt-table--lined tbody tr:last-child td { border-bottom: 0; }
-.rt-table--lined :is(th, td):first-child { padding-left: 20px; }
-.rt-table--lined :is(th, td):last-child { padding-right: 20px; }
+/* строки — линиями только на широком экране: уже 576 px routes.css показывает .rt-table карточками (data-label) */
+@media (min-width: 576px) {
+    .rt-table--lined tbody td, .rt-table--lined tfoot td { padding: 11px 8px; border: 0; border-top: 1px solid var(--rt-line); vertical-align: middle; }
+    .rt-table--lined tbody tr:last-child td { border-bottom: 0; }
+    .rt-table--lined :is(th, td):first-child { padding-left: 20px; }
+    .rt-table--lined :is(th, td):last-child { padding-right: 20px; }
+}
 .rt-table--lined .num { text-align: right; white-space: nowrap; }
 .rt-table--lined tfoot td { font-weight: 600; padding-bottom: 14px; }
 .rt-table--lined tr.is-problem td { background: var(--rt-danger-bg); }
+/* телефон: строка итогов — тоже карточкой (подписи из data-label) */
+@media (max-width: 575.98px) {
+    .rt-table--lined tfoot { display: block; margin-top: 8px; }
+    .rt-table--lined tfoot tr {
+        display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 12px; padding: 12px 14px;
+        border-radius: var(--rt-radius-sm); background: var(--rt-panel-2);
+    }
+    .rt-table--lined tfoot td { display: block; padding: 0; border: 0; text-align: left; }
+    .rt-table--lined tfoot td:first-child { grid-column: 1 / -1; }
+    .rt-table--lined tfoot td:empty { display: none; }
+    .rt-table--lined tbody tr.is-problem { background: var(--rt-danger-bg); }   /* карточкой — фон у всей карточки */
+    .rt-table--lined tbody tr.is-problem td { background: none; }
+    .rt-table--lined tfoot td[data-label]::before { content: attr(data-label); display: block; font-size: 12px; font-weight: 500; color: var(--rt-fg-dim); }
+}
 .rt-status { display: inline-block; padding: 3px 10px; border-radius: 999px; background: var(--rt-chip); color: var(--rt-fg-dim); font-size: 12px; font-weight: 500; white-space: nowrap; }
 .rt-status.is-warn { background: var(--rt-warn-bg); color: var(--rt-warn); }
 .rt-status.is-risk { background: var(--rt-danger-bg); color: var(--rt-danger); }

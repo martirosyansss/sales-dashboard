@@ -35,13 +35,12 @@
     }
     const icon = (cls) => h('i', { class: 'fas ' + cls, 'aria-hidden': 'true' });
     // телефон начальника гаража: узкий экран, палец вместо мыши; анимация прокрутки — если её не отключили в системе
-    const PHONE = window.matchMedia('(max-width: 575px)');
     const TOUCH = window.matchMedia('(pointer: coarse)');
     const scrollMode = () => (window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth');
 
     // whatList — список «Ինչ է արվել» в форме; spreadTouched — «Բաշխել» меняли руками в этой форме, spreadAuto — срок
     // поставлен выбором двигателя / КПП; odoWhat — текст правимой записи «только пробег» (поля у неё нет)
-    const state = { data: null, entries: [], editing: null, busy: false, whatList: null, spreadTouched: false,
+    const state = { data: null, entries: [], recent: [], editing: null, busy: false, whatList: null, spreadTouched: false,
         spreadAuto: false, odoWhat: null };
 
     function announce(text) { $('gjStatus').textContent = ''; setTimeout(() => { $('gjStatus').textContent = text; }, 30); }
@@ -233,6 +232,26 @@
         syncOdoHint();
     }
 
+    // форма записи — раскрывается по «+ Նոր գրառում» и «Փոխել» (Tesla+: не висит над журналом постоянно); после
+    // сохранения остаётся открытой для следующей записи той же машины, «Փակել» — свернуть
+    function openForm() {
+        $('gjForm').hidden = false;
+        $('gjNew').setAttribute('aria-expanded', 'true');
+    }
+    function closeForm() {
+        resetForm();
+        $('gjForm').hidden = true;
+        $('gjNew').setAttribute('aria-expanded', 'false');
+        $('gjNew').focus();
+    }
+    function newEntry() {
+        selectTab('gjTabCosts');
+        if (state.editing !== null) resetForm();
+        openForm();
+        $('gjForm').scrollIntoView({ behavior: scrollMode(), block: 'start' });
+        $('gjCar').focus({ preventScroll: true });
+    }
+
     function resetForm() {
         state.editing = null;
         $('gjForm').reset();
@@ -251,6 +270,7 @@
     function editEntry(e) {
         state.editing = e.id;
         selectTab('gjTabCosts');
+        openForm();
         if (![...$('gjCar').options].some(o => o.value === e.car_code)) $('gjCar').append(h('option', { value: e.car_code, text: truckName(e.car_code) }));
         $('gjCar').value = e.car_code;
         $('gjDay').value = e.day;
@@ -412,7 +432,7 @@
 
     function goStale() {
         selectTab('gjTabOdo');
-        const first = $('gjOdoRows').querySelector('tr.is-stale input');
+        const first = $('gjOdoRows').querySelector('tr.is-stale input') || $('gjOdoRows').querySelector('input');
         if (first) { first.scrollIntoView({ behavior: scrollMode(), block: 'center' }); first.focus({ preventScroll: true }); }
     }
 
@@ -489,27 +509,112 @@
     }
 
     // ---------- итоги ----------
-    function statusBadge(r) {
+    // «Բարձր ֏/կմ» (Tesla+, 11.10): своя цена машины в расчёте (status ready) выше средней по парку — Σ ремонта ÷ Σ км
+    // готовых машин за те же 12 месяцев — на HIGH_PKM и больше; сравнивать есть с чем, только если готовых машин ≥ 2
+    const HIGH_PKM = 1.3;
+    function fleetPkm(rows) {
+        const ready = rows.filter(r => r.garage && r.garage.status === 'ready' && num(r.garage.km) > 0);
+        const cost = ready.reduce((s, r) => s + (num(r.garage.cost_amd) || 0), 0), km = ready.reduce((s, r) => s + num(r.garage.km), 0);
+        return { n: ready.length, avg: km > 0 ? cost / km : null };
+    }
+    const isHigh = (r, fleet) => !!(r.garage && r.garage.status === 'ready' && fleet.n >= 2 && fleet.avg
+        && num(r.garage.price) !== null && r.garage.price >= fleet.avg * HIGH_PKM);
+    const noKm = (r) => r.active && (!r.garage || r.garage.status === 'none');
+
+    function statusBadge(r, fleet) {
         const g = r.garage;
-        if (!g || g.status === 'none') return h('span', { class: 'rt-badge b-none', text: 'Վազք չկա' });
-        if (g.status === 'ready') return h('span', { class: 'rt-badge b-ok', text: 'Հաշվարկում է' });
-        if (g.status === 'low_km') return h('span', { class: 'rt-badge b-warn', text: 'Քիչ կմ' });
-        if (g.status === 'no_repairs') return h('span', { class: 'rt-badge b-warn', text: 'Վերանորոգում չի գրանցված',
-            title: r.wear_source === 'garage_avg' ? 'Վերանորոգում չկա՝ հաշվարկում է մոդելի կամ ավտոպարկի միջինը'
-                : 'Վերանորոգում չկա՝ հաշվարկում է կարգավորումների «մաշվածքը»' });
-        return h('span', { class: 'rt-badge b-warn', text: 'Կուտակվում է՝ ' + g.months + ' / ' + g.ready_months + ' ամիս' });
+        const pill = (cls, text, title) => h('span', { class: 'rt-status' + (cls ? ' ' + cls : ''), text, title: title || null });
+        if (!g || g.status === 'none') return pill('is-warn', 'Վազք չկա');
+        if (g.status === 'ready') return isHigh(r, fleet)
+            ? pill('is-risk', 'Բարձր ֏/կմ', 'Միջինից (' + fmt(fleet.avg, 1) + ' ֏/կմ) ավելի է ' + Math.round((HIGH_PKM - 1) * 100) + '%-ով և ավելի')
+            : pill('is-ok', 'Նորմալ', 'Հաշվարկում է');
+        if (g.status === 'low_km') return pill('', 'Քիչ կմ');
+        if (g.status === 'no_repairs') return pill('', 'Վերանորոգում չի գրանցված',
+            r.wear_source === 'garage_avg' ? 'Վերանորոգում չկա՝ հաշվարկում է մոդելի կամ ավտոպարկի միջինը'
+                : 'Վերանորոգում չկա՝ հաշվարկում է կարգավորումների «մաշվածքը»');
+        return pill('', 'Կուտակվում է՝ ' + g.months + ' / ' + g.ready_months + ' ամիս');
+    }
+
+    // миллионы и тысячи драма — как в макете: «10,3 մլն ֏», «850 հազ. ֏»
+    const big = (v) => { const n = num(v) || 0; return n >= 1e6 ? [fmt(n / 1e6, 1), 'մլն ֏'] : n >= 1e3 ? [fmt(n / 1e3, 0), 'հազ. ֏'] : [fmt(n), '֏']; };
+    const short = (v) => big(v).join(' ');
+    const MONTH_SHORT = ['հնվ', 'փտր', 'մրտ', 'ապր', 'մյս', 'հնս', 'հլս', 'օգս', 'սեպ', 'հոկ', 'նոյ', 'դեկ'];
+    const monthShort = (key) => { const m = /^(\d{4})-(\d{2})$/.exec(key || ''); return m ? MONTH_SHORT[+m[2] - 1] + '. ' + m[1] : key; };
+
+    function kpi(cap, value, unit, note, tone) {
+        return h('div', { class: 'rt-kpi rt-kpi--card' }, h('span', { class: 'rt-kpi__cap', text: cap }),
+            h('span', { class: 'rt-kpi__val' }, h('span', { class: 'rt-kpi__num', text: value }), unit ? h('span', { class: 'rt-kpi__unit', text: unit }) : null),
+            note ? h('span', { class: 'rt-kpi__note' + (tone ? ' ' + tone : ''), text: note }) : null);
+    }
+
+    function renderKpis(fleet) {
+        const d = state.data, rows = d.summary;
+        const sum = (k) => d.months.reduce((s, m) => s + (num(m[k]) || 0), 0);
+        const total = sum('total');
+        const withKm = rows.filter(r => r.garage && r.garage.status !== 'none' && num(r.garage.km) > 0);
+        const km = withKm.reduce((s, r) => s + num(r.garage.km), 0);
+        const high = rows.filter(r => r.active && isHigh(r, fleet)), none = rows.filter(noKm);
+        const why = [...high.map(r => r.car_code + ' բարձր ֏/կմ'), ...none.map(r => r.car_code + ' վազք չկա')];
+        const [tv, tu] = big(total);
+        $('gjKpis').replaceChildren(
+            kpi('Ծախս 12 ամսում', tv, tu, 'վերանորոգում՝ ' + short(sum('repair')) + ' · վթար՝ ' + short(sum('accident'))
+                + ' · ապահ., հարկ՝ ' + short(sum('fixed'))),
+            kpi('Վերանորոգում, միջին', fleet.avg !== null ? fmt(fleet.avg, 1) : '—', '֏/կմ',
+                fleet.n ? fleet.n + ' մեքենայի վազքով՝ վերջին 12 ամիս' : 'հաշվարկի համար վազքը դեռ քիչ է'),
+            kpi('Վազք 12 ամսում', fmt(km), 'կմ', withKm.length + ' մեքենա՝ վազքով'),
+            kpi('Ուշադրություն', fmt(high.length + none.length), 'մեքենա', why.length ? why.join(' · ') : 'բոլոր մեքենաները կարգին են',
+                why.length ? 'is-risk' : 'is-ok'));
+    }
+
+    // столбики по месяцам: ремонт — акцент, авария — risk, страховка и налог — серый; высота — от самого дорогого месяца
+    function renderChart() {
+        const months = state.data.months, max = Math.max(1, ...months.map(m => num(m.total) || 0));
+        const px = (v) => Math.round((num(v) || 0) / max * 150);
+        const top = months.reduce((a, m) => (num(m.total) || 0) > (num(a && a.total) || 0) ? m : a, null);
+        $('gjChart').setAttribute('aria-label', 'Ծախսերը ըստ ամիսների' + (top && num(top.total) ? '՝ ամենաշատը '
+            + monthHy(top.month) + '-ին, ' + short(top.total) : '՝ ծախս չկա'));
+        $('gjChart').replaceChildren(...months.map(m => h('div', { class: 'gj-col', title: monthHy(m.month) + ': վերանորոգում ' + fmt(m.repair)
+            + ' ֏, վթար ' + fmt(m.accident) + ' ֏, ապահովագրություն, հարկ ' + fmt(m.fixed) + ' ֏' },
+            h('span', { class: 'gj-col-v', text: num(m.total) ? fmt(m.total / 1000) : '' }),
+            h('span', { class: 'gj-col-b is-accident', style: 'height:' + px(m.accident) + 'px' }),
+            h('span', { class: 'gj-col-b is-repair', style: 'height:' + px(m.repair) + 'px' }),
+            h('span', { class: 'gj-col-b is-fixed', style: 'height:' + px(m.fixed) + 'px' }),
+            h('span', { class: 'gj-col-m', text: (MONTHS[+m.month.slice(5, 7) - 1] || '').slice(0, 1).toUpperCase() }))));
+    }
+
+    const RECENT_ICON = { repair: ['fa-wrench', 'is-acc'], accident: ['fa-car-burst', 'is-risk'], fixed: ['fa-shield-halved', ''],
+        odometer: ['fa-gauge', ''] };
+    function renderRecent() {
+        const rows = state.recent.filter(e => !e.deleted_at).slice(0, 5);
+        if (!rows.length) { $('gjRecent').replaceChildren(h('li', { class: 'gj-sub', text: 'Գրառումներ դեռ չկան' })); return; }
+        $('gjRecent').replaceChildren(...rows.map(e => {
+            const [ico, tone] = RECENT_ICON[e.kind] || RECENT_ICON.odometer;
+            return h('li', {}, h('span', { class: 'gj-recent-ico ' + tone, 'aria-hidden': 'true' }, icon(ico)),
+                h('span', { class: 'gj-recent-t' }, h('span', { class: 'gj-recent-what', text: e.what || KIND[e.kind] || e.kind }),
+                    h('span', { class: 'gj-sub', text: e.car_code + ' · ' + dayHy(e.day) + ' · ' + (KIND[e.kind] || e.kind) })),
+                h('span', { class: 'gj-recent-sum', text: e.kind === 'odometer' ? fmt(e.odometer_km) + ' կմ' : fmt(e.amount_amd) + ' ֏' }));
+        }));
     }
 
     function renderSummary() {
         const d = state.data, rules = d.rules;
+        const fleet = fleetPkm(d.summary);
+        if (d.months.length) $('gjPeriod').textContent = 'Վերջին 12 ամիս · ' + monthShort(d.months[0].month) + ' – ' + monthShort(d.months[d.months.length - 1].month);
+        renderKpis(fleet);
+        renderChart();
+        renderRecent();
+        const maxPrice = Math.max(0, ...d.summary.map(r => num(r.garage && r.garage.price) || 0));
         const avgLabel = (p) => p.scope === 'model' ? 'մոդելի միջին' + (p.model ? ' (' + p.model + ')' : '') : 'ավտոպարկի միջին';
         $('gjSumLead').textContent = 'Վերանորոգում ֏/կմ = վերանորոգման ծախսը ÷ վազքը նույն ժամանակահատվածում (բաշխված վերանորոգումից՝ '
             + 'այդ ամիսներին ընկնող մասը)։ Առաքման հաշվարկում է, երբ վազքը ծածկում է ' + rules.ready_months + ' ամիս և առնվազն '
             + fmt(rules.ready_km) + ' կմ, և այդ ընթացքում գրանցված է գոնե մեկ վերանորոգում։ Սեփական գինը մոտեցվում է նույն մոդելի '
             + '(կամ ամբողջ ավտոպարկի) միջինին՝ որքան քիչ կմ, այնքան ավելի (' + fmt(rules.blend_km) + ' կմ-ով)։ '
-            + 'Մինչ այդ հաշվարկում է կարգավորումների «մաշվածքը», իսկ եթե այն դատարկ է՝ մոդելի (կամ ավտոպարկի) միջինը։';
+            + 'Մինչ այդ հաշվարկում է կարգավորումների «մաշվածքը», իսկ եթե այն դատարկ է՝ մոդելի (կամ ավտոպարկի) միջինը։ '
+            + '«Բարձր ֏/կմ»՝ մեքենայի ֏/կմ-ը ավտոպարկի միջինից (հաշվարկում գտնվող մեքենաների վերանորոգումը ÷ նրանց կմ-ը) '
+            + Math.round((HIGH_PKM - 1) * 100) + '%-ով և ավելի բարձր է։';
         if (!d.summary.length) {
             $('gjSumRows').replaceChildren(h('tr', {}, h('td', { colspan: 8, class: 'rt-empty', text: 'Մեքենաներ չկան' })));
+            $('gjSumFoot').replaceChildren();
         } else {
             $('gjSumRows').replaceChildren(...d.summary.map(r => {
                 const g = r.garage;
@@ -518,8 +623,11 @@
                     : [];
                 if (r.stale) last.push(h('span', { class: 'rt-badge b-warn gj-stale', text: 'Լրացրեք վազքը' }));
                 // в расчёте — своя, сглаженная к средней модели (или парка): видно все три числа и что делится
+                const bar = (v) => h('span', { class: 'gj-pkm' }, h('b', { class: 'gj-price', text: fmt(v, 1) }),
+                    h('span', { class: 'rt-bar' + (isHigh(r, fleet) ? ' rt-bar--risk' : ''), 'aria-hidden': 'true' },
+                        h('span', { class: 'rt-bar__fill', style: 'width:' + (maxPrice ? Math.round(v / maxPrice * 100) : 0) + '%' })));
                 const price = g && g.price !== null
-                    ? [h('b', { class: 'gj-price', text: fmt(g.price, 1) }),
+                    ? [bar(g.price),
                         g.blend ? h('small', { class: 'gj-sub', text: 'սեփական՝ ' + fmt(g.own, 1) }) : null,
                         g.blend ? h('small', { class: 'gj-sub', text: (g.blend === 'model' ? g.model + '-ի միջին՝ ' : 'ավտոպարկի միջին՝ ') + fmt(g.model_price, 1) }) : null,
                         h('small', { class: 'gj-sub', text: fmt(g.cost_amd) + ' ֏ ÷ ' + fmt(g.km) + ' կմ' })]
@@ -535,16 +643,27 @@
                 // ремонт за 12 месяцев — полная сумма; «в расчёте» — с долями растянутых
                 const repair = g ? [h('span', { text: fmt(g.repair_amd) }),
                     g.status !== 'none' && g.cost_amd !== g.repair_amd ? h('small', { class: 'gj-sub', text: 'հաշվարկում՝ ' + fmt(g.cost_amd) }) : null] : ['—'];
-                return h('tr', { class: r.active ? null : 'is-closed' },
+                return h('tr', { class: [r.active ? null : 'is-closed', r.active && isHigh(r, fleet) ? 'is-problem' : null].filter(Boolean).join(' ') || null },
                     h('td', { class: 'rt-cell-name' }, h('span', { class: 'n', text: r.car_code }), h('span', { class: 'c', text: r.name || (r.active ? '' : 'չի աշխատում') })),
                     h('td', { class: 'gj-num w-half', 'data-label': 'Վերանորոգում, ֏' }, ...repair),
                     h('td', { class: 'gj-num w-half', 'data-label': 'Վթար, ֏', text: g ? fmt(g.accident_amd) : '—' }),
                     h('td', { class: 'gj-num w-half', 'data-label': 'Ապահովագրություն, հարկ, ֏', text: g ? fmt(g.fixed_amd) : '—' }),
                     h('td', { class: 'gj-num w-half', 'data-label': 'Կմ', text: g && g.status !== 'none' ? fmt(g.km) : '—' }),
-                    h('td', { class: 'gj-num w-half', 'data-label': 'Վերանորոգում, ֏/կմ' }, ...price),
-                    h('td', { class: 'w-half', 'data-label': 'Կարգավիճակ' }, statusBadge(r)),
+                    h('td', { class: 'gj-pkm-c w-half', 'data-label': 'Վերանորոգում, ֏/կմ' }, ...price),
+                    h('td', { class: 'w-half', 'data-label': 'Կարգավիճակ' }, statusBadge(r, fleet)),
                     h('td', { class: 'w-half', 'data-label': 'Վերջին վազքը' }, ...last));
             }));
+            // итог: суммы за 12 месяцев и средняя ֏/км парка (та же, что в показателе и в правиле «Բարձր ֏/կմ»)
+            const tot = (k) => d.summary.reduce((s, r) => s + (num(r.garage && r.garage[k]) || 0), 0);
+            const kmAll = d.summary.reduce((s, r) => s + (r.garage && r.garage.status !== 'none' ? num(r.garage.km) || 0 : 0), 0);
+            $('gjSumFoot').replaceChildren(h('tr', {},
+                h('td', { text: 'Ընդամենը' }),
+                h('td', { class: 'gj-num', 'data-label': 'Վերանորոգում, ֏', text: fmt(tot('repair_amd')) }),
+                h('td', { class: 'gj-num', 'data-label': 'Վթար, ֏', text: fmt(tot('accident_amd')) }),
+                h('td', { class: 'gj-num', 'data-label': 'Ապահ., հարկ, ֏', text: fmt(tot('fixed_amd')) }),
+                h('td', { class: 'gj-num', 'data-label': 'Կմ', text: fmt(kmAll) }),
+                h('td', { class: 'gj-pkm-c', 'data-label': 'Միջին, ֏/կմ' }, h('b', { class: 'gj-price', text: fleet.avg !== null ? fmt(fleet.avg, 1) : '—' })),
+                h('td', {}), h('td', {})));
         }
         $('gjMonthRows').replaceChildren(...d.months.slice().reverse().map(m => h('tr', {},
             h('td', { class: 'rt-cell-name' }, h('span', { class: 'n', text: monthHy(m.month) })),
@@ -801,6 +920,8 @@
     // ---------- загрузка ----------
     async function reload() {
         state.data = await api('/api/routes/garage');
+        // «Վերջին գրառումները» в «Ամփոփում» — без фильтров журнала
+        state.recent = (await api('/api/routes/garage/entries')).entries;
         fillCars();
         renderOdo();
         renderSummary();
@@ -808,10 +929,6 @@
         await loadEntries();
     }
 
-    // Пояснения «Ինչպե՞ս …» на телефоне свёрнуты — данные сразу под рукой; на ПК раскрыты (кнопки не видно)
-    function syncHelp() {
-        document.querySelectorAll('#gjPage details.gj-help').forEach(d => { d.open = !PHONE.matches; });
-    }
 
     // открылась клавиатура телефона (видимая часть окна заметно ниже) — поле, в котором пишут, не должно оказаться под
     // ней; прочие изменения высоты (панель адреса браузера при прокрутке) прокрутку не трогают
@@ -824,8 +941,6 @@
     }
 
     async function init() {
-        syncHelp();
-        PHONE.addEventListener('change', syncHelp);
         setStickyTop();
         window.addEventListener('resize', setStickyTop);
         if (window.visualViewport) window.visualViewport.addEventListener('resize', keepFieldVisible);
@@ -844,6 +959,10 @@
         $('gjAmount').addEventListener('input', syncSpread);
         $('gjSpread').addEventListener('change', () => { state.spreadTouched = true; state.spreadAuto = false; syncSpread(); });
         $('gjBannerGo').addEventListener('click', goStale);
+        $('gjGoOdo').addEventListener('click', goStale);
+        $('gjNew').addEventListener('click', newEntry);
+        $('gjFormClose').addEventListener('click', closeForm);
+        $('gjRecentAll').addEventListener('click', () => selectTab('gjTabCosts', true));
         $('gjCar').addEventListener('change', syncOdoHint);
         $('gjOdoForm').addEventListener('submit', saveOdo);
         const refilter = () => loadEntries().catch(e => showError(e.message));
@@ -855,6 +974,7 @@
         try {
             await reload();
             resetForm();
+            if (state.data.journal_empty) openForm();   // журнал пуст — сразу с чего начать
         } catch (e) {
             showError(e.message);
             $('gjRows').replaceChildren(h('tr', {}, h('td', { colspan: 7, class: 'rt-empty', text: 'Չհաջողվեց բեռնել' })));

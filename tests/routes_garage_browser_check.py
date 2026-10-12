@@ -19,7 +19,10 @@ E сохранение: пункт списка — в базе ровно ег�
 F правка: запись с текстом пункта — выбран он; с другим текстом — «Այլ…» и текст в поле; двигатель с 36 — срок 36 не
   тронут (и при повторном выборе двигателя), пояснение — 36; КПП без срока — открытие правки срок не ставит, пояснение —
   совет 24; страховка — свой список; старый текст длиннее 120 знаков правится (поле не короче него), потом снова 120;
-G телефон 390×860: список высотой ≥ 44 px, горизонтальной прокрутки нет.
+G телефон 390×860: список высотой ≥ 44 px, горизонтальной прокрутки нет;
+H Tesla+ (макет Garage.dc.html): журнал не пуст — форма свёрнута, «+ Նոր գրառում» раскрывает (aria-expanded), «Փակել» —
+  сворачивает и фокус на кнопке; «Ամփոփում» — 4 показателя, итог «Ընդամենը», статус каждой машины, 12 столбиков месяцев,
+  «Վերջին գրառումները»; все 4 вкладки в обеих темах на 390 / 1366 / 1920 — без горизонтальной прокрутки.
 Ошибки страницы (pageerror) и консоли — провал (кроме сетевых для внешних ресурсов — шрифты, CDN).
 """
 from __future__ import annotations
@@ -54,9 +57,13 @@ def options(page):
 
 
 def ready(page):
-    """Страница загрузила данные и собрала форму (машины и список «Ինչ է արվել» — после ответа сервера)."""
+    """Страница загрузила данные и собрала форму (машины и список «Ինչ է արվել» — после ответа сервера); форма записи
+    (Tesla+: раскрывается по «+ Նոր գրառում», пустой журнал — сразу) — открыта."""
     page.wait_for_selector('#gjCar option[value="CAR1"]', state='attached')
     page.wait_for_selector('#gjWhat option[value="__other"]', state='attached')
+    if page.is_hidden('#gjForm'):
+        page.click('#gjNew')
+    page.wait_for_selector('#gjForm:not([hidden])')
 
 
 def fill_entry(page, day, kind, km, amount=None, what=None, other=None):
@@ -253,6 +260,44 @@ def main() -> int:
             check(box and box['height'] >= 44, f'G список на телефоне высотой ≥ 44 px ({box and box["height"]})')
             check(not page.evaluate('document.documentElement.scrollWidth > document.documentElement.clientWidth'),
                   'G горизонтальной прокрутки нет')
+
+            # H Tesla+
+            page.set_viewport_size({'width': 1366, 'height': 900})
+            page.evaluate("localStorage.setItem('gjTab', 'gjTabCosts')")
+            page.reload()
+            page.wait_for_selector('#gjRows button[data-act="edit"]')
+            check(page.is_hidden('#gjForm') and page.get_attribute('#gjNew', 'aria-expanded') == 'false',
+                  'H журнал не пуст — форма свёрнута')
+            page.click('#gjNew')
+            check(page.is_visible('#gjForm') and page.get_attribute('#gjNew', 'aria-expanded') == 'true'
+                  and page.evaluate('document.activeElement.id') == 'gjCar', 'H «+ Նոր գրառում» — форма раскрыта, фокус на машине')
+            page.click('#gjFormClose')
+            check(page.is_hidden('#gjForm') and page.evaluate('document.activeElement.id') == 'gjNew', 'H «Փակել» — свёрнута, фокус на кнопке')
+            page.click('#gjTabSum')
+            page.wait_for_selector('#gjKpis .rt-kpi--card')
+            sm = page.evaluate("""() => ({ kpis: document.querySelectorAll('#gjKpis .rt-kpi--card').length,
+                foot: document.querySelector('#gjSumFoot td') && document.querySelector('#gjSumFoot td').textContent,
+                rows: document.querySelectorAll('#gjSumRows tr').length, pills: document.querySelectorAll('#gjSumRows .rt-status').length,
+                cols: document.querySelectorAll('#gjChart .gj-col').length, recent: document.querySelectorAll('#gjRecent li').length })""")
+            check(sm['kpis'] == 4 and sm['foot'] == 'Ընդամենը' and sm['rows'] >= 1 and sm['pills'] == sm['rows']
+                  and sm['cols'] == 12 and sm['recent'] >= 1, f'H «Ամփոփում» по макету: {sm}')
+            for theme in ('dark', 'light'):
+                for w, hh in ((390, 860), (1366, 900), (1920, 1080)):
+                    pt = browser.new_page(viewport={'width': w, 'height': hh})
+                    pt.on('pageerror', lambda e: errors.append(f'pageerror: {e}'))
+                    pt.on('console', lambda m: errors.append(f'console: {m.text}') if m.type == 'error' and not base.is_ignorable(m) else None)
+                    pt.add_init_script("try { localStorage.setItem('rtTheme', '%s'); } catch (e) {}" % theme)
+                    pt.goto(f'{BASE}/routes/garage')
+                    pt.wait_for_selector('#gjRows button[data-act="edit"]')
+                    wide = []
+                    for tab in ('gjTabCosts', 'gjTabOdo', 'gjTabSum', 'gjTabNorm'):
+                        pt.click('#' + tab)
+                        pt.wait_for_timeout(300)
+                        if pt.evaluate('document.documentElement.scrollWidth > document.documentElement.clientWidth'):
+                            wide.append(tab)
+                    check(not wide and pt.evaluate("document.documentElement.dataset.rtTheme") == theme,
+                          f'H {theme} {w}: 4 вкладки без горизонтальной прокрутки {wide}')
+                    pt.close()
             browser.close()
     finally:
         server.shutdown()

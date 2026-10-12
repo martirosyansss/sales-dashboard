@@ -1,5 +1,5 @@
 {% extends "routes_base.html" %}
-{#- пункт меню раздела слева (routes_base.html) -#}
+{#- текущая страница в верхней панели раздела (routes_base.html) -#}
 {% set rt_nav = '/routes/garage' %}
 
 {# снаружи (роль «Гараж», araqich.orix.am) — без названия программы, как страница входа #}
@@ -8,7 +8,6 @@
 {% block viewport %}width=device-width, initial-scale=1.0, viewport-fit=cover{% endblock %}
 
 {% block extra_css %}
-<meta name="theme-color" content="#0e1116">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400..700&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+Armenian:wght@300;400;500;600;700&display=swap" rel="stylesheet">
@@ -16,30 +15,41 @@
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=27">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_ui.css') }}?v=1">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_ui.css') }}?v=2">
 <!-- Журнал гаража (ответ владельца №53): страница на армянском, телефон и ПК — свои стили поверх routes.css -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_garage.css') }}?v=11">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_garage.css') }}?v=12">
 {% endblock %}
 
 {% block content %}
 <div class="rt-page" id="gjPage" lang="hy">
 
-    <header class="rt-head">
-        <div class="rt-head-row">
-            <h1 class="rt-title">Ավտոտնակ</h1>
-            <div class="rt-head-tools">
-                <!-- машины на карте сейчас (№76) — начальнику гаража и администратору -->
-                <a class="rt-btn rt-btn-ghost rt-btn-sm" href="/routes/live"><i class="fas fa-satellite-dish" aria-hidden="true"></i>Մեքենաները առցանց</a>
-                <!-- показатели водителей (№87) — гаражу без денег; у администратора — вкладка «Վարորդներ» выше -->
-                {% if is_garage %}<a class="rt-btn rt-btn-ghost rt-btn-sm" href="/routes/drivers"><i class="fas fa-id-card" aria-hidden="true"></i>Վարորդներ</a>{% endif %}
-            </div>
+    {#- Tesla+ (макет mockups/Garage.dc.html): заголовок, серая строка периода, справа — вкладки и действия; длинное
+        пояснение — по раскрытию «Ինչպե՞ս օգտվել». Карта машин и «Վարորդներ» — в верхней панели раздела. -#}
+    <header class="rt-pagehead gj-head">
+        <div class="gj-head-t">
+            <h1 class="rt-pagehead__title">Ավտոտնակ</h1>
+            <p class="rt-pagehead__sub" id="gjPeriod">Վերջին 12 ամիս</p>
+            <details class="gj-help gj-howto">
+                <summary><i class="fas fa-circle-question" aria-hidden="true"></i>Ինչպե՞ս օգտվել</summary>
+                <p class="rt-head-lead">Գրանցեք, թե որ մեքենայի վրա ինչ է փոխվել կամ վերանորոգվել, ինչ գնով և սպիդոմետրի ինչ ցուցմունքով։
+                Ամիսը մեկ անգամ լրացրեք բոլոր մեքենաների վազքը։ Ծրագիրը հաշվում է յուրաքանչյուր մեքենայի վերանորոգման ծախսը
+                մեկ կիլոմետրի համար (֏/կմ) վերջին 12 ամսում և, երբ վազքը ծածկում է 6 ամիս, օգտագործում է այն առաքման հաշվարկում։</p>
+            </details>
         </div>
-        <details class="gj-help" open>
-            <summary><i class="fas fa-circle-question" aria-hidden="true"></i>Ինչպե՞ս օգտվել այս էջից</summary>
-            <p class="rt-head-lead">Գրանցեք, թե որ մեքենայի վրա ինչ է փոխվել կամ վերանորոգվել, ինչ գնով և սպիդոմետրի ինչ ցուցմունքով։
-            Ամիսը մեկ անգամ լրացրեք բոլոր մեքենաների վազքը։ Ծրագիրը հաշվում է յուրաքանչյուր մեքենայի վերանորոգման ծախսը
-            մեկ կիլոմետրի համար (֏/կմ) վերջին 12 ամսում և, երբ վազքը ծածկում է 6 ամիս, օգտագործում է այն առաքման հաշվարկում։</p>
-        </details>
+        <div class="rt-pagehead__actions">
+            <div class="rt-seg--tabs gj-tabs" id="gjTabs" role="tablist" aria-label="Ավտոտնակի բաժիններ">
+                <button type="button" role="tab" id="gjTabCosts" aria-controls="gjCosts" aria-selected="true">
+                    <i class="fas fa-wrench" aria-hidden="true"></i>Ծախսեր</button>
+                <button type="button" role="tab" id="gjTabOdo" aria-controls="gjOdo" aria-selected="false" tabindex="-1">
+                    <i class="fas fa-gauge" aria-hidden="true"></i>Վազք</button>
+                <button type="button" role="tab" id="gjTabSum" aria-controls="gjSum" aria-selected="false" tabindex="-1">
+                    <i class="fas fa-chart-column" aria-hidden="true"></i>Ամփոփում</button>
+                <button type="button" role="tab" id="gjTabNorm" aria-controls="gjNorm" aria-selected="false" tabindex="-1">
+                    <i class="fas fa-gas-pump" aria-hidden="true"></i>Նորմ և փաստ</button>
+            </div>
+            <button id="gjGoOdo" type="button" class="rt-btn rt-btn--secondary">Լրացնել վազքը</button>
+            <button id="gjNew" type="button" class="rt-btn rt-btn--primary" aria-controls="gjForm" aria-expanded="false"><i class="fas fa-plus" aria-hidden="true"></i>Նոր գրառում</button>
+        </div>
     </header>
 
     <div id="gjStatus" class="rt-sr-only" role="status" aria-live="polite"></div>
@@ -54,22 +64,12 @@
         <span id="gjAlertText" class="rt-alert-text"></span>
     </div>
 
-    <div class="gj-tabs" id="gjTabs" role="tablist" aria-label="Ավտոտնակի բաժիններ">
-        <button type="button" role="tab" id="gjTabCosts" aria-controls="gjCosts" aria-selected="true">
-            <i class="fas fa-wrench" aria-hidden="true"></i>Ծախսեր</button>
-        <button type="button" role="tab" id="gjTabOdo" aria-controls="gjOdo" aria-selected="false" tabindex="-1">
-            <i class="fas fa-gauge" aria-hidden="true"></i>Վազք</button>
-        <button type="button" role="tab" id="gjTabSum" aria-controls="gjSum" aria-selected="false" tabindex="-1">
-            <i class="fas fa-chart-column" aria-hidden="true"></i>Ամփոփում</button>
-        <button type="button" role="tab" id="gjTabNorm" aria-controls="gjNorm" aria-selected="false" tabindex="-1">
-            <i class="fas fa-gas-pump" aria-hidden="true"></i>Նորմ և փաստ</button>
-    </div>
-
-    <!-- 1. Ծախսեր: форма записи и список записей -->
+    <!-- 1. Ծախսեր: форма записи (раскрывается по «+ Նոր գրառում» и «Փոխել»; пустой журнал — сразу) и список записей -->
     <section id="gjCosts" role="tabpanel" aria-labelledby="gjTabCosts">
-        <form id="gjForm" class="rt-card gj-form" novalidate>
+        <form id="gjForm" class="rt-card gj-form" novalidate hidden>
             <div class="rt-card-head">
                 <h2 class="rt-card-title" id="gjFormTitle"><i class="fas fa-plus" aria-hidden="true"></i>Նոր գրառում</h2>
+                <button id="gjFormClose" type="button" class="rt-btn rt-btn--ghost gj-form-close" aria-label="Փակել ձևը"><i class="fas fa-xmark" aria-hidden="true"></i>Փակել</button>
             </div>
             <div class="gj-grid">
                 <div class="rt-field">
@@ -167,7 +167,7 @@
             </div>
             <p id="gjTotal" class="gj-total" aria-live="polite"></p>
             <div class="rt-table-scroll gj-scroll">
-                <table class="rt-table gj-table gj-entries">
+                <table class="rt-table rt-table--lined gj-table gj-entries">
                     <caption class="rt-sr-only">Ավտոտնակի գրառումներ</caption>
                     <thead><tr>
                         <th scope="col">Ամսաթիվ</th><th scope="col">Մեքենա</th><th scope="col">Տեսակ</th>
@@ -192,7 +192,7 @@
                 <input id="gjOdoDay" class="rt-input gj-date" type="date" required>
             </div>
             <div class="rt-table-scroll gj-scroll">
-                <table class="rt-table gj-table gj-odo-table">
+                <table class="rt-table rt-table--lined gj-table gj-odo-table">
                     <caption class="rt-sr-only">Մեքենաների վազքը</caption>
                     <thead><tr>
                         <th scope="col">Մեքենա</th><th scope="col">Վերջին ցուցմունքը</th><th scope="col">Նոր ցուցմունք, կմ</th>
@@ -207,35 +207,46 @@
         </form>
     </section>
 
-    <!-- 3. Ամփոփում: по машинам за 12 месяцев и по месяцам -->
+    <!-- 3. Ամփոփում (макет Garage.dc.html): 4 показателя, по машинам за 12 месяцев, по месяцам, последние записи -->
     <section id="gjSum" role="tabpanel" aria-labelledby="gjTabSum" hidden>
-        <section class="rt-card" aria-labelledby="gjSumTitle">
+        <div class="gj-kpis" id="gjKpis" aria-label="Գլխավոր ցուցանիշներ"></div>
+        <div class="gj-sum-grid">
+        <section class="rt-card gj-sum-main" aria-labelledby="gjSumTitle">
             <div class="rt-card-head">
-                <h2 class="rt-card-title" id="gjSumTitle"><i class="fas fa-truck" aria-hidden="true"></i>Ըստ մեքենաների՝ վերջին 12 ամիս</h2>
+                <h2 class="rt-card-title" id="gjSumTitle">Ըստ մեքենաների</h2>
             </div>
-            <details class="gj-help" open>
+            <details class="gj-help">
                 <summary><i class="fas fa-circle-question" aria-hidden="true"></i>Ինչպե՞ս է հաշվարկվում</summary>
                 <p class="rt-card-lead" id="gjSumLead"></p>
             </details>
             <div class="rt-table-scroll gj-scroll">
-                <table class="rt-table gj-table gj-sum-table">
-                    <caption class="rt-sr-only">Ծախսերը և վերանորոգումը ֏/կմ ըստ մեքենաների</caption>
+                <table class="rt-table rt-table--lined gj-table gj-sum-table">
+                    <caption class="rt-sr-only">Ծախսերը և վերանորոգումը ֏/կմ ըստ մեքենաների՝ վերջին 12 ամիս</caption>
                     <thead><tr>
                         <th scope="col">Մեքենա</th><th scope="col" class="gj-num">Վերանորոգում, ֏</th>
-                        <th scope="col" class="gj-num">Վթար, ֏</th><th scope="col" class="gj-num">Ապահովագրություն, հարկ, ֏</th>
-                        <th scope="col" class="gj-num">Կմ</th><th scope="col" class="gj-num">Վերանորոգում, ֏/կմ</th>
+                        <th scope="col" class="gj-num">Վթար, ֏</th><th scope="col" class="gj-num">Ապահ., հարկ, ֏</th>
+                        <th scope="col" class="gj-num">Կմ</th><th scope="col" class="gj-pkm-h">Վերանորոգում, ֏/կմ</th>
                         <th scope="col">Կարգավիճակ</th><th scope="col">Վերջին վազքը</th>
                     </tr></thead>
                     <tbody id="gjSumRows"></tbody>
+                    <tfoot id="gjSumFoot"></tfoot>
                 </table>
             </div>
         </section>
+        <div class="gj-sum-side">
         <section class="rt-card" aria-labelledby="gjMonthsTitle">
             <div class="rt-card-head">
-                <h2 class="rt-card-title" id="gjMonthsTitle"><i class="fas fa-calendar" aria-hidden="true"></i>Ծախսերը ըստ ամիսների</h2>
+                <h2 class="rt-card-title" id="gjMonthsTitle">Ըստ ամիսների</h2>
+                <span class="gj-unit">հազ. ֏</span>
             </div>
+            <div class="gj-chart" id="gjChart" role="img" aria-label="Ծախսերը ըստ ամիսների"></div>
+            <div class="gj-chart-legend" aria-hidden="true">
+                <span><i class="is-repair"></i>Վերանորոգում</span><span><i class="is-accident"></i>Վթար</span>
+                <span><i class="is-fixed"></i>Ապահովագրություն, հարկ</span></div>
+            <details class="gj-help gj-months-more">
+                <summary><i class="fas fa-table" aria-hidden="true"></i>Աղյուսակով</summary>
             <div class="rt-table-scroll gj-scroll">
-                <table class="rt-table gj-table gj-months-table">
+                <table class="rt-table rt-table--lined gj-table gj-months-table">
                     <caption class="rt-sr-only">Բոլոր մեքենաների ծախսերը ըստ ամիսների</caption>
                     <thead><tr>
                         <th scope="col">Ամիս</th><th scope="col" class="gj-num">Վերանորոգում, ֏</th><th scope="col" class="gj-num">Վթար, ֏</th>
@@ -244,7 +255,17 @@
                     <tbody id="gjMonthRows"></tbody>
                 </table>
             </div>
+            </details>
         </section>
+        <section class="rt-card" aria-labelledby="gjRecentTitle">
+            <div class="rt-card-head">
+                <h2 class="rt-card-title" id="gjRecentTitle">Վերջին գրառումները</h2>
+                <button id="gjRecentAll" type="button" class="rt-btn rt-btn--ghost gj-recent-all">Բոլորը</button>
+            </div>
+            <ul class="gj-recent" id="gjRecent"></ul>
+        </section>
+        </div>
+        </div>
     </section>
     <!-- 4. Նորմ և փաստ: расход по заправкам против нормы «Развоза», км по GPS против плана — за месяц -->
     <section id="gjNorm" role="tabpanel" aria-labelledby="gjTabNorm" hidden>
@@ -258,7 +279,7 @@
                     <input id="gjNormMonth" class="rt-input gj-date" type="month">
                 </div>
             </div>
-            <details class="gj-help" open>
+            <details class="gj-help">
                 <summary><i class="fas fa-circle-question" aria-hidden="true"></i>Ինչպե՞ս է հաշվարկվում</summary>
                 <p class="rt-card-lead" id="gjNormLead"></p>
             </details>
@@ -267,7 +288,7 @@
                 <span id="gjNormEmptyText" class="rt-alert-text"></span>
             </div>
             <div class="rt-table-scroll gj-scroll">
-                <table class="rt-table gj-table gj-norm-table">
+                <table class="rt-table rt-table--lined gj-table gj-norm-table">
                     <caption class="rt-sr-only">Վառելիքի ծախսը և կիլոմետրերը՝ նորմ և փաստ ըստ մեքենաների</caption>
                     <thead><tr>
                         <th scope="col">Մեքենա</th><th scope="col" class="gj-num">Նորմ, լ/100 կմ</th>
@@ -303,5 +324,5 @@
         integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
 <!-- подложка карт раздела (№47) — без ключа Яндекса: страница открыта из интернета, ключ сюда не выдаётся → OpenStreetMap -->
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=4" data-yandex-key=""></script>
-<script src="{{ url_for('static', filename='js/routes_garage.js') }}?v=14"></script>
+<script src="{{ url_for('static', filename='js/routes_garage.js') }}?v=15"></script>
 {% endblock %}

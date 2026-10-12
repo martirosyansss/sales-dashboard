@@ -10,39 +10,33 @@
     /* viewport-fit=cover (routes_garage.html): в альбомной ориентации — не под вырезом камеры, внизу — не под полоской «домой» */
     padding: 0 env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
 }
-#gjPage .rt-title { font-size: clamp(1.5rem, 1.1rem + 1.6vw, 2.125rem); }
 /* не под прилипшими вкладками: карточка при переходе к ней, поле при фокусе (ошибка проверки, «Далее» на клавиатуре) */
-#gjPage .rt-card, #gjPage .rt-input, #gjPage .rt-select { scroll-margin-top: calc(var(--gj-top, 0px) + 84px); }
+#gjPage .rt-card, #gjPage .rt-input, #gjPage .rt-select { scroll-margin-top: 16px; }
 
 main:has(> #gjPage) { padding-top: 12px !important; }   /* py-4 дашборда — на телефоне лишний экранный отступ */
 
-/* Пояснения «Ինչպե՞ս …»: на ПК раскрыты всегда (кнопки нет), на телефоне свёрнуты (routes_garage.js syncHelp) */
+/* Пояснения «Ինչպե՞ս …» — свёрнуты, по нажатию (Tesla+: данные сразу под рукой, длинный текст — по раскрытию) */
 .gj-help > summary {
-    display: inline-flex; align-items: center; gap: 8px; min-height: 44px; margin-top: 4px; cursor: pointer; list-style: none;
-    color: var(--rt-acc); font-size: .9375rem; font-weight: 600;
+    display: inline-flex; align-items: center; gap: 8px; min-height: 36px; cursor: pointer; list-style: none;
+    color: var(--rt-acc); font-size: 12.5px; font-weight: 500;
 }
 .gj-help > summary::-webkit-details-marker { display: none; }
 .gj-help > summary:hover { color: var(--rt-acc-hover); }
-.gj-help > .rt-head-lead { margin-top: 2px; }
-@media (min-width: 576px) {
-    .gj-help > summary { display: none; }
-    .gj-help > .rt-head-lead { margin-top: 10px; }
-}
+.gj-help > .rt-head-lead, .gj-help > .rt-card-lead { margin-top: 2px; }
 
-/* Вкладки страницы: Ծախսեր · Վազք · Ամփոփում · Նորմ և փաստ — прилипают к верху (под шапкой, если она прилипает) */
-.gj-tabs {
-    position: sticky; top: calc(var(--gj-top, 0px) + env(safe-area-inset-top, 0px)); z-index: 20;
-    display: flex; gap: 4px; padding: 4px; margin: 16px 0 14px; max-width: 760px;
-    background: var(--rt-inset); border: 1px solid var(--rt-line); border-radius: 12px;
-}
-.gj-tabs button {
-    flex: 1 1 0; display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px;
-    padding: 0 12px; border: 0; border-radius: 9px; background: transparent; color: var(--rt-fg-dim);
-    font: 600 1rem var(--rt-font); cursor: pointer; transition: background .15s, color .15s;
-}
-.gj-tabs button:hover { color: var(--rt-fg); background: var(--rt-panel-2); }
-.gj-tabs button[aria-selected="true"] { background: var(--rt-acc-fill); color: var(--rt-acc-ink); }
-.gj-tabs button i { font-size: .9em; }
+/* Tesla+ (макет mockups/Garage.dc.html): шапка страницы — заголовок, строка периода, «Ինչպե՞ս օգտվել» по раскрытию;
+   справа вкладки-сегменты (routes_ui.css .rt-seg--tabs) и действия; панели — surface без рамки с тенью */
+.gj-head { margin-bottom: 14px; }
+.gj-head-t { min-width: 0; }
+.gj-howto { margin-top: 2px; }
+.gj-howto > .rt-head-lead { max-width: 80ch; }
+.gj-tabs > button i { display: none; }   /* как в макете — только подписи */
+#gjPage .rt-card { border: 0; box-shadow: var(--rt-shadow); padding: 16px 20px 18px; margin-bottom: 16px; }
+#gjPage .rt-card-title { font-size: 15px; font-weight: 600; }
+#gjPage .rt-card-title i { display: none; }
+#gjPage .rt-card-head { justify-content: space-between; }
+#gjPage .rt-table-scroll { border: 0; border-radius: 0; }   /* таблица — прямо на панели, строки линиями (rt-table--lined) */
+.gj-form-close { margin-left: auto; }
 
 /* Форма записи: крупные поля, на ПК — две колонки */
 .gj-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 18px; margin-top: 10px; }
@@ -60,11 +54,11 @@ main:has(> #gjPage) { padding-top: 12px !important; }   /* py-4 дашборда
 .gj-total { margin: 0 0 10px; font-weight: 700; font-size: 1.0625rem; }
 .gj-total:empty { display: none; }
 .gj-table .gj-num { text-align: right; white-space: nowrap; }
-.gj-table td.gj-num { font-family: var(--rt-mono); }
+.gj-table td.gj-num { font-variant-numeric: tabular-nums; }   /* Tesla+: цифры шрифтом интерфейса, ровными столбцами */
 .gj-table td.gj-num .gj-sub { white-space: normal; font-family: var(--rt-font); }   /* подписи цены — с переносом */
 .gj-table .rt-cell-name .n { white-space: nowrap; overflow-wrap: normal; }        /* номер машины — одной строкой */
 .gj-table td { vertical-align: middle; }
-.gj-day { font-family: var(--rt-mono); white-space: nowrap; }
+.gj-day { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .gj-what { overflow-wrap: anywhere; min-width: 160px; }
 .gj-what small, .gj-sub { display: block; font-size: .8125rem; color: var(--rt-fg-mute); }
 .gj-row-acts { display: inline-flex; gap: 6px; }
@@ -72,11 +66,53 @@ main:has(> #gjPage) { padding-top: 12px !important; }   /* py-4 дашборда
 .gj-gone.is-changed { color: var(--rt-warn); }
 .gj-acts { white-space: nowrap; }
 
+
+/* Ամփոփում: 4 показателя, слева таблица по машинам, справа месяцы и последние записи */
+.gj-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.gj-sum-grid { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; }
+.gj-sum-main { flex: 999 1 640px; min-width: 0; }
+.gj-sum-side { flex: 1 1 340px; min-width: 0; display: flex; flex-direction: column; }
+#gjPage .gj-sum-main { padding: 16px 0 6px; }
+#gjPage .gj-sum-main > .rt-card-head, #gjPage .gj-sum-main > .gj-help { padding: 0 20px; }
+.gj-sum-table { min-width: 860px; }
+.gj-pkm { display: flex; align-items: center; gap: 10px; min-width: 150px; }
+.gj-pkm .gj-price { font-family: var(--rt-font); font-size: 17px; font-weight: 300; min-width: 40px; }
+.gj-pkm .rt-bar { flex: 1 1 auto; min-width: 60px; }
+.gj-sum-table tfoot .gj-price { font-family: var(--rt-font); font-size: 17px; font-weight: 300; }
+.gj-unit { color: var(--rt-fg-dim); font-size: 12px; }
+.gj-chart { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 6px; align-items: end; height: 190px; margin-top: 6px; }
+.gj-col { display: flex; flex-direction: column; justify-content: flex-end; gap: 2px; height: 100%; min-width: 0; }
+.gj-col-v { font-size: 10.5px; color: var(--rt-fg-dim); text-align: center; white-space: nowrap; overflow: hidden; }
+.gj-col-b { display: block; border-radius: 3px; min-height: 0; }
+.gj-col-b[style="height:0px"] { display: none; }
+.gj-col-b.is-repair { background: var(--rt-acc-fill); }
+.gj-col-b.is-accident { background: var(--rt-danger); }
+.gj-col-b.is-fixed { background: var(--rt-muted-fill); }
+.gj-col-m { font-size: 10.5px; color: var(--rt-fg-dim); text-align: center; margin-top: 4px; }
+.gj-chart-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 12px 0 4px; color: var(--rt-fg-dim); font-size: 12px; }
+.gj-chart-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.gj-chart-legend i { width: 10px; height: 10px; border-radius: 3px; }
+.gj-chart-legend i.is-repair { background: var(--rt-acc-fill); }
+.gj-chart-legend i.is-accident { background: var(--rt-danger); }
+.gj-chart-legend i.is-fixed { background: var(--rt-muted-fill); }
+.gj-recent { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.gj-recent li { display: flex; align-items: center; gap: 12px; padding: 9px 0; }
+.gj-recent-ico {
+    flex: none; display: grid; place-items: center; width: 36px; height: 36px; border-radius: 10px;
+    background: var(--rt-chip); color: var(--rt-fg-dim);
+}
+.gj-recent-ico.is-acc { background: var(--rt-acc-glow); color: var(--rt-acc); }
+.gj-recent-ico.is-risk { background: var(--rt-danger-bg); color: var(--rt-danger); }
+.gj-recent-t { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+.gj-recent-what { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gj-recent-sum { font-weight: 500; white-space: nowrap; }
+.gj-recent-all { height: 32px; padding: 0 8px; }
+
 /* Пробег и итоги */
 .gj-odo-day { max-width: 240px; }
 .gj-odo-table .rt-input { height: 46px; font-size: 1rem; max-width: 220px; }
-.gj-km { font-family: var(--rt-mono); }
-.gj-price { font-family: var(--rt-mono); font-size: 1.0625rem; }
+.gj-km { font-variant-numeric: tabular-nums; }
+.gj-price { font-size: 1.0625rem; font-variant-numeric: tabular-nums; }
 .gj-stale { margin-top: 4px; }
 .gj-sub + .gj-stale { margin-top: 6px; }
 /* Плашка «пробег не вносился» и подсветка этих машин в «Վազք»; подсказка растянуть крупный ремонт */
@@ -136,21 +172,17 @@ main:has(> #gjPage) { padding-top: 12px !important; }   /* py-4 дашборда
     .gj-map { height: 60vh; height: 60svh; min-height: 280px; max-height: 560px; margin: 8px -18px; border-radius: 0; }
 }
 @media (max-width: 575px) {
-    #gjPage .rt-head { padding: 14px 16px 8px; margin-bottom: 12px; }
     .gj-banner .rt-btn { flex: 1 1 100%; margin-left: 0; }
-    /* вкладки — во всю ширину экрана, 4 в ряд: значок над подписью, длинная подпись — в 2 строки */
-    .gj-tabs {
-        max-width: none; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px;
-        margin: 12px -12px 14px; padding: 6px 12px; border-radius: 0; border-left: 0; border-right: 0;
-        background: var(--rt-bg); box-shadow: var(--rt-shadow-sm);
-    }
-    .gj-tabs button {
-        flex-direction: column; gap: 4px; min-height: 56px; padding: 6px 2px;
-        font-size: .875rem; line-height: 1.15; text-align: center; white-space: normal; overflow-wrap: anywhere;
-    }
-    .gj-tabs button i { font-size: 1.125rem; }
-    .gj-tabs button:not([aria-selected="true"]) { background: var(--rt-panel); }
+    /* шапка: вкладки — во всю ширину, 2 × 2, кнопки действий — следом по половине */
+    .gj-head .rt-pagehead__actions { width: 100%; }
+    .gj-tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; border-radius: 18px; }
+    .gj-tabs > button { height: 44px; white-space: normal; line-height: 1.15; }
+    .gj-head .rt-pagehead__actions > .rt-btn { flex: 1 1 0; }
     #gjPage .rt-card { padding: 14px 14px 16px; }
+    #gjPage .gj-sum-main { padding: 14px 14px 6px; }
+    #gjPage .gj-sum-main > .rt-card-head, #gjPage .gj-sum-main > .gj-help { padding: 0; }
+    .gj-sum-table { min-width: 0; }
+    .gj-pkm { min-width: 0; }
     .gj-form .gj-actions, #gjOdoForm .gj-actions { margin: 8px -14px -16px; padding-left: 14px; padding-right: 14px; }
     .gj-map { margin: 8px -14px; }
 
