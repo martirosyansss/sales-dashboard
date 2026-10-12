@@ -388,14 +388,25 @@ def pick_orders(orders: Sequence[DispatchOrder], day: date, view: RoutesView, ca
     return [o for o in active if owner.get(o.isn) == car_code]
 
 
-def invoice_owner(view: RoutesView, car_code: str) -> Callable[[int], bool]:
-    """Клиент, чью накладную без машины (fDELIVERYCAR пуст) везёт машина: план выпущен — клиент только в рейсах этой
-    машины (клиент в рейсах нескольких машин — накладная ничья, иначе одну сумму взяли бы два водителя; офис ставит
-    машину в ERP, plan_mismatches это показывает); план не выпущен или его нет (№80) — ничья."""
+def invoice_owner(view: RoutesView, car_code: str) -> Callable[..., bool]:
+    """Чья накладная без машины (fDELIVERYCAR пуст): (клиент, parents — fISN заказов накладной, DOCPARENTS) → везёт ли её
+    машина. План не выпущен или его нет (№80) — ничья.
+    Снимок отправки с заказами (view.published, один заказ ERP — одна машина): накладная — машины её заказа с наименьшим
+    fISN среди отправленных (накладная из заказов двух машин — ровно у одной, ревью ветки 12.10); заказов накладной ещё не
+    знаем (parents пуст — отбор заказов машины до чтения накладных) — да: заказы и так только этой машины.
+    Снимок без заказов — по клиенту, как раньше: клиент только в рейсах этой машины (клиент нескольких машин — накладная
+    ничья, иначе одну сумму взяли бы два водителя; офис ставит машину в ERP, plan_mismatches это показывает)."""
     if not view.released:
-        return lambda cid: False
+        return lambda cid, parents=(): False
     owners = view.plan_trucks()
-    return lambda cid: owners.get(cid) == {car_code}
+    published = view.published
+
+    def owns(cid: int, parents: Sequence[str] = ()) -> bool:
+        if published is not None:
+            mine = sorted(p for p in parents if p in published)
+            return not parents or (published[mine[0]] == car_code if mine else owners.get(cid) == {car_code})
+        return owners.get(cid) == {car_code}
+    return owns
 
 
 def distance_fn(view: RoutesView, points: Sequence[Point]) -> Distance | None:

@@ -733,7 +733,7 @@ OrdersPick = Callable[[Sequence[DispatchOrder], Callable[[Sequence[int]], dict[i
 
 
 def load_day(connection_string: str, car_code: str, day: date, orders_window: tuple[date, date],
-             pick_orders: OrdersPick, invoice_owner: Callable[[int], bool] | None = None) -> DayData:
+             pick_orders: OrdersPick, invoice_owner: Callable[..., bool] | None = None) -> DayData:
     """Всё для /day машины на дату — одним read-only соединением.
 
     Точки — по клиенту (docstring модуля): проведённые накладные машины на дату (с машиной в накладной или без
@@ -743,13 +743,18 @@ def load_day(connection_string: str, car_code: str, day: date, orders_window: tu
     conn = erp.connect(connection_string)
     try:
         sales = day_sales(conn, car_code, day)
+        own = {d.isn for d in sales}
         picked = pick_orders(erp.dispatch_orders(conn, *orders_window), lambda ids: erp.place_texts(conn, ids))
         shipped = [o.isn for o in picked if o.shipped is not None
                    and invoice_owner is not None and invoice_owner(o.customer_id)]
         if shipped:
-            own = {d.isn for d in sales}
             sales += [d for d in plan_sales(conn, shipped, day) if d.isn not in own]
         parents = sale_parents(conn, [d.isn for d in sales]) if sales else {}
+        if invoice_owner is not None and len(sales) > len(own):
+            # накладная без машины из заказов разных машин (ревью ветки 12.10, P1) — у одной: владелец по её заказам
+            # (routes_link.invoice_owner с parents), а не у каждой машины, чей заказ в ней есть
+            sales = [d for d in sales if d.isn in own
+                     or invoice_owner(d.customer_id, [r[2:] for r in parents.get(d.isn, ())])]
         sales = [Doc(d.stop_id, d.source, d.isn, d.doc_number, d.customer_id, d.agent_id, d.pay_type, d.amount,
                      parents.get(d.isn, ())) for d in sales]
         pending = pending_orders(picked, sales)

@@ -1594,7 +1594,7 @@ def test_load_day_plan_invoice_without_car(fake_erp):
                            ((ISN[4], '000318004', 13, 7, '1', 900), ISN[3])]
     fake_erp.parents = [(ISN[0], ISN[2]), (ISN[4], ISN[3])]
     data = ed.load_day('cs', '991AT61', d, (date(2026, 9, 29), d), lambda orders, places: [o for o in orders if o.customer_id == 11],
-                       lambda cid: True)
+                       lambda cid, parents=(): True)
     assert [(x.stop_id, x.source, x.amount, x.replaces) for x in data.docs] == [
         (f'S:{ISN[0]}', 'invoice', 18000, (f'O:{ISN[2]}',))]
     i = next(i for i, sql in enumerate(fake_erp.calls) if sql.startswith(ed.SQL_PLAN_SALES.split('{')[0]))
@@ -1608,11 +1608,11 @@ def test_load_day_plan_invoice_not_doubled_and_skipped_without_shipped(fake_erp)
     fake_erp.sales = [(ISN[0], '000318001', 11, 7, '1', 18000)]
     fake_erp.orders = [(ISN[2], 'Z0011', date(2026, 10, 1), 11, 7, '991AT61', 18000, 10, d, 0, None)]
     fake_erp.plan_sales = [((ISN[0], '000318001', 11, 7, '1', 18000), ISN[2])]   # подмена не фильтрует машину
-    data = ed.load_day('cs', '991AT61', d, (date(2026, 9, 29), d), lambda orders, places: list(orders), lambda cid: True)
+    data = ed.load_day('cs', '991AT61', d, (date(2026, 9, 29), d), lambda orders, places: list(orders), lambda cid, parents=(): True)
     assert [x.stop_id for x in data.docs] == [f'S:{ISN[0]}']
     fake_erp.calls.clear()
     fake_erp.orders = [(ISN[1], 'Z0012', date(2026, 10, 1), 12, 7, '991AT61', 3600, 5, None, 0, None)]
-    ed.load_day('cs', '991AT61', d, (date(2026, 9, 29), d), lambda orders, places: list(orders), lambda cid: True)
+    ed.load_day('cs', '991AT61', d, (date(2026, 9, 29), d), lambda orders, places: list(orders), lambda cid, parents=(): True)
     assert not any(sql.startswith(ed.SQL_PLAN_SALES.split('{')[0]) for sql in fake_erp.calls)
 
 
@@ -1763,7 +1763,7 @@ def test_load_day_plan_invoice_from_two_orders_in_two_chunks(fake_erp, monkeypat
     row = (ISN[0], '000318001', 11, 7, '1', 18000)
     fake_erp.plan_sales = [(row, ISN[2]), (row, ISN[3])]
     fake_erp.parents = [(ISN[0], ISN[2]), (ISN[0], ISN[3])]
-    data = ed.load_day('cs', 'A', d, (date(2026, 9, 29), d), lambda o, places: list(o), lambda cid: True)
+    data = ed.load_day('cs', 'A', d, (date(2026, 9, 29), d), lambda o, places: list(o), lambda cid, parents=(): True)
     assert [(x.stop_id, x.replaces) for x in data.docs] == [(f'S:{ISN[0]}', (f'O:{ISN[2]}', f'O:{ISN[3]}'))]
 
 

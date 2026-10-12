@@ -696,3 +696,15 @@ def test_rebuilt_driver_seat_is_unsent_and_paper_is_draft(client, monkeypatch):
     wbill = _ok(client.get('/api/routes/dispatch/waybill', query_string={'date': '2026-10-01', 'truck': car, 'rev': d['rev']}))
     assert wbill['draft'] is True and wbill['driver'] == 'Կարեն'
 
+
+def test_courier_shared_invoice_without_car_belongs_to_one_truck():
+    """Класс P1 (терминал): накладная без машины из заказов двух машин — у одной (машина её наименьшего отправленного заказа),
+    а не у обеих; накладная заказа машины у клиента нескольких машин — её (раньше — ничья: заказ пропадал у обеих)."""
+    from courier import routes_link as rl
+    a, b = _isn(1), _isn(2)
+    view = rl.RoutesView(plan_exists=True, released=True, trips=(('A', (101,)), ('B', (101,))), published={a: 'A', b: 'B'})
+    assert rl.invoice_owner(view, 'A')(101, [a, b]) and not rl.invoice_owner(view, 'B')(101, [a, b])
+    assert rl.invoice_owner(view, 'B')(101, [b]) and not rl.invoice_owner(view, 'A')(101, [b])
+    assert rl.invoice_owner(view, 'A')(101) and rl.invoice_owner(view, 'B')(101)     # до чтения накладных — заказы машины
+    legacy = rl.RoutesView(plan_exists=True, released=True, trips=view.trips)
+    assert not rl.invoice_owner(legacy, 'A')(101, [a]) and not rl.invoice_owner(legacy, 'B')(101)   # как раньше — ничья
