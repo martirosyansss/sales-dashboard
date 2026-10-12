@@ -111,7 +111,7 @@ def test_garage_role_sees_only_its_pages(client, url):
     hrefs = set(re.findall(r'href="([^"]+)"', top))
     assert hrefs == set(GARAGE_PAGES)                       # ни настроек, ни разделов дашборда, ни чужих страниц
     assert 'rtTopApps' not in top and 'data-rt-pop aria-expanded="false" aria-controls="rtTopG' not in top
-    assert 'action="/logout"' in top and 'Ելք' in top and 'class="rt-page" id=' in html
+    assert 'action="/logout"' in top and 'Ելք' in top and re.search(r'class="rt-page[^"]*" id=', html)
     assert 'app-nav' not in html and 'gj-nav' not in html
 
 

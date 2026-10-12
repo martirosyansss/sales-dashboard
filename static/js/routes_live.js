@@ -569,10 +569,14 @@
                     a.sev ? h('span', { class: 'rt-sr-only', text: SEV[a.sev][1] + (a.fresh ? ', նոր' : '') }) : null),
                     h('div', { class: 'lv-item-name', text: [t.name, t.driver].filter(Boolean).join(' · ') || label })),
                 h('div', { class: 'lv-item-right' },
+                    // Tesla+: «закрыто / всего» магазинов — крупно справа (те же числа, что в строке ниже)
+                    t.stores.total ? h('span', { class: 'lv-item-done', 'aria-hidden': 'true' }, String(t.stores.done), h('small', { text: '/' + t.stores.total })) : null,
                     // скорость — только у свежей точки: у давней (нет связи) она уже не «сейчас»
                     pos && pos.speed_kmh !== null && ageClass(pos.age_s) === '' ? h('div', { class: 'lv-item-speed', text: pos.speed_kmh + ' կմ/ժ' }) : null,
                     t.alerts.count ? h('span', { class: 'lv-badge', title: 'Այսօրվա ահազանգեր' }, icon('fa-bell'), String(t.alerts.count)) : null),
-                h('div', { class: 'lv-item-meta' }, ...meta));
+                h('div', { class: 'lv-item-meta' }, ...meta),
+                t.stores.total ? h('span', { class: 'lv-item-bar', 'aria-hidden': 'true' },
+                    h('i', { style: 'width:' + Math.min(100, Math.round(t.stores.done / t.stores.total * 100)) + '%' })) : null);
             item.addEventListener('click', () => select(t.car_code));
             item.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); select(t.car_code); } });
             return item;
@@ -622,6 +626,40 @@
             p.ex ? explainButton(car, p.ex, car + ' · ' + p.text) : null);
     }
 
+    // ---------- раскладка Tesla+ ----------
+    // ПК (≥ 900 px): «сцена» с картой — от своего верха до низа окна; панели слева и справа кончаются над полосой снизу
+    // (её высота меняется: повтор дня есть только у выбранной машины с треком) — routes_live.css, --lv-stage-h / --lv-bottom-h
+    const WIDE = window.matchMedia('(min-width: 900px)');
+    function fitStage() {
+        const lay = document.querySelector('.lv-layout'), bottom = document.querySelector('.lv-bottom');
+        if (!lay) return;
+        const top = lay.getBoundingClientRect().top + window.scrollY;
+        lay.style.setProperty('--lv-stage-h', Math.max(560, window.innerHeight - top - 16) + 'px');
+        lay.style.setProperty('--lv-bottom-h', (WIDE.matches && bottom ? bottom.offsetHeight + 24 : 112) + 'px');
+        if (state.map) state.map.invalidateSize({ pan: false });
+    }
+    window.addEventListener('resize', fitStage);
+    // сколько карты закрыто панелями (ПК): слева машины, справа тревоги и карточка, снизу полоса — показ машины и дня
+    // центрируется в видимой части карты, а не под панелью
+    function covers() {
+        if (!WIDE.matches || !state.map) return { l: 0, r: 0, b: 0 };
+        const m = $('lvMap').getBoundingClientRect(), side = document.querySelector('.lv-side').getBoundingClientRect();
+        const right = [...document.querySelectorAll('.lv-right > :not([hidden])')].map(e => e.getBoundingClientRect().left);
+        const bottom = document.querySelector('.lv-bottom').getBoundingClientRect();
+        return { l: Math.max(0, side.right - m.left), r: right.length ? Math.max(0, m.right - Math.min(...right)) : 0,
+                 b: Math.max(0, m.bottom - bottom.top) };
+    }
+    const fitPad = () => { const c = covers(); return { paddingTopLeft: [c.l + 12, 12], paddingBottomRight: [c.r + 12, c.b + 12] }; };
+    function panVisible(latlng) {
+        const c = covers(), z = state.map.getZoom();
+        const p = state.map.project(latlng, z).add([(c.r - c.l) / 2, c.b / 2]);
+        state.map.panTo(state.map.unproject(p, z), { animate: !reduced() });
+    }
+    if (typeof window.ResizeObserver !== 'undefined') {
+        const ro = new ResizeObserver(() => fitStage());
+        document.querySelectorAll('.lv-bottom, .lv-head').forEach(el => ro.observe(el));
+    }
+
     // ---------- карта ----------
     function initMap() {
         if (typeof window.L === 'undefined' || typeof window.RoutesBasemap === 'undefined') {
@@ -638,6 +676,7 @@
         state.map.on('zoomend', drawArrows);
         state.map.on('click', forgetHover);   // касание мимо линии на телефоне — подсказку убрать
         state.map.on('mouseout', forgetHover);   // курсор ушёл с карты (линию перерисовал опрос — её mouseout не придёт)
+        fitStage();
         // тема ☀/☾ сменилась: слои — новыми цветами на месте (вид карты и воспроизведение не сбрасываются)
         document.addEventListener('rt-theme-change', () => {
             const restyle = (l) => { if (l.options && l.options.rtStyle) l.setStyle(l.options.rtStyle()); };
@@ -699,7 +738,7 @@
         if (!state.fitted && seen.size) {
             const pts = trucks.filter(t => t.position).map(t => [t.position.lat, t.position.lon]);
             if (state.data.depot) pts.push(state.data.depot);
-            state.map.fitBounds(L.latLngBounds(pts).pad(0.25), { maxZoom: 14 });
+            state.map.fitBounds(L.latLngBounds(pts).pad(0.25), { maxZoom: 14, ...fitPad() });
             state.fitted = true;
         }
         if (!state.zone && state.data.center_zone && state.data.center_zone.length >= 3) {   // малый центр — тонкий контур
@@ -1478,7 +1517,7 @@
         rp.ghost = L.circleMarker(t.track[0], { radius: 9, ...paint({ color: '--rt-map-ink', fillColor: '--rt-fg' }), weight: 3, fillOpacity: 1, interactive: false })
             .addTo(state.layer);
         // один раз показать весь день; без анимации, если пользователь просил меньше движения
-        state.map.fitBounds(L.latLngBounds(t.track).pad(0.15), { maxZoom: 15, animate: !reduced() });
+        state.map.fitBounds(L.latLngBounds(t.track).pad(0.15), { maxZoom: 15, animate: !reduced(), ...fitPad() });
         $('lvReplayExit').hidden = false;
         return true;
     }
@@ -1623,7 +1662,7 @@
         if (state.data) { renderList(state.data.trucks); renderMarkers(state.data.trucks); }
         refresh().then(() => {
             const t = state.detail;
-            if (t && t.position && state.map) state.map.panTo([t.position.lat, t.position.lon], { animate: !reduced() });
+            if (t && t.position && state.map) panVisible([t.position.lat, t.position.lon]);
             if (t) focusCard();
         });
     }

@@ -651,23 +651,23 @@ def alarm2_checks(browser, base, cars, check, clear_acks, errors) -> None:
     bad.close()
     clear_acks()
 
-    # раскладка: страница — контейнер lvpage (три колонки — от 1241 px ширины самой страницы). Администратор — слева меню
-    # «Маршрутов» (Tesla+, 11.10): меню слева больше нет — у всех ролей верхняя панель раздела и ширина «Гаража»: три колонки. Машина не выбрана — карта
-    # до правого края раскладки (в три колонки — и на месте карточки); выбрана — в три колонки карточка справа и карта уже,
-    # в две — карточка под картой, ширина карты та же; Leaflet пересчитал размер — выбранная машина посередине карты
+    # раскладка Tesla+ (макет Live.dc.html): карта — во всю «сцену» (до правого края и низа окна), панели поверх неё;
+    # машина не выбрана — карточки нет; выбрана — карточка справа поверх карты (не шире половины), карта той же ширины,
+    # машина — посередине ВИДИМОЙ части карты (между панелью машин и карточкой; Leaflet знает размер); выбор снят — как было
     def boxes(p):
         return p.evaluate("""() => { const r = (s) => document.querySelector(s).getBoundingClientRect();
-            const l = r('.lv-layout'), m = r('.lv-mapbox'), c = r('#lvCard');
-            return { layR: l.right, mapR: m.right, mapW: m.width, mapB: m.bottom, cardL: c.left, cardT: c.top, cardW: c.width,
-                     cols: getComputedStyle(document.querySelector('.lv-layout')).gridTemplateColumns.split(' ').length }; }""")
+            const l = r('.lv-layout'), m = r('.lv-mapbox'), c = r('#lvCard'), sd = r('.lv-side'), bt = r('.lv-bottom');
+            return { layL: l.left, layR: l.right, layW: l.width, layB: l.bottom, mapR: m.right, mapW: m.width, mapB: m.bottom,
+                     sideL: sd.left, sideR: sd.right, botT: bt.top, cardL: c.left, cardR: c.right, cardB: c.bottom, cardW: c.width,
+                     vh: innerHeight }; }""")
     for width, role in ((1366, 'admin'), (1440, 'admin'), (1366, 'garage'), (1440, 'garage')):
         name = f'{width} px, {"администратор" if role == "admin" else "«Гараж»"}, верхняя панель'
         p = open_page(role, viewport={'width': width, 'height': 900})
         menu = p.locator('#rtTop').count() == 1
         free = boxes(p)
-        three = True
-        check(menu and free['cols'] == (3 if three else 2) and not p.is_visible('#lvCard')
-              and abs(free['mapR'] - free['layR']) <= 1, f'круг 2, {name}: без выбора карта до правого края ({free})')
+        check(menu and not p.is_visible('#lvCard') and abs(free['mapR'] - free['layR']) <= 1 and abs(free['mapW'] - free['layW']) <= 1
+              and free['layB'] <= free['vh'] + 1 and free['sideL'] >= free['layL'] and free['sideR'] < free['layL'] + free['layW'] / 2,
+              f'круг 2, {name}: без выбора карта во всю сцену до низа окна, машины — панелью слева поверх ({free})')
         if (width, role) == (1440, 'garage'):
             p.screenshot(path=str(SHOTS / 'live_alarm2_wide_noselect.png'))
         if (width, role) == (1366, 'admin'):
@@ -676,25 +676,21 @@ def alarm2_checks(browser, base, cars, check, clear_acks, errors) -> None:
         p.wait_for_selector('#lvCard:not([hidden]) .lv-grid dt')
         p.wait_for_timeout(900)
         sel = boxes(p)
-        if three:
-            ok = sel['mapR'] <= sel['cardL'] and sel['mapW'] < free['mapW'] - 300 and sel['cardW'] >= 330
-        else:
-            ok = sel['cardT'] >= sel['mapB'] and abs(sel['mapW'] - free['mapW']) <= 1 and abs(sel['mapR'] - sel['layR']) <= 1
-        check(p.is_visible('#lvCard') and ok, f'круг 2, {name}: выбрана машина — карточка '
-              f'{"справа, карта уже" if three else "под картой, карта той же ширины"} ({sel})')
-        # со старым размером (без invalidateSize) машина после panTo оказалась бы правее середины — Leaflet считал бы карту шире
+        ok = (sel['cardL'] > sel['layL'] + sel['layW'] / 2 and sel['cardR'] <= sel['layR'] and sel['cardB'] <= sel['botT']
+              and sel['cardW'] >= 330 and abs(sel['mapW'] - free['mapW']) <= 1)
+        check(p.is_visible('#lvCard') and ok, f'круг 2, {name}: выбрана машина — карточка справа поверх карты, над полосой снизу ({sel})')
         mid = p.evaluate("""car => { const m = [...document.querySelectorAll('.lv-marker')].find(x =>
             x.querySelector('.lv-marker-plate').textContent === car).getBoundingClientRect();
-            const b = document.querySelector('#lvMap').getBoundingClientRect();
-            return [Math.round(m.left + m.width / 2), Math.round(b.left + b.width / 2)]; }""", cars[0])
-        check(abs(mid[0] - mid[1]) <= 12, f'круг 2, {name}: размер карты пересчитан — машина посередине карты ({mid})')
-        p.locator(f'.lv-item[data-car="{cars[0]}"]').click()   # снять выбор — снова на всю ширину
+            const sd = document.querySelector('.lv-side').getBoundingClientRect(), c = document.querySelector('#lvCard').getBoundingClientRect();
+            return [Math.round(m.left + m.width / 2), Math.round((sd.right + c.left) / 2)]; }""", cars[0])
+        check(abs(mid[0] - mid[1]) <= 16, f'круг 2, {name}: машина — посередине видимой части карты ({mid})')
+        p.locator(f'.lv-item[data-car="{cars[0]}"]').click()   # снять выбор
         p.wait_for_timeout(600)
         back = boxes(p)
-        check(abs(back['mapR'] - back['layR']) <= 1 and abs(back['mapW'] - free['mapW']) <= 1,
-              f'круг 2, {name}: выбор снят — карта снова до края ({back})')
+        check(not p.is_visible('#lvCard') and abs(back['mapR'] - back['layR']) <= 1 and abs(back['mapW'] - free['mapW']) <= 1,
+              f'круг 2, {name}: выбор снят — карточки нет, карта та же ({back})')
         p.close()
-    # телефон: раскладка прежняя (карта во всю ширину, без горизонтальной прокрутки), баннер и строки круга 2
+    # телефон: панели листом под картой (карта во всю ширину, без горизонтальной прокрутки), баннер и строки круга 2
     phone = open_page(viewport={'width': 390, 'height': 860}, is_mobile=True, has_touch=True)
     pb = phone.evaluate("() => [document.querySelector('.lv-mapbox').getBoundingClientRect().width, "
                         "document.querySelector('.lv-layout').getBoundingClientRect().width]")
@@ -964,20 +960,19 @@ def main() -> int:
                 page.wait_for_timeout(16000)
                 check(len(polls) > n, f'опрос раз в 15 с ({n} → {len(polls)})')
 
-                # меню слева больше нет (Tesla+, 11.10: верхняя панель раздела) — и в 1366×650 три колонки, карточка справа на
-                # виду (окно низкое — страница может чуть прокрутиться к ней); 1920 — три колонки, без прокрутки
-                for w, h, cols in ((1366, 650, 3), (1920, 1080, 3)):
+                # Tesla+: карта во всю «сцену», карточка выбранной машины — справа поверх карты и на экране (1366×650 — окно
+                # ниже сцены, страница может чуть прокрутиться; 1920×1080 — без прокрутки)
+                for w, h in ((1366, 650), (1920, 1080)):
                     pc = browser.new_page(viewport={'width': w, 'height': h})
                     pc.on('pageerror', lambda e: errors.append(str(e)))
                     pc.goto(base + '/routes/live')
                     pc.wait_for_selector('.lv-item')
-                    n_cols = pc.eval_on_selector('.lv-layout', "e => getComputedStyle(e).gridTemplateColumns.split(' ').length")
                     pc.locator(f'.lv-item[data-car="{cars[0]}"]').click()
                     pc.wait_for_selector('#lvCard:not([hidden]) .lv-grid dt')
                     pc.wait_for_timeout(900)
-                    top, sy = pc.evaluate("[document.getElementById('lvCard').getBoundingClientRect().top, scrollY]")
-                    check(n_cols == cols and 0 <= top < h - 120 and (h < 700 or sy == 0),
-                          f'{w}×{h}: {n_cols} колонки, выбранная машина — карточка на экране (верх {round(top)}, прокрутка {sy})')
+                    top, left, sy = pc.evaluate("[...(r => [r.top, r.left])(document.getElementById('lvCard').getBoundingClientRect()), scrollY]")
+                    check(0 <= top < h - 120 and left > w / 2 and (h < 700 or sy == 0),
+                          f'{w}×{h}: выбранная машина — карточка справа на экране (верх {round(top)}, слева {round(left)}, прокрутка {sy})')
                     if w == 1366:
                         out = ROOT / 'output' / 'routes-top'
                         out.mkdir(parents=True, exist_ok=True)
@@ -1036,6 +1031,20 @@ def main() -> int:
                       'тревоги, телефон: звук после перезагрузки — касание страницы его включает')
                 phone.close()
                 alarm2_checks(browser, base, cars, check, clear_acks, errors)
+                # Tesla+: обе темы на 390 / 1366 / 1920 — без горизонтальной прокрутки, без ошибок; на 390 карта видна
+                # (во всю ширину, не ниже полуэкрана), панели — листом под ней
+                sys.path.insert(0, str(ROOT / 'tests'))
+                import routes_dispatch_browser_check as dbc   # noqa: F401  (tesla_layout_check берёт TILE_PNG оттуда)
+                import tesla_layout_check as tl
+                tl.themes_and_widths(browser, base + '/routes/live', lambda pg: pg.wait_for_selector('.lv-item'), check, errors, 'Tesla+')
+                ph = browser.new_page(viewport={'width': 390, 'height': 860})
+                ph.goto(base + '/routes/live')
+                ph.wait_for_selector('.lv-item')
+                mb = ph.evaluate("""() => { const m = document.querySelector('#lvMap').getBoundingClientRect(),
+                    s = document.querySelector('.lv-side').getBoundingClientRect();
+                    return { w: Math.round(m.width), h: Math.round(m.height), below: s.top >= m.bottom - 1 }; }""")
+                check(mb['w'] >= 358 and mb['h'] >= 300 and mb['below'], f'Tesla+ 390: карта видна, машины — под ней ({mb})')
+                ph.close()
                 browser.close()
         finally:
             server.shutdown()
