@@ -10,7 +10,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400..700&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+Armenian:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=27">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=28">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes_ui.css') }}?v=4">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes_customer_settings.css') }}?v=3">
 <!-- Tesla+ (макет mockups/Settings.dc.html): оглавление по шагам, поиск, панели-блоки, плавающая панель сохранения -->
@@ -137,8 +137,8 @@
                         <h3 class="rt-card-title" id="rsHDepot"><i class="fas fa-warehouse" aria-hidden="true"></i>Պահեստ</h3>
                         <span class="rt-card-state" id="rsStDepot"></span>
                     </div>
-                    <p class="rt-card-lead">Մեքենաները մեկնում են այստեղից և վերադառնում այստեղ։ Սեղմեք քարտեզի վրա՝ պահեստի տեղում — կետը կարելի է քաշել մկնիկով։
-                        Կամ տեղադրեք կոորդինատները Google Maps-ից՝ աջ սեղմում տեղի վրա → մենյուի առաջին տողը։</p>
+                    <p class="rt-card-lead">Մեքենաները մեկնում և վերադառնում են այստեղ։ Սեղմեք քարտեզին պահեստի տեղում (կետը քաշվում է)
+                        կամ տեղադրեք կոորդինատները Google Maps-ից՝ աջ սեղմում → առաջին տողը։</p>
                     <div class="rt-depot">
                         <div id="rsDepotMap" class="rt-depotmap" role="region" aria-label="Քարտեզ — սեղմեք պահեստի տեղում"></div>
                         <div>
@@ -162,15 +162,19 @@
                         <h3 class="rt-card-title" id="rsHTrucks"><i class="fas fa-truck" aria-hidden="true"></i>Առաքման մեքենաներ</h3>
                         <span class="rt-card-state" id="rsStTrucks"></span>
                     </div>
-                    <p class="rt-card-lead">Մեքենաների ցուցակը վերցված է ERP-ից։ Մեքենան, որը այնտեղ չկա, կարելի է ավելացնել ձեռքով։ Նշեք, թե քանի տոննա է տանում մեքենան և քանի լիտր է ծախսում 100 կմ-ի վրա։
-                        Մեքենան ամրացված է վարորդին՝ օրվա ընթացքում բոլոր մենեջերների պատվերները ծրագիրն ինքը կբաշխի մեքենաների և երթերի միջև։
-                        «Ըստ ERP ապրանքագրերի» հուշումը ցույց է տալիս, թե վերջին 3 ամսում մեքենան սովորաբար որքան է տարել օրական և երբ է տարել վերջին անգամ։
-                        60 օրից ավելի բեռ չտարած մեքենան լռելյայն անջատված է։
-                        «Բեռնվածություն և մաշվածք» բաժնում նշեք դատարկ և լրիվ բեռնված մեքենայի ծախսը և մաշվածքի արժեքը — այդ դեպքում մեքենայի ընտրությունը և կետերի հերթականությունը հաշվի են առնում մնացորդային բեռը յուրաքանչյուր հատվածում։
-                        Դատարկ նորմերը նշանակում են, որ բեռնվածության ազդեցությունը դեռ կարգավորված չէ։</p>
+                    {#- 12.10: сразу видно — одна строка; подробности (бывший длинный абзац) — по раскрытию, текст тот же -#}
+                    <p class="rt-card-lead">Ցուցակը՝ ERP-ից, չեղած մեքենան ավելացրեք ձեռքով։ Նշեք տոննաժը և ծախսը 100 կմ-ի վրա։</p>
+                    <details class="rt-howto rs-trucks-more">
+                        <summary><i class="fas fa-circle-question" aria-hidden="true"></i>Մանրամասն</summary>
+                        <p>Մեքենան ամրացված է վարորդին՝ օրվա ընթացքում բոլոր մենեջերների պատվերները ծրագիրն ինքը կբաշխի մեքենաների և երթերի միջև։
+                            «Ըստ ERP ապրանքագրերի» հուշումը ցույց է տալիս, թե վերջին 3 ամսում մեքենան սովորաբար որքան է տարել օրական և երբ է տարել վերջին անգամ։
+                            60 օրից ավելի բեռ չտարած մեքենան լռելյայն անջատված է։</p>
+                        <p>«Բեռնվածություն և մաշվածք» բաժնում նշեք դատարկ և լրիվ բեռնված մեքենայի ծախսը և մաշվածքի արժեքը — այդ դեպքում մեքենայի ընտրությունը և կետերի հերթականությունը հաշվի են առնում մնացորդային բեռը յուրաքանչյուր հատվածում։
+                            Դատարկ նորմերը նշանակում են, որ բեռնվածության ազդեցությունը դեռ կարգավորված չէ։</p>
+                    </details>
                     <div id="rsTrucks"></div>
                     <p class="rt-field-hint"><a href="{{ url_for('route_optimizer.api_missing_coordinates') }}">Ներբեռնել առանց կոորդինատների հաճախորդների թարմ ցուցակը</a>։
-                        Ստուգվում են ERP-ն, այցերի GPS-ը, վարորդների հաստատված կետերը և ձեռքով նշված կետերը։ Նոր կետ կարելի է նշել «Առաքում» էջում։</p>
+                        Ստուգվում են ERP-ն, GPS-ը, վարորդների և ձեռքով նշված կետերը․ նոր կետ՝ «Առաքում» էջում։</p>
                 </section>
 
                 <section class="rt-card" id="fuel" aria-labelledby="rsHFuel">
@@ -194,8 +198,8 @@
                         <h3 class="rt-card-title" id="rsHDays"><i class="fas fa-calendar-days" aria-hidden="true"></i>Աշխատանքային և ոչ աշխատանքային օրեր</h3>
                         <span class="rt-card-state" id="rsStDays"></span>
                     </div>
-                    <p class="rt-card-lead">Ոչ աշխատանքային օրը (օրինակ՝ կիրակի կամ տոն) առաքում չկա․ «Առաքում» էջը այդ օրը բաց է թողնում,
-                        իսկ այդ օրվա պատվերները տանում է հաջորդ աշխատանքային օրը։ Պահպանելու համար սեղմեք «Պահպանել» կոճակը էջի ներքևում։</p>
+                    <p class="rt-card-lead">Ոչ աշխատանքային օրը (կիրակի, տոն) առաքում չկա․ պատվերները տանում ենք հաջորդ աշխատանքային օրը։
+                        Պահպանեք «Պահպանել» կոճակով էջի ներքևում։</p>
                     <div id="rsDays"></div>
                 </section>
 

@@ -28,7 +28,7 @@ D тексты: «Երթերը կազմված են» нигде нет, пока
   в открытом «Խնդիր» снятая проблемная машина сразу уходит из него (строк = чипов), в «Պատրաստ» без строк — подпись;
 G числа шага 2 (заказ дня на 12 345 կգ и 1 250 000 ֏) при 1366×768 и 1920×1080: каждое — в своей ячейке и в карточке;
 F водитель машины с неполными данными — в подвале («մեքենայի տվյալները թերի են») с «եկել է»: снять — диалог;
-E 1366×768, 1920×1080, 390×860: нет горизонтальной прокрутки, фон страницы тёмный до низа документа;
+E 1366×768, 1920×1080, 390×860: нет горизонтальной прокрутки, фон страницы по теме (без выбора — светлая) до низа;
 ошибки страницы (pageerror) и консоли — провал (кроме сетевых для внешних ресурсов).
 """
 from __future__ import annotations
@@ -294,8 +294,10 @@ def main() -> int:
             def fits(pg, tag):
                 sw = pg.evaluate('document.documentElement.scrollWidth <= document.documentElement.clientWidth')
                 bg = pg.evaluate("getComputedStyle(document.body).backgroundColor")
+                theme = pg.evaluate("document.documentElement.dataset.rtTheme")
                 # фон страницы — --rt-bg темы Tesla+ (routes.css: тёмная #101113, светлая #F2F3F5) до самого низа
-                check(sw and bg in ('rgb(16, 17, 19)', 'rgb(242, 243, 245)'), f'E {tag}: no horizontal scroll ({sw}), theme background to the bottom ({bg})')
+                want = {'dark': 'rgb(16, 17, 19)', 'light': 'rgb(242, 243, 245)'}.get(theme)
+                check(sw and bg == want, f'E {tag}: no horizontal scroll ({sw}), {theme} theme background to the bottom ({bg})')
             fits(page, '1366×768')
             page.context.close()
             for w, h in ((1920, 1080), (390, 860)):

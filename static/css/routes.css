@@ -3,8 +3,9 @@
    Стиль «Tesla+» (утверждён 11.10, F:/routs optimaizer/design/web-tesla-plus/DESIGN.md, tokens.css) — интерфейс «для чайников»
    (docs/plans/ux-simple-plan.md): вывод первым и человеческим языком, шаги с одной главной
    кнопкой, подробности — по раскрытию, обычный регистр, основной текст ≥ 15 px.
-   Две темы: тёмная — по умолчанию (нет атрибута), светлая — html[data-rt-theme="light"] (переключатель ☀/☾ в меню
-   раздела, routes_top.js; до отрисовки — _routes_theme.html). Цвета — только из токенов --rt-* ниже, в обеих темах.
+   Две темы: светлая — html[data-rt-theme="light"], тёмная — html[data-rt-theme="dark"] (переключатель ☀/☾ в меню
+   раздела, routes_top.js). Атрибут до отрисовки ставит _routes_theme.html: без выбора — светлая, независимо от ОС.
+   Токены ниже без атрибута — тёмные: так остаются страницы курьера (courier*.html), где атрибута нет. Цвета — только из токенов --rt-* ниже, в обеих темах.
    Шрифты: Noto Sans Armenian — интерфейс (армянский и латиница), Google Sans — кириллица, IBM Plex Mono — только цифры
    в таблицах. Всё — под .rt-page, глобальные стили не трогаем.
    ========================================================================== */
@@ -92,17 +93,17 @@
     position: fixed; inset: 0; z-index: -1; pointer-events: none;
     background: var(--rt-bg);   /* Tesla+: без градиентов */
 }
-/* Светлая тема Tesla+ (html[data-rt-theme="light"], выбор пользователя). Те же имена — другие значения. */
+/* Светлая тема Tesla+ (html[data-rt-theme="light"], по умолчанию). Те же имена — другие значения. */
 html[data-rt-theme="light"] .rt-page {
     --rt-bg:        #f2f3f5;
-    --rt-panel:     #ffffff;
+    --rt-panel:     #fcfcfd;   /* мягкий белый (12.10) вместо #FFF; --rt-fg-dim на нём 6.3:1 */
     --rt-panel-2:   #f4f5f7;
     --rt-inset:     #f7f8fa;
     --rt-line:      #e2e3e5;
     --rt-line-soft: #ebecee;
     --rt-fg:        #171a20;
-    --rt-fg-dim:    #5c5e62;   /* 6.5:1 на белом */
-    --rt-fg-mute:   #6b6d71;   /* 5.2:1 на белом, 4.5:1 на #EEEFF1 */
+    --rt-fg-dim:    #5c5e62;   /* 6.3:1 на --rt-panel #FCFCFD */
+    --rt-fg-mute:   #6b6d71;   /* 5.1:1 на #FCFCFD, 4.5:1 на #EEEFF1 */
     /* #3E6AE1 — заливки; текстом на светлом фоне (#F2F3F5) он 4.3:1 — текстовый акцент чуть темнее (5.1–5.7:1) */
     --rt-acc:       #345ed2;
     --rt-acc-hover: #2a4fb8;
@@ -132,7 +133,7 @@ html[data-rt-theme="light"] .rt-page {
     --rt-chip:      #eeeff1;
     --rt-muted-fill: #c9cbcf;
     --rt-scrim:     rgba(23, 26, 32, .35);
-    --rt-glass:     rgba(255, 255, 255, .92);
+    --rt-glass:     rgba(252, 252, 253, .92);
     --rt-hl:        rgba(23, 26, 32, .07);
     --rt-shadow:    0 8px 30px rgba(23, 26, 32, .08);
     --rt-shadow-sm: 0 4px 14px rgba(23, 26, 32, .14);
@@ -297,8 +298,8 @@ main:has(> .rt-top) { padding: 16px !important; }
     background: transparent; color: var(--rt-fg-dim); font-size: .875rem; cursor: pointer; transition: background .15s, color .15s;
 }
 .rt-theme-btn:hover { color: var(--rt-fg); }
-html:not([data-rt-theme="light"]) .rt-theme-btn[data-rt-theme-set="dark"],
-html[data-rt-theme="light"] .rt-theme-btn[data-rt-theme-set="light"] { background: var(--rt-panel); color: var(--rt-fg); box-shadow: var(--rt-shadow-sm); }
+html[data-rt-theme="dark"] .rt-theme-btn[data-rt-theme-set="dark"],
+html:not([data-rt-theme="dark"]) .rt-theme-btn[data-rt-theme-set="light"] { background: var(--rt-panel); color: var(--rt-fg); box-shadow: var(--rt-shadow-sm); }
 
 /* узкий экран: группы — в одной кнопке, лист со всеми страницами на всю ширину панели */
 .rt-top-sheet { left: 0; right: 0; width: auto; max-width: none; max-height: calc(100vh - 120px); overflow: auto; }

@@ -11,7 +11,8 @@ A администратор, 1366×768, обе темы: тёмной шапк�
   подсвечена; группа открывается (aria-expanded, видна выпадашка, пункты с подсказками, текущий — aria-current), открыта
   только одна; Esc закрывает и фокус на кнопке группы; клик мимо закрывает; Tab с кнопки — в первый пункт выпадашки;
   ⋮⋮⋮ — разделы Sales Dashboard (Dashboard, /settings, /managers …); пользователь — имя и «Ելք» (POST /logout);
-B тема ☀/☾ в панели: атрибуты html, aria-pressed, rtTheme в браузере, событие rt-theme-change;
+B тема ☀/☾ в панели: атрибуты html, aria-pressed, rtTheme в браузере, событие rt-theme-change; без выбора — светлая
+  (data-rt-theme и data-bs-theme light, фон страницы светлый) даже при тёмной теме ОС (решение 12.10);
 C ширины 390 / 1366 / 1920 на 6 страницах: прокрутки вбок нет; уже 900 px — группы в кнопке «☰ <страница>», лист
   со всеми страницами (видно, Esc закрывает); шире — кнопки нет, группы видны;
 D роли: «Гараж» — три плоские ссылки (журнал, карта, водители), без ⋮⋮⋮ и ⚙; «Склад» — одна ссылка, без листа;
@@ -82,10 +83,10 @@ def main() -> int:
         with sync_playwright() as p:
             browser = p.chromium.launch()
 
-            def new_page(w, h, theme='dark'):
-                ctx = browser.new_context(viewport={'width': w, 'height': h})
-                if theme == 'light':
-                    ctx.add_init_script("try { localStorage.setItem('rtTheme', 'light'); } catch (e) {}")
+            def new_page(w, h, theme='dark', scheme='light'):
+                ctx = browser.new_context(viewport={'width': w, 'height': h}, color_scheme=scheme)
+                if theme:   # None — без выбора в браузере (тема по умолчанию)
+                    ctx.add_init_script("try { localStorage.setItem('rtTheme', '%s'); } catch (e) {}" % theme)
                 pg = ctx.new_page()
                 pg.on('pageerror', lambda e: errors.append(f'pageerror {w}: {e}'))
                 pg.on('console', lambda m: errors.append(f'console {w}: {m.text} {(m.location or {}).get("url", "")}')
@@ -176,6 +177,17 @@ def main() -> int:
                     ls: localStorage.getItem('rtTheme'), ev: window.__ev,
                     p: document.querySelector('[data-rt-theme-set="%s"]').getAttribute('aria-pressed') })""" % other)
                 check(b == {'t': other, 'bs': other, 'ls': other, 'ev': [other], 'p': 'true'}, f'B {theme} → {other}: {b}')
+                pg.context.close()
+
+            # B без выбора: светлая, хоть ОС и тёмная
+            for url in ('/routes/dispatch', '/routes/garage'):
+                pg = new_page(1366, 768, None, scheme='dark')
+                go(pg, url)
+                b0 = pg.evaluate("""() => ({ t: document.documentElement.dataset.rtTheme, bs: document.documentElement.getAttribute('data-bs-theme'),
+                    ls: localStorage.getItem('rtTheme'), bg: getComputedStyle(document.body).backgroundColor,
+                    p: document.querySelector('[data-rt-theme-set="light"]').getAttribute('aria-pressed') })""")
+                check(b0 == {'t': 'light', 'bs': 'light', 'ls': None, 'bg': 'rgb(242, 243, 245)', 'p': 'true'},
+                      f'B {url} без выбора, ОС тёмная → светлая: {b0}')
                 pg.context.close()
 
             # C ширины

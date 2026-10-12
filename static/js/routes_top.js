@@ -10,7 +10,7 @@
 
     // ---------- тема ----------
     const themeBtns = Array.from(top.querySelectorAll('[data-rt-theme-set]'));
-    const theme = () => (root.dataset.rtTheme === 'light' ? 'light' : 'dark');
+    const theme = () => (root.dataset.rtTheme === 'dark' ? 'dark' : 'light');   // без выбора — светлая (_routes_theme.html)
     const syncTheme = () => themeBtns.forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.rtThemeSet === theme())));
     themeBtns.forEach((b) => b.addEventListener('click', () => {
         const t = b.dataset.rtThemeSet === 'light' ? 'light' : 'dark';

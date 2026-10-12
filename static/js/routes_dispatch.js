@@ -536,7 +536,7 @@
             tone = 'is-ok'; ico = 'fa-circle-check';
             title = 'Երթերը պատրաստ են — հաստատեք և ուղարկեք վարորդներին';
             const when = builtWhen(d.built_at);
-            lines.push((when ? 'Կազմվել են ' + when + '։ ' : '') + 'Վարորդները կտեսնեն երթերը «Առաքիչ» ծրագրում միայն հաստատելուց հետո։');
+            lines.push((when ? 'Կազմվել են ' + when + '։ ' : '') + 'Վարորդները կտեսնեն հաստատելուց հետո։');
             if (coming) lines.push(coming + ' Եթե գան նոր պատվերներ, այստեղ կհայտնվի հիշեցում։');
             if (gone) lines.push(gone);
             btns.push({ act: approvePlan, text: 'Հաստատել և ուղարկել', ico: 'fa-paper-plane' });
@@ -567,7 +567,8 @@
         // строки дня, а для состояний с действием (пересобрать, настройки, показать проблемы) — чип с этим действием
         state.todo = { tone, title, lines: lines.slice(), btn: btns[0] || null };
         const sp = $('dpSendState').querySelector('.dp-sendpill');
-        if (sp) sp.title = (sp.dataset.base || (sp.dataset.base = sp.title)) + ' — ' + title + (lines[0] ? '։ ' + lines[0] : '');
+        // подсказка — по строке на мысль (статус, что делать, пояснение), а не одна длинная фраза
+        if (sp) sp.title = (sp.dataset.base || (sp.dataset.base = sp.title)) + '\n' + title + (lines[0] ? '\n' + lines[0] : '');
         syncTodoChip();
         box.className = 'dp-todo ' + tone;
         box.innerHTML = '<div class="dp-todo-ico" aria-hidden="true"><i class="fas ' + ico + '"></i></div>'
@@ -611,8 +612,8 @@
                 + (!drivers.length ? '․ վարորդները դեռ նշված չեն' : came === drivers.length ? '․ եկել են բոլոր ' + drivers.length + ' վարորդները'
                     : '․ եկել է ' + drivers.length + ' վարորդից ' + came + '-ը') + '։';
             // машина без водителя в «Վարորդ» едет, как до №77 (dispatch.build_crewed) — сказать прямо
-            if (fl.noDriver.length && drivers.length) lead += ' Առանց վարորդի մեքենաները նույնպես կմտնեն երթերի մեջ՝ նշեք վարորդին կամ հանեք մեքենայի նշումը։';
-            if (fl.backlog) lead += ' Նախորդ օրերից մնացել է ' + pl(fl.backlog, 'պատվեր') + '՝ որոշեք, տանե՞լ դրանք այսօր։';
+            // 12.10: коротко — подробности и действие у чипов ниже («մեքենա առանց վարորդի», «պատվեր նախորդ օրերից»)
+            if (fl.noDriver.length && drivers.length) lead += ' Առանց վարորդի մեքենաներն էլ կմտնեն երթեր՝ նշեք վարորդին կամ հանեք նշումը։';
             if (coming) notes.push(coming + (o.count ? ' Կարող եք կազմել հիմա և վերակազմել ' + d.ready_time + '-ից հետո։' : ' Էջն ինքն է թարմանում 5 րոպեն մեկ։'));
         }
         notes.push(...dn.tail);

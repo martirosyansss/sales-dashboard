@@ -10,7 +10,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400..700&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+Armenian:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=27">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=28">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes_ui.css') }}?v=4">
 <!-- Tesla+ (макет mockups/Optimize.dc.html): шапка страницы, шаги карточками, параметры таблетками, «было → стало»,
      менеджеры аккордеоном слева и карта дня справа -->
@@ -235,7 +235,7 @@
                 <section class="ro-mgrs-box" aria-labelledby="roCardsTitle">
                 <div class="ro-cards-head">
                     <h3 class="rt-h3" id="roCardsTitle">Առաջարկներ ըստ մենեջերների</h3>
-                    <p class="rt-h3-note">Բացեք մենեջերին — առաջարկները խմբավորված են, դրանք կարելի է ընդունել ամբողջ խմբով կամ ըստ առանձին խանութի։</p>
+                    <p class="rt-h3-note">Բացեք մենեջերին և ընդունեք առաջարկները՝ ամբողջ խմբով կամ ըստ խանութի։</p>
                 </div>
                 <ul class="ro-cards" id="roCards" aria-labelledby="roCardsTitle"></ul>
 
@@ -331,5 +331,5 @@
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=4" data-yandex-key="{{ yandex_tiles_key }}"></script>
-<script src="{{ url_for('static', filename='js/routes_optimize.js') }}?v=17"></script>
+<script src="{{ url_for('static', filename='js/routes_optimize.js') }}?v=18"></script>
 {% endblock %}

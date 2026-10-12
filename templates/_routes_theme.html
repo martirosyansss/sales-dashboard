@@ -1,10 +1,11 @@
 {#- Тема «Маршрутов» ☀/☾ (Tesla+, static/css/routes.css) — до первой отрисовки страницы: выбор этого браузера
     (localStorage rtTheme, ставит routes_top.js) на <html> — data-rt-theme для routes.css и data-bs-theme для Bootstrap.
-    Без выбора (и без хранилища) — тёмная, как раньше. Для всех ролей: routes_base.html и «Պահեստ». -#}
+    Без выбора (и без хранилища) — светлая, независимо от темы ОС (решение 12.10); тёмная — только выбором ☾.
+    Для всех ролей: routes_base.html. -#}
 <script>(function () {
     var t = null;
     try { t = window.localStorage.getItem('rtTheme'); } catch (e) { /* без хранилища — как без выбора */ }
-    if (t !== 'light') t = 'dark';
+    if (t !== 'dark') t = 'light';
     document.documentElement.dataset.rtTheme = t;
     document.documentElement.setAttribute('data-bs-theme', t);
 })();</script>
