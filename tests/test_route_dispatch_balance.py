@@ -276,7 +276,7 @@ def test_random_builds_with_windows_and_pinned_trips(monkeypatch):
             if ok0[tr['car_code']]:
                 assert not tr['late'] and not any(t['window_miss'] for t in tr['trips']), (seed, tr['car_code'])
         sh0, sh1 = dp._shares(d0.trips), dp._shares(d1.trips)
-        t0, t1 = dp._timeline(ctx, d0.trips, routable, sh0), dp._timeline(ctx, d1.trips, routable, sh1)
+        t0, t1 = dp._timeline(ctx, d0.trips, routable, sh0, kg_of={}), dp._timeline(ctx, d1.trips, routable, sh1, kg_of={})
         for a, b in zip(d0.trips, d1.trips):
             wait0 = t0[a.id][1] - _plain_minutes(ctx, a.stops, routable, sh0)
             wait1 = t1[b.id][1] - _plain_minutes(ctx, b.stops, routable, sh1)

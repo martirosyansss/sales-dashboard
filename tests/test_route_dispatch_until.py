@@ -252,7 +252,7 @@ def _random_day(seed):
     order = [c for c, _, _ in spec]
     draft = dp.Draft(trucks=[HOWO.car_code, FORD.car_code], next_id=2, trips=[dp.DraftTrip(1, HOWO.car_code, order[:])])
     ctx = _dp_ctx()
-    arrivals = dp._timeline(ctx, draft.trips, {s.customer_id: s for s in stops}, dp._shares(draft.trips))[1][2]
+    arrivals = dp._timeline(ctx, draft.trips, {s.customer_id: s for s in stops}, dp._shares(draft.trips), kg_of={})[1][2]
     eta = dict(zip(order, arrivals))
     wins = {c: (-INF, 540 + eta[c] + rnd.uniform(-25, 10)) for c in rnd.sample(order, rnd.randint(1, 3))}
     target = rnd.choice(order[2:])

@@ -7491,7 +7491,8 @@ def _warehouse_body(state: RoutesState, bundle: Bundle, day: date) -> dict[str, 
     dd = _as_sent(_load_day(state, bundle, day, draft=draft.for_drivers(), rev=rev, live=False))   # №98: перенос — из снимка
     if dd.ctx is None:
         raise dp.DispatchError(WAREHOUSE_NO_SETUP)
-    plan = dp.plan_view(dd.ctx, dd.stops, dd.draft, _stop_info(dd), explain=False)
+    plan = dp.plan_view(dd.ctx, dd.stops, dd.draft, _stop_info(dd), explain=False,
+                          published=True)   # склад: заказы машин — как отправлены (без перераспределения)
     seats = dp.crew_view(dd.draft, _crew(state, day, bundle.trucks)[0])   # водители — плана водителей, как и рейсы
     by_id = {t.id: t for t in dd.draft.trips}
     marks = {t.id: t.loaded for t in draft.trips}
@@ -7572,7 +7573,8 @@ def api_warehouse_goods() -> Any:
     dd = _as_sent(_load_day(state, bundle, day, draft=dd.draft.for_drivers(), rev=dd.rev, live=False))   # №81, №98
     if dd.ctx is None:
         return _bad_request({'_': WAREHOUSE_NO_SETUP})
-    plan = dp.plan_view(dd.ctx, dd.stops, dd.draft, _stop_info(dd), explain=False)
+    plan = dp.plan_view(dd.ctx, dd.stops, dd.draft, _stop_info(dd), explain=False,
+                          published=True)   # склад: заказы машин — как отправлены (без перераспределения)
     truck = next((t for t in plan['trucks'] if t['car_code'] == car), None)
     if truck is None or all(tr['id'] != int(trip) for tr in truck['trips']):
         return _conflict(WAREHOUSE_STALE)
@@ -7612,7 +7614,8 @@ def api_warehouse_waybill() -> Any:
     dd = _as_sent(_load_day(state, bundle, day, draft=draft.for_drivers(), rev=cur, live=False))   # №81, №98: план водителей
     if dd.ctx is None:
         return _bad_request({'_': WAREHOUSE_NO_SETUP})
-    plan = dp.plan_view(dd.ctx, dd.stops, dd.draft, _stop_info(dd), explain=False)
+    plan = dp.plan_view(dd.ctx, dd.stops, dd.draft, _stop_info(dd), explain=False,
+                          published=True)   # склад: заказы машин — как отправлены (без перераспределения)
     truck = next((t for t in plan['trucks'] if t['car_code'] == car), None)
     if truck is None:
         return _conflict(WAREHOUSE_STALE)

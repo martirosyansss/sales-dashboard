@@ -104,9 +104,9 @@ def test_timeline_buffer_pushes_next_trip_and_plan_view_shows_it():
     stops, draft = _two_trips()
     routable = {s.customer_id: s for s in stops}
     tn = replace(TN, buffer_c=3.0)
-    base = dp._timeline(_ctx(TN), draft.trips, routable, dp._shares(draft.trips))
+    base = dp._timeline(_ctx(TN), draft.trips, routable, dp._shares(draft.trips), kg_of={})
     parts = {}
-    tl = dp._timeline(_ctx(tn), draft.trips, routable, dp._shares(draft.trips), parts)
+    tl = dp._timeline(_ctx(tn), draft.trips, routable, dp._shares(draft.trips), parts, kg_of={})
     r1 = parts[1]['buffer']
     assert r1 == pytest.approx(fl.trip_reserve(3.0, base[1][1])) and r1 > 5
     assert tl[1][2] == base[1][2] and tl[1][1] == pytest.approx(base[1][1] + r1)   # точки — по медиане, рейс — с запасом
@@ -120,7 +120,7 @@ def test_timeline_buffer_pushes_next_trip_and_plan_view_shows_it():
     assert x['loading_min'] + x['drive_min'] + x['unload_min'] + x['wait_min'] + x['buffer_min'] == \
         pytest.approx(t1['minutes'], abs=1.0)
     slow = dp._timeline(_ctx(replace(TN, pace={HOWO.car_code: (1.2, 1.3)})), draft.trips, routable,
-                        dp._shares(draft.trips))
+                        dp._shares(draft.trips), kg_of={})
     assert slow[1][1] > base[1][1] * 1.19 and slow[1][2][0] > base[1][2][0]        # темп машины — в шкале «Развоза»
     end = tl[2][0] + tl[2][1]
     tight = replace(tn, work_minutes=end - 1.0)

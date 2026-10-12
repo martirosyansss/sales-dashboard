@@ -781,3 +781,53 @@ def test_overtime_and_resize_and_add_respect_manual_locks():
                   locks={104: howo, 105: howo, 106: howo})
     grown = dp.apply_edit(ctx, stops, d3, {'action': 'resize', 'trip': 1, 'return': 18 * 60}, {o.isn for o in orders})
     assert all(_where(grown, c) == [howo] for c in (104, 105, 106))
+
+
+# ============================== ревью ветки, раунд 5 ==============================
+
+def test_warehouse_plan_keeps_published_order_mapping():
+    """P1: 600/500/400 отправлены A/B/C; после отправки заказ A в ERP стал 300 кг. Склад (план водителей, published) держит
+    отправленное распределение как есть — у C тот же 400, что у её терминала (до правки склад перераспределял по нынешним
+    весам: C получала 300 и печатала его Բեռնագիր)."""
+    from route_optimizer import fleet as fl
+    from test_route_optimizer import FORD, HOWO, _coord_of
+    howo2 = fl.FleetTruck('123AV61', 'HOWO', 10000.0, 30.0)
+    ctx = _dp_ctx((HOWO, howo2, FORD))
+    a, b, c = HOWO.car_code, howo2.car_code, FORD.car_code
+    stops, orders = _dp_stops([(101, (40.200, 44.640), 600.0), (101, (40.200, 44.640), 500.0), (101, (40.200, 44.640), 400.0)])
+    draft = dp.Draft([a, b, c], trips=[dp.DraftTrip(1, a, [101]), dp.DraftTrip(2, b, [101]), dp.DraftTrip(3, c, [101])],
+                     next_id=4)
+    dp.approve(draft, 'at', 'u')
+    dp.send(draft, 'at', 'u', orders=dp.published_orders(draft, stops))
+    dp.mark_loaded(draft, 3, '2026-10-01T08:00:00', 'sklad')
+    sent = {i: v[0] for i, v in draft.sent['orders'].items()}
+    lighter = dp.build_stops([replace(orders[0], kg=300.0), *orders[1:]], _coord_of({101: (40.200, 44.640)}))
+    info = lambda st: {'customer_id': st.customer_id, 'orders': [{'isn': o.isn} for o in st.orders]}   # noqa: E731
+    view = dp.plan_view(ctx, lighter, draft.for_drivers(), info, explain=False, published=True)
+    got = {tr['truck']: [o['isn'] for s in tr['stops'] for o in s['orders']] for t in view['trucks'] for tr in t['trips']}
+    assert {t: isns for t, isns in got.items()} == {t: [i for i, x in sent.items() if x == t] for t in (a, b, c)}
+    # без published (черновик логиста) распределение по нынешним весам — другое: отличие видно логисту и складу
+    plain = dp.plan_view(ctx, lighter, draft.for_drivers(), info, explain=False)
+    assert {tr['truck']: [o['isn'] for s in tr['stops'] for o in s['orders']] for t in plain['trucks'] for tr in t['trips']} != got
+    moved, _ = dp.orders_unsent(draft.sent['orders'], dp.published_orders(draft.for_drivers(), lighter))
+    assert a in moved
+
+
+def test_deadline_check_uses_assigned_weight():
+    """P2: «Մինչև ժամը» (fit_until) считает прибытие тем же весом, что план: 3400/100 кг магазина двух машин — точка после
+    него у FORD приезжает позже срока, и fit_until это видит (до правки — по долям поровну: «успевает», а план — опоздание)."""
+    ctx = _dp_ctx()
+    ford, howo = '333DO33', '991AT61'
+    stops, _ = _dp_stops([(101, (40.200, 44.640), 3400.0), (101, (40.200, 44.640), 100.0), (102, (40.205, 44.650), 200.0)])
+    draft = dp.Draft([ford, howo], trips=[dp.DraftTrip(1, ford, [101, 102], pinned=True), dp.DraftTrip(2, howo, [101])],
+                     next_id=3)
+    routable = {s.customer_id: s for s in stops}
+    real = dp._timeline(ctx, draft.trips, routable, dp._shares(draft.trips), kg_of=dp.trip_kgs(draft, routable)[0])[1][2][1]
+    equal = dp._timeline(ctx, draft.trips, routable, dp._shares(draft.trips), kg_of={})[1][2][1]
+    assert real > equal + 5                                              # 3400 кг разгружают дольше 1750
+    hi = ctx.work_start_min + (real + equal) / 2                          # срок 102 — между «поровну» и настоящим
+    ctx = replace(ctx, windows={102: (0.0, hi)})
+    got = dp.fit_until(ctx, stops, dp.Draft.from_json(draft.to_json()), 102)
+    assert got['late'] is True and got['kept'] == [1]
+    view = dp.plan_view(ctx, stops, draft, _info, explain=False)
+    assert next(s for t in view['trucks'] for tr in t['trips'] for s in tr['stops'] if s['customer_id'] == 102)['window_miss']

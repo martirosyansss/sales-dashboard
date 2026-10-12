@@ -79,7 +79,7 @@ def _first_eta(ctx, stops, cid):
     routable = {s.customer_id: s for s in stops}
     order = [cid] + [c for c in (101, 102, 103, 104) if c != cid]
     trips = [dp.DraftTrip(1, HOWO.car_code, order)]
-    return 540 + dp._timeline(ctx, trips, routable, dp._shares(trips))[1][2][0]
+    return 540 + dp._timeline(ctx, trips, routable, dp._shares(trips), kg_of={})[1][2][0]
 
 
 def _with_deadline(ctx, cid, end, buffer=15):
@@ -90,7 +90,7 @@ def _with_deadline(ctx, cid, end, buffer=15):
 def test_fit_until_targets_buffer_when_possible():
     """Срок 104 позже её ETA, но ETA позже срока − 15: перестановка — к сроку с запасом; запас выходит — не tight."""
     ctx, stops, draft, _ = _setup()
-    eta = 540 + dp._timeline(ctx, draft.trips, {s.customer_id: s for s in stops}, dp._shares(draft.trips))[1][2][3]
+    eta = 540 + dp._timeline(ctx, draft.trips, {s.customer_id: s for s in stops}, dp._shares(draft.trips), kg_of={})[1][2][3]
     ctx = _with_deadline(ctx, 104, eta + 5)
     got = dp.fit_until(ctx, stops, draft, 104)
     assert got == {'late': False, 'reordered': [1], 'kept': [], 'split': False, 'hint': None, 'tight': False}
@@ -164,7 +164,7 @@ def test_place_added_falls_back_to_real_deadline():
     ctx, stops, draft, _ = _added_day()
     assert dp.place_added(ctx, stops, dp.Draft.from_json(draft.to_json()), [105])   # без срока — место есть
     routable = {s.customer_id: s for s in stops}
-    first = 540 + dp._timeline(ctx, [dp.DraftTrip(9, FORD.car_code, [105])], routable, {105: 1})[9][2][0]
+    first = 540 + dp._timeline(ctx, [dp.DraftTrip(9, FORD.car_code, [105])], routable, {105: 1}, kg_of={})[9][2][0]
     hard = replace(ctx, windows={105: (-INF, first - 10)})
     assert dp.place_added(hard, stops, dp.Draft.from_json(draft.to_json()), [105]) == {}
     soft = _with_deadline(ctx, 105, first + 5)
@@ -179,7 +179,7 @@ def test_same_day_options_fall_back_to_real_deadline():
     ctx, stops, draft, orders = _added_day()
     base = [s for s in stops if s.customer_id != 105]
     routable = {s.customer_id: s for s in stops}
-    first = 540 + dp._timeline(ctx, [dp.DraftTrip(9, FORD.car_code, [105])], routable, {105: 1})[9][2][0]
+    first = 540 + dp._timeline(ctx, [dp.DraftTrip(9, FORD.car_code, [105])], routable, {105: 1}, kg_of={})[9][2][0]
     hard = replace(ctx, windows={105: (-INF, first - 10)})
     assert dp.same_day_options(hard, base, stops, draft, [105], -30.0)['options'] == []
     soft = _with_deadline(ctx, 105, first + 5)

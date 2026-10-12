@@ -67,7 +67,7 @@ def test_trip_time_parts_add_up_to_trip_minutes(tn, norms):
     draft, view = _view(ctx, stops, [(FORD.car_code, [101, 102], False), (FORD.car_code, [103], False)])
     routable = {s.customer_id: s for s in stops}
     parts = {}
-    raw = dp._timeline(ctx, draft.trips, routable, dp._shares(draft.trips), parts)
+    raw = dp._timeline(ctx, draft.trips, routable, dp._shares(draft.trips), parts, kg_of={})
     first, second = _trips(view)
     for trip in (first, second):
         depart, minutes, arrivals = raw[trip['id']]
@@ -106,7 +106,7 @@ def test_parts_do_not_change_schedule():
                  dp.DraftTrip(3, HOWO.car_code, [102])]
         routable = {s.customer_id: s for s in stops}
         shares = dp._shares(trips)
-        assert dp._timeline(ctx, trips, routable, shares, {}) == dp._timeline(ctx, trips, routable, shares)
+        assert dp._timeline(ctx, trips, routable, shares, {}, kg_of={}) == dp._timeline(ctx, trips, routable, shares, kg_of={})
         pts, kgs = [s.point for s in stops], [s.kg for s in stops]
         spans = [dp._span(ctx, s.customer_id) for s in stops]
         assert fl.trip_schedule(pts, kgs, DP_DEPOT, norms, tn, 30.0, spans, {}) == \

@@ -166,10 +166,10 @@ def test_occupied_assumes_more_trips_after_pinned_work():
     stops, _ = _dp_stops(EAST)
     routable = {s.customer_id: s for s in stops}
     pinned = [dp.DraftTrip(1, HOWO.car_code, [101, 102, 103], True)]
-    plain = dp._timeline(_ctx(TN), pinned, routable, {})[1]
+    plain = dp._timeline(_ctx(TN), pinned, routable, {}, kg_of={})[1]
     last_end = plain[2][-1] + 9.2                                   # разгрузка 8 + 6 × 0,2 т
     tn = replace(TN, lunch_minutes=30.0, lunch_from=last_end - 1.0, lunch_to=last_end + 100)
-    assert dp._timeline(_ctx(tn), pinned, routable, {})[1] == plain                # точный план — без обеда
+    assert dp._timeline(_ctx(tn), pinned, routable, {}, kg_of={})[1] == plain                # точный план — без обеда
     fed = set()
     used, _, _ = dp._occupied(_ctx(tn), pinned, routable, {}, fed)
     assert used[HOWO.car_code] == pytest.approx(plain[0] + plain[1] + 30.0) and fed == {HOWO.car_code}
@@ -195,9 +195,9 @@ def test_plan_view_shows_lunch_and_includes_it_in_minutes():
     # окно обеда — через 20 мин после выезда: обед — в первом рейсе, после второй точки (кончилась в 26 мин)
     tn = replace(TN, lunch_minutes=30.0, lunch_from=20.0, lunch_to=140.0)
     plain_ctx, ctx = _ctx(TN), _ctx(tn)
-    base = dp._timeline(plain_ctx, draft.trips, routable, dp._shares(draft.trips))
+    base = dp._timeline(plain_ctx, draft.trips, routable, dp._shares(draft.trips), kg_of={})
     parts = {}
-    tl = dp._timeline(ctx, draft.trips, routable, dp._shares(draft.trips), parts)
+    tl = dp._timeline(ctx, draft.trips, routable, dp._shares(draft.trips), parts, kg_of={})
     brk = parts[1]['lunch']
     assert brk is not None and brk.stop == 1 and parts[2]['lunch'] is None          # обед — один на день машины
     k = brk.stop
@@ -223,7 +223,7 @@ def test_plan_view_depot_lunch_between_trips():
     """Первый рейс кончается до начала окна обеда, второй выезжает после — обед на складе до его загрузки."""
     stops, draft = _two_trips()
     routable = {s.customer_id: s for s in stops}
-    first = dp._timeline(_ctx(TN), draft.trips, routable, dp._shares(draft.trips))[1]
+    first = dp._timeline(_ctx(TN), draft.trips, routable, dp._shares(draft.trips), kg_of={})[1]
     back = first[0] + first[1]
     tn = replace(TN, lunch_minutes=30.0, lunch_from=back - 5.0, lunch_to=back + 100)
     view = dp.plan_view(_ctx(tn), stops, draft, _info)
@@ -240,17 +240,17 @@ def test_plan_view_road_lunch_and_runs_late_exact():
     — обеда нет и машина укладывается; занятое время для раскладки (обед после рейса с запасом) — её не «опаздывает»."""
     stops, draft = _two_trips()
     routable = {s.customer_id: s for s in stops}
-    base = dp._timeline(_ctx(TN), draft.trips, routable, dp._shares(draft.trips))
+    base = dp._timeline(_ctx(TN), draft.trips, routable, dp._shares(draft.trips), kg_of={})
     road = replace(TN, lunch_minutes=30.0, lunch_from=1.0, lunch_to=3.0)
     view = dp.plan_view(_ctx(road), stops, draft, _info)
     t1 = view['trucks'][0]['trips'][0]
     assert t1['lunch'] == {'start': '09:03', 'end': '09:33', 'minutes': 30.0, 'added_min': 30.0, 'after_stop': None,
                            'where': 'road'}
-    tl = dp._timeline(_ctx(road), draft.trips, routable, dp._shares(draft.trips))
+    tl = dp._timeline(_ctx(road), draft.trips, routable, dp._shares(draft.trips), kg_of={})
     assert all(a == pytest.approx(b + 30.0) for a, b in zip(tl[1][2], base[1][2]))
     assert t1['explain']['lunch_min'] == 30.0 and t1['explain']['idle_before_min'] == 0.0
     one = dp.Draft(trucks=[HOWO.car_code], trips=[dp.DraftTrip(1, HOWO.car_code, [101, 102, 103])])
-    plain = dp._timeline(_ctx(TN), one.trips, routable, {})[1]
+    plain = dp._timeline(_ctx(TN), one.trips, routable, {}, kg_of={})[1]
     last_end = plain[2][-1] + 9.2
     tight = replace(TN, work_minutes=plain[0] + plain[1] + 10.0, lunch_minutes=30.0, lunch_from=last_end - 1.0,
                     lunch_to=last_end + 100.0)

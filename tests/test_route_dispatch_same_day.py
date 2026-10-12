@@ -75,9 +75,9 @@ def test_draft_same_day_roundtrip_and_old_draft_byte_identical():
 def test_not_before_delays_trip_loading():
     ctx, base, _, _, draft = _base()
     routable = {s.customer_id: s for s in base}
-    t0 = dp._timeline(ctx, draft.trips, routable, dp._shares(draft.trips))
+    t0 = dp._timeline(ctx, draft.trips, routable, dp._shares(draft.trips), kg_of={})
     late = [replace(t, not_before=ctx.work_start_min + 120.0) for t in draft.trips]
-    t1 = dp._timeline(ctx, late, routable, dp._shares(late))
+    t1 = dp._timeline(ctx, late, routable, dp._shares(late), kg_of={})
     assert t0[1][0] == 0.0 and t1[1][0] == 120.0 and t1[1][1] == pytest.approx(t0[1][1])
 
 
@@ -107,7 +107,7 @@ def test_options_ranked_cheapest_first_with_insert_new_trip_and_extra_truck():
     assert all(o['km'] > 0 and o['minutes'] > 0 and o['amd'] > 0 for o in opts)
     # новый рейс FORD — после возвращения из первого; доп. машина — с начала дня
     assert trip['loading_start'] == dp._hhmm(9 * 60 + dp._timeline(ctx, draft.trips, {s.customer_id: s for s in base},
-                                                                    dp._shares(draft.trips))[1][1])
+                                                                    dp._shares(draft.trips), kg_of={})[1][1])
     assert extra['loading_start'] == '09:00'
 
 
@@ -169,7 +169,7 @@ def test_window_misses_not_increased():
     ctx, base, orders, _, draft = _base()
     # окно 103 — до 09:25: вставка 201 перед ним опоздала бы, после — нет; вставка не нарушает окно ни так, ни так
     routable = {s.customer_id: s for s in base}
-    at = dp._timeline(ctx, draft.trips, routable, dp._shares(draft.trips))[1][2]
+    at = dp._timeline(ctx, draft.trips, routable, dp._shares(draft.trips), kg_of={})[1][2]
     last = draft.trips[0].stops[-1]
     win = replace(ctx, windows={last: (0.0, 9 * 60 + at[-1] + 1.0)})
     stops = dp.build_stops([*orders, _dorder(72, 201, 100.0, day=D)], _coord_of(POINTS))
@@ -472,7 +472,7 @@ def test_take_pins_trip_and_rebuild_keeps_it():
     assert all(201 not in t.stops for t in again.trips if t.id != trip.id)
     # утренний рейс машины — по-прежнему с начала дня, до закреплённого (машина свободна и до его «не раньше»)
     routable = {s.customer_id: s for s in stops}
-    tl = dp._timeline(ctx, again.trips, routable, dp._shares(again.trips))
+    tl = dp._timeline(ctx, again.trips, routable, dp._shares(again.trips), kg_of={})
     morning = next(t for t in again.trips if t.id != trip.id and t.truck == FORD.car_code)
     assert tl[morning.id][0] == 0.0 and tl[morning.id][0] + tl[morning.id][1] <= tl[trip.id][0]
     assert [t.id for t in again.trips if t.truck == FORD.car_code] == [morning.id, trip.id]

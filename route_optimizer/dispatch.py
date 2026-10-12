@@ -1207,7 +1207,7 @@ def _reachable(ctx: DayContext, routable: Mapping[int, Stop], cid: int, codes: S
     (_real_end) — иначе пересборка с настоящим сроком ничего не даст (№93)."""
     for code in codes:
         trip = DraftTrip(0, code, [cid])
-        if _timeline(ctx, [trip], routable, {cid: 1})[0][2][0] <= _real_end(ctx, cid) + _EPS:
+        if _timeline(ctx, [trip], routable, {cid: 1}, kg_of={})[0][2][0] <= _real_end(ctx, cid) + _EPS:   # один магазин
             return True
     return False
 
@@ -1244,7 +1244,7 @@ def _end_limit(ctx: DayContext, trips: Sequence[DraftTrip], stops: Mapping[int, 
         return ctx.tn.work_minutes
     parts: dict[int, dict[str, Any]] = {}
     mine = [t for t in trips if t.truck == code]
-    _timeline(ctx, mine, stops, shares, parts)
+    _timeline(ctx, mine, stops, shares, parts, kg_of=_weights(trips, stops))
     last = next((t.id for t in reversed(mine) if t.id in parts), None)
     return _horizon(ctx).end_limit((parts.get(last) or {}).get('buffer', 0.0))
 
@@ -1365,8 +1365,8 @@ def _route(ctx: DayContext, cids: Sequence[int], stops: Mapping[int, Stop], shar
 
 
 def _timeline(ctx: DayContext, trips: Sequence[DraftTrip], stops: Mapping[int, Stop],
-              shares: Mapping[int, int], parts: dict[int, dict[str, Any]] | None = None, open_end: bool = False,
-              kg_of: Mapping[tuple[int, int], float] | None = None) -> dict[int, tuple[float, float, list[float]]]:
+              shares: Mapping[int, int], parts: dict[int, dict[str, Any]] | None = None, open_end: bool = False, *,
+              kg_of: Mapping[tuple[int, int], float]) -> dict[int, tuple[float, float, list[float]]]:
     """Рейсы машин подряд, с ожиданием у окон приёма: рейс → (выезд, минуты рейса от выезда, прибытия к точкам),
     время — минуты от начала дня машины. Рейс выезжает, как только машина вернулась, но не раньше, чем нужно к
     окну первой точки (fl.trip_schedule) — как его поставил fleet._plan_timed. Без окон — подряд, минуты те же,
@@ -1374,9 +1374,10 @@ def _timeline(ctx: DayContext, trips: Sequence[DraftTrip], stops: Mapping[int, S
     и 'lunch': fl.Break или None). Обед в пути (№61, ctx.tn.lunch_minutes) — по правилу fleet (шапка модуля): один на
     день машины; open_end — за последним рейсом машины будут ещё рейсы (занятое время для раскладки вокруг: обед может
     встать и после его последней точки). Запас на рейс и темп машины (№66, ctx.tn) — по правилу fleet: минуты рейса — с
-    запасом в конце (parts['buffer']), прибытия — без него. kg_of — (рейс, клиент) → кг точки вместо доли поровну (trip_kgs:
-    магазин нескольких машин — заказы своей машины): загрузка, разгрузка и всё время рейса — по настоящему грузу."""
-    kg_of = kg_of or {}
+    запасом в конце (parts['buffer']), прибытия — без него. kg_of — ОБЯЗАТЕЛЕН (ревью ветки 12.10, раунд 5: ни один расчёт
+    времени не забудет вес): (рейс, клиент) → кг точки магазина нескольких машин по заказам своей машины (_weights /
+    trip_kgs — одна функция для всех); прочие точки — доля поровну (shares). Загрузка, разгрузка и всё время рейса — по
+    настоящему грузу; trips может быть частью рейсов — kg_of считают по всем рейсам плана."""
     used: dict[str, float] = {}
     out: dict[int, tuple[float, float, list[float]]] = {}
     lunch = ctx.tn.lunch_minutes > 0
@@ -1417,7 +1418,7 @@ def _occupied(ctx: DayContext, trips: Sequence[DraftTrip], stops: Mapping[int, S
     иначе None — день занят одним куском, как раньше; выезд каждого рейса). За рейсами встанут новые — обед (№61) по
     правилу с запасом (open_end); fed — сюда машины, чей обед уже в этих рейсах."""
     found: dict[int, dict[str, Any]] = {}
-    tl = _timeline(ctx, trips, stops, shares, found, open_end=True)
+    tl = _timeline(ctx, trips, stops, shares, found, open_end=True, kg_of=_weights(trips, stops))
     used: dict[str, float] = {}
     spans: dict[str, list[tuple[float, float]]] = {}
     gap = False
@@ -1528,7 +1529,7 @@ def build(ctx: DayContext, stops: Sequence[Stop], old: Draft | None, trucks: Seq
     # времени (иначе машина была бы занята с утра до его конца и утренние рейсы ушли бы за него)
     timed = timed or any(t.not_before is not None for t in pinned)
     if timed and pinned and sel:
-        was = _timeline(ctx, old.trips, routable, _shares(old.trips))
+        was = _timeline(ctx, old.trips, routable, _shares(old.trips), kg_of=trip_kgs(old, routable)[0])
         draft.trips, rest, reasons, draft.next_id = _plan_around(ctx, sel, routable, pinned, was, draft.next_id, iterations,
                                                                  draft.locks)
     else:
@@ -1954,7 +1955,7 @@ def _truck_day(ctx: DayContext, trips: Sequence[DraftTrip], stops: Mapping[int, 
     """Рейсы машины code подряд (_timeline): (возвращение каждого рейса, конец дня машины, точек позже окна приёма) —
     минуты от начала дня машины."""
     mine = [t for t in trips if t.truck == code]
-    tl = _timeline(ctx, mine, stops, shares)
+    tl = _timeline(ctx, mine, stops, shares, kg_of=_weights(trips, stops))
     ends: dict[int, float] = {}
     misses = 0
     for t in mine:
@@ -2007,7 +2008,7 @@ def _take(ctx: DayContext, draft: Draft, stops: Mapping[int, Stop], trips: list[
     shares = _shares(trips)
     for t in trips:
         if t.id in touched:
-            start = _timeline(ctx, trips, stops, shares)[t.id][0]
+            start = _timeline(ctx, trips, stops, shares, kg_of=_weights(trips, stops))[t.id][0]
             was = t.stops
             ends, _, misses = _truck_day(ctx, trips, stops, shares, t.truck)
             t.stops, *_ = _route(ctx, was, stops, shares, reorder=True, start=start)
@@ -2306,7 +2307,7 @@ def _trip_stops(ctx: DayContext, draft: Draft, routable: Mapping[int, Stop], edi
     for t in draft.trips:
         if t.id in touched:
             # выезд — для окон приёма при 2-opt; заново для каждого рейса (рейсы одной машины идут друг за другом)
-            start = _timeline(ctx, draft.trips, routable, shares)[t.id][0]
+            start = _timeline(ctx, draft.trips, routable, shares, kg_of=trip_kgs(draft, routable)[0])[t.id][0]
             t.stops, *_ = _route(ctx, t.stops, routable, shares, reorder=True, start=start, truck=t.truck)
     return draft
 
@@ -2569,7 +2570,7 @@ def apply_edit(ctx: DayContext, stops: Sequence[Stop], draft: Draft, edit: Mappi
     for t in (src, dst):
         if t is not None and t.stops:
             # выезд рейса — для окон приёма при 2-opt; заново после перестановки src (та же машина — другой выезд)
-            start = _timeline(ctx, draft.trips, routable, shares)[t.id][0]
+            start = _timeline(ctx, draft.trips, routable, shares, kg_of=trip_kgs(draft, routable)[0])[t.id][0]
             t.stops, *_ = _route(ctx, t.stops, routable, shares, reorder=True, start=start, truck=t.truck)
     return draft
 
@@ -2593,7 +2594,7 @@ def _whole_store(ctx: DayContext, draft: Draft, routable: Mapping[int, Stop], ed
     gone = {t.id for t in touched}
     for t in draft.trips:
         if t.id in gone or (t.truck == truck and cid in t.stops):
-            start = _timeline(ctx, draft.trips, routable, shares)[t.id][0]
+            start = _timeline(ctx, draft.trips, routable, shares, kg_of=trip_kgs(draft, routable)[0])[t.id][0]
             t.stops, *_ = _route(ctx, t.stops, routable, shares, reorder=True, start=start, truck=t.truck)
     return draft
 
@@ -2656,7 +2657,7 @@ def _place_added(ctx: DayContext, stops: Sequence[Stop], draft: Draft, cids: Seq
 def _late_of(ctx: DayContext, trips: Sequence[DraftTrip], stops: Mapping[int, Stop], shares: Mapping[int, int]
              ) -> set[tuple[int, int]]:
     """Опоздания рейсов trips (машины — подряд, _timeline): (рейс, клиент) точек, куда машина приезжает позже окна."""
-    tl = _timeline(ctx, trips, stops, shares)
+    tl = _timeline(ctx, trips, stops, shares, kg_of=_weights(trips, stops))
     return {(t.id, c) for t in trips if t.id in tl
             for c, at in zip([c for c in t.stops if c in stops], tl[t.id][2]) if at > _span(ctx, c)[1] + _EPS}
 
@@ -2671,11 +2672,12 @@ def _fit_windows(ctx: DayContext, trips: Sequence[DraftTrip], stops: Mapping[int
     обед, ожидание окон); trips — рейсы, среди которых trip (сам он здесь не меняется). Меньше опозданий не стало — None."""
     shares = _shares(trips)
     mine = [t for t in trips if t.truck == trip.truck]
+    kg_of = _weights(trips, stops)   # по всем рейсам: порядок внутри рейса вес точек не меняет
 
     def run(order: list[int]) -> tuple[tuple[int, float, float], set[tuple[int, int]]]:
         """((опозданий у машины, конец её дня, км рейса), опоздания машины (рейс, клиент)) при порядке order."""
         trial = [replace(t, stops=order) if t is trip else t for t in mine]
-        tl = _timeline(ctx, trial, stops, shares)
+        tl = _timeline(ctx, trial, stops, shares, kg_of=kg_of)
         late = {(t.id, c) for t in trial if t.id in tl
                 for c, at in zip([c for c in t.stops if c in stops], tl[t.id][2]) if at > _span(ctx, c)[1] + _EPS}
         end = max((d + m for d, m, _ in tl.values()), default=0.0)
@@ -2697,7 +2699,7 @@ def _fit_windows(ctx: DayContext, trips: Sequence[DraftTrip], stops: Mapping[int
         cur, late, order = best
     if late == first:
         return None
-    start = _timeline(ctx, [replace(t, stops=order) if t is trip else t for t in mine], stops, shares)[trip.id][0]
+    start = _timeline(ctx, [replace(t, stops=order) if t is trip else t for t in mine], stops, shares, kg_of=kg_of)[trip.id][0]
     two, *_ = _route(ctx, order, stops, shares, reorder=True, start=start, truck=trip.truck)
     score, got = run(two)
     return two if got <= late and score[1] <= cur[1] + _EPS else order
@@ -2738,7 +2740,7 @@ def _until_hint(ctx: DayContext, routable: Mapping[int, Stop], draft: Draft, cid
         _, end0, miss0 = _truck_day(ctx, draft.trips, routable, shares, r.truck)
         trial, dst = _until_move(ctx, draft.trips, routable, cid, src.id, r)
         got = _shares(trial)
-        tl = _timeline(ctx, [t for t in trial if t.truck == r.truck], routable, got)
+        tl = _timeline(ctx, [t for t in trial if t.truck == r.truck], routable, got, kg_of=_weights(trial, routable))
         at = tl[dst.id][2][dst.stops.index(cid)]
         _, end1, miss1 = _truck_day(ctx, trial, routable, got, r.truck)
         limit = over if over is not None else _end_limit(ctx, trial, routable, got, r.truck)
@@ -2957,7 +2959,7 @@ def _same_day_variants(ctx: DayContext, base: Sequence[Stop], stops: Sequence[St
             if end1 > max(limit, end0) + _EPS or miss1 > miss0:
                 return
         got: dict[int, dict[str, Any]] = {}
-        tl = _timeline(ctx, [t for t in trial if t.truck in codes], routable, shares, got)
+        tl = _timeline(ctx, [t for t in trial if t.truck in codes], routable, shares, got, kg_of=_weights(trial, routable))
         km = amd = minutes = 0.0
         etas = []
         for t in trial:
@@ -3184,35 +3186,48 @@ def order_trucks(trips: Sequence[tuple[str, Sequence[int]]], orders: Sequence[Di
     return out, warn
 
 
-def assign(draft: Draft, orders: Sequence[DispatchOrder]) -> tuple[dict[str, str], list[dict[str, Any]]]:
+def assign(draft: Draft, orders: Sequence[DispatchOrder], published: bool = False
+           ) -> tuple[dict[str, str], list[dict[str, Any]]]:
     """order_trucks плана draft — ЕДИНОЕ распределение заказов по машинам (страница, Բեռնագիր, терминал, проверки груза):
     заказы загруженных рейсов (№78) закреплены за их машиной по отправленному плану (Draft.sent orders — по нему склад
-    грузил): машина загруженного рейса с этим магазином. Снимка заказов нет — без закрепления."""
+    грузил): машина загруженного рейса с этим магазином. Снимка заказов нет — без закрепления.
+    published — draft — сам отправленный план (склад, ревью ветки 12.10, раунд 5): отправленное распределение — как есть,
+    для всех его заказов (терминал каждой машины держит ровно свои; перераспределять по нынешним весам нельзя)."""
     sent = (draft.sent or {}).get('orders') or {}
     loaded = {(t.truck, c) for t in draft.trips if t.loaded is not None for c in t.stops}
-    fixed = {o.isn: sent[o.isn][0] for o in orders if o.isn in sent and (sent[o.isn][0], o.customer_id) in loaded}
+    fixed = {o.isn: sent[o.isn][0] for o in orders
+             if o.isn in sent and (published or (sent[o.isn][0], o.customer_id) in loaded)}
     return order_trucks([(t.truck, t.stops) for t in draft.trips], orders, fixed)
 
 
-def trip_kgs(draft: Draft, routable: Mapping[int, Stop]) -> tuple[dict[tuple[int, int], float], dict[str, str]]:
-    """Вес точек магазинов нескольких машин по рейсам (один заказ ERP — одна машина, assign): (рейс, клиент) → кг заказов
-    его машины поровну между её рейсами к магазину; и само распределение fISN → машина. Магазины одной машины — не здесь
-    (их кг — доли поровну, как раньше): _timeline и plan_view берут вес отсюда — время рейса по настоящему грузу."""
-    owner, _ = assign(draft, [o for x in routable.values() for o in x.orders])
+def _weights(trips: Sequence[DraftTrip], routable: Mapping[int, Stop], fixed: Mapping[str, str] | None = None,
+             owner: Mapping[str, str] | None = None) -> dict[tuple[int, int], float]:
+    """ЕДИНСТВЕННЫЙ расчёт веса точек для времени рейсов (_timeline: plan_view, «уже грузится», «опаздывает», «Մինչև ժամը»,
+    правки и пробы): магазин в рейсах нескольких машин — (рейс, клиент) → кг заказов его машины (order_trucks; owner —
+    готовое распределение, fixed — закреплённые заказы, как в assign) поровну между её рейсами к магазину. trips — ВСЕ рейсы
+    плана (или пробы): по части рейсов машина магазина «одна». Магазинов нескольких машин нет — пусто (доли поровну)."""
     on: dict[int, set[str]] = {}
     visits: dict[tuple[str, int], int] = {}
-    for t in draft.trips:
+    for t in trips:
         for c in t.stops:
             if c in routable:
                 on.setdefault(c, set()).add(t.truck)
                 visits[(t.truck, c)] = visits.get((t.truck, c), 0) + 1
-    out: dict[tuple[int, int], float] = {}
-    for t in draft.trips:
-        for c in t.stops:
-            if c in routable and len(on[c]) > 1:
-                out[(t.id, c)] = math.fsum(o.kg for o in routable[c].orders if owner.get(o.isn) == t.truck) \
-                    / visits[(t.truck, c)]
-    return out, owner
+    multi = {c for c, ts in on.items() if len(ts) > 1}
+    if not multi:
+        return {}
+    if owner is None:
+        owner, _ = order_trucks([(t.truck, t.stops) for t in trips], [o for c in multi for o in routable[c].orders], fixed)
+    return {(t.id, c): math.fsum(o.kg for o in routable[c].orders if owner.get(o.isn) == t.truck) / visits[(t.truck, c)]
+            for t in trips for c in t.stops if c in multi}
+
+
+def trip_kgs(draft: Draft, routable: Mapping[int, Stop], published: bool = False
+             ) -> tuple[dict[tuple[int, int], float], dict[str, str]]:
+    """Вес точек плана draft (_weights по распределению assign — с закреплёнными заказами загруженных машин; published —
+    отправленное распределение как есть) и само распределение fISN → машина."""
+    owner, _ = assign(draft, [o for x in routable.values() for o in x.orders], published)
+    return _weights(draft.trips, routable, owner=owner), owner
 
 
 def published_orders(draft: Draft, stops: Sequence[Stop]) -> dict[str, list[Any]]:
@@ -3606,7 +3621,8 @@ def _stop_of(base: Mapping[str, Any], part: tuple[float, float, set[str], int] |
 
 
 def plan_view(ctx: DayContext, stops: Sequence[Stop], draft: Draft,
-              info: Callable[[Stop], dict[str, Any]], explain: bool = True, crew: Crew | None = None) -> dict[str, Any]:
+              info: Callable[[Stop], dict[str, Any]], explain: bool = True, crew: Crew | None = None,
+              published: bool = False) -> dict[str, Any]:
     """Рейсы черновика с цифрами по текущим заказам: машины → рейсы по порядку (выезд, возвращение,
     км, литры, загрузка), точки по порядку; «ещё не в рейсах»; «не помещается» и совет, что с этим делать (advice —
     _advice). Время — рейсы машины подряд с ожиданием у окон приёма; у точки — прибытие (eta), вне окна (window_miss —
@@ -3628,8 +3644,9 @@ def plan_view(ctx: DayContext, stops: Sequence[Stop], draft: Draft,
     # машина ровно свои заказы (order_trucks — то же, что получает терминал, published_orders, и грузит склад,
     # waybill.truck_waybill): у точки — заказы машины, их кг и ֏ поровну между её рейсами к магазину; кг и загрузка рейса —
     # по ним (перегруз — по настоящему весу), время рейса — тоже (_timeline с kg_of). Таких магазинов нет — прежний план
-    kg_of, owner = trip_kgs(draft, routable)
-    _, split = assign(draft, [o for x in routable.values() for o in x.orders])
+    # published — draft сам отправленный план (склад): заказы машин — как отправлены (assign, раунд 5 ревью ветки)
+    kg_of, owner = trip_kgs(draft, routable, published)
+    _, split = assign(draft, [o for x in routable.values() for o in x.orders], published)
     on_trucks: dict[int, set[str]] = {}
     visits: dict[tuple[str, int], int] = {}
     for t in draft.trips:
