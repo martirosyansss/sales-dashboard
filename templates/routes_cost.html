@@ -9,26 +9,34 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400..700&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+Armenian:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=27">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_ui.css') }}?v=2">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_cost.css') }}?v=1">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_ui.css') }}?v=3">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_cost.css') }}?v=2">
 {% endblock %}
 
 {% block content %}
 <!-- «Առաքման արժեք» (№87, п. 6; route_optimizer/cost_to_serve.py): ֏ доставки магазина против его продаж; только администратору -->
-<div class="rt-page" id="ctPage" lang="hy">
+<div class="rt-page rt-tesla" id="ctPage" lang="hy">
 
-    <header class="rt-head">
-        <div class="rt-head-row">
-            <h1 class="rt-title">Առաքման արժեք</h1>
-            <div class="rt-head-tools">
-                <div class="ct-periods" role="group" aria-label="Ժամանակահատված">
-                    <button type="button" class="rt-btn rt-btn-ghost ct-period" data-days="30" aria-pressed="true">30 օր</button>
-                    <button type="button" class="rt-btn rt-btn-ghost ct-period" data-days="90" aria-pressed="false">90 օր</button>
-                    <button type="button" class="rt-btn rt-btn-ghost ct-period" data-days="custom" aria-pressed="false" aria-controls="ctRange">Ընտրել…</button>
-                </div>
-                <button type="button" id="ctCsv" class="rt-btn rt-btn-ghost">
-                    <i class="fas fa-file-csv" aria-hidden="true"></i>Ներբեռնել CSV</button>
+    <!-- Шапка страницы (Tesla+): заголовок, серая строка, пояснение по раскрытию; справа — период сегментами и CSV -->
+    <header class="rt-pagehead ct-head">
+        <div>
+            <h1 class="rt-pagehead__title">Առաքման արժեք</h1>
+            <p class="rt-pagehead__sub">Առաքման ծախսը յուրաքանչյուր խանութի համար՝ նրա վաճառքի համեմատ</p>
+            <details class="rt-howto">
+                <summary><i class="fas fa-circle-question" aria-hidden="true"></i>Ինչպե՞ս կարդալ</summary>
+                <p>Յուրաքանչյուր խանութի առաքման ծախսը՝ դիզել, մեքենայի մաշվածք և առաքիչի գործավարձ, համեմատած
+                    նրա վաճառքի հետ։ Կարմիր են այն խանութները, որտեղ առաքումը վաճառքի ավելի մեծ մասն է կազմում, քան միջին հավելագինը։
+                    Սեղմեք խանութի վրա՝ նրա երթերը տեսնելու համար։</p>
+            </details>
+        </div>
+        <div class="rt-pagehead__actions">
+            <div class="ct-periods rt-seg--tabs" role="group" aria-label="Ժամանակահատված">
+                <button type="button" class="ct-period" data-days="30" aria-pressed="true">30 օր</button>
+                <button type="button" class="ct-period" data-days="90" aria-pressed="false">90 օր</button>
+                <button type="button" class="ct-period" data-days="custom" aria-pressed="false" aria-controls="ctRange">Ընտրել…</button>
             </div>
+            <button type="button" id="ctCsv" class="rt-btn rt-btn--secondary">
+                <i class="fas fa-file-csv" aria-hidden="true"></i>Ներբեռնել CSV</button>
         </div>
         <form id="ctRange" class="ct-range" hidden novalidate>
             <div class="rt-field">
@@ -42,9 +50,6 @@
             <button type="submit" class="rt-btn rt-btn-primary">Ցույց տալ</button>
             <span class="rt-field-hint">Ոչ ավելի, քան 92 օր։</span>
         </form>
-        <p class="rt-head-lead">Յուրաքանչյուր խանութի առաքման ծախսը՝ դիզել, մեքենայի մաշվածք և առաքիչի գործավարձ, համեմատած
-            նրա վաճառքի հետ։ Կարմիր են այն խանութները, որտեղ առաքումը վաճառքի ավելի մեծ մասն է կազմում, քան միջին հավելագինը։
-            Սեղմեք խանութի վրա՝ նրա երթերը տեսնելու համար։</p>
     </header>
 
     <div id="ctStatus" class="rt-sr-only" role="status" aria-live="polite"></div>

@@ -1,9 +1,10 @@
 /* «Առաքման արժեք» /routes/cost — поверх routes.css (тема, карточки, плитки .rt-kpi); свои классы .ct-* */
 #ctPage { max-width: 1280px; margin: 0 auto; }
 
-.ct-periods { display: inline-flex; flex-wrap: wrap; gap: 6px; }
-.ct-period[aria-pressed="true"] { background: var(--rt-acc-glow); border-color: var(--rt-acc-dim); color: var(--rt-acc); }
-.ct-range { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 0 14px; margin-top: 12px; }
+/* период — сегменты (routes_ui.css .rt-seg--tabs, выбранный — aria-pressed) */
+.ct-head { flex-wrap: wrap; }
+.ct-range { flex: 1 1 100%; display: flex; flex-wrap: wrap; align-items: flex-end; gap: 0 14px; margin-top: 4px; }
+.ct-range[hidden] { display: none; }
 .ct-range .rt-field { margin-bottom: 0; }
 .ct-range .rt-field-hint { align-self: center; }
 .ct-sub { font-size: .9375rem; color: var(--rt-fg-dim); }
@@ -17,9 +18,8 @@
 .ct-search { width: min(360px, 100%); }
 .ct-only-red { display: inline-flex; align-items: center; gap: 8px; font-size: .9375rem; color: var(--rt-fg-dim); cursor: pointer; }
 
-/* таблица прокручивается внутри карточки — страница не шире экрана */
-.ct-scroll { max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch;
-    border: 1px solid var(--rt-line); border-radius: var(--rt-radius-sm); }
+/* таблица прокручивается внутри карточки — страница не шире экрана; Tesla+: прямо на панели, без рамки */
+.ct-scroll { max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
 .ct-table { min-width: 1040px; }
 .ct-trips { min-width: 860px; }
 .rt-numtable.ct-table thead th:nth-child(2) { text-align: left; }
@@ -37,10 +37,10 @@
 .ct-table tbody tr { cursor: pointer; }
 .ct-table tbody tr:hover td { background: var(--rt-panel-2); }
 .ct-table tbody tr.is-open td { background: var(--rt-acc-glow); }
-.ct-table tbody tr.is-red td:first-child { box-shadow: inset 3px 0 0 var(--rt-danger); }
-.ct-table td.ct-cost { font-weight: 700; }
+.ct-table tbody tr.is-red td { background: var(--rt-danger-bg); }   /* Tesla+: строка-проблема — risk-soft */
+.ct-table td.ct-cost { font-weight: 600; }
 .ct-table .rt-badge { margin-left: 6px; vertical-align: 1px; }
-.ct-table tfoot td { font-weight: 700; border-top: 1px solid var(--rt-line); padding: 10px 12px; }
+.ct-table tfoot td { font-weight: 600; border-top: 1px solid var(--rt-line); padding: 12px 12px 14px; }
 .ct-legend { margin: 10px 0 0; }
 .ct-close { margin-left: auto; }
 
@@ -50,8 +50,9 @@
 .ct-how .note { color: var(--rt-fg-mute); font-size: .875rem; }
 
 @media (max-width: 575px) {
+    #ctPage .rt-pagehead__actions { width: 100%; }
     .ct-periods { flex: 1 1 100%; }
-    .ct-periods .rt-btn { flex: 1 1 auto; }
+    .ct-periods .ct-period { flex: 1 1 auto; }
     #ctCsv { flex: 1 1 100%; }
     .ct-margin-row .rt-btn { flex: 1 1 auto; }
 }

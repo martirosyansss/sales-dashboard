@@ -17,7 +17,8 @@ D наценка: 150 — ошибка у поля и aria-invalid, ничего
 E клик по магазину — карточка рейсов (строк = его рейсов, сумма ֏ = его ֏ доставки), «Փակել» — скрыта, фокус на строке;
 F период: «90 օր» — запрос days=90 и подзаголовок «90 օր»; «Ընտրել…» — поля дат, 30.09–01.10 → подзаголовок с датами;
 G CSV — файл cost-to-serve-….csv с BOM и шапкой, за последний УСПЕШНЫЙ период (неверный период его не подменил);
-H телефон 390×860: горизонтальной прокрутки страницы нет (таблица прокручивается внутри карточки).
+H телефон 390×860: горизонтальной прокрутки страницы нет (таблица прокручивается внутри карточки);
+I Tesla+: шапка страницы, период — сегменты; обе темы на 390 / 1366 / 1920 без горизонтальной прокрутки (tesla_layout_check).
 Ошибки страницы (pageerror) и консоли — провал (кроме сетевых для внешних ресурсов — шрифты, CDN).
 """
 from __future__ import annotations
@@ -217,6 +218,15 @@ def main() -> int:
             page.wait_for_timeout(200)
             check(not page.evaluate('document.documentElement.scrollWidth > document.documentElement.clientWidth'),
                   'H горизонтальной прокрутки страницы нет')
+            # I Tesla+
+            import tesla_layout_check as tl
+            page.set_viewport_size({'width': 1440, 'height': 900})
+            page.goto(f'{BASE}/routes/cost')
+            page.wait_for_selector('#ctRows tr', timeout=30000)
+            check(page.locator('#ctPage header.rt-pagehead h1.rt-pagehead__title').count() == 1
+                  and page.locator('.ct-periods.rt-seg--tabs .ct-period[aria-pressed="true"]').count() == 1, 'I шапка страницы и период сегментами')
+            tl.themes_and_widths(browser, f'{BASE}/routes/cost', lambda pg: pg.wait_for_selector('#ctRows tr', timeout=30000),
+                                 check, errors, 'I')
             browser.close()
     finally:
         server.shutdown()
