@@ -112,6 +112,13 @@ def main() -> int:
                   f'O step cards: 1 ✓ «{page.inner_text("#roStepSub1")}», 2 «{page.inner_text("#roStepSub2")}» is current')
             check(page.locator('#roParamPills .ro-param').count() == 4 and page.locator('#roParamsToggle').is_visible()
                   and page.locator('#roForm').is_hidden(), 'O parameters as 4 pills, «Փոխել», the form folded')
+            # решение 12.10: «Վերահաշվել» и «Ներբեռնել…» — только в шапке; в шаге 3 — пояснение и переход к кнопке шапки
+            check(page.locator('#roRecalcBtn').is_hidden() and page.locator('#roExportBtn').is_hidden()
+                  and page.locator('#roExportNote').is_visible() and page.locator('#roDecBox').is_visible(),
+                  'O no duplicate buttons in steps 1 and 3 (note and «Ձեր որոշումները» stay)')
+            page.click('#roToHeadExport')
+            page.wait_for_timeout(600)
+            check(page.evaluate('document.activeElement.id') == 'roHeadExport', 'O step 3 link → focus on the head «Ներբեռնել…»')
             page.click('#roParamsToggle')
             check(page.locator('#roForm').is_visible() and page.locator('#roMore').evaluate('d => d.open'),
                   'O «Փոխել» → the previous parameter form (all fields and modes)')
@@ -133,6 +140,11 @@ def main() -> int:
             page.wait_for_selector(f'#roCards .ro-card[data-agent="{agent}"] #roPanel:not([hidden])', timeout=5000)
             check(page.locator(f'#roCards .ro-card[data-agent="{agent}"].is-open #roPanel').count() == 1,
                   'O accordion: the open manager row holds its proposals')
+            stripes = page.eval_on_selector_all('#roPanel .ro-grp, #roPanel .ro-item, #roPanel .ro-panel-head',
+                                                "els => els.filter(e => parseFloat(getComputedStyle(e).borderLeftWidth) > 1"
+                                                " || parseFloat(getComputedStyle(e).borderTopWidth) > 1).length")
+            check(stripes == 0 and page.locator('#roPanel .ro-panel-title .rt-dot').count() == 1,
+                  f'O no coloured stripes in the accordion (DESIGN.md п. 9), manager colour as a dot ({stripes})')
             page.screenshot(path=str(SHOTS / 'optimize.png'), full_page=True)
             ok = page.locator('#roPanel .ro-btn-ok').first
             if ok.count():
@@ -140,6 +152,8 @@ def main() -> int:
                 page.wait_for_function("() => document.getElementById('roHeadExport').getAttribute('aria-disabled') === 'false'", timeout=15000)
                 check(page.get_attribute('#roHeadExport', 'aria-disabled') == 'false' and page.get_attribute('#roStepCard3', 'aria-current') == 'step',
                       'O «Ընդունել» → the main button available, step 3 current')
+                # скачивание и «Վերահաշվել» — только кнопками шапки
+                check('Վերահաշվել' in page.inner_text('#roHeadRecalc'), f'O head «{page.inner_text("#roHeadRecalc").strip()}» follows the step 1 button')
                 with page.expect_download(timeout=15000) as dl:
                     page.click('#roHeadExport')
                 check(dl.value.suggested_filename.endswith('.xlsx'), f'O the head button downloads the plan ({dl.value.suggested_filename})')

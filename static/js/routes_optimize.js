@@ -603,7 +603,9 @@
         $('roHeadExportHint').textContent = hint;
         const rb = r ? $('roRecalcBtn') : $('roRunBtn'), hb = $('roHeadRecalc');
         hb.setAttribute('aria-disabled', rb.getAttribute('aria-disabled') || 'false');
-        hb.querySelector('span').textContent = running() ? 'Հաշվում եմ…' : r ? 'Վերահաշվել' : 'Հաշվել';
+        // текст — как у скрытой «Վերահաշվել» шага 1 («…՝ հաշվի առնելով որոշումները», пока решения не учтены)
+        hb.querySelector('span').textContent = running() ? 'Հաշվում եմ…' : r ? rb.querySelector('span').textContent : 'Հաշվել';
+        hb.classList.toggle('is-dirty', !!r && !!state.dirty && !running());
     }
 
     // ---------- Запуск и опрос задачи ----------
@@ -2907,6 +2909,10 @@
         $('roHeadExport').addEventListener('click', () => {
             if ($('roHeadExport').getAttribute('aria-disabled') === 'true') { announce($('roHeadExportHint').textContent || 'Դեռ ներբեռնելու բան չկա'); return; }
             $('roExportBtn').click();
+        });
+        $('roToHeadExport').addEventListener('click', () => {
+            window.scrollTo({ top: 0, behavior: RM ? 'auto' : 'smooth' });
+            $('roHeadExport').focus({ preventScroll: true });
         });
         $('roHeadRecalc').addEventListener('click', () => {
             if (state.result) $('roRecalcBtn').click();
