@@ -878,23 +878,22 @@
             el.title = title;
             box.appendChild(el);
         };
-        // магазин в рейсах нескольких машин, а заказ один (решение владельца 12.10 «Запрещать»: один заказ ERP — одна
-        // машина): план не утверждается и не отправляется — по нажатию окно «Տանել ամբողջը <машина>»
+        // магазин в рейсах нескольких машин (решение владельца 12.10 «Запретить целиком»: магазин — одной машине, рейсов у
+        // неё может быть несколько): план не утверждается и не отправляется — по нажатию окно «Տանել ամբողջը <машина>»
         const split = d.plan && Array.isArray(d.plan.order_split) ? d.plan.order_split.filter(isObj) : [];
         if (split.length) {
             const label = (c) => { const t = truckBy(c); return t ? truckLabel(t) : c; };
             const name = (cid) => { const s = findStop(cid); return s ? (s.name || s.code) : String(cid); };
-            chip(pl(split.length, 'խանութ') + '՝ մի պատվեր, մի քանի մեքենա', split.map(x => '«' + name(x.customer_id) + '» բաժանված է '
-                + (x.trucks || []).map(label).join(', ') + ' մեքենաների միջև, բայց պատվերը մեկն է․ ամբողջը կտանի '
-                + (x.trucks || []).filter(c => !(x.empty || []).includes(c)).map(label).join(', ') + '-ը, '
-                + (x.empty || []).map(label).join(', ') + '-ի «Առաքիչ»-ում այս խանութի պատվեր չի լինի։').join('\n')
-                + '\nՏեղափոխեք խանութը մեկ մեքենա կամ ERP-ում բաժանեք պատվերը։ Մինչ այդ պլանը չի ուղարկվում։', () => openSplit(split));
+            chip(pl(split.length, 'խանութ') + '՝ մի քանի մեքենայում', split.map(x => '«' + name(x.customer_id) + '»՝ '
+                + (x.trucks || []).map(label).join(', ') + ' մեքենաների երթերում։').join('\n')
+                + '\nՄեկ խանութը տանում է միայն մեկ մեքենա (պետք լինի՝ մի քանի երթով)։ Տվեք ամբողջ խանութը մեկ մեքենայի․ '
+                + 'մինչ այդ պլանը չի ուղարկվում։', () => openSplit(split));
         }
         // P2 №10: машины плана — не работает, без водителя, водитель не вышел или ведёт две машины
         const crew = Array.isArray(d.crew_problems) ? d.crew_problems.filter(isObj) : [];
         if (crew.length) chip(pl(crew.length, 'մեքենայի') + ' վարորդի խնդիր', crewProblemsText(crew));
     }
-    // «Տանել ամբողջը <машина>»: list — магазины нескольких машин с одним заказом (order_split плана или split_block ответа
+    // «Տանել ամբողջը <машина>»: list — магазины нескольких машин (order_split плана или split_block ответа
     // сервера: {customer_id, trucks, name?}); кнопка — правка whole_store (магазин целиком этой машине, ручное решение)
     function openSplit(list) {
         const ul = $('dpSplitList');

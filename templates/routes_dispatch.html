@@ -611,12 +611,12 @@
             <button type="button" id="dpSfCancel" class="rt-btn rt-btn-ghost">Չեղարկել</button>
         </div>
     </dialog>
-    <!-- решение владельца 12.10 «Запрещать»: один заказ ERP — одна машина; магазин нескольких машин с одним заказом —
-         «Տանել ամբողջը <машина>» (правка whole_store), иначе план не утверждается и не отправляется -->
+    <!-- решение владельца 12.10 «Запретить целиком»: магазин — одной машине (несколько её рейсов — можно); магазин в рейсах
+         нескольких машин — «Տանել ամբողջը <машина>» (правка whole_store), иначе план не утверждается и не отправляется -->
     <dialog id="dpSplitDlg" class="dp-dlg dp-unload-dlg" aria-labelledby="dpSplitTitle" aria-describedby="dpSplitLead">
-        <h2 class="dp-dlg-t" id="dpSplitTitle">Մեկ պատվեր՝ մի քանի մեքենա</h2>
-        <p class="dp-dlg-lead" id="dpSplitLead">Մեկ պատվերը կարող է տանել միայն մեկ մեքենա։ Ամբողջ խանութը տվեք մեկ մեքենայի կամ
-            ERP-ում բաժանեք պատվերը մի քանի պատվերի։ Մինչ այդ պլանը չի հաստատվում և չի ուղարկվում։</p>
+        <h2 class="dp-dlg-t" id="dpSplitTitle">Խանութը մի քանի մեքենայում է</h2>
+        <p class="dp-dlg-lead" id="dpSplitLead">Մեկ խանութը կարող է տանել միայն մեկ մեքենա (անհրաժեշտության դեպքում՝ մի քանի
+            երթով)։ Ամբողջ խանութը տվեք մեկ մեքենայի։ Մինչ այդ պլանը չի հաստատվում և չի ուղարկվում։</p>
         <ul class="dp-split-list" id="dpSplitList"></ul>
         <div class="dp-dlg-btns">
             <button type="button" id="dpSplitClose" class="rt-btn rt-btn-ghost">Փակել</button>
@@ -732,5 +732,5 @@
 <script src="{{ url_for('static', filename='js/routes_dispatch_ai.js') }}?v=4"></script>
 <!-- Tesla+: стеклянные панели поверх карты сворачиваются (общий модуль с «Մեքենաները առցանց») -->
 <script src="{{ url_for('static', filename='js/rt_panels.js') }}?v=1"></script>
-<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=133"></script>
+<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=134"></script>
 {% endblock %}

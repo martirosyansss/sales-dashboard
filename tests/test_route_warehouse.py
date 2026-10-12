@@ -600,7 +600,12 @@ def _heavy_split_day(client, monkeypatch):
     assert len(with104) == 2, with104
     first, second = with104
     d = _ok(client, d, action='pin', trip=second['id'], truck='CAR2')
+    # план утверждён до решения владельца 12.10 «Запретить целиком» (магазин в рейсах двух машин) — так его утверждали
+    # раньше; проверки груза таких планов (старые снимки) — защитный слой, он остаётся
+    real = dp.multi_truck
+    monkeypatch.setattr(dp, 'multi_truck', lambda trips: [])
     d = _ok(client, d, action='approve')
+    monkeypatch.setattr(dp, 'multi_truck', real)
     d = _ok(client, d, action='loaded', trip=first['id'])
     cars = {tr['id']: t['car_code'] for t in d['plan']['trucks'] for tr in t['trips']}
     assert cars[first['id']] != cars[second['id']] == 'CAR2'

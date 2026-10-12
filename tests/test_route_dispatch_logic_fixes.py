@@ -441,44 +441,90 @@ def _split_store(client, state, cid):
     return d
 
 
-def test_split_store_with_two_orders_loads_exactly_what_each_terminal_gets(client, monkeypatch):
-    """Магазин двух машин с двумя заказами: Բեռնագիր каждой машины (логист и склад) — ровно её заказы, те же, что у её
-    терминала; кг точки — по ним (до решения товар магазина делился поровну между машинами, а терминал брал заказ целиком)."""
+def test_store_on_two_trucks_with_two_orders_is_blocked_too(client, monkeypatch):
+    """Решение владельца 12.10 «Запретить целиком»: магазин в рейсах двух машин не утверждается и не отправляется, сколько бы
+    у него ни было заказов (раньше — только при одном заказе); после «Տանել ամբողջը» — у одной машины, план уходит; в
+    отправленном плане магазина на двух машинах нет, терминал и Բեռնագիր — те же заказы."""
     from courier import routes_link as rl
     from route_optimizer import waybill as wb
     from test_route_dispatch_send import ORDERS
-    from test_route_warehouse import _wb
     state = _page(client, monkeypatch)
     second = _dorder(41, 101, 300.0)
     _erp_orders(state, lambda orders, since, until: [*orders, *(o for o in [second] if since <= o.order_date < until)])
-    asked = []
     products = {10: wb.Product(10, '0101', 'Կաթ 1լ', 'հատ', 1.0, None)}
-
-    def loader(isns):
-        asked.append(sorted(i.upper() for i in isns))
-        return wb.Lines({i.upper(): ((10, 1.0),) for i in isns}, frozenset(), products)
-    state.waybill_loader = loader
+    state.waybill_loader = lambda isns: wb.Lines({i.upper(): ((10, 1.0),) for i in isns}, frozenset(), products)
     d = _split_store(client, state, 101)
-    assert 'order_split' not in d['plan']                                        # каждой машине есть что везти
+    assert [x['customer_id'] for x in d['plan']['order_split']] == [101] and d['plan']['order_split'][0]['empty'] == []
+    for action in ('approve',):
+        r = _post(client, '/api/routes/dispatch/edit', {'rev': d['rev'], 'action': action})
+        assert r.status_code == 400 and [x['customer_id'] for x in r.get_json()['split_block']] == [101]
+    d = _ok(_post(client, '/api/routes/dispatch/edit', {'rev': d['rev'], 'action': 'whole_store', 'customer_id': 101,
+                                                        'truck': 'CAR2'}))
     d = _ok(_post(client, '/api/routes/dispatch/edit', {'rev': d['rev'], 'action': 'approve'}))
+    sent = dp.Draft.from_json(state.store.load_dispatch('2026-10-01')[0]).for_drivers()
+    assert dp.multi_truck(sent.trips) == []                                   # отправленный план — магазин одной машине
     view = rl.routes_view(state, D)
     every = [*ORDERS, second]
     apk = {car: sorted(o.isn for o in rl.pick_orders(every, D, view, car)) for car in ('CAR1', 'CAR2')}
-    both = {_isn(1), second.isn}
-    assert {c for c, isns in apk.items() if set(isns) & both} == {'CAR1', 'CAR2'}
-    assert sorted(i for isns in apk.values() for i in isns if i in both) == sorted(both)   # каждый — одной машине
+    assert {_isn(1), second.isn} <= set(apk['CAR2']) and not {_isn(1), second.isn} & set(apk['CAR1'])
     for car in ('CAR1', 'CAR2'):
-        page = [tr for t in d['plan']['trucks'] if t['car_code'] == car for tr in t['trips']]
-        assert sorted(o['isn'] for tr in page for s in tr['stops'] for o in s['orders']) == apk[car]   # страница = терминал
-        # Բեռնագիր логиста и склада — товар ровно заказов машины (у каждого заказа — 1 штука): строки читаются для всего
-        # плана (общая накладная — у одной машины), а грузит машина свои
-        qty = lambda wbill: sum(r['qty'] for tr in wbill['trips'] for r in tr['rows'])   # noqa: E731
         got = _ok(client.get('/api/routes/dispatch/waybill', query_string={'date': '2026-10-01', 'truck': car, 'rev': d['rev']}))
-        assert qty(got) == len(apk[car])
-        r = _wb(client, car, d['rev'])
-        assert r.status_code == 200 and qty(r.get_json()) == len(apk[car])
-        kg = sum(s['kg'] for tr in page for s in tr['stops'] if s['customer_id'] == 101)
-        assert kg == round(sum(o.kg for o in every if o.isn in apk[car] and o.customer_id == 101))
+        assert sum(r['qty'] for tr in got['trips'] for r in tr['rows']) == len(apk[car])
+
+
+def test_sent_plan_never_has_store_on_two_trucks(client, monkeypatch):
+    """Решение владельца 12.10 «Запретить целиком»: ни утверждение, ни отправка, ни переутверждение не публикуют магазин в
+    рейсах двух машин; несколько рейсов ОДНОЙ машины к магазину — можно."""
+    state = _page(client, monkeypatch)
+    d = _ok(_post(client, '/api/routes/dispatch/build', {'trucks': ['CAR1', 'CAR2']}))
+    d = _ok(_post(client, '/api/routes/dispatch/edit', {'rev': d['rev'], 'action': 'approve'}))
+    # после отправки магазин 101 оказался в рейсе и второй машины (правка рейса) — «Ուղարկել» закрыта
+    raw, rev = state.store.load_dispatch('2026-10-01')
+    car = next(t['truck'] for t in raw['trips'] if 101 in t['stops'])
+    other = next(c for c in ('CAR1', 'CAR2') if c != car)
+    raw['trips'].append({'id': raw['next_id'], 'truck': other, 'stops': [101], 'pinned': True})
+    raw['next_id'] += 1
+    assert state.store.save_dispatch('2026-10-01', raw, 'qa', expected_rev=rev) is not None
+    d = _ok(client.get('/api/routes/dispatch?date=2026-10-01'))
+    for action in ('send', 'approve'):
+        if action == 'approve':
+            d = _ok(_post(client, '/api/routes/dispatch/edit', {'rev': d['rev'], 'action': 'unapprove'}))
+        r = _post(client, '/api/routes/dispatch/edit', {'rev': d['rev'], 'action': action, 'confirm_crew': True,
+                                                        'confirm_loaded': True})
+        assert r.status_code == 400 and r.get_json()['split_block'], action
+    sent = dp.Draft.from_json(state.store.load_dispatch('2026-10-01')[0]).for_drivers()
+    assert dp.multi_truck(sent.trips) == []
+    # два рейса ОДНОЙ машины к магазину — отправляется
+    raw, rev = state.store.load_dispatch('2026-10-01')
+    raw['trips'] = [{**t, 'truck': car} if t['stops'] == [101] and t['truck'] == other else t for t in raw['trips']]
+    assert state.store.save_dispatch('2026-10-01', raw, 'qa', expected_rev=rev) is not None
+    d = _ok(client.get('/api/routes/dispatch?date=2026-10-01'))
+    d = _ok(_post(client, '/api/routes/dispatch/edit', {'rev': d['rev'], 'action': 'approve'}))
+    assert dp.multi_truck(dp.Draft.from_json(state.store.load_dispatch('2026-10-01')[0]).for_drivers().trips) == []
+
+
+def test_build_gives_heavy_store_trips_to_one_truck():
+    """Решение владельца 12.10 «Запретить целиком», сборка: магазин 12 т (больше любой машины) — две поездки по 6 т; решатель
+    дал их двум HOWO, _one_truck отдаёт обе одной машине, её день это вмещает (иначе — запрет утверждения и «Տանել
+    ամբողջը»)."""
+    import random
+    from route_optimizer import fleet as fl
+    from test_route_optimizer import FORD, HOWO
+    rng = random.Random(7)
+    spec = [(100 + i, (40.15 + rng.random() * 0.08, 44.45 + rng.random() * 0.15), rng.choice([100.0, 300.0, 600.0]))
+            for i in range(25)] + [(200, (40.23, 44.55), 12000.0)]
+    stops, _ = _dp_stops(spec)
+    howo2 = fl.FleetTruck('123AV61', 'HOWO', 10000.0, 30.0)
+    ctx = _dp_ctx((HOWO, howo2, FORD))
+    codes = [HOWO.car_code, FORD.car_code, howo2.car_code]
+    draft = dp.build(ctx, stops, None, codes, 'now')
+    assert len([t for t in draft.trips if 200 in t.stops]) == 2 and dp.multi_truck(draft.trips) == []
+    real = dp._one_truck
+    try:
+        dp._one_truck = lambda *a: None                          # без него решатель кладёт поездки на две машины
+        assert [x['customer_id'] for x in dp.multi_truck(dp.build(ctx, stops, None, codes, 'now').trips)] == [200]
+    finally:
+        dp._one_truck = real
 
 
 def test_single_order_split_blocks_send_until_whole_store(client, monkeypatch):

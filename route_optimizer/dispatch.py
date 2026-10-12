@@ -1551,6 +1551,7 @@ def build(ctx: DayContext, stops: Sequence[Stop], old: Draft | None, trucks: Seq
         for t in trips:
             draft.trips.append(DraftTrip(draft.next_id, t.truck, [rest[i].customer_id for i in t.items]))
             draft.next_id += 1
+    _one_truck(ctx, routable, draft, sel)   # решение владельца 12.10 «Запретить целиком»
     placed = {c for t in draft.trips for c in t.stops}
     draft.same_day_trips &= {t.id for t in draft.trips}   # рейс взятия, ушедший при пересборке, — без отметки (№72)
     if sel:
@@ -1565,6 +1566,33 @@ def build(ctx: DayContext, stops: Sequence[Stop], old: Draft | None, trucks: Seq
     if tight:
         return build(_relaxed(ctx, tight), stops, old, trucks, now, iterations)
     return draft
+
+
+def _one_truck(ctx: DayContext, routable: Mapping[int, Stop], draft: Draft, sel: Sequence[fl.FleetTruck]) -> None:
+    """Решение владельца 12.10 «Запретить целиком»: магазин — только у одной машины. Сборка делит магазин тяжелее самой
+    большой машины на отдельные поездки «склад → магазин → склад» (fleet.route_day) и может дать их разным машинам — тогда
+    его рейсы на других машинах целиком переходят к машине, у которой их больше (равенство — первая по коду), если она их
+    везёт (_can_carry: допуск, центр, груз), её день укладывается (конец — _end_limit) и опозданий у неё не прибавляется. Не
+    вышло — как есть: утверждение закрыто, логист решает «Տանել ամբողջը». Закреплённые и загруженные рейсы не трогаются."""
+    for x in multi_truck(draft.trips):
+        cid = x['customer_id']
+        mine = [t for t in draft.trips if cid in t.stops]
+        if cid not in routable or any(t.pinned or t.loaded is not None for t in mine):
+            continue
+        count: dict[str, int] = {}
+        for t in mine:
+            count[t.truck] = count.get(t.truck, 0) + 1
+        keep = max(sorted(count), key=lambda c: count[c])
+        moved = {t.id for t in mine if t.truck != keep}
+        trial = [replace(t, truck=keep) if t.id in moved else t for t in draft.trips]
+        shares = _shares(trial)
+        if not all(_can_carry(ctx, sel, keep, [c for c in t.stops if c in routable], routable, shares)
+                   for t in trial if t.id in moved):
+            continue
+        _, end0, miss0 = _truck_day(ctx, draft.trips, routable, _shares(draft.trips), keep)
+        _, end1, miss1 = _truck_day(ctx, trial, routable, shares, keep)
+        if end1 <= max(_end_limit(ctx, trial, routable, shares, keep), end0) + _EPS and miss1 <= miss0:
+            draft.trips = trial
 
 
 # --- Водителей меньше, чем машин (ответ владельца №77) ---
@@ -3186,6 +3214,17 @@ def order_trucks(trips: Sequence[tuple[str, Sequence[int]]], orders: Sequence[Di
     return out, warn
 
 
+def multi_truck(trips: Sequence[DraftTrip]) -> list[dict[str, Any]]:
+    """Магазины в рейсах НЕСКОЛЬКИХ машин: [{'customer_id', 'trucks'}] по клиенту. Решение владельца 12.10 «Запретить
+    целиком»: такой план не утверждается и не отправляется (views — SPLIT_BLOCK, «Տանել ամբողջը»); несколько рейсов ОДНОЙ
+    машины к магазину (груз тяжелее машины) — можно, их здесь нет."""
+    on: dict[int, set[str]] = {}
+    for t in trips:
+        for c in t.stops:
+            on.setdefault(c, set()).add(t.truck)
+    return [{'customer_id': c, 'trucks': sorted(ts)} for c, ts in sorted(on.items()) if len(ts) > 1]
+
+
 def assign(draft: Draft, orders: Sequence[DispatchOrder], published: bool = False
            ) -> tuple[dict[str, str], list[dict[str, Any]]]:
     """order_trucks плана draft — ЕДИНОЕ распределение заказов по машинам (страница, Բեռնագիր, терминал, проверки груза):
@@ -3793,9 +3832,11 @@ def plan_view(ctx: DayContext, stops: Sequence[Stop], draft: Draft,
                   for s in stops if s.point is not None and s.customer_id not in in_trips]
     over = [t for t in trips_json if t['over_time'] or t['over_capacity'] or t['no_truck'] or t['vehicle_miss']]
     km_total = math.fsum(t['km'] for t in trips_json)
-    # магазин в рейсах нескольких машин, которому одной из них по заказам везти нечего (order_trucks: заказ один или заказов
-    # меньше, чем машин) — логисту предупреждение, утверждение и отправка закрыты (views: SPLIT_BLOCK); ключ только при таких
-    # магазинах (план прежний до байта)
+    # магазин в рейсах нескольких машин (решение владельца 12.10 «Запретить целиком»: multi_truck) — логисту предупреждение,
+    # утверждение и отправка закрыты (views: SPLIT_BLOCK); empty — машины, которым по заказам везти нечего (order_trucks);
+    # ключ только при таких магазинах (план прежний до байта)
+    empty = {x['customer_id']: x['empty'] for x in split}
+    split = [{**x, 'empty': empty.get(x['customer_id'], [])} for x in multi_truck(draft.trips)]
     return {
         **({'order_split': split} if split else {}),
         **({'locks': len(draft.locks)} if draft.locks else {}),   # ручных решений в плане — «Հանել ձեռքով որոշումները»
