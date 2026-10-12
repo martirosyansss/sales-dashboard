@@ -30,7 +30,7 @@ def test_one_renderer_for_both_pages():
     assert '/api/routes/warehouse/waybill?' in warehouse and '/api/routes/dispatch' not in warehouse
     assert 'Բեռնման հերթականություն' not in dispatch                                   # и в Excel — только итог по товару
     tpl = (ROOT / 'templates' / 'base_v2.html').read_text(encoding='utf-8')
-    assert "filename='js/base.js') }}?v=5\"" in tpl                                    # новый base.js — мимо кэша
+    assert "filename='js/base.js') }}?v=6\"" in tpl                                    # новый base.js — мимо кэша
     page = (ROOT / 'templates' / 'routes_warehouse.html').read_text(encoding='utf-8')
     assert "routes_warehouse.js') }}?v=9" in page and "routes_warehouse.css') }}?v=8" in page
 

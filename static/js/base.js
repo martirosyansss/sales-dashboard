@@ -68,9 +68,16 @@ window.RtWaybill = (function () {
             + '.sign div{flex:1;display:flex;flex-direction:column;justify-content:flex-end}.sign span{display:block;border-bottom:1px solid #000;height:26px}.made{margin-top:14px;font-size:12px;color:#444}'
             + '.blank{display:inline-block;width:260px;border-bottom:1px solid #000;height:15px;vertical-align:bottom}'
             + '@media screen{body{background:#fff}}'
+            // ревью логики 12.10 (P2 №7): Բեռնագիր не отправленного водителям плана (wb.draft сервера) — пометка на каждой
+            // странице: рабочая бумага печатается только из отправленного плана (№81)
+            + (wb.draft ? 'body::before{content:"ՍԵՎԱԳԻՐ";position:fixed;top:38%;left:0;right:0;text-align:center;font-size:110px;'
+                + 'font-weight:800;color:rgba(0,0,0,.09);transform:rotate(-28deg);pointer-events:none;z-index:0}'
+                + '.draft{border:2px solid #000;padding:6px 10px;font-weight:700;font-size:16px;margin:0 0 10px}' : '')
             + '</style></head><body>';
         wb.trips.forEach(tr => {
-            html += '<section class="sheet"><h1>ԲԵՌՆԱԳԻՐ</h1>'
+            html += '<section class="sheet">'
+                + (wb.draft ? '<p class="draft">ՍԵՎԱԳԻՐ — վարորդներին չուղարկված պլան, աշխատանքային թուղթ չէ</p>' : '')
+                + '<h1>ԲԵՌՆԱԳԻՐ</h1>'
                 + '<p class="sub"><b>' + esc(truckLabel(t)) + '</b> · ' + esc(dayText) + ' · Երթ ' + tr.no + (wb.trips.length > 1 ? ' / ' + wb.trips.length : '') + '</p>'
                 + '<p class="sub">Բեռնում՝ ' + esc(tr.loading_start) + ' · մեկնում՝ ' + esc(tr.depart) + ' · ' + esc(pl(tr.stops, 'խանութ')) + '</p>'
                 + '<p class="sub">Վարորդ՝ ' + (wb.driver ? '<b>' + esc(wb.driver) + '</b>' + (wb.driver_seat ? ' (փոխարինում)' : '') : '<span class="blank"></span>')

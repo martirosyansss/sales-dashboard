@@ -132,6 +132,7 @@
 
     const state = {
         day: null, data: null, busy: false,
+        erpDown: false,                     // автообновление не дозвалось ERP (503) — плашка «ERP-ն չի պատասխանում»
         map: null, layers: null, mapFailed: false, mapBounds: null,
         mapFitting: false, mapUserMoved: false,   // логист сам двигал или приближал карту — не перевписывать
         mapFocus: null,                     // карта только одной машины {truck} или одного рейса {truck, trip}; null — все
@@ -355,6 +356,7 @@
 
     function setData(data) {
         closeStopCard();   // карточка магазина — о прежних данных (и прежнем дне)
+        state.erpDown = false;   // день пришёл с сервера — заказы ERP только что прочитаны (P2 №9)
         if (!state.data || !data || state.data.day !== data.day) state.progress = null;   // ход дня — своего дня
         setTimeout(loadProgress, 0);
         const trips = new Set();
@@ -455,6 +457,21 @@
 
     // «Պատվերներ՝ երկ, 12 հոկ · ERP 16:42» — коротко в панели дня (№99); полностью — в подсказке
     const dayShort = (s) => (isDay(s) ? (WD_SHORT[wdOf(s)] || '') + ', ' + Number(s.slice(8, 10)) + ' ' + MONTH_SHORT[Number(s.slice(5, 7)) - 1] : '—');
+    // Ревью логики 12.10 (P2 №9): ERP не ответила — при автообновлении (state.erpDown) или новые заказы дня не прочитаны
+    // (erp_ok сервера): «ERP-ն չի պատասխանում · վերջին թարմացումը HH:MM» — пока не ответит; «новых нет» без данных не говорим
+    function renderErpWarn() {
+        const d = state.data, el = $('dpErpWarn');
+        if (!el) return;
+        const down = !!d && !d.is_past && (state.erpDown || d.erp_ok === false);
+        el.hidden = !down;
+        if (!down) return;
+        const last = state.erpDown ? d.data_as_of : (d.erp_last_ok || null);
+        const at = typeof last === 'string' && last.length >= 16 ? last.slice(11, 16) : '';
+        el.innerHTML = '<i class="fas fa-plug-circle-exclamation" aria-hidden="true"></i><span></span>';
+        el.lastChild.textContent = 'ERP-ն չի պատասխանում' + (at ? ' · վերջին թարմացումը ' + at : '');
+        el.title = state.erpDown ? 'Էջը չի կարողանում թարմացնել պատվերները ERP-ից․ ցույց է տրված ' + (at || 'նախորդ') + '-ի տվյալները։'
+            : 'Այսօրվա նոր պատվերները ERP-ից չեն կարդացվել․ «նոր պատվեր չկա» չի նշանակում, որ դրանք չկան։';
+    }
     function renderDateNote() {
         const d = state.data, od = d.order_dates;
         const orders = od.since === od.until ? dayHuman(od.since, true) : dayHuman(od.since, true) + ' – ' + dayHuman(od.until, true);
@@ -463,6 +480,7 @@
             + (d.data_as_of ? ' · ERP ' + d.data_as_of.slice(11, 16) : '');
         note.title = 'Տանում ենք պատվերները, որոնք ընդունվել են՝ ' + orders
             + (d.data_as_of ? ' · ERP-ից կարդացել ենք ժամը ' + d.data_as_of.slice(11, 16) + '-ին' : '');
+        renderErpWarn();
     }
 
     // ---------- «Что делать сейчас»: одна подсказка и главная кнопка по состоянию дня ----------
@@ -715,7 +733,12 @@
         state.fetchedAt = Date.now();
         const day = state.day;
         let s;
-        try { s = await api('GET', '/api/routes/dispatch/status?date=' + encodeURIComponent(day)); } catch (e) { return; }
+        try { s = await api('GET', '/api/routes/dispatch/status?date=' + encodeURIComponent(day)); } catch (e) {
+            // ревью логики 12.10 (P2 №9): ERP не ответила — не молчать, а сказать, с какого времени данные
+            if (e.status === 503 && state.day === day && state.data === d) { state.erpDown = true; renderErpWarn(); }
+            return;
+        }
+        state.erpDown = false;
         if (state.day !== day || state.data !== d || state.busy) return;     // пока ждали, сменили дату или правили
         const before = d.new_since_build ? d.new_since_build.count : 0;
         // новые заказы дня (№72): пришли или ушли — перечитать день, плашка появится без перезагрузки страницы
@@ -731,7 +754,7 @@
                 renderFresh();
             }
         } else {
-            ['orders_still_coming', 'ready_time', 'built_at', 'new_since_build', 'removed_since_build', 'data_as_of'].forEach(k => { d[k] = s[k]; });
+            ['orders_still_coming', 'ready_time', 'built_at', 'new_since_build', 'removed_since_build', 'data_as_of', 'erp_ok', 'erp_last_ok'].forEach(k => { d[k] = s[k]; });
             d.live_orders = s.orders;
             renderDateNote();
             renderFresh();
@@ -770,7 +793,8 @@
                 b.title = badge.textContent;
                 b.addEventListener('click', () => {
                     if (!window.confirm('Չեղարկե՞լ օրվա պլանի հաստատումը։ Հաստատմամբ ամրացված երթերը կապամրացվեն, '
-                        + 'ձեր ամրացրածները կմնան։ Դրանից հետո կարելի է վերակազմել երթերը։')) return;
+                        + 'ձեր ամրացրածները կմնան։ Դրանից հետո կարելի է վերակազմել երթերը։'
+                        + (d.sent ? ' Վարորդները կշարունակեն տեսնել ' + builtWhen(d.sent.at) + '-ին ուղարկված տարբերակը, մինչև նոր ուղարկելը։' : ''))) return;
                     edit({ action: 'unapprove' }, 'Պլանի հաստատումը չեղարկված է');
                 });
                 box.appendChild(b);
@@ -815,16 +839,65 @@
             + builtWhen(d.sent.at) + ')՝ ներառյալ հաստատումը և ամրացումները։')) return;
         edit({ action: 'discard' }, 'Պլանը վերադարձավ վարորդներին ուղարկված վիճակին');
     }
+    // Экипаж машин плана (ревью логики 12.10, P2 №10): что не так — строкой на машину
+    const CREW_PROBLEM_HY = { off: 'մեքենան այսօր չի աշխատում (կարգավորումներում անջատված է)', none: 'վարորդ նշված չէ',
+        absent: 'վարորդը չի աշխատում', twice: 'վարորդը նշված է նաև այլ մեքենայում' };
+    function crewProblemsText(list) {
+        return (Array.isArray(list) ? list : []).filter(isObj).map(p => {
+            const t = truckBy(p.truck);
+            return '• ' + (t ? truckLabel(t) : String(p.truck)) + '՝ ' + (CREW_PROBLEM_HY[p.kind] || String(p.kind));
+        }).join('\n');
+    }
+    const unsentCrew = (u) => (u && Array.isArray(u.crew) ? u.crew : []);
     function unsentTitle(u) {
-        return u.trucks.length ? pl(u.trucks.length, 'մեքենայի') + ' փոփոխությունը չի ուղարկվել' : 'Պատվերների փոփոխությունը չի ուղարկվել';
+        return u.trucks.length ? pl(u.trucks.length, 'մեքենայի') + ' փոփոխությունը չի ուղարկվել'
+            : unsentCrew(u).length ? 'Վարորդները փոխվել են ուղարկելուց հետո' : 'Պատվերների փոփոխությունը չի ուղարկվել';
     }
     function unsentDetail(u) {
-        const names = u.trucks.map(c => { const t = truckBy(c); return t ? truckLabel(t) : c; });
+        const label = (c) => { const t = truckBy(c); return t ? truckLabel(t) : c; };
+        const names = u.trucks.map(label), crew = unsentCrew(u).map(label);
         const road = onRoad(u);
-        return (names.length ? 'Փոխվել են՝ ' + names.join(', ') + '։' : '')
-            + (u.orders ? (names.length ? ' ' : '') + 'Փոխվել է պատվերների ընտրությունը։' : '')
-            + (road.length ? ' Արդեն ճանապարհին են՝ ' + road.join(', ') + '․ ուղարկելուց հետո զանգահարեք վարորդին։' : '');
+        // ревью логики 12.10: заказ пришёл / ушёл / изменился в ERP после отправки — у водителя его нет, пока не отправить
+        return [names.length ? 'Փոխվել են՝ ' + names.join(', ') + '։' : '',
+            u.orders ? 'Փոխվել է պատվերների ընտրությունը։' : '',
+            num(u.orders_changed) ? pl(u.orders_changed, 'պատվեր') + ' ERP-ում ավելացել, հանվել կամ փոխվել է ուղարկելուց հետո․ վարորդը դրանք կտեսնի ուղարկելուց հետո։' : '',
+            crew.length ? 'Ուղարկելուց հետո փոխվել է վարորդը կամ մեքենան՝ ' + crew.join(', ') + '։' : '',
+            road.length ? 'Արդեն ճանապարհին են՝ ' + road.join(', ') + '․ ուղարկելուց հետո զանգահարեք վարորդին։' : ''].filter(Boolean).join(' ');
     }
+    // Ревью логики 12.10: плашки рядом со статусом отправки — подробности в подсказке
+    function renderPlanWarnings(box) {
+        const d = state.data;
+        if (d.is_past) return;
+        const chip = (text, title) => {
+            const el = document.createElement('span');
+            el.className = 'dp-planwarn';
+            el.setAttribute('role', 'note');
+            el.innerHTML = '<i class="fas fa-triangle-exclamation" aria-hidden="true"></i><span></span>';
+            el.lastChild.textContent = text;
+            el.title = title;
+            box.appendChild(el);
+        };
+        // P1 №2: магазин в рейсах нескольких машин, а заказ один — он целиком у одной машины, другой везти нечего
+        const split = d.plan && Array.isArray(d.plan.order_split) ? d.plan.order_split.filter(isObj) : [];
+        if (split.length) {
+            const label = (c) => { const t = truckBy(c); return t ? truckLabel(t) : c; };
+            const name = (cid) => { const s = findStop(cid); return s ? (s.name || s.code) : String(cid); };
+            chip(pl(split.length, 'խանութ') + '՝ մի պատվեր, մի քանի մեքենա', split.map(x => '«' + name(x.customer_id) + '» բաժանված է '
+                + (x.trucks || []).map(label).join(', ') + ' մեքենաների միջև, բայց պատվերը մեկն է․ ամբողջը կտանի '
+                + (x.trucks || []).filter(c => !(x.empty || []).includes(c)).map(label).join(', ') + '-ը, '
+                + (x.empty || []).map(label).join(', ') + '-ի «Առաքիչ»-ում այս խանութի պատվեր չի լինի։').join('\n')
+                + '\nՏեղափոխեք խանութը մեկ մեքենա կամ ERP-ում բաժանեք պատվերը։');
+        }
+        // P2 №10: машины плана — не работает, без водителя, водитель не вышел или ведёт две машины
+        const crew = Array.isArray(d.crew_problems) ? d.crew_problems.filter(isObj) : [];
+        if (crew.length) chip(pl(crew.length, 'մեքենայի') + ' վարորդի խնդիր', crewProblemsText(crew));
+    }
+    const findStop = (cid) => {
+        const plan = state.data && state.data.plan;
+        if (!plan) return null;
+        for (const t of plan.trucks) for (const tr of t.trips) for (const s of tr.stops) if (s.customer_id === cid) return s;
+        return null;
+    };
     function renderSendState() {
         const d = state.data, box = $('dpSendState');
         const printMain = !!d.sent || !!d.is_past;
@@ -853,6 +926,7 @@
         }
         pill.title = (unsent ? unsentDetail(d.unsent) : long.textContent) + (d.approved ? ' · Պլանը հաստատված է' : '');
         box.appendChild(pill);
+        renderPlanWarnings(box);
         renderErpState(box);
         if (!unsent) return;
         const b = document.createElement('button');
@@ -4219,6 +4293,11 @@
             tags.lastChild.title = 'խանութի հաստատուն մասը՝ առանց բեռի ժամանակի';
         }
         if (stop.center) tag(stop.center_miss ? 'b-danger' : 'b-warn', stop.center_miss ? 'Կենտրոն — մեքենան չի կարող մտնել' : 'Կենտրոն', 'fa-city', !stop.center_miss);
+        // ревью логики 12.10 (P1 №1): магазин здесь по решению логиста — пересборка его не переставит («⋯» → снять)
+        if (stop.locked) {
+            tag('dp-b-lock', 'Ձեռքով', 'fa-hand', false);
+            tags.lastChild.title = 'Դուք եք տեղադրել այս մեքենայում․ վերակազմելիս խանութը կմնա այստեղ («⋯» → «Հանել ձեռքով որոշումները»)';
+        }
         // большая машина в зоне Еревана (№68): к разгрузке прибавлены минуты — они уже во времени точки и рейса
         if (num(stop.yerevan_min)) {
             tag('b-warn', 'Մեծ մեքենա Երևանում՝ +' + fmt(stop.yerevan_min) + NB + 'ր', 'fa-truck-moving', true);
@@ -6049,7 +6128,8 @@
         $('dpBuildText').textContent = 'Կազմում եմ երթերը…';
         try {
             // фильтр — только свой (до сборки или изменённый тут): иначе сервер берёт фильтр плана, а не копию этой вкладки
-            const body = { date: state.day, trucks };
+            // ревью логики 12.10 (P2 №5): номер плана на экране — план изменили в другой вкладке — 409, а не пересборка поверх
+            const body = { date: state.day, trucks, rev: state.data.rev };
             if (!state.data.plan || agentsDirty()) body.agents_off = [...agentsOff()];
             let data;
             try { data = await api('POST', '/api/routes/dispatch/build', body); } catch (e) {
@@ -6088,6 +6168,12 @@
             // №78: правка загруженного рейса — товар уже в машине: спросить и повторить с подтверждением
             if (e.data && e.data.loaded_confirm === true && !body.confirm_loaded && window.confirm(e.message)) {
                 return edit({ ...body, confirm_loaded: true }, okText);
+            }
+            // ревью логики 12.10 (P2 №10): у машин плана нет водителя / он не вышел / ведёт две машины / машина не работает —
+            // перечислить и отправить только после явного согласия (не запрет)
+            if (e.data && e.data.crew_confirm === true && !body.confirm_crew
+                && window.confirm(crewProblemsText(e.data.problems) + '\n\n' + e.message)) {
+                return edit({ ...body, confirm_crew: true }, okText);
             }
             render();
             showActionError(e);
@@ -6627,9 +6713,17 @@
         else if (refocus) $('dpWsMore').focus();
     }
     // пункты меню — только когда есть их кнопки (утверждение снять / неотправленные правки отменить)
+    const lockedCount = () => {
+        const plan = state.data && state.data.plan;
+        if (!plan) return 0;
+        const ids = new Set();
+        plan.trucks.forEach(t => t.trips.forEach(tr => tr.stops.forEach(s => { if (s.locked) ids.add(s.customer_id); })));
+        return ids.size;
+    };
     function syncMenu() {
         $('dpMenuUnapprove').hidden = !$('dpUnapprove');
         $('dpMenuDiscard').hidden = !$('dpDiscardBtn');
+        $('dpMenuUnlock').hidden = !lockedCount();
         $('dpMenuCompare').hidden = !(state.data && state.data.plan);
         $('dpMenuPrint').hidden = $('dpMenuExcel').hidden = !(state.data && state.data.plan);
         $('dpMenuTrips').hidden = !($('dpOverflow').children.length || $('dpUnassigned').children.length);
@@ -6689,6 +6783,13 @@
             if (b) { state.fleetFilter = b.dataset.f; applyFleetFilter(); }
         });
         $('dpViewList').addEventListener('click', () => { openMenu(false); setView('list'); });
+        // ревью логики 12.10 (P1 №1): ручные решения логиста (магазин → машина) — снять все разом
+        $('dpMenuUnlock').addEventListener('click', () => {
+            openMenu(false, true);
+            const n = lockedCount();
+            if (!n || !window.confirm('Հանե՞լ ձեռքով որոշումները (' + pl(n, 'խանութ') + ')։ Վերակազմելիս ծրագիրը կրկին ինքը կընտրի դրանց մեքենաները։')) return;
+            edit({ action: 'unlock_all' }, 'Ձեռքով որոշումները հանված են');
+        });
         // меню «⋯»: пункты нажимают настоящие кнопки (там же подтверждение), сами кнопки на рабочем экране скрыты
         $('dpWsMore').addEventListener('click', () => openMenu($('dpWsMenu').hidden));
         [['dpMenuPrint', 'dpPrint'], ['dpMenuExcel', 'dpExcel'], ['dpMenuUnapprove', 'dpUnapprove'], ['dpMenuDiscard', 'dpDiscardBtn']].forEach(([item, real]) => $(item).addEventListener('click', () => {
@@ -6773,26 +6874,44 @@
     }
 
     // ---------- Печать и Excel ----------
-    // №81: бумага (лист водителей, Excel, «Բեռնագիր») должна совпадать с терминалом водителя. Есть неотправленные правки
-    // (у машины code или в отборе заказов) — сначала окно «Ուղարկել և շարունակել»: отправка, затем сама бумага. Окно —
-    // на странице, не confirm(): клик по его кнопке — действие пользователя, после него браузер ещё даст открыть печать
+    // №81: бумага (лист водителей, Excel, «Բեռնագիր») должна совпадать с терминалом водителя — рабочая бумага печатается
+    // только из отправленного плана (ревью логики 12.10, P2 №7: и первый черновик, а не только правки после отправки).
+    // План не отправлен или у машины code (рейсы, заказы, экипаж) либо в отборе заказов есть неотправленные правки — окно:
+    // «Ուղարկել և տպել» (первый раз — утверждение: только оно отправляет план) или «Տպել սևագիր» — та же бумага с пометкой
+    // «ՍԵՎԱԳԻՐ». Окно — на странице, не confirm(): клик по его кнопке — действие пользователя, после него браузер ещё даст
+    // открыть печать
     function unsentFor(code) {
         const d = state.data, u = d.sent && !d.is_past ? d.unsent : null;
-        return !!u && (!code || u.trucks.includes(code) || u.orders);
+        return !!u && (!code || u.trucks.includes(code) || u.orders || unsentCrew(u).includes(code));
     }
+    const paperDraft = (code) => !state.data.sent || unsentFor(code);
     let paperNext = null;
     function paper(code, go) {
         if (state.busy) return;
-        if (!unsentFor(code)) { go(false); return; }
+        if (!paperDraft(code)) { go(false, false); return; }
         paperNext = go;
-        $('dpSfLead').textContent = 'Վարորդների «Առաքիչ» ծրագրում դեռ ' + builtWhen(state.data.sent.at) + '-ի պլանն է։ '
-            + unsentDetail(state.data.unsent) + ' Որպեսզի թուղթը համընկնի վարորդի ծրագրի հետ, նախ ուղարկեք փոփոխությունները։';
+        const d = state.data;
+        $('dpSfTitle').textContent = d.sent ? 'Կան չուղարկված փոփոխություններ' : 'Պլանը դեռ չի ուղարկվել վարորդներին';
+        $('dpSfLead').textContent = d.is_past ? 'Այս օրվա պլանը վարորդներին չի ուղարկվել․ կարելի է տպել միայն սևագիր։'
+            : d.sent ? 'Վարորդների «Առաքիչ» ծրագրում դեռ ' + builtWhen(d.sent.at) + '-ի պլանն է։ ' + unsentDetail(d.unsent)
+                + ' Որպեսզի թուղթը համընկնի վարորդի ծրագրի հետ, նախ ուղարկեք փոփոխությունները։'
+            : 'Վարորդները դեռ չեն տեսնում այս պլանը «Առաքիչ»-ում։ Աշխատանքային թուղթը տպվում է ուղարկված պլանից․ '
+                + 'հաստատեք և ուղարկեք կամ տպեք սևագիր՝ «ՍԵՎԱԳԻՐ» նշումով։';
+        $('dpSfSend').hidden = !!d.is_past;
+        $('dpSfSend').lastChild.textContent = d.sent ? 'Ուղարկել և տպել' : 'Հաստատել, ուղարկել և տպել';
         $('dpSendFirstDlg').showModal();
     }
-    const sendForPaper = async () => !!(await edit({ action: 'send' }, SENT_OK));
+    // первая отправка — утверждение (№73/№80: только оно выпускает план водителям), дальше — «Ուղարկել»
+    const sendForPaper = async () => !!(await (state.data.sent ? edit({ action: 'send' }, SENT_OK)
+        : edit({ action: 'approve' }, 'Օրվա պլանը հաստատված է և ուղարկված վարորդներին')));
+    // пометка черновика на листе печати: заголовок и водяной знак на каждой странице (литералы цвета — бумага)
+    const DRAFT_CSS = 'body::before{content:"ՍԵՎԱԳԻՐ";position:fixed;top:38%;left:0;right:0;text-align:center;font-size:110px;'
+        + 'font-weight:800;color:rgba(0,0,0,.09);transform:rotate(-28deg);pointer-events:none;z-index:0}'
+        + '.draft{border:2px solid #000;padding:6px 10px;font-weight:700;font-size:16px;margin:0 0 10px}';
+    const DRAFT_NOTE = 'ՍԵՎԱԳԻՐ — վարորդներին չուղարկված պլան, աշխատանքային թուղթ չէ';
     const POPUP_HY = 'Զննարկիչը թույլ չտվեց բացել տպման պատուհանը — թույլատրեք թռուցիկ պատուհանները այս կայքի համար։';
     function printSheets() { paper(null, printSheetsGo); }
-    async function printSheetsGo(send) {
+    async function printSheetsGo(send, draft) {
         if (!state.data.plan) return;
         // окно — сразу по нажатию: открытое после ответа сервера браузер счёл бы всплывающим
         const w = window.open('', '_blank');
@@ -6804,9 +6923,9 @@
             if (!(await sendForPaper())) { try { w.close(); } catch (e) { /* уже закрыто */ } return; }
             if (w.closed) return;
         }
-        printSheetsTo(w);
+        printSheetsTo(w, !!draft);
     }
-    function printSheetsTo(w) {
+    function printSheetsTo(w, draft) {
         const d = state.data, plan = d.plan;
         if (!plan) return;
         const dayText = (WD_NAME[d.weekday] || '') + ', ' + dateRu(d.day);
@@ -6819,9 +6938,11 @@
             + 'th{font-size:13px;background:#eee}td.n{font-size:22px;font-weight:700;width:38px;text-align:center}td.kg{font-size:18px;font-weight:700;white-space:nowrap;width:90px}'
             + 'td.ok{width:60px}td.ld{font-size:18px;text-align:center;width:56px}td.t{font-size:17px;font-weight:700;white-space:nowrap;width:110px}.win{font-size:13px;font-weight:400}'
             + '.addr{font-size:17px}.nm{font-weight:700}@media screen{body{background:#fff}}'
+            + (draft ? DRAFT_CSS : '')
             + '</style></head><body>';
         plan.trucks.forEach(t => {
-            html += '<section class="sheet"><h1>' + esc(truckLabel(t)) + '</h1><p class="sub">Առաքում՝ ' + esc(dayText) + ' · '
+            html += '<section class="sheet">' + (draft ? '<p class="draft">' + esc(DRAFT_NOTE) + '</p>' : '')
+                + '<h1>' + esc(truckLabel(t)) + '</h1><p class="sub">Առաքում՝ ' + esc(dayText) + ' · '
                 + esc(pl(t.trips.length, 'երթ')) + ' · ' + esc(pl(t.stops, 'կետ')) + ' · ' + esc(kgText(t.kg))
                 + ' · ≈ ' + esc(fmt(t.km)) + ' կմ</p>';
             t.trips.forEach((tr, i) => {
@@ -6849,7 +6970,7 @@
     }
 
     function exportExcel() { paper(null, exportExcelGo); }
-    async function exportExcelGo(send) {
+    async function exportExcelGo(send, draft) {
         if (send && !(await sendForPaper())) return;
         const d = state.data, plan = d.plan;
         if (!plan) return;
@@ -6868,6 +6989,7 @@
         if (plan.baseline) sum.push(['Եթե ըստ մենեջերների', plan.baseline.trips, '', '', plan.baseline.km,
             plan.baseline.liters, plan.baseline.wear_amd, plan.baseline.operating_cost_amd, '', '']);
         const wb = XLSX.utils.book_new();
+        if (draft) rows.unshift([DRAFT_NOTE], []);
         XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), 'Երթեր');
         XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(sum), 'Մեքենաներ');
         const pending = [['Կոդ', 'Խանութ', 'Հասցե', 'Բեռ, կգ', 'Պատճառ']];
@@ -6875,7 +6997,7 @@
         plan.unassigned.forEach(s => pending.push([s.code, s.name, s.address, s.kg,
             s.yielded ? 'Զիջեց ավելի հին պատվերին' : s.no_vehicle ? 'Խանութը սպասարկող մեքենա չկա' : s.no_window ? 'Ընդունման ժամին չենք հասնում' : s.no_center ? 'Կենտրոն մտնելու մեքենա չկա' : 'Սմենայում չի տեղավորվում']));
         if (pending.length > 1) XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(pending), 'Երթերում չկան');
-        XLSX.writeFile(wb, 'araqum_' + d.day + '.xlsx');
+        XLSX.writeFile(wb, 'araqum_' + d.day + (draft ? '_sevagir' : '') + '.xlsx');
         announce('Excel ֆայլը ներբեռնված է');
     }
 
@@ -6900,6 +7022,7 @@
         };
         const drv = mk('fa-user-pen', 'Վարորդ', 'Վարորդ և առաքիչ՝ ', openDriver);
         drv.classList.add('dp-drvbtn');
+        // сервер сам помечает Բեռնագիր неотправленного плана (draft) — пометка «ՍԵՎԱԳԻՐ» и без выбора в окне
         box.append(drv, mk('fa-print', 'Բեռնագիր', 'Տպել բեռնագիրը՝ ', (c, b) => paper(c, (send) => printWaybill(c, b, send))),
             mk('fa-file-excel', 'Excel', 'Բեռնագիրը Excel-ով՝ ', (c, b) => paper(c, (send) => excelWaybill(c, b, send))));
         return box;
@@ -7192,7 +7315,7 @@
         const { t, d, wb } = res;
         const book = XLSX.utils.book_new();
         wb.trips.forEach(tr => {
-            const rows = [['Բեռնագիր'], ['Մեքենա', truckLabel(t)], ['Վարորդ', (wb.driver || '') + (wb.driver && wb.driver_seat ? ' (փոխարինում)' : '')], ['Առաքիչ', wb.helper || ''], ['Օր', (WD_NAME[d.weekday] || '') + ', ' + dateRu(d.day)],
+            const rows = [[wb.draft ? 'Բեռնագիր — ' + DRAFT_NOTE : 'Բեռնագիր'], ['Մեքենա', truckLabel(t)], ['Վարորդ', (wb.driver || '') + (wb.driver && wb.driver_seat ? ' (փոխարինում)' : '')], ['Առաքիչ', wb.helper || ''], ['Օր', (WD_NAME[d.weekday] || '') + ', ' + dateRu(d.day)],
                 ['Երթ', tr.no + (wb.trips.length > 1 ? ' / ' + wb.trips.length : '')], ['Բեռնում', tr.loading_start], ['Մեկնում', tr.depart],
                 ['Խանութներ', tr.stops], [],
                 ['№', 'Կոդ', 'Ապրանք', 'Միավոր', 'Քանակ', 'Փաթեթ', 'Առանձին', 'Փաթեթում', 'Քաշ, կգ']];
@@ -7204,7 +7327,7 @@
             ws['!cols'] = [{ wch: 5 }, { wch: 8 }, { wch: 42 }, { wch: 8 }, { wch: 9 }, { wch: 8 }, { wch: 9 }, { wch: 10 }, { wch: 9 }];
             XLSX.utils.book_append_sheet(book, ws, 'Երթ ' + tr.no);
         });
-        XLSX.writeFile(book, 'bernagir_' + (t.car_code.replace(/[^0-9A-Za-z]+/g, '') || 'mekena') + '_' + d.day + '.xlsx');
+        XLSX.writeFile(book, 'bernagir_' + (t.car_code.replace(/[^0-9A-Za-z]+/g, '') || 'mekena') + '_' + d.day + (wb.draft ? '_sevagir' : '') + '.xlsx');
         announce('Բեռնագիրը ներբեռնված է՝ ' + truckLabel(t));
     }
 
@@ -7378,7 +7501,13 @@
             const go = paperNext;
             paperNext = null;
             $('dpSendFirstDlg').close();
-            if (go) go(true);
+            if (go) go(true, false);
+        });
+        $('dpSfDraft').addEventListener('click', () => {
+            const go = paperNext;
+            paperNext = null;
+            $('dpSendFirstDlg').close();
+            if (go) go(false, true);
         });
         $('dpSfCancel').addEventListener('click', () => $('dpSendFirstDlg').close());
         $('dpErpOk').addEventListener('click', erpConfirm);

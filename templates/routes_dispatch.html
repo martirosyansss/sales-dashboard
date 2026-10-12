@@ -14,7 +14,7 @@
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=30">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes_ui.css') }}?v=5">
 <!-- Страница на армянском (ответ владельца №31). Цвета — тема Tesla+ из routes.css (☀/☾), свои стили поверх routes.css -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=85">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=86">
 {% endblock %}
 
 {% block content %}
@@ -32,6 +32,8 @@
                         <i class="fas fa-rotate" aria-hidden="true"></i> Թարմացնել պատվերները</button></p>
                 <!-- №81: что видят водители — черновик, отправлено, есть неотправленные правки (кнопка «Ուղարկել») -->
                 <div class="dp-sendstate" id="dpSendState" hidden></div>
+                <!-- ревью логики 12.10 (P2 №9): ERP не ответила — с какого времени данные на экране -->
+                <span class="dp-erpwarn" id="dpErpWarn" role="status" hidden></span>
             </div>
             <div class="dp-daynav">
                 <div class="dp-dayseg">
@@ -70,6 +72,8 @@
                         <a role="menuitem" id="dpMenuNorms" href="/routes/settings#trucks" hidden><i class="fas fa-gear" aria-hidden="true"></i><span>Լրացնել մեքենաների նորմերը</span></a>
                         <button type="button" role="menuitem" id="dpMenuUnapprove" hidden><i class="fas fa-lock-open" aria-hidden="true"></i><span>Չեղարկել հաստատումը</span></button>
                         <button type="button" role="menuitem" id="dpMenuDiscard" hidden><i class="fas fa-rotate-left" aria-hidden="true"></i><span>Չեղարկել չուղարկված փոփոխությունները</span></button>
+                        <!-- ревью логики 12.10 (P1 №1): ручные решения «магазин → машина» держатся при пересборке; снять — здесь -->
+                        <button type="button" role="menuitem" id="dpMenuUnlock" hidden><i class="fas fa-hand" aria-hidden="true"></i><span>Հանել ձեռքով որոշումները</span></button>
                         <button type="button" role="menuitem" id="dpViewList"><i class="fas fa-list" aria-hidden="true"></i><span>Ցուցակով (նախկին տեսք)</span></button>
                     </div>
                 </div>
@@ -596,12 +600,14 @@
             <button type="button" id="dpAddCancel" class="rt-btn rt-btn-ghost">Չեղարկել</button>
         </div>
     </dialog>
-    <!-- №81: бумага при неотправленных правках — сначала отправить водителям, потом печать / Excel / «Բեռնագիր» -->
+    <!-- №81: рабочая бумага — только из отправленного плана (ревью логики 12.10, P2 №7: и первый черновик): отправить и
+         печатать или печатать черновик с пометкой «ՍԵՎԱԳԻՐ» -->
     <dialog id="dpSendFirstDlg" class="dp-dlg dp-unload-dlg" aria-labelledby="dpSfTitle" aria-describedby="dpSfLead">
         <h2 class="dp-dlg-t" id="dpSfTitle">Կան չուղարկված փոփոխություններ</h2>
         <p class="dp-dlg-lead" id="dpSfLead"></p>
         <div class="dp-dlg-btns">
-            <button type="button" id="dpSfSend" class="rt-btn rt-btn-primary"><i class="fas fa-paper-plane" aria-hidden="true"></i><span>Ուղարկել և շարունակել</span></button>
+            <button type="button" id="dpSfSend" class="rt-btn rt-btn-primary"><i class="fas fa-paper-plane" aria-hidden="true"></i><span>Ուղարկել և տպել</span></button>
+            <button type="button" id="dpSfDraft" class="rt-btn rt-btn-ghost"><i class="fas fa-file-pen" aria-hidden="true"></i><span>Տպել սևագիր</span></button>
             <button type="button" id="dpSfCancel" class="rt-btn rt-btn-ghost">Չեղարկել</button>
         </div>
     </dialog>
@@ -715,5 +721,5 @@
 <script src="{{ url_for('static', filename='js/routes_dispatch_ai.js') }}?v=4"></script>
 <!-- Tesla+: стеклянные панели поверх карты сворачиваются (общий модуль с «Մեքենաները առցանց») -->
 <script src="{{ url_for('static', filename='js/rt_panels.js') }}?v=1"></script>
-<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=130"></script>
+<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=131"></script>
 {% endblock %}
