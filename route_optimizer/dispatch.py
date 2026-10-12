@@ -1891,7 +1891,8 @@ def overtime(ctx: DayContext, stops: Sequence[Stop], draft: Draft) -> Draft:
                          ctx.depot, sel, ctx.norms, limit, used, overflow=ctx.overtime_minutes is None,
                          earliest=True, windows=[_span(ctx, s.customer_id) for s in rest],
                          center=[_central(ctx, s) for s in rest], reasons=reasons, busy=busy, departs=departs,
-                         load_cap=fl.LOAD_CAP, allowed_trucks=[_allowed_trucks(ctx, s.customer_id) for s in rest], fed=fed,
+                         load_cap=fl.LOAD_CAP, allowed_trucks=[_access(ctx, s.customer_id, draft.locks) for s in rest],
+                         fed=fed,
                          solo=_solo(ctx, rest), report=False)
     new = []
     for t in trips:
@@ -2046,7 +2047,8 @@ def _shrink(ctx: DayContext, draft: Draft, stops: Mapping[int, Stop], trip: Draf
         base_km = _closed_km(ctx, trip.stops, stops)
         cands = []
         for cid in trip.stops:
-            if shares[cid] != 1:          # тяжёлый заказ на несколько поездок — переносят целиком вручную
+            # тяжёлый заказ на несколько поездок — переносят целиком вручную; ручное решение логиста (Draft.locks) — тоже
+            if shares[cid] != 1 or cid in draft.locks:
                 continue
             rest = [c for c in trip.stops if c != cid]
             saved_km = base_km - _closed_km(ctx, rest, stops)
@@ -2111,9 +2113,10 @@ def _grow(ctx: DayContext, draft: Draft, stops: Mapping[int, Stop], trip: DraftT
         dests = [by_id[i] for i in (trip.id, follow) if i in by_id]
         if last and follow not in by_id:
             dests.append(DraftTrip(draft.next_id, code, []))
-        pool = [(cid, None) for cid in sorted(stops) if cid not in shares]
+        # ручное решение логиста (Draft.locks): магазин только своей машине — чужой рейс его не берёт
+        pool = [(cid, None) for cid in sorted(stops) if cid not in shares and draft.locks.get(cid, code) == code]
         pool += [(cid, t) for t in draft.trips if t.truck != code and _movable(draft, t, frozen)
-                 for cid in t.stops if shares[cid] == 1]
+                 for cid in t.stops if shares[cid] == 1 and cid not in draft.locks]
         base = {t.id: _closed_km(ctx, t.stops, stops) for t in draft.trips if t.truck != code}
         cands = []
         for cid, src in pool:
@@ -2626,8 +2629,9 @@ def _place_added(ctx: DayContext, stops: Sequence[Stop], draft: Draft, cids: Seq
         shares = _shares(draft.trips)
         if cid in shares:
             continue
-        options = [*(t for t in draft.trips if t.truck in codes and _movable(draft, t, frozen)),
-                   *(DraftTrip(draft.next_id, code, [], not_before=not_before) for code in codes)]
+        mine = [draft.locks[cid]] if draft.locks.get(cid) in codes else codes   # ручное решение — его машина
+        options = [*(t for t in draft.trips if t.truck in mine and _movable(draft, t, frozen)),
+                   *(DraftTrip(draft.next_id, code, [], not_before=not_before) for code in mine)]
         cands = []
         for r in options:
             if not _can_carry(ctx, sel, r.truck, [*r.stops, cid], routable, shares):
@@ -3076,7 +3080,11 @@ def approve(draft: Draft, at: str, by: str | None) -> Draft:
     draft.approved = {'at': at, 'by': by, 'pinned': ids}
     if draft.released is None:   # №80: с первого утверждения план дня идёт на терминалы — и после снятия
         draft.released = {'at': at, 'by': by}
-    return send(draft, at, by)   # №81: утверждение отправляет план водителям (views повторит после prune и прогноза)
+    # №81: утверждение отправляет план водителям (views повторит после prune и прогноза, с итоговыми заказами и экипажем).
+    # Заказы и экипаж прежнего снимка остаются до того шага: по ним assign держит груз загруженных машин (ревью ветки
+    # 12.10, раунд 4: без них переутверждение перекладывало погруженные заказы)
+    prev = draft.sent or {}
+    return send(draft, at, by, orders=prev.get('orders'), crew=prev.get('crew'))
 
 
 def unapprove(draft: Draft) -> Draft:

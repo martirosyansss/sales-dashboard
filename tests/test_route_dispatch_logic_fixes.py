@@ -708,3 +708,76 @@ def test_courier_shared_invoice_without_car_belongs_to_one_truck():
     assert rl.invoice_owner(view, 'A')(101) and rl.invoice_owner(view, 'B')(101)     # до чтения накладных — заказы машины
     legacy = rl.RoutesView(plan_exists=True, released=True, trips=view.trips)
     assert not rl.invoice_owner(legacy, 'A')(101, [a]) and not rl.invoice_owner(legacy, 'B')(101)   # как раньше — ничья
+
+
+# ============================== ревью ветки, раунд 4 ==============================
+
+def test_order_taken_today_not_on_tomorrows_published_terminal(client, monkeypatch):
+    """P1: план 02.10 отправлен с заказом 103; 01.10 его взяли в развоз дня приёма (№72) и везут сегодня — терминал 02.10 его
+    уже не показывает (до правки показывал по снимку, пока нет накладной), логист 02.10 видит «не отправлено»."""
+    from courier import routes_link as rl
+    from test_route_dispatch_same_day import NEXT
+    state = _page(client, monkeypatch)                                  # сейчас 01.10 08:00
+    n = _ok(client.post('/api/routes/dispatch/build', json={'date': NEXT, 'trucks': ['CAR1', 'CAR2']}))
+    n = _ok(client.post('/api/routes/dispatch/edit', json={'date': NEXT, 'rev': n['rev'], 'action': 'approve'}))
+    owner = {s['customer_id']: tr['truck'] for t in n['plan']['trucks'] for tr in t['trips'] for s in tr['stops']}
+    assert 103 in owner and n['unsent'] is None
+    every = state.dispatch_loader(date(2026, 9, 1), date(2026, 10, 3), D).orders
+    nxt = date(2026, 10, 2)
+
+    def terminal():
+        view = rl.routes_view(state, nxt)
+        return sorted(o.isn for o in rl.pick_orders(every, nxt, view, owner[103]))
+    assert _isn(10) in terminal()
+    d = _ok(_post(client, '/api/routes/dispatch/build', {'trucks': ['CAR1', 'CAR2']}))
+    key = _ok(client.post('/api/routes/dispatch/same-day', json={'date': '2026-10-01', 'orders': [_isn(10)]}))['options'][0]['key']
+    _ok(_post(client, '/api/routes/dispatch/edit', {'rev': d['rev'], 'action': 'same_day', 'orders': [_isn(10)], 'option': key}))
+    assert _isn(10) not in terminal()                                   # взят сегодня — завтра его нет
+    n = _ok(client.get('/api/routes/dispatch?date=' + NEXT))
+    assert owner[103] in n['unsent']['trucks'] and n['unsent']['orders_changed'] >= 1
+
+
+def test_reapproval_keeps_loaded_truck_orders():
+    """P2: 600/500/400 у A/B/C, рейс C загружен; снятие утверждения, рейс B → машина A, утверждение снова: у C тот же
+    погруженный заказ 400 (до правки approve() отправлял снимок без заказов — закрепление терялось, C получала 500)."""
+    from route_optimizer import fleet as fl
+    from test_route_optimizer import FORD, HOWO
+    howo2 = fl.FleetTruck('123AV61', 'HOWO', 10000.0, 30.0)
+    ctx = _dp_ctx((HOWO, howo2, FORD))
+    a, b, c = HOWO.car_code, howo2.car_code, FORD.car_code
+    stops, orders = _dp_stops([(101, (40.200, 44.640), 600.0), (101, (40.200, 44.640), 500.0), (101, (40.200, 44.640), 400.0)])
+    draft = dp.Draft([a, b, c], trips=[dp.DraftTrip(1, a, [101]), dp.DraftTrip(2, b, [101]), dp.DraftTrip(3, c, [101])],
+                     next_id=4)
+    dp.approve(draft, 'at', 'u')
+    dp.send(draft, 'at', 'u', orders=dp.published_orders(draft, stops))      # как views после approve
+    dp.mark_loaded(draft, 3, '2026-10-01T08:00:00', 'sklad')
+    dp.unapprove(draft)
+    dp.apply_edit(ctx, stops, draft, {'action': 'pin', 'trip': 2, 'truck': a}, {o.isn for o in orders})
+    dp.approve(draft, 'at2', 'u')
+    assert draft.sent['orders'] is not None                                  # прежний снимок — до итогового
+    assert not dp.loaded_changed(draft, stops)
+    dp.send(draft, 'at2', 'u', orders=dp.published_orders(draft, stops))
+    assert draft.sent['orders'][orders[2].isn][0] == c                       # у C — тот же погруженный 400
+
+
+def test_overtime_and_resize_and_add_respect_manual_locks():
+    """P2: «Везти после конца дня», «Տանել այսօր» и растягивание рейса на шкале не отдают магазин ручного решения чужой машине."""
+    ctx = _dp_ctx()
+    stops, orders = _dp_stops(EAST + WEST)
+    ford, howo = '333DO33', '991AT61'
+    # «Везти после конца дня»: 104 не поместился (no_room) — встаёт к машине своего ручного решения (до правки — к HOWO,
+    # даже закреплённый за FORD)
+    near = [s for s in stops if s.customer_id not in (105, 106)]
+    for lock in (howo, ford):
+        draft = dp.Draft(TRUCKS, trips=[dp.DraftTrip(1, ford, [101, 102, 103])], next_id=2, no_room={104}, locks={104: lock})
+        assert _where(dp.overtime(ctx, near, draft), 104) == [lock]
+    # «Տանել այսօր»: магазин ручного решения — только в рейс своей машины
+    d2 = dp.Draft(TRUCKS, trips=[dp.DraftTrip(1, ford, [101, 102]), dp.DraftTrip(2, howo, [104])], next_id=3,
+                  locks={103: howo})
+    placed = dp.place_added(ctx, stops, d2, [103])
+    assert placed and dp.trip_of(d2, placed[103]).truck == howo
+    # растягивание рейса FORD на шкале не забирает магазин HOWO с ручным решением
+    d3 = dp.Draft(TRUCKS, trips=[dp.DraftTrip(1, ford, [101]), dp.DraftTrip(2, howo, [104, 105, 106])], next_id=3,
+                  locks={104: howo, 105: howo, 106: howo})
+    grown = dp.apply_edit(ctx, stops, d3, {'action': 'resize', 'trip': 1, 'return': 18 * 60}, {o.isn for o in orders})
+    assert all(_where(grown, c) == [howo] for c in (104, 105, 106))

@@ -372,7 +372,10 @@ def pick_orders(orders: Sequence[DispatchOrder], day: date, view: RoutesView, ca
     if not view.released:
         return []
     if view.published is not None:
-        return [o for o in orders if view.published.get(o.isn) == car_code and (o.shipped is None or o.shipped >= day)]
+        # взятые в развоз дня их приёма в прошлые дни (№72, view.taken — уже без недовезённого, №98) — и из отправленного:
+        # их везли раньше; пока нет накладной, иначе тот же заказ ушёл бы второй раз (ревью ветки 12.10, раунд 4)
+        return [o for o in orders if view.published.get(o.isn) == car_code and (o.shipped is None or o.shipped >= day)
+                and o.isn not in view.taken]
     since, _ = dp.order_window(day, view.workdays, view.holidays)
     need = sorted({o.customer_id for o in orders if view.fleet.needs_place(o)})
     texts = places(need) if need and places is not None else {}

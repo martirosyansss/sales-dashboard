@@ -3331,7 +3331,8 @@ def api_dispatch_edit() -> Any:
     if not confirmed and payload.get('action') != 'discard' and dp.loaded_cargo(draft, dd.stops, cargo) != cargo:
         return _loaded_confirm()
     # №81 + №78: склад грузил по отправленному плану — отправка, меняющая состав загруженного рейса, только с подтверждением
-    if not confirmed and payload.get('action') == 'send' and dp.loaded_changed(draft, dd.stops):
+    # и переутверждение (оно тоже отправляет): груз загруженной машины против отправленного снимка
+    if not confirmed and payload.get('action') in ('send', 'approve') and dp.loaded_changed(draft, dd.stops):
         return _loaded_confirm()
     dp.release_same_day_trucks(draft)   # №72: машина, отмеченная взятием заказа дня, без рейсов — снова не отмечена
     dp.keep_approved(draft, trips_before)   # №73: пока план утверждён, новые рейсы тоже закреплены
