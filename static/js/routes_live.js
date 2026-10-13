@@ -506,6 +506,8 @@
         if (n > th.no_contact_min * 60) return 'is-bad';
         return n > th.stale_s ? 'is-mute' : '';
     };
+    // строка карточки: красным — только «нет связи», серое «давно» не выделяем (значение не мельчает)
+    const ageBad = (s) => (ageClass(s) === 'is-bad' ? 'is-bad' : null);
     // сверка расчёта топлива с заправками (этап 2): последняя заправка, интервал «полный бак → полный бак», расчёт после неё
     const fuelCheckText = (c) => {
         if (!c) return null;
@@ -1197,13 +1199,6 @@
         out.push(v.slice(last));
         return out.filter(x => x !== '');
     }
-    function field(label, value, sub, cls, wide) {
-        const dd = h('dd', { class: cls || null });
-        dd.append(...(Array.isArray(value) ? value : [value]).flatMap(withUnits));
-        if (sub) dd.append(h('small', { text: sub }));
-        return h('div', { class: wide ? 'is-wide' : null }, h('dt', { text: label }), dd);
-    }
-
     function alertText(a) {
         const [, title] = ALERT[a.kind] || ['', a.kind];
         const when = hm(a.from) + (a.to ? '–' + hm(a.to) : ' — հիմա');
@@ -1278,33 +1273,19 @@
         $('lvActive').replaceChildren(...rows0);
         if (refocus) { const b = $('lvActive').querySelector('.lv-active-more'); if (b) b.focus({ preventScroll: true }); }
 
+        // карточка машины (пользователь 13.10 «всё очень крупное и непонятное»): строки как в «Օրվա ցուցանիշներ» —
+        // подпись слева, значение справа, пояснение мелко; три группы: рейс, где машина, экипаж и терминал. Км дня — в
+        // «Օրվա ցուցանիշներ», координаты GPS — во всплывающей подсказке строки «Դիրքը»
         const p = t.position;
         const off = noForecast(t), until = off ? untilText(t) : null;   // прогноза нет: данные — на момент последних данных
-        const rows = [];
-        rows.push(field(off ? 'Վերջին հայտնի դիրքը' : 'Դիրքը', p ? [ago(p.age_s)] : '—', p ? 'GPS՝ ' + hms(p.at) + ' · ' + p.lat.toFixed(5) + ', ' + p.lon.toFixed(5) : 'GPS կետ դեռ չկա', p ? ageClass(p.age_s) : 'is-mute'));
-        rows.push(field('Արագություն', p && p.speed_kmh !== null ? p.speed_kmh + ' կմ/ժ' : '—',
-            p && p.heading !== null ? 'ուղղություն՝ ' + p.heading + '°' : null));
-        const crew = [t.driver ? 'Վարորդ՝ ' + t.driver : null, t.helper ? 'Առաքիչ՝ ' + t.helper : null].filter(Boolean).join(' · ');
-        const term = (t.drivers || [])[0];
-        rows.push(field('Վարորդ / առաքիչ', crew || '—', term && term !== t.driver ? 'Տերմինալում՝ ' + term : null, null, true));
+        const past = t.closed || !!state.date;   // день закрыт / прошлый день: «давно» — не тревога, скорость — не нужна
+        const txt = (row) => (row.classList.add('is-txt'), row);   // значение — имя, не число: мельче, не в ширину цифр
+        const trip = [], car = [], crew = [];
         const sg = t.stores;
-        rows.push(field('Խանութներ', sg.done + ' / ' + sg.total + (sg.gps_visited ? ' · GPS-ով՝ ' + sg.gps_visited : ''),
-            [sg.in_progress ? 'ընթացքի մեջ՝ ' + sg.in_progress : null,
-                sg.unmarked ? 'GPS-ով այցելած, չնշված՝ ' + sg.unmarked : null].filter(Boolean).join(' · ') || null));
-        rows.push(field('Այսօր, կմ (GPS)', fmt(t.km, 1), until));
-        rows.push(field('Վառելիք', t.fuel_l === null ? '—' : ['≈ ' + fmt(t.fuel_l, 1) + ' լ', h('span', { class: 'lv-est', text: 'հաշվարկ' })],
-            [t.fuel_l === null ? 'մեքենայի ծախսը նշված չէ կարգավորումներում' : null, fuelCheckText(t.fuel_check), until].filter(Boolean).join(' · ')));
-        const ld = t.load;
-        // до выезда в машине ещё ничего — план рейса, а не «0 կգ»
-        const before = !ld.trips_gone && num(ld.planned_kg) !== null;
-        rows.push(field('Բեռի մնացորդ', before ? 'պլանով՝ ' + fmt(ld.planned_kg) + ' կգ' : fmt(ld.remaining_kg) + ' կգ',
-            [ld.trips_gone ? 'բեռնված այս երթում՝ ' + fmt(ld.trip_kg) + ' կգ, առաքված՝ ' + fmt(ld.delivered_kg) + ' կգ'
-                + (ld.trips > 1 ? ' · երթ ' + ld.trips_gone + '/' + ld.trips : '') : 'մեքենան դեռ չի մեկնել պահեստից',
-            ld.trips_gone && num(ld.planned_kg) !== null ? 'հաջորդ երթը՝ պլանով ' + fmt(ld.planned_kg) + ' կգ' : null,
-            ld.refused_kg ? 'չառաքված՝ ' + fmt(ld.refused_kg) + ' կգ (մեքենայում՝ մինչև պահեստ)' : null,
-            ld.returns_kg ? 'վերադարձ՝ ' + fmt(ld.returns_kg) + ' կգ (մեքենայում)' : null,
-            ld.returns_unweighed ? ld.returns_unweighed + ' վերադարձ առանց քաշի' : null,
-            ld.unweighed_lines ? ld.unweighed_lines + ' տող առանց քաշի' : null, until].filter(Boolean).join(' · ')));
+        trip.push(statRow('Խանութներ', sg.done + ' / ' + sg.total,
+            [sg.gps_visited ? 'GPS-ով հաստատված՝ ' + sg.gps_visited : null, sg.in_progress ? 'ընթացքի մեջ՝ ' + sg.in_progress : null,
+                sg.unmarked ? 'GPS-ով այցելած, չնշված՝ ' + sg.unmarked : null].filter(Boolean).join(' · ') || null,
+            sg.total && sg.done === sg.total ? 'is-ok' : sg.unmarked ? 'is-warn' : null));
         const nx = t.next;
         if (nx) {
             const d = delayText(nx.delay_min);
@@ -1314,22 +1295,46 @@
                     : (!t.position ? 'GPS դիրք դեռ չկա' : 'կապ չկա ' + hm(t.data_until) + '-ից'));
             const when = nx.eta_unknown ? 'Ժամանումը անհայտ է՝ ' + why
                 : (nx.here ? 'տեղում է' : 'ժամանում ≈ ' + hm(nx.eta) + srcText(nx.eta_source));
-            rows.push(field('Հաջորդ խանութը', nx.name || nx.stop_id,
+            trip.push(txt(statRow('Հաջորդ խանութը', nx.name || nx.stop_id,
                 when + (nx.planned_eta ? ' · պլան՝ ' + hm(nx.planned_eta) : '') + (d ? ' · ' + d[0] : ''),
-                d && d[1] !== 'is-ok' ? d[1] : null, true));
+                d && d[1] !== 'is-ok' ? d[1] : null)));
         }
         const back = (t.late || []).find(x => x.late_kind === 'return');
-        rows.push(field('Վերադարձ պահեստ', t.return_eta ? '≈ ' + hm(t.return_eta) : '—',
+        trip.push(statRow('Վերադարձ պահեստ', t.return_eta ? '≈ ' + hm(t.return_eta) : '—',
             [t.return_eta ? srcText(t.return_source).trim().slice(1, -1) : null,
                 back ? 'բոլոր երթերից հետո ≈ ' + hm(back.eta) + '՝ ' + lateText(back).toLowerCase() : null].filter(Boolean).join(' · ') || null,
-            back ? 'is-bad' : null));
-        rows.push(field('Վերջին կապը', t.last_contact ? hms(t.last_contact) : '—', t.contact_age_s !== null ? ago(t.contact_age_s) : null,
-            ageClass(t.contact_age_s)));
+            back ? 'is-bad' : (t.return_eta ? null : 'is-mute')));
+        const ld = t.load;
+        // до выезда в машине ещё ничего — план рейса, а не «0 կգ»
+        const before = !ld.trips_gone && num(ld.planned_kg) !== null;
+        trip.push(statRow('Բեռի մնացորդ', before ? 'պլանով՝ ' + fmt(ld.planned_kg) + ' կգ' : fmt(ld.remaining_kg) + ' կգ',
+            [ld.trips_gone ? 'բեռնված այս երթում՝ ' + fmt(ld.trip_kg) + ' կգ, առաքված՝ ' + fmt(ld.delivered_kg) + ' կգ'
+                + (ld.trips > 1 ? ' · երթ ' + ld.trips_gone + '/' + ld.trips : '') : 'մեքենան դեռ չի մեկնել պահեստից',
+            ld.trips_gone && num(ld.planned_kg) !== null ? 'հաջորդ երթը՝ պլանով ' + fmt(ld.planned_kg) + ' կգ' : null,
+            ld.refused_kg ? 'չառաքված՝ ' + fmt(ld.refused_kg) + ' կգ (մեքենայում՝ մինչև պահեստ)' : null,
+            ld.returns_kg ? 'վերադարձ՝ ' + fmt(ld.returns_kg) + ' կգ (մեքենայում)' : null,
+            ld.returns_unweighed ? ld.returns_unweighed + ' վերադարձ առանց քաշի' : null,
+            ld.unweighed_lines ? ld.unweighed_lines + ' տող առանց քաշի' : null, until].filter(Boolean).join(' · ')));
+
+        const pos = statRow(off ? 'Վերջին հայտնի դիրքը' : 'Դիրքը', p ? hm(p.at) : '—',
+            p ? (past ? 'վերջին GPS կետը' : ago(p.age_s)) : 'GPS կետ դեռ չկա', p ? (past ? null : ageBad(p.age_s)) : 'is-mute');
+        if (p) pos.title = 'GPS՝ ' + hms(p.at) + ' · ' + p.lat.toFixed(5) + ', ' + p.lon.toFixed(5);
+        car.push(pos);
+        if (!past) car.push(statRow('Արագություն', p && p.speed_kmh !== null ? p.speed_kmh + ' կմ/ժ' : '—', null, p ? null : 'is-mute'));
+        car.push(statRow('Վառելիք', t.fuel_l === null ? '—' : '≈ ' + fmt(t.fuel_l, 1) + ' լ',
+            [t.fuel_l === null ? 'մեքենայի ծախսը նշված չէ կարգավորումներում' : 'հաշվարկով, ոչ սենսորից', fuelCheckText(t.fuel_check), until]
+                .filter(Boolean).join(' · '), t.fuel_l === null ? 'is-mute' : null));
+
+        const term = (t.drivers || [])[0];
+        crew.push(txt(statRow('Վարորդ', t.driver || '—', term && term !== t.driver ? 'Տերմինալում՝ ' + term : null, t.driver ? null : 'is-mute')));
+        if (t.helper) crew.push(txt(statRow('Առաքիչ', t.helper)));
         const dv = t.device;
-        rows.push(field('Տերմինալ', dv ? [(dv.battery !== null ? dv.battery + '%' : '—'), dv.charging ? ' ⚡' : '']
-            : '—', dv ? ['GPS՝ ' + (GPS[dv.gps] || '—'), 'ինտերնետ՝ ' + (NET[dv.net] || '—'), 'APK ' + (dv.app || '—'), 'տվյալ՝ ' + hm(dv.at)].join(' · ')
-            : 'տերմինալը չի ուղարկում իր վիճակը (հին տարբերակ)', dv && dv.gps && dv.gps !== 'on' ? 'is-bad' : null, true));
-        $('lvGrid').replaceChildren(...rows);
+        crew.push(statRow('Տերմինալ', dv ? (dv.battery !== null ? dv.battery + '%' : '—') + (dv.charging ? ' ⚡' : '') : '—',
+            dv ? ['GPS՝ ' + (GPS[dv.gps] || '—'), 'ինտերնետ՝ ' + (NET[dv.net] || '—'), 'APK ' + (dv.app || '—'), 'տվյալ՝ ' + hm(dv.at)].join(' · ')
+                : 'տերմինալը չի ուղարկում իր վիճակը (հին տարբերակ)', dv ? (dv.gps && dv.gps !== 'on' ? 'is-bad' : null) : 'is-mute'));
+        crew.push(statRow('Վերջին կապը', t.last_contact ? hm(t.last_contact) : '—', t.contact_age_s !== null && !past ? ago(t.contact_age_s) : null,
+            t.last_contact ? (past ? null : ageBad(t.contact_age_s)) : 'is-mute'));
+        $('lvGrid').replaceChildren(statGroup('ԵՐԹ', trip), statGroup('ՄԵՔԵՆԱՆ', car), statGroup('ԱՆՁՆԱԿԱԶՄ ԵՎ ՏԵՐՄԻՆԱԼ', crew));
         renderStats(t);
 
         $('lvStopsBox').hidden = !t.stops;

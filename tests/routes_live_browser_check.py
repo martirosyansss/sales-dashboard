@@ -688,7 +688,7 @@ def alarm2_checks(browser, base, cars, check, clear_acks, errors) -> None:
         if (width, role) == (1366, 'admin'):
             p.screenshot(path=str(SHOTS / 'live_alarm2_1366.png'))
         p.locator(f'.lv-item[data-car="{cars[0]}"]').click()
-        p.wait_for_selector('#lvCard:not([hidden]) .lv-grid dt')
+        p.wait_for_selector('#lvCard:not([hidden]) #lvGrid dt')
         p.wait_for_timeout(900)
         sel = boxes(p)
         ok = (sel['cardL'] > sel['layL'] + sel['layW'] / 2 and sel['cardR'] <= sel['layR'] and sel['cardB'] <= sel['botT']
@@ -782,12 +782,12 @@ def main() -> int:
                 check('1 խանութ ուշանում է' in first, f'№87: в списке у машины 1 — «1 խանութ ուշանում է» ({first!r})')
                 alarm_checks(page, cars, check)
                 page.locator(f'.lv-item[data-car="{cars[0]}"]').click()
-                page.wait_for_selector('#lvCard:not([hidden]) .lv-grid dt')
+                page.wait_for_selector('#lvCard:not([hidden]) #lvGrid dt')
                 page.wait_for_timeout(800)
                 act1 = page.inner_text('#lvActive')
                 check('Կուշանա պատուհանից' in act1 and 'րոպեով' in act1, f'№87: в карточке — «Կուշանա պատուհանից N րոպեով» ({act1!r})')
                 labels = page.eval_on_selector_all('#lvGrid dt', 'els => els.map(e => e.textContent)')
-                for need in ('Դիրքը', 'Արագություն', 'Վարորդ / առաքիչ', 'Խանութներ', 'Այսօր, կմ (GPS)', 'Վառելիք',
+                for need in ('Դիրքը', 'Արագություն', 'Վարորդ', 'Խանութներ', 'Վառելիք',
                              'Բեռի մնացորդ', 'Հաջորդ խանութը', 'Վերադարձ պահեստ', 'Վերջին կապը', 'Տերմինալ'):
                     check(need in labels, f'карточка: «{need}»')
                 grid = page.inner_text('#lvGrid')
@@ -1002,7 +1002,7 @@ def main() -> int:
                     pc.goto(base + '/routes/live')
                     pc.wait_for_selector('.lv-item')
                     pc.locator(f'.lv-item[data-car="{cars[0]}"]').click()
-                    pc.wait_for_selector('#lvCard:not([hidden]) .lv-grid dt')
+                    pc.wait_for_selector('#lvCard:not([hidden]) #lvGrid dt')
                     pc.wait_for_timeout(900)
                     top, left, sy = pc.evaluate("[...(r => [r.top, r.left])(document.getElementById('lvCard').getBoundingClientRect()), scrollY]")
                     check(0 <= top < h - 120 and left > w / 2 and (h < 700 or sy == 0),
@@ -1093,7 +1093,7 @@ def main() -> int:
                       'тревоги, телефон 390 px: баннер переносится, нет горизонтальной прокрутки')
                 phone.screenshot(path=str(SHOTS / 'live_alarm_phone.png'))
                 phone.locator(f'.lv-item[data-car="{cars[0]}"]').click()
-                phone.wait_for_selector('#lvCard:not([hidden]) .lv-grid dt')
+                phone.wait_for_selector('#lvCard:not([hidden]) #lvGrid dt')
                 phone.wait_for_timeout(800)
                 wide = phone.evaluate('document.documentElement.scrollWidth > window.innerWidth + 1')
                 phone.locator('#lvMap').scroll_into_view_if_needed()
