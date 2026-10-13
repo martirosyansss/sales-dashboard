@@ -1456,46 +1456,80 @@
     }
     function clearPoint() { if (state.pin) { state.pin.remove(); state.pin = null; } }
 
+    // «Օրվա ցուցանիշներ» (пользователь 13.10, вариант B): сверху три главных числа с полосой — км, следование плану,
+    // лишний пробег; ниже строки по группам: точка статуса, подпись и пояснение слева, значение справа
+    function heroCell(label, value, note, cls, bar, title) {
+        const fill = h('i');
+        fill.style.width = (bar === null ? 0 : Math.max(0, Math.min(100, bar))).toFixed(1) + '%';
+        return h('div', { class: 'lv-hero-cell', title: title || null },
+            h('dt', { text: label }),
+            h('dd', { class: cls || null }, [value].flat().flatMap(withUnits)),
+            h('span', { class: 'lv-bar', 'aria-hidden': 'true' }, fill),
+            note ? h('small', { text: note }) : null);
+    }
+    function statRow(label, value, sub, cls) {
+        return h('div', { class: 'lv-li' + (cls ? ' ' + cls : '') }, h('dt', { text: label }),
+            h('dd', { class: cls || null }, h('span', { class: 'lv-v' }, [value].flat().flatMap(withUnits)),
+                sub ? h('small', { text: sub }) : null));
+    }
+    const statGroup = (title, rows) => h('section', { class: 'lv-grp' }, h('h4', { text: title }), h('dl', null, rows));
+
+    function statsHero(t) {
+        const r = t.route, plan = r ? num(r.km) : null;
+        const [, kmSub, kmCls] = kmText(t);
+        const pct = t.position && plan > 0 ? Math.round((t.km / plan - 1) * 100) : null;
+        const km = heroCell('Կմ՝ փաստ / պլան', t.position ? fmt(t.km, 1) + ' կմ' : NO_DATA,
+            pct !== null ? 'պլան՝ ' + fmt(plan, 1) + ' կմ · ' + (pct > 0 ? '+' : '') + pct + '%'
+                : (plan !== null ? 'պլանով՝ ' + fmt(plan, 1) + ' կմ' : null),
+            t.position ? kmCls : 'is-mute', pct !== null ? t.km / plan * 100 : null, kmSub);
+        const d = t.deviation, p = d ? num(d.adherence_pct) : null;
+        const [adh, adhSub, adhCls] = adherenceText(t);
+        const follow = heroCell('Երթուղուն հետևում', adh, p !== null ? 'դուրս՝ ' + fmt(d.off_km, 1) + ' կմ' : null, adhCls, p, adhSub);
+        const x = t.detour;
+        const [dt, dtSub, dtCls] = detourText(t);
+        const over = x && x.legs_over;
+        const detour = heroCell('Ավելորդ վազք', over ? '+' + fmt(x.excess_km, 1) + ' կմ' : dt,
+            over ? ['+' + dur(x.excess_min), amd(x.cost_amd)].filter(Boolean).join(' · ') : (x && x.legs ? fmt(x.legs) + ' հատված' : null),
+            dtCls, over && plan > 0 ? x.excess_km / plan * 100 : null, dtSub);
+        return h('dl', { class: 'lv-hero' }, km, follow, detour);
+    }
+
     function renderStats(t) {
         const st = t.stats || {}, th = state.data ? state.data.thresholds : {};
         const r = t.route;
-        const rows = [];
-        rows.push(field('Պլանային երթուղի', r ? r.trips + ' երթ · ' + r.stops + ' խանութ' : '—',
+        const route = [];
+        route.push(statRow('Պլանային երթուղի', r ? r.trips + ' երթ · ' + r.stops + ' խանութ' : '—',
             r ? (r.road ? 'ճանապարհներով, ինչպես «Առաքում» էջում'
                 + (r.straight ? ' · ' + r.straight + ' հատված՝ ուղիղ գծով (ճանապարհ չգտնվեց, այնտեղ շեղումը չի հաշվվում)' : '')
                 : 'ուղիղ գծով՝ ճանապարհների քարտեզը դեռ պատրաստ չէ') : noRouteText(t),
-            r ? null : 'is-mute', true));
-        const [km, kmSub, kmCls] = kmText(t);
-        rows.push(field('Կմ՝ փաստ / պլան', km, kmSub, kmCls));
-        const [dv, dvSub, dvCls] = deviationText(t);
-        rows.push(field('Շեղում երթուղուց', dv, dvSub, dvCls));
-        rows.push(field('Երթուղուն հետևում', ...adherenceText(t)));
-        rows.push(field('Ավելորդ վազք', ...detourText(t)));
-        rows.push(field('Հերթականություն', ...sequenceText(t), true));
+            r ? null : 'is-mute'));
+        route.push(statRow('Շեղում երթուղուց', ...deviationText(t)));
+        route.push(statRow('Հերթականություն', ...sequenceText(t)));
+        const speed = [], time = [];
         const ms = st.max_speed;
         let top = NO_DATA;
         if (ms) {
             top = h('button', { type: 'button', class: 'lv-linkbtn', title: 'Ցույց տալ քարտեզին' }, icon('fa-location-dot'), ms.kmh + ' կմ/ժ');
             top.addEventListener('click', () => showPoint(ms.lat, ms.lon, 'Առավելագույն արագություն՝ ' + ms.kmh + ' կմ/ժ · ' + hm(ms.at)));
         }
-        rows.push(field('Առավելագույն արագություն', top, ms ? 'ժամը ' + hm(ms.at) + ' · սեղմեք՝ քարտեզին' : null,
+        speed.push(statRow('Առավելագույն արագություն', top, ms ? 'ժամը ' + hm(ms.at) + ' · սեղմեք՝ քարտեզին' : null,
             ms ? (th && ms.kmh > th.speed_kmh ? 'is-bad' : null) : 'is-mute'));
-        rows.push(field('Միջին արագություն ընթացքում', num(st.avg_kmh) !== null ? st.avg_kmh + ' կմ/ժ' : NO_DATA, null,
+        speed.push(statRow('Միջին արագություն ընթացքում', num(st.avg_kmh) !== null ? st.avg_kmh + ' կմ/ժ' : NO_DATA, null,
             num(st.avg_kmh) !== null ? null : 'is-mute'));
-        rows.push(field('Ընթացքում / կանգնած', num(st.moving_min) !== null ? dur(st.moving_min) + ' / ' + dur(st.stopped_min) : NO_DATA,
+        time.push(statRow('Ընթացքում / կանգնած', num(st.moving_min) !== null ? dur(st.moving_min) + ' / ' + dur(st.stopped_min) : NO_DATA,
             st.nodata_min ? 'առանց տվյալի՝ ' + dur(st.nodata_min) : null, num(st.moving_min) !== null ? null : 'is-mute'));
         const off = offStops(t);
         if (Array.isArray(t.stops_off)) {
-            rows.push(field('Կանգառներ ոչ խանութում', off.length ? off.length + ' · ' + dur(off.reduce((m, s) => m + (num(s.minutes) || 0), 0)) : 'չկա',
+            time.push(statRow('Կանգառներ ոչ խանութում', off.length ? off.length + ' · ' + dur(off.reduce((m, s) => m + (num(s.minutes) || 0), 0)) : 'չկա',
                 off.length ? [off.some(s => s.off_line) ? 'երթուղուց դուրս՝ ' + off.filter(s => s.off_line).length : null,
                     off.some(s => s.long) ? 'երկար (ահազանգ)՝ ' + off.filter(s => s.long).length : null].filter(Boolean).join(' · ') || null : null,
                 off.some(s => s.long || s.off_line) ? 'is-warn' : 'is-ok'));
         }
         const ov = st.overspeed;
-        rows.push(field('Արագության գերազանցում', ov ? (ov.count ? ov.count + ' անգամ · ' + dur(ov.minutes) : 'չկա') : NO_DATA,
+        speed.push(statRow('Արագության գերազանցում', ov ? (ov.count ? ov.count + ' անգամ · ' + dur(ov.minutes) : 'չկա') : NO_DATA,
             th ? 'ավելի, քան ' + fmt(th.speed_kmh) + ' կմ/ժ՝ ' + fmt(th.speed_sec) + ' վ-ից երկար' : null,
             ov ? (ov.count ? 'is-warn' : 'is-ok') : 'is-mute'));
-        $('lvStats').replaceChildren(...rows);
+        $('lvStats').replaceChildren(statsHero(t), statGroup('ԵՐԹՈՒՂԻ', route), statGroup('ԱՐԱԳՈՒԹՅՈՒՆ', speed), statGroup('ԺԱՄԱՆԱԿ', time));
         // «план — факт» магазинов: та же сводка км и отклонений одной строкой
         $('lvPf').textContent = [r && num(r.km) !== null ? 'Կմ՝ պլան ' + fmt(r.km, 1) + (t.position ? ' · փաստ ' + fmt(t.km, 1) : '') : null,
             t.deviation && t.position ? 'շեղում՝ ' + (t.deviation.count ? t.deviation.count + ' անգամ, ' + fmt(t.deviation.km, 1) + ' կմ' : 'չկա') : null]
