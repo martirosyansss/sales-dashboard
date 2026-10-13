@@ -235,6 +235,8 @@ def test_api_file_has_courier_and_car_of_sent_plan(day):
 
 def test_api_trial_one_order(day):
     _sent(day)
+    r = day.get(f'/api/routes/dispatch/erp-import?date={DAY}&isn={_isn(99)}')   # не в отправленном плане
+    assert r.status_code == 409 and r.get_json()['error'] == views.ERP_IMPORT_NOT_IN_PLAN
     r = day.get(f'/api/routes/dispatch/erp-import?date={DAY}&isn={_isn(2).lower()}')
     assert r.status_code == 200 and r.headers['X-Erp-Rows'] == '1'
     assert [x['A'] for x in _file_rows(r)] == ['N' + _isn(2)[-1]]

@@ -4152,6 +4152,7 @@ ERP_IMPORT_OFF = 'ERP-ի հետ կապ չկա'
 ERP_IMPORT_NOTHING = 'ERP-ում փոխելու բան չկա'
 ERP_IMPORT_ADDRESS = 'Պատվերում առաքման հասցե կա — ֆայլով չի փոխվում'
 ERP_IMPORT_CHILDREN_HINT = 'Ապրանքագիրն ու տրամադրումը արեք ֆայլը ERP-ում բեռնելուց հետո։'
+ERP_IMPORT_NOT_IN_PLAN = 'Այս պատվերը ուղարկված պլանում չէ'
 XLSM_MIME = 'application/vnd.ms-excel.sheet.macroEnabled.12'
 
 
@@ -4192,7 +4193,7 @@ def api_dispatch_erp_import() -> Any:
     chosen = [d for d in scope if d.write and d.isn.upper() in heads and not heads[d.isn.upper()]['address_id']]
     skipped = sum(d.reason != 'unchanged' for d in scope) - len(chosen)
     if not chosen:
-        why = _erp_import_why(scope, heads)
+        why = ERP_IMPORT_NOT_IN_PLAN if isn and not scope else _erp_import_why(scope, heads)
         logger.info('[Routes] Excel ERP-ի համար %s: файла нет — %s (%s)', day, why, session.get('username'))
         return jsonify({'success': False, 'error': why}), 409
     rows = []
