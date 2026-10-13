@@ -456,6 +456,28 @@ button.lv-prob:focus-visible { outline: 2px solid var(--rt-acc); outline-offset:
 }
 .lv-pf { margin: 6px 0 0; font-size: .875rem; color: var(--rt-fg-dim); font-variant-numeric: tabular-nums; }
 
+/* Подсказка магазина (13.10 «слишком длинная»): карточка — номер в цвете статуса и название, чип статуса,
+   строки «подпись — время» и прогноз «не успеет» */
+.rt-page .leaflet-tooltip.lv-store-tip { width: max-content; max-width: min(260px, 80vw); padding: 10px 12px; border-radius: 12px;
+    white-space: normal; background: var(--rt-panel); }
+.lv-st { display: grid; gap: 6px; font-size: 12.5px; line-height: 1.35; font-variant-numeric: tabular-nums; }
+.lv-st-head { display: flex; align-items: flex-start; gap: 8px; }
+.lv-st-head b { font-size: 13.5px; font-weight: var(--rt-fw-strong); line-height: 20px; overflow-wrap: anywhere; }
+.lv-st-no { flex: none; display: grid; place-items: center; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 10px;
+    color: var(--rt-status-ink); font-size: 11px; font-weight: 600; }
+.lv-st-chip { justify-self: start; display: inline-flex; align-items: center; gap: 6px; padding: 1px 9px 1px 7px; border-radius: 999px;
+    background: color-mix(in srgb, var(--lv-st-c) 14%, transparent); color: var(--rt-fg); font-size: 12px; }
+.lv-st-chip::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--lv-st-c); }
+.lv-st-rows { display: grid; gap: 3px; padding-top: 7px; border-top: 1px solid var(--rt-line); }
+.lv-st-row { display: flex; justify-content: space-between; gap: 16px; }
+.lv-st-row span { color: var(--rt-fg-dim); }
+.lv-st-row b { font-weight: 500; }
+.lv-st-row em { margin-left: 6px; font-style: normal; font-weight: 400; color: var(--rt-fg-dim); }
+.lv-st-row em.is-warn { color: var(--rt-warn); }
+.lv-st-row em.is-bad { color: var(--rt-danger); }
+.lv-st-late { display: flex; gap: 6px; align-items: baseline; padding: 5px 8px; border-radius: 8px; background: var(--rt-danger-bg); color: var(--rt-danger); }
+.lv-st-late i { font-size: 11px; }
+
 /* подсказка точки линии трека и плана (08.10): строки — время, скорость, км, стоянка, отклонение */
 .rt-page .leaflet-tooltip.lv-hover-tip { width: max-content; max-width: min(280px, 80vw); white-space: normal; pointer-events: none; }
 .lv-hover { display: grid; gap: 2px; font-size: .8125rem; line-height: 1.35; font-variant-numeric: tabular-nums; }

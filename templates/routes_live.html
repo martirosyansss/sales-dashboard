@@ -15,7 +15,7 @@
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=30">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes_ui.css') }}?v=5">
 <!-- Машины на карте сейчас (№76): тема «Развоза», свои классы .lv-*; новые файлы статики — и в _PUBLIC_STATIC app_v2 -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_live.css') }}?v=20">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_live.css') }}?v=21">
 {% endblock %}
 
 {% block content %}
@@ -253,5 +253,5 @@
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=4" data-yandex-key="{{ yandex_tiles_key }}"></script>
 <!-- Tesla+: стеклянные панели поверх карты сворачиваются (общий модуль с «Առաքում») -->
 <script src="{{ url_for('static', filename='js/rt_panels.js') }}?v=1"></script>
-<script src="{{ url_for('static', filename='js/routes_live.js') }}?v=29"></script>
+<script src="{{ url_for('static', filename='js/routes_live.js') }}?v=30"></script>
 {% endblock %}

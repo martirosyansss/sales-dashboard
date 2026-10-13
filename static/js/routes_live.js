@@ -785,6 +785,32 @@
     const gpsText = (g) => (!g ? null : g.here ? 'տեղում է ' + g.minutes + ' ր'
         : 'ժամանում ' + hm(g.arrive) + (g.leave ? ' · մեկնում ' + hm(g.leave) : '') + ' · ' + g.minutes + ' ր');
 
+    // подсказка магазина на карте (пользователь 13.10 «слишком длинная, не профессионально»): карточка — номер по плану
+    // в цвете статуса и название, чип статуса, строки план / прибытие (± к плану) / отъезд / стоянка, прогноз «не успеет»
+    function storeTip(s, lt) {
+        const [label, color] = storeOf(s), g = s.gps;
+        const no = s.plan_no ? h('span', { class: 'lv-st-no', text: String(s.plan_no) }) : null;
+        if (no) no.style.background = 'var(' + color + ')';
+        const chip = h('span', { class: 'lv-st-chip', text: label });
+        chip.style.setProperty('--lv-st-c', 'var(' + color + ')');
+        const rows = [];
+        const row = (k, v, extra) => rows.push(h('div', { class: 'lv-st-row' }, h('span', { text: k }), h('b', null, v, extra || null)));
+        if (s.planned_eta) row('Պլան', hm(s.planned_eta));
+        if (g && g.here) row('Տեղում է', dur(g.minutes));
+        else if (g) {
+            const off = s.planned_eta && g.arrive ? Math.round((epoch(g.arrive) - epoch(s.planned_eta)) / 60) : null;
+            row('Ժամանում', hm(g.arrive), off !== null && Math.abs(off) >= 5
+                ? h('em', { class: off > 60 ? 'is-bad' : off > 15 ? 'is-warn' : null, text: (off > 0 ? '+' : '−') + dur(Math.abs(off)) }) : null);
+            if (g.leave) row('Մեկնում', hm(g.leave));
+            row('Կանգառ', dur(g.minutes));
+        }
+        return h('div', { class: 'lv-st' },
+            h('div', { class: 'lv-st-head' }, no, h('b', { text: s.name || s.stop_id })),
+            chip,
+            rows.length ? h('div', { class: 'lv-st-rows' }, rows) : null,
+            lt ? h('div', { class: 'lv-st-late' }, icon('fa-hourglass-half'), lateText(lt) + ' · ≈ ' + hm(lt.eta)) : null);
+    }
+
     // номер магазина в плане машины за день: цвет — состояние; без цвета — магазин плана, которого нет у терминала
     function pinIcon(no, color, late) {
         const el = h('span', { class: 'lv-npin' + (color ? '' : ' is-plan-only') + (late ? ' is-late' : ''), text: String(no) });
@@ -1107,14 +1133,12 @@
         const lateOf = new Map((t.late || []).filter(x => x.stop_id).map(x => [lateKey(x), x]));
         for (const s of t.stops || []) {
             if (num(s.lat) === null || num(s.lon) === null) continue;
-            const [label, color] = storeOf(s);
+            const color = storeOf(s)[1];
             const lt = s.status === 'pending' ? lateOf.get(lateKey(s)) : null;   // №87: прогноз «не успеет» — красная обводка и строка в подсказке
-            const text = (s.name || s.stop_id) + ' — ' + label + (s.planned_eta ? ' · պլան՝ ' + hm(s.planned_eta) : '')
-                + (s.gps ? ' · GPS՝ ' + gpsText(s.gps) : '') + (lt ? ' · ' + lateText(lt) + ' (≈ ' + hm(lt.eta) + ')' : '');
             // магазин плана — с номером по плану; вне плана — кружок
             (s.plan_no ? L.marker([s.lat, s.lon], { icon: pinIcon(s.plan_no, color, !!lt), keyboard: false, zIndexOffset: 500 })
                 : L.circleMarker([s.lat, s.lon], { radius: 7, ...paint({ color: lt ? '--rt-danger' : '--rt-map-ink', fillColor: color }), weight: lt ? 3 : 2, fillOpacity: 1 }))
-                .bindTooltip(tip((s.plan_no ? '№' + s.plan_no + ' · ' : '') + text)).addTo(state.layer);
+                .bindTooltip(storeTip(s, lt), { className: 'lv-store-tip', direction: 'top', offset: [0, -10], opacity: 1 }).addTo(state.layer);
         }
         drawOffStops(t, state.layer);
         for (const a of t.alerts_log || []) {
