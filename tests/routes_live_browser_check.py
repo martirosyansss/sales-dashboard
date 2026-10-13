@@ -790,7 +790,8 @@ def main() -> int:
                 for need in ('Դիրքը', 'Արագություն', 'Վարորդ', 'Խանութներ', 'Վառելիք',
                              'Բեռի մնացորդ', 'Հաջորդ խանութը', 'Վերադարձ պահեստ', 'Վերջին կապը', 'Տերմինալ'):
                     check(need in labels, f'карточка: «{need}»')
-                grid = page.inner_text('#lvGrid')
+                # пояснения строк карточки (13.10 «очень много текста») — во всплывающей подсказке строки (title)
+                grid = page.inner_text('#lvGrid') + ' ' + ' '.join(page.eval_on_selector_all('#lvGrid [title]', 'els => els.map(e => e.title)'))
                 check('2 / 3' in grid and '≈' in grid and 'տող առանց քաշի' in grid and 'APK 2.2.0' in grid,
                       'карточка: магазины 2/3, топливо ≈, строки без веса, версия APK')
                 check('բեռնված այս երթում' in grid and 'վերադարձ՝' in grid and 'մեքենայում' in grid,
