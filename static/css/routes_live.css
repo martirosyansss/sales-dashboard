@@ -270,16 +270,23 @@ button.lv-prob:focus-visible { outline: 2px solid var(--rt-acc); outline-offset:
 .lv-active-more:focus-visible { outline: 2px solid var(--rt-acc); outline-offset: 1px; }
 .lv-late-list { flex-basis: 100%; margin: 4px 0 0 22px; padding: 0 0 0 14px; font-size: .875rem; color: var(--rt-fg-dim); }
 .lv-late-list li + li { margin-top: 2px; }
-.lv-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 16px; margin: 0; }
-.lv-grid > div { min-width: 0; padding: 8px 10px; border-radius: 10px; background: var(--rt-hl); border: 0; }
+/* Показатели (пользователь 13.10 «карточки не красивые»): без серых плашек — тонкая линия сверху (DESIGN.md п. 9),
+   подпись серым, число крупное и тонкое, единица мельче; пояснение — мелким серым под числом */
+.lv-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 20px; margin: 0; }
+.lv-grid > div { min-width: 0; padding: 10px 0 12px; border-top: 1px solid var(--rt-line); }
 .lv-grid > div.is-wide { grid-column: 1 / -1; }
-.lv-grid dt { font-size: .75rem; font-weight: 600; color: var(--rt-fg-mute); letter-spacing: .02em; margin-bottom: 3px; }
-.lv-grid dd { margin: 0; font-size: 18px; font-weight: 300; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-.lv-grid dd small { display: block; font-size: .8125rem; font-weight: 400; color: var(--rt-fg-dim); }
-.lv-grid .is-ok { color: var(--rt-ok); }
-.lv-grid .is-warn { color: var(--rt-warn); }
-.lv-grid .is-bad { color: var(--rt-danger); }
+.lv-grid dt { font-size: 12.5px; font-weight: 500; line-height: 1.3; color: var(--rt-fg-dim); margin-bottom: 4px; }
+.lv-grid dd { margin: 0; font-size: var(--rt-fs-num-s); font-weight: var(--rt-fw-num); line-height: 1.2;
+    font-variant-numeric: tabular-nums; overflow-wrap: break-word; }
+.lv-grid dd.is-mute { font-size: 1rem; line-height: 1.4; }
+.lv-grid .lv-u { font-size: .6em; font-weight: 400; color: var(--rt-fg-dim); }
+.lv-grid dd small { display: block; margin-top: 4px; font-size: 12px; font-weight: 400; line-height: 1.4; color: var(--rt-fg-dim); }
+.lv-grid .is-ok, .lv-grid .is-ok .lv-u { color: var(--rt-ok); }
+.lv-grid .is-warn, .lv-grid .is-warn .lv-u { color: var(--rt-warn); }
+.lv-grid .is-bad, .lv-grid .is-bad .lv-u { color: var(--rt-danger); }
 .lv-grid .is-mute { color: var(--rt-fg-mute); }
+.lv-grid .lv-linkbtn { text-decoration-style: dotted; text-decoration-thickness: 1px; }
+.lv-grid .lv-linkbtn i { font-size: .6em; }
 .lv-est { font-size: .75rem; font-weight: 600; color: var(--rt-warn); margin-left: 4px; }
 .lv-more { margin-top: 12px; }
 .lv-more > summary { cursor: pointer; font-weight: 600; color: var(--rt-acc); min-height: 36px; display: flex; align-items: center; }

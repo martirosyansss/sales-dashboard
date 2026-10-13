@@ -1126,9 +1126,22 @@
     }
 
     // ---------- карточка ----------
+    // единица после числа — мельче и серым, через неразрывный пробел: «16,5 կմ» не рвётся на две строки
+    const UNIT_RE = /(\d)[ \u00a0](կմ\/ժ|կմ|կգ|րոպե|ր|ժ|մ|վ|լ|֏)(?=$|[ \u00a0]*[·/,()]|[ \u00a0]+[\d+−-])/gu;
+    function withUnits(v) {
+        if (typeof v !== 'string') return [v];
+        const out = [];
+        let last = 0;
+        for (const m of v.matchAll(UNIT_RE)) {
+            out.push(v.slice(last, m.index + 1) + '\u00a0', h('span', { class: 'lv-u', text: m[2] }));
+            last = m.index + m[0].length;
+        }
+        out.push(v.slice(last));
+        return out.filter(x => x !== '');
+    }
     function field(label, value, sub, cls, wide) {
         const dd = h('dd', { class: cls || null });
-        dd.append(...(Array.isArray(value) ? value : [value]));
+        dd.append(...(Array.isArray(value) ? value : [value]).flatMap(withUnits));
         if (sub) dd.append(h('small', { text: sub }));
         return h('div', { class: wide ? 'is-wide' : null }, h('dt', { text: label }), dd);
     }
