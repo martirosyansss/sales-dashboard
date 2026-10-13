@@ -84,6 +84,45 @@ def _share(sid: str, stop: Mapping[str, Any], status: str, deliveries: Mapping[s
     return None, None
 
 
+MONEY_TOL = 1.0   # ֏: расхождение меньше — округление, не проблема
+
+
+def stop_money(v: Any, collect: str | None, amount_due: Any, pays: list[Mapping[str, Any]]) -> dict[str, Any] | None:
+    """Деньги точки для подсказки карты (пользователь 13.10 «сколько взял и сколько должно было быть, проблема — пиши»).
+    Правило — как «Գումար» (views.money_drivers), но по точке, а не по водителю:
+    - due — стоимость отданного по последнему заявлению (partial — меньше накладной), covered — 0; без заявления — None;
+    - expected — сколько надо было взять: только cash / cash_ecr (covered — 0); безнал и «ask» — None;
+    - paid — по накладной всеми водителями (StopView.paid: без отменённых, с поглощёнными и covered-сёстрами);
+      debt — в счёт старого долга (payments_total платежей, чей получатель — эта точка);
+    - problems — коды: no_payment (надо взять, ничего не взято), short (взято меньше), over (взято больше стоимости),
+      noncash_paid (безнал, а деньги взяты), no_receipt (ՀԴՄ без чека), conflict (заявления расходятся — в офис).
+    v — StopView правила или None (точки нет в правиле): тогда None."""
+    if v is None:
+        return None
+    from .events import payments_total
+    from .views import CASH_COLLECT, _money
+    paid = _money(v.paid)
+    due = _money(v.due) if v.statement is not None or v.status == 'covered' else None
+    expected = (0.0 if v.status == 'covered' else due) if collect in CASH_COLLECT else None
+    flags = {f for e in pays for f in e.get('flags') or ()} | set(v.flags)
+    problems: list[dict[str, Any]] = []
+    if expected is not None and expected > MONEY_TOL:
+        if paid <= 0:
+            problems.append({'code': 'no_payment', 'amd': expected})
+        elif paid < expected - MONEY_TOL:
+            problems.append({'code': 'short', 'amd': round(expected - paid, 2)})
+    if collect not in CASH_COLLECT and collect != 'ask' and paid > MONEY_TOL:
+        problems.append({'code': 'noncash_paid', 'amd': paid})
+    elif due is not None and paid > due + MONEY_TOL:
+        problems.append({'code': 'over', 'amd': round(paid - due, 2)})
+    if 'no_ecr_receipt' in flags:
+        problems.append({'code': 'no_receipt'})
+    if 'merge_conflict' in flags:
+        problems.append({'code': 'conflict'})
+    return {'collect': collect, 'amount_due': _number(amount_due) if amount_due is not None else None, 'due': due,
+            'expected': expected, 'paid': paid, 'debt': payments_total(pays)['debt'], 'problems': problems}
+
+
 class _Entry:
     """Расчёт флота за один день: свой замок — одно вычисление на день, остальные ждут и берут его результат."""
     __slots__ = ('lock', 'value', 'fingerprint', 'expires')
@@ -132,7 +171,8 @@ class LiveSource:
     def _compute(self, day: str) -> dict[str, dict[str, Any]]:
         """Машина → факт дня (рабочий день day, YYYY-MM-DD):
         - stops — точки последнего /day машины: stop_id, customer_id, name, lat, lon, seq, weight_kg, unweighed (строк
-          без веса), status (§5 п. 12), share (доля доставленного или None), delivered_at (ISO или None);
+          без веса), status (§5 п. 12), share (доля доставленного или None), delivered_at (ISO или None), money
+          (stop_money: сколько взято / надо было взять и проблемы; None — точки нет в правиле);
         - track — [(at_ms, lat, lon, acc, spd, brg)] по возрастанию момента;
         - drivers — водители, входившие на терминал машины (по последнему событию, последний — первым);
         - last_contact — последняя связь терминала машины (получение события или любой запрос терминала), ISO;
@@ -158,6 +198,10 @@ class LiveSource:
         absorbed: dict[str, list[str]] = {}
         for x, owner in model.absorbed_by.items():
             absorbed.setdefault(owner, []).append(x)
+        pays: dict[str, list[dict[str, Any]]] = {}   # точка-получатель (как «Գումար») → её платежи
+        for e in events:
+            if e['type'] == 'payment':
+                pays.setdefault(model.payee(e['stop_id']) or '', []).append(e)
         cars = sorted(set(model.current) | {e['car_code'] for e in events + beats})
         out: dict[str, dict[str, Any]] = {}
         units: dict[str, dict[Any, float]] = {}   # машина → вес единицы товара по product_id (из строк её точек)
@@ -174,7 +218,9 @@ class LiveSource:
                               else None, 'name': cust.get('name'), 'lat': point[0] if point else None,
                               'lon': point[1] if point else None, 'seq': s.get('seq'),
                               'weight_kg': _number(s.get('weight_kg')), 'unweighed': _unweighed(s), 'status': status,
-                              'share': share, 'delivered_at': clock.iso(at) if at is not None else None})
+                              'share': share, 'delivered_at': clock.iso(at) if at is not None else None,
+                              'money': stop_money(model.views.get(sid), model.collect.get(sid, s.get('collect')),
+                                                  s.get('amount_due'), pays.get(sid, []))})
             units[car] = {ln.get('product_id'): _number(ln['weight_kg']) / _number(ln['qty'])
                           for s in model.current.get(car, []) for ln in s.get('lines') or ()
                           if isinstance(ln, dict) and _number(ln.get('qty')) > 0 and _number(ln.get('weight_kg')) > 0}

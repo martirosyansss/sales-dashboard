@@ -475,6 +475,13 @@ button.lv-prob:focus-visible { outline: 2px solid var(--rt-acc); outline-offset:
 .lv-st-row em { margin-left: 6px; font-style: normal; font-weight: 400; color: var(--rt-fg-dim); }
 .lv-st-row em.is-warn { color: var(--rt-warn); }
 .lv-st-row em.is-bad { color: var(--rt-danger); }
+.lv-st-rows h5 { margin: 0 0 1px; font-size: 10.5px; font-weight: 600; letter-spacing: .06em; color: var(--rt-fg-mute); }
+.lv-st-row.is-bad b { color: var(--rt-danger); }
+/* проблемы точки (вес, деньги — пользователь 13.10): красный блок, строка — значок и текст */
+.lv-st-probs { display: grid; gap: 3px; margin: 0; padding: 6px 8px; list-style: none; border-radius: 8px;
+    background: var(--rt-danger-bg); color: var(--rt-danger); }
+.lv-st-probs li { display: flex; gap: 6px; align-items: baseline; }
+.lv-st-probs i { flex: none; font-size: 10px; }
 .lv-st-late { display: flex; gap: 6px; align-items: baseline; padding: 5px 8px; border-radius: 8px; background: var(--rt-danger-bg); color: var(--rt-danger); }
 .lv-st-late i { font-size: 11px; }
 

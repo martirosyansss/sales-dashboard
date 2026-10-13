@@ -804,12 +804,46 @@
             if (g.leave) row('Մեկնում', hm(g.leave));
             row('Կանգառ', dur(g.minutes));
         }
+        const block = (title, items) => (items.length ? h('div', { class: 'lv-st-rows' }, h('h5', { text: title }), items) : null);
+        const goods = [], cash = [], probs = [];
+        const line = (to, k, v, cls) => to.push(h('div', { class: 'lv-st-row' + (cls ? ' ' + cls : '') }, h('span', { text: k }), h('b', { text: v })));
+        // товар по весу: отдано / по накладной; не отдано — проблема (частично или отказ)
+        const kg = num(s.weight_kg), got = num(s.delivered_kg), closed = DONE.includes(s.status);
+        if (kg !== null && kg > 0) {
+            if (closed && got !== null) line(goods, 'Տրված', fmt(got, 1) + ' / ' + fmt(kg, 1) + ' կգ');
+            else line(goods, 'Ապրանքագրով', fmt(kg, 1) + ' կգ');
+            if (s.status === 'refused') probs.push('Մերժված է՝ ապրանքը չի տրվել (' + fmt(kg, 1) + ' կգ)');
+            else if (closed && got !== null && kg - got >= 0.1) probs.push('Տրված է պակաս՝ ' + fmt(kg - got, 1) + ' կգ');
+        }
+        // деньги (только администратору — сервер иначе отдаёт money: null): надо было взять / взято / проблемы
+        const m = s.money;
+        if (m) {
+            const amd = (v) => fmt(v) + ' ֏';
+            if (num(m.amount_due) !== null) line(cash, 'Ապրանքագիր', amd(m.amount_due));
+            if (m.collect === 'none') line(cash, 'Վճարում', 'անկանխիկ');
+            else if (num(m.expected) !== null) line(cash, 'Պետք էր վերցնել', amd(m.expected));
+            if (num(m.expected) !== null || num(m.paid) > 0) line(cash, 'Վերցրել է', amd(m.paid || 0),
+                (m.problems || []).some(p => p.code in CASH_WRONG) ? 'is-bad' : null);
+            if (num(m.debt) > 0) line(cash, 'Պարտքից', amd(m.debt));
+            for (const p of m.problems || []) {
+                const text = MONEY_PROBLEM[p.code];
+                if (text) probs.push(text + (num(p.amd) !== null ? ' ' + amd(p.amd) : ''));
+            }
+        }
         return h('div', { class: 'lv-st' },
             h('div', { class: 'lv-st-head' }, no, h('b', { text: s.name || s.stop_id })),
             chip,
             rows.length ? h('div', { class: 'lv-st-rows' }, rows) : null,
+            block('ԱՊՐԱՆՔ', goods), block('ԳՈՒՄԱՐ', cash),
+            probs.length ? h('ul', { class: 'lv-st-probs' }, probs.map(p => h('li', null, icon('fa-triangle-exclamation'), h('span', { text: p })))) : null,
             lt ? h('div', { class: 'lv-st-late' }, icon('fa-hourglass-half'), lateText(lt) + ' · ≈ ' + hm(lt.eta)) : null);
     }
+    // проблемы денег точки (courier.live.stop_money): текст + сумма, если есть
+    const CASH_WRONG = { no_payment: 1, short: 1, over: 1, noncash_paid: 1 };   // «Վերցրել է» — красным
+    const MONEY_PROBLEM = {
+        no_payment: 'Գումար չի վերցրել՝ պետք էր', short: 'Պակաս է վերցրել՝', over: 'Ավել է վերցրել՝',
+        noncash_paid: 'Անկանխիկ է, բայց վերցրել է', no_receipt: 'ՀԴՄ կտրոն չկա', conflict: 'Տվյալները հակասում են՝ ստուգել գրասենյակում',
+    };
 
     // номер магазина в плане машины за день: цвет — состояние; без цвета — магазин плана, которого нет у терминала
     function pinIcon(no, color, late) {

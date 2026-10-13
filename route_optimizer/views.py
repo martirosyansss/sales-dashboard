@@ -6098,7 +6098,10 @@ def api_live_truck() -> Any:
     if car not in cards:
         return jsonify({'success': False, 'error': 'Այս մեքենան այս օրը տվյալներ չունի'}), 404
     now = _yerevan_now()
-    return jsonify({**_live_head(ctx, day, now), 'truck': _live_card(ctx, day, now, car, fleet.get(car), True, True)})
+    card = _live_card(ctx, day, now, car, fleet.get(car), True, True)
+    if g.get('user_role') != 'admin':   # деньги точек (подсказка магазина) — только администратору, как «Կանխիկ»
+        card['stops'] = [{**s, 'money': None} for s in card.get('stops') or ()]
+    return jsonify({**_live_head(ctx, day, now), 'truck': card})
 
 
 # «Բացատրել» (владелец 08.10): диспетчер объясняет отклонение или нарушение порядка объезда — причина и заметка (схема 26).
