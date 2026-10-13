@@ -4149,7 +4149,9 @@ def _erp_write_page(state: RoutesState, dd: _DispatchDay) -> dict[str, Any]:
 
 # --- «Excel ERP-ի համար» (владелец 13.10, erp_import) ---
 ERP_IMPORT_OFF = 'ERP-ի հետ կապ չկա'
-ERP_IMPORT_NOTHING = 'ERP-ում փոխելու բան չկա՝ բոլոր պատվերներում առաքիչն ու մեքենան արդեն ճիշտ են կամ պատվերները բաց են թողնված'
+ERP_IMPORT_NOTHING = 'ERP-ում փոխելու բան չկա'
+ERP_IMPORT_ADDRESS = 'Պատվերում առաքման հասցե կա — ֆայլով չի փոխվում'
+ERP_IMPORT_CHILDREN_HINT = 'Ապրանքագիրն ու տրամադրումը արեք ֆայլը ERP-ում բեռնելուց հետո։'
 XLSM_MIME = 'application/vnd.ms-excel.sheet.macroEnabled.12'
 
 
@@ -4190,7 +4192,9 @@ def api_dispatch_erp_import() -> Any:
     chosen = [d for d in scope if d.write and d.isn.upper() in heads and not heads[d.isn.upper()]['address_id']]
     skipped = sum(d.reason != 'unchanged' for d in scope) - len(chosen)
     if not chosen:
-        return jsonify({'success': False, 'error': ERP_IMPORT_NOTHING}), 409
+        why = _erp_import_why(scope, heads)
+        logger.info('[Routes] Excel ERP-ի համար %s: файла нет — %s (%s)', day, why, session.get('username'))
+        return jsonify({'success': False, 'error': why}), 409
     rows = []
     for d in chosen:
         head = {k: v for k, v in heads[d.isn.upper()].items() if k != 'address_id'}
@@ -4201,6 +4205,23 @@ def api_dispatch_erp_import() -> Any:
     return Response(data, mimetype=XLSM_MIME, headers={
         'Content-Disposition': f'attachment; filename="{ei.file_name(day, _same_day_now())}"',
         'X-Erp-Rows': str(len(rows)), 'X-Erp-Skipped': str(skipped), 'Cache-Control': 'no-store'})
+
+
+def _erp_import_why(scope: Sequence[ew.Decision], heads: Mapping[str, Mapping[str, Any]]) -> str:
+    """Почему файла нет: «ERP-ում փոխելու բան չկա (N պատվեր)․ причина՝ сколько; …» (тексты причин — erp_write.REASON_HY;
+    заказ к записи с адресом доставки — ERP_IMPORT_ADDRESS); есть заказы с накладной — подсказка о порядке работы
+    (ответ владельца №100.1: план → файл → накладные)."""
+    counts: dict[str, int] = {}
+    for d in scope:
+        text = (ERP_IMPORT_ADDRESS if d.write and heads.get(d.isn.upper(), {}).get('address_id')
+                else ew.REASON_HY.get(d.reason or 'order_state', d.reason))
+        counts[text] = counts.get(text, 0) + 1
+    out = f'{ERP_IMPORT_NOTHING} ({len(scope)} պատվեր)'
+    if counts:
+        out += '․ ' + '; '.join(f'{text}՝ {n}' for text, n in sorted(counts.items(), key=lambda x: -x[1]))
+    if any(d.reason == 'has_child_docs' for d in scope):
+        out += '։ ' + ERP_IMPORT_CHILDREN_HINT
+    return out
 
 
 DRIVER_NO_TRUCK = 'Մեքենան չի գտնվել — թարմացրեք էջը'

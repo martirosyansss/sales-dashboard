@@ -21,6 +21,7 @@ sys.path.insert(0, str(ROOT))
 
 from route_optimizer import erp  # noqa: E402
 from route_optimizer import erp_import as ei  # noqa: E402
+from route_optimizer import erp_write as ew  # noqa: E402
 from route_optimizer import views  # noqa: E402
 from route_optimizer.erp import OrderState, check_sql  # noqa: E402
 from test_route_dispatch_erp_write import AGENTS, API_CARS, CAR_DRIVERS, CIDS, NOW, body  # noqa: E402
@@ -247,7 +248,8 @@ def test_api_order_with_delivery_address_is_skipped(day):
     assert r.status_code == 200 and (r.headers['X-Erp-Rows'], r.headers['X-Erp-Skipped']) == ('2', '1')
     assert {x['A'] for x in _file_rows(r)} == {'N' + _isn(2)[-1], 'N' + _isn(3)[-1]}
     r = day.get(f'/api/routes/dispatch/erp-import?date={DAY}&isn={_isn(1)}')
-    assert r.status_code == 409 and r.get_json()['error'] == views.ERP_IMPORT_NOTHING
+    assert r.status_code == 409
+    assert r.get_json()['error'] == f'{views.ERP_IMPORT_NOTHING} (1 պատվեր)․ {views.ERP_IMPORT_ADDRESS}՝ 1'
 
 
 def test_api_nothing_to_change(day):
@@ -256,7 +258,9 @@ def test_api_nothing_to_change(day):
         day.orders[i].update(van=3199 if owner[cid] == 'CAR1' else 3200, car='CAR1' if owner[cid] == 'CAR1' else '')
     day.orders[_isn(3)]['children'] = True                              # накладная уже есть — пропуск
     r = day.get('/api/routes/dispatch/erp-import?date=' + DAY)
-    assert r.status_code == 409 and r.get_json()['error'] == views.ERP_IMPORT_NOTHING
+    assert r.status_code == 409                                         # причины с числами и подсказка о порядке (№100.1)
+    assert r.get_json()['error'] == (f"{views.ERP_IMPORT_NOTHING} (3 պատվեր)․ {ew.REASON_HY['unchanged']}՝ 2; "
+                                     f"{ew.REASON_HY['has_child_docs']}՝ 1։ {views.ERP_IMPORT_CHILDREN_HINT}")
 
 
 def test_page_menu_item_and_versions():
