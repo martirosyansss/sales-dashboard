@@ -72,6 +72,7 @@ def init_app(app: Flask, db: Any, db_path: str | None = None) -> None:
         cost_sales_loader=lambda since, until: erp.load_cost_sales(connection_string, since, until),
         erp_states_loader=(lambda isns: erp.load_order_states(connection_string, isns)) if write_dsn else None,
         erp_write_conn=(lambda: erp_write.connect_write(write_dsn)) if write_dsn else None,
+        erp_import_loader=lambda isns: erp.load_order_import(connection_string, isns),
     )
     app.register_blueprint(bp)
     logger.info('[Routes] Раздел «Маршруты» подключён; база настроек: %s; карта дорог: %s%s', path,

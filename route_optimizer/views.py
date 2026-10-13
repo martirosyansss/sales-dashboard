@@ -31,6 +31,7 @@ from . import cost_to_serve as cts
 from . import crew_kpi as ck
 from . import crew_pay as cp
 from . import dispatch as dp
+from . import erp_import as ei
 from . import erp_write as ew
 from . import evaluate, garage, learning, live, optimize
 from . import scorecard as sc
@@ -250,6 +251,9 @@ class RoutesState:
     # Запись и «Վերադարձնել» — по одной за раз на сервер (erp_write_lock)
     erp_states_loader: Callable[[Sequence[str]], tuple[dict[str, OrderState], dict[int, Agent], dict[str, Car]]] | None = None
     erp_write_conn: Callable[[], Any] | None = None
+    # «Excel ERP-ի համար» (владелец 13.10, erp_import): то же чтение и шапки заказов — есть всегда, когда есть ERP
+    erp_import_loader: Callable[[Sequence[str]], tuple[dict[str, OrderState], dict[int, Agent], dict[str, Car],
+                                                       dict[str, dict[str, Any]]]] | None = None
     erp_write_lock: threading.Lock = field(default_factory=threading.Lock)
     # сверка записанного сайтом с ERP для страницы (views._erp_drift): день → (time.monotonic(), ключ набора, машина →
     # сколько разошлось); под dispatch_lock
@@ -3822,13 +3826,16 @@ def _trucks_of(sent: dp.Draft) -> dict[int, str]:
     return {cid: ', '.join(sorted(codes)) for cid, codes in by.items()}
 
 
-def _erp_write_plan(state: RoutesState, day: date) -> tuple[list[ew.Decision], dict[str, Any]]:
+def _erp_write_plan(state: RoutesState, day: date,
+                    loader: Callable[[Sequence[str]], tuple[dict[str, OrderState], dict[int, Agent], dict[str, Car]]]
+                    | None = None) -> tuple[list[ew.Decision], dict[str, Any]]:
     """Решения по заказам отправленного водителям плана дня (erp_write.plan_assignments) по ERP сейчас и ответ
     предпросмотра. План не отправлен — DispatchError. Заказы — магазинов отправленного плана (Draft.for_drivers: его отбор
     заказов); писать можно только заказы, которые он видел (заказы его сборки, добавленные, взятые заказы дня — не
     заведённые после отправки). Водитель машины — кто в этот день за рулём (dispatch.crew_view, как Բեռնագիր: не вышел —
     нет; ведёт две машины или посадка сборки устарела — неоднозначен). У заказов к записи — fBODY до и после (проба).
-    pending — строки журнала, чей итог неизвестен (сервер упал между COMMIT и итогом), со сверкой с ERP только чтением."""
+    pending — строки журнала, чей итог неизвестен (сервер упал между COMMIT и итогом), со сверкой с ERP только чтением.
+    loader — чтение ERP (нет — state.erp_states_loader записи; «Excel ERP-ի համար» передаёт своё)."""
     draft, rev = _stored_draft(state, day)
     if draft is None or draft.sent is None:
         raise dp.DispatchError(ERP_WRITE_NOT_SENT)
@@ -3841,8 +3848,9 @@ def _erp_write_plan(state: RoutesState, day: date) -> tuple[list[ew.Decision], d
     plan_orders = [o for s in stops for o in s.orders]
     log = state.store.erp_write_log(day.isoformat())
     hanging = [row for row in _latest(log).values() if row['result'] == 'pending']
-    assert state.erp_states_loader is not None
-    states, agents, cars = state.erp_states_loader(sorted({o.isn for o in plan_orders} | {r['order_isn'] for r in hanging}))
+    load = loader or state.erp_states_loader
+    assert load is not None
+    states, agents, cars = load(sorted({o.isn for o in plan_orders} | {r['order_isn'] for r in hanging}))
     # заказа уже нет в ORDERS (удалён) — состояние 0: пропуск order_state
     current = [states.get(o.isn) or OrderState(o.isn, o.doc_num, o.customer_id, 0, o.van_agent_id, o.car_code, False)
                for o in plan_orders]
@@ -4137,6 +4145,62 @@ def _erp_write_page(state: RoutesState, dd: _DispatchDay) -> dict[str, Any]:
         for code, n in drift.items():
             trucks[code]['drift'] = n
     return {'erp_write': {'max_orders': ew.max_orders(), 'trucks': trucks}}
+
+
+# --- «Excel ERP-ի համար» (владелец 13.10, erp_import) ---
+ERP_IMPORT_OFF = 'ERP-ի հետ կապ չկա'
+ERP_IMPORT_NOTHING = 'ERP-ում փոխելու բան չկա՝ բոլոր պատվերներում առաքիչն ու մեքենան արդեն ճիշտ են կամ պատվերները բաց են թողնված'
+XLSM_MIME = 'application/vnd.ms-excel.sheet.macroEnabled.12'
+
+
+@bp.get('/api/routes/dispatch/erp-import')
+@_api
+@_admin_only
+def api_dispatch_erp_import() -> Any:
+    """Файл импорта ArmSoft (SalesOrder.xlsm, лист «Խմբագրում») с առաքիչ и машиной заказов отправленного плана дня:
+    ?date=ГГГГ-ММ-ДД[&isn=fISN — только этот заказ, проба]. Какие заказы и что ставить — те же решения, что у записи №97
+    (_erp_write_plan → erp_write.plan_assignments; ERP — только чтение): только заказы к изменению, без накладной и
+    տրամադրում; остальные поля шапки — как сейчас в ERP; заказ с адресом доставки — пропуск (макрос ArmSoft стёр бы адрес,
+    erp_import). Сайт в ERP не пишет и ничего не сохраняет: файл в ERP загружает оператор (кнопка листа). Заголовки
+    X-Erp-Rows / X-Erp-Skipped — сколько заказов в файле и сколько пропущено (уже верные — не пропуск; с isn — только он)."""
+    state = _state()
+    day = _parse_day(request.args.get('date'))
+    isn = (request.args.get('isn') or '').strip().upper()
+    errors = {}
+    if day is None:
+        errors['date'] = 'дата в формате ГГГГ-ММ-ДД'
+    if isn and not dp.ISN_RE.match(isn):
+        errors['isn'] = 'fISN заказа'
+    if errors:
+        return _bad_request(errors)
+    if state.erp_import_loader is None:
+        return jsonify({'success': False, 'error': ERP_IMPORT_OFF}), 404
+    if day < _same_day_now().date():   # по Еревану, как запись №97
+        return jsonify({'success': False, 'error': ERP_WRITE_PAST}), 409
+    heads: dict[str, dict[str, Any]] = {}
+
+    def load(isns: Sequence[str]) -> tuple[dict[str, OrderState], dict[int, Agent], dict[str, Car]]:
+        assert state.erp_import_loader is not None
+        states, agents, cars, found = state.erp_import_loader(isns)
+        heads.update(found)
+        return states, agents, cars
+
+    decisions, _ = _erp_write_plan(state, day, load)
+    scope = [d for d in decisions if not isn or d.isn.upper() == isn]
+    chosen = [d for d in scope if d.write and d.isn.upper() in heads and not heads[d.isn.upper()]['address_id']]
+    skipped = sum(d.reason != 'unchanged' for d in scope) - len(chosen)
+    if not chosen:
+        return jsonify({'success': False, 'error': ERP_IMPORT_NOTHING}), 409
+    rows = []
+    for d in chosen:
+        head = {k: v for k, v in heads[d.isn.upper()].items() if k != 'address_id'}
+        rows.append(ei.ImportRow(**head, courier=d.new_code, car=d.new_car))
+    data = ei.build_xlsm(ei.TEMPLATE.read_bytes(), rows)
+    logger.info('[Routes] Excel ERP-ի համար %s: %d заказов, пропущено %d (%s)', day, len(rows), skipped,
+                session.get('username'))
+    return Response(data, mimetype=XLSM_MIME, headers={
+        'Content-Disposition': f'attachment; filename="{ei.file_name(day, _same_day_now())}"',
+        'X-Erp-Rows': str(len(rows)), 'X-Erp-Skipped': str(skipped), 'Cache-Control': 'no-store'})
 
 
 DRIVER_NO_TRUCK = 'Մեքենան չի գտնվել — թարմացրեք էջը'

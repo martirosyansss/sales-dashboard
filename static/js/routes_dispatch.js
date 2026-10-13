@@ -6809,6 +6809,7 @@
         $('dpMenuUnlock').hidden = !lockedCount();
         $('dpMenuCompare').hidden = !(state.data && state.data.plan);
         $('dpMenuPrint').hidden = $('dpMenuExcel').hidden = !(state.data && state.data.plan);
+        $('dpMenuErpXlsm').hidden = !(state.data && state.data.sent && !state.data.is_past);
         $('dpMenuTrips').hidden = !($('dpOverflow').children.length || $('dpUnassigned').children.length);
         $('dpMenuBoss').hidden = $('dpAnalysis').hidden;
         $('dpMenuNorms').hidden = !normsMissing();
@@ -6875,6 +6876,7 @@
         });
         // меню «⋯»: пункты нажимают настоящие кнопки (там же подтверждение), сами кнопки на рабочем экране скрыты
         $('dpWsMore').addEventListener('click', () => openMenu($('dpWsMenu').hidden));
+        $('dpMenuErpXlsm').addEventListener('click', () => { openMenu(false, true); exportErpXlsm(); });
         [['dpMenuPrint', 'dpPrint'], ['dpMenuExcel', 'dpExcel'], ['dpMenuUnapprove', 'dpUnapprove'], ['dpMenuDiscard', 'dpDiscardBtn']].forEach(([item, real]) => $(item).addEventListener('click', () => {
             openMenu(false, true);
             const b = $(real);
@@ -7052,6 +7054,45 @@
         setTimeout(() => { try { w.print(); } catch (e) { /* окно закрыли раньше */ } }, 300);
     }
 
+    // «Excel ERP-ի համար» (владелец 13.10): файл официального импорта ArmSoft (SalesOrder.xlsm, лист «Խմբագրում») с
+    // առաքիչ и машиной заказов ОТПРАВЛЕННОГО плана — оператор загружает его в ERP кнопкой листа; сайт в ERP не пишет.
+    // Неотправленные правки в файл не попадут — сначала спросить. Ошибка сервера — JSON, файл — blob. Файл — снимок шапок
+    // заказов: загружать сразу, старый не загружать (вернёт прежние значения) — об этом подсказка.
+    async function exportErpXlsm() {
+        const d = state.data;
+        if (!d || !d.sent || d.is_past) return;
+        if (d.unsent && !window.confirm('Կան չուղարկված փոփոխություններ։ Ֆայլը կլինի վարորդներին ուղարկված պլանով։ Շարունակե՞լ։')) return;
+        toast('ERP-ի ֆայլը պատրաստվում է…');
+        try {
+            let resp;
+            try {
+                resp = await fetch('/api/routes/dispatch/erp-import?' + new URLSearchParams({ date: d.day }), { credentials: 'same-origin', cache: 'no-store' });
+            } catch (e) { throw new Error('Սերվերի հետ կապ չկա։'); }
+            const type = resp.headers.get('Content-Type') || '';
+            if (!resp.ok || type.indexOf('json') >= 0) {
+                let data = null;
+                try { data = await resp.json(); } catch (e) { data = null; }
+                const msg = isObj(data) && typeof data.error === 'string' && data.error.trim() ? serverText(data.error)
+                    : (HTTP_TEXT[resp.status] || ('Սերվերի սխալ (կոդ ' + resp.status + ')։'));
+                throw Object.assign(new Error(msg), { status: resp.status === 409 ? 0 : resp.status });
+            }
+            const rows = resp.headers.get('X-Erp-Rows') || '?', skipped = resp.headers.get('X-Erp-Skipped') || '0';
+            const blob = await resp.blob();
+            const a = document.createElement('a');
+            const name = /filename="([^"]+)"/.exec(resp.headers.get('Content-Disposition') || '');
+            a.href = URL.createObjectURL(blob);
+            a.download = name ? name[1] : 'ERP-araqich-' + d.day + '.xlsm';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+            toast('ERP-ի ֆայլը ներբեռնված է՝ ' + pl(+rows, 'պատվեր') + (skipped !== '0' ? ', բաց թողնված՝ ' + skipped : '')
+                + '։ Բացեք այն Excel-ում հիմա և սեղմեք «Խմբագրում» թերթի կոճակը․ հին ֆայլը կրկին մի բեռնեք։');
+        } catch (e) {
+            hideToast($('dpToast'));
+            showActionError(e);
+        }
+    }
     function exportExcel() { paper(null, exportExcelGo); }
     async function exportExcelGo(send, draft) {
         if (send && !(await sendForPaper())) return;
