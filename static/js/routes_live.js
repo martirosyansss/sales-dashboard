@@ -792,7 +792,7 @@
     function storeTip(s, lt) {
         const [label, color] = storeOf(s), g = s.gps;
         const no = s.plan_no ? h('span', { class: 'lv-st-no', text: String(s.plan_no) }) : null;
-        if (no) no.style.background = 'var(' + color + ')';
+        if (no) no.style.background = 'var(' + (cashMissed(s) ? '--rt-danger' : color) + ')';   // как номер на карте
         const chip = h('span', { class: 'lv-st-chip', text: label });
         chip.style.setProperty('--lv-st-c', 'var(' + color + ')');
         const rows = [];
@@ -846,10 +846,17 @@
         no_payment: 'Գումար չի վերցրել՝ պետք էր', short: 'Պակաս է վերցրել՝', over: 'Ավել է վերցրել՝',
         noncash_paid: 'Անկանխիկ է, բայց վերցրել է', no_receipt: 'ՀԴՄ կտրոն չկա', conflict: 'Տվյալները հակասում են՝ ստուգել գրասենյակում',
     };
+    // деньги надо было взять, а не взяты — ничего или меньше (пользователь 17.10): точка на карте красная и мигает;
+    // недостача меньше 10 ֏ — сдача монетами (монет мельче 10 ֏ нет), строка в подсказке есть, но не мигает
+    const CASH_SHORT_MIN = 10;
+    const cashMissed = (s) => ((s.money && s.money.problems) || [])
+        .some(p => p.code === 'no_payment' || (p.code === 'short' && num(p.amd) >= CASH_SHORT_MIN));
 
-    // номер магазина в плане машины за день: цвет — состояние; без цвета — магазин плана, которого нет у терминала
-    function pinIcon(no, color, late) {
-        const el = h('span', { class: 'lv-npin' + (color ? '' : ' is-plan-only') + (late ? ' is-late' : ''), text: String(no) });
+    // номер магазина в плане машины за день: цвет — состояние; без цвета — магазин плана, которого нет у терминала;
+    // cash — деньги не взяты (мигающее кольцо)
+    function pinIcon(no, color, late, cash) {
+        const el = h('span', { class: 'lv-npin' + (color ? '' : ' is-plan-only') + (late ? ' is-late' : '') + (cash ? ' is-cash' : ''),
+            text: String(no) });
         if (color) el.style.background = 'var(' + color + ')';
         return L.divIcon({ html: el.outerHTML, className: '', iconSize: [24, 24], iconAnchor: [12, 12] });
     }
@@ -1169,11 +1176,13 @@
         const lateOf = new Map((t.late || []).filter(x => x.stop_id).map(x => [lateKey(x), x]));
         for (const s of t.stops || []) {
             if (num(s.lat) === null || num(s.lon) === null) continue;
-            const color = storeOf(s)[1];
+            const cash = cashMissed(s);   // деньги не взяты — красная мигающая точка поверх соседних
+            const color = cash ? '--rt-danger' : storeOf(s)[1];
             const lt = s.status === 'pending' ? lateOf.get(lateKey(s)) : null;   // №87: прогноз «не успеет» — красная обводка и строка в подсказке
             // магазин плана — с номером по плану; вне плана — кружок
-            (s.plan_no ? L.marker([s.lat, s.lon], { icon: pinIcon(s.plan_no, color, !!lt), keyboard: false, zIndexOffset: 500 })
-                : L.circleMarker([s.lat, s.lon], { radius: 7, ...paint({ color: lt ? '--rt-danger' : '--rt-map-ink', fillColor: color }), weight: lt ? 3 : 2, fillOpacity: 1 }))
+            (s.plan_no ? L.marker([s.lat, s.lon], { icon: pinIcon(s.plan_no, color, !!lt, cash), keyboard: false, zIndexOffset: cash ? 600 : 500 })
+                : L.circleMarker([s.lat, s.lon], { radius: 7, ...paint({ color: lt ? '--rt-danger' : '--rt-map-ink', fillColor: color }), weight: lt ? 3 : 2, fillOpacity: 1,
+                    ...(cash ? { className: 'lv-cash-dot' } : {}) }))
                 .bindTooltip(storeTip(s, lt), { className: 'lv-store-tip', direction: 'top', offset: [0, -10], opacity: 1 }).addTo(state.layer);
         }
         drawOffStops(t, state.layer);

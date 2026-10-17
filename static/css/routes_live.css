@@ -414,6 +414,19 @@ button.lv-prob:focus-visible { outline: 2px solid var(--rt-acc); outline-offset:
     display: inline-grid; place-items: center; width: 16px; height: 16px; border-radius: 50%; background: var(--rt-fg-mute);
     color: var(--rt-status-ink); font: 700 9px/1 var(--rt-font); font-style: normal;
 }
+/* деньги не взяты (17.10): номер красный (цвет — в routes_live.js) + кольцо, мигание 1 Гц — как у новой тревоги (WCAG 2.3.1);
+   «меньше движения» — ровное двойное кольцо. Кружок точки вне плана (SVG) мигает заливкой */
+.lv-npin.is-cash { position: relative; }
+.lv-npin.is-cash::before {
+    content: ''; position: absolute; inset: -5px; border-radius: 50%; border: 3px solid var(--lv-alert);
+    box-sizing: border-box; pointer-events: none;
+}
+.lv-npin-sq.is-cash { background: var(--lv-alert); box-shadow: 0 0 0 2px var(--rt-danger-bg), 0 0 0 4px var(--lv-alert); }
+@media (prefers-reduced-motion: no-preference) {
+    .lv-npin.is-cash::before { inset: -2px; animation: lv-halo 1s ease-out infinite; }
+    .leaflet-overlay-pane path.lv-cash-dot { animation: lv-cash-dot 1s ease-in-out infinite; }
+}
+@keyframes lv-cash-dot { 50% { fill-opacity: .2; } }
 #lvPage .lv-sec-title { margin: 14px 0 8px; font-size: .875rem; font-weight: 700; color: var(--rt-fg-dim); }
 .lv-linkbtn {
     display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 0; border: 0; background: none;
