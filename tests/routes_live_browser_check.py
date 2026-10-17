@@ -342,6 +342,72 @@ def fit_track(page) -> None:
     page.wait_for_timeout(300)
 
 
+TRUCK_RE = re.compile(r'/api/routes/live/truck\?')
+CASH_JS = """() => [...document.querySelectorAll('.lv-npin')].map(e => ({ no: e.textContent, cash: e.classList.contains('is-cash'),
+    bg: getComputedStyle(e).backgroundColor, anim: getComputedStyle(e, '::before').animationName,
+    ring: getComputedStyle(e, '::before').borderTopWidth }))"""
+
+
+def cash_checks(page, check) -> None:
+    """Пользователь 17.10: деньги надо было взять, а не взяты — точка красная и мигает. Ответ карточки машины 1 подменяется
+    (page.route): магазину 1 — «взял меньше» на 400 ֏ (short), 2 — меньше на 8 ֏ (сдача монетами: не мигает), 3 — вне
+    плана (без номера, кружок) и «ничего не взял» (no_payment) — кружок мигает заливкой. Номер в подсказке — красный, как
+    на карте. «Меньше движения» — кольцо ровное, без анимации."""
+    def poll() -> None:
+        page.evaluate("document.dispatchEvent(new Event('visibilitychange'))")   # вкладка видна — опрос сразу
+        page.wait_for_timeout(1200)
+
+    def money(code, amd):
+        return {'collect': 'cash', 'amount_due': 1000.0, 'due': 1000.0, 'expected': 1000.0, 'paid': 1000.0 - amd,
+                'debt': 0.0, 'problems': [{'code': code, 'amd': amd}]}
+
+    def handle(route):
+        resp = route.fetch()
+        body = resp.json()
+        for s in body['truck']['stops']:
+            if s.get('plan_no') == 1:
+                s['money'] = money('short', 400.0)
+            elif s.get('plan_no') == 2:
+                s['money'] = money('short', 8.0)
+            elif s.get('plan_no') == 3:
+                s['plan_no'] = None
+                s['money'] = money('no_payment', 1000.0)
+        route.fulfill(response=resp, json=body)
+    page.route(TRUCK_RE, handle)
+    poll()
+    pins = {p['no']: p for p in page.evaluate(CASH_JS)}
+    danger = page.evaluate("getComputedStyle(document.querySelector('.rt-page')).getPropertyValue('--rt-danger').trim()")
+    red = page.evaluate("c => { const e = document.createElement('i'); e.style.color = c; document.body.append(e); "
+                        "const v = getComputedStyle(e).color; e.remove(); return v; }", danger)
+    one, two = pins.get('1') or {}, pins.get('2') or {}
+    check(one.get('cash') and one.get('bg') == red and one.get('anim') == 'lv-halo',
+          f'17.10: магазин 1 «Պակաս է վերցրել» — номер красный и мигает кольцом ({one!r}, красный {red})')
+    check(two and not two.get('cash') and two.get('anim') == 'none',
+          f'17.10: магазин 2 — недостача 8 ֏ (сдача монетами) не мигает ({two!r})')
+    dot = page.locator('.leaflet-overlay-pane path.lv-cash-dot')
+    check(dot.count() == 1 and dot.evaluate("e => getComputedStyle(e).animationName") == 'lv-cash-dot'
+          and dot.get_attribute('fill') == danger,
+          f'17.10: точка вне плана «Գումար չի վերցրել» — красный кружок мигает ({dot.count()})')
+    page.locator('.lv-npin.is-cash').hover()
+    page.wait_for_timeout(400)
+    tip = page.inner_text('.leaflet-tooltip-pane')
+    check('Պակաս է վերցրել՝' in tip, f'17.10: подсказка красной точки — «Պակաս է վերցրել» ({tip[:120]!r})')
+    tip_no = page.eval_on_selector('.leaflet-tooltip-pane .lv-st-no', 'e => getComputedStyle(e).backgroundColor')
+    check(tip_no == red, f'17.10: номер в подсказке — красный, как на карте ({tip_no}, красный {red})')
+    page.mouse.move(5, 5)
+    page.locator('.lv-npin.is-cash').scroll_into_view_if_needed()
+    page.locator('#lvMap').screenshot(path=str(SHOTS / 'live_cash_pin.png'))
+    page.emulate_media(reduced_motion='reduce')
+    page.wait_for_timeout(200)
+    calm = {p['no']: p for p in page.evaluate(CASH_JS)}.get('1') or {}
+    check(calm.get('anim') == 'none' and calm.get('ring') == '3px' and calm.get('bg') == red,
+          f'17.10: «меньше движения» — красный номер с ровным кольцом, без мигания ({calm!r})')
+    page.emulate_media(reduced_motion='no-preference')
+    page.unroute(TRUCK_RE)
+    poll()
+    check(page.locator('.lv-npin.is-cash, path.lv-cash-dot').count() == 0, '17.10: настоящий ответ — красных точек нет')
+
+
 def alarm_checks(page, cars, check) -> None:
     """Тревоги (08.10): важность, новые мигают, «Տեսա» строки и «Տեսա բոլորը», заголовок вкладки, отметки после перезагрузки,
     устаревший ответ при смене даты, случай тревоги (since) и дребезг, ослабление / усиление «не успеет», звук до касания."""
@@ -865,6 +931,7 @@ def main() -> int:
                 check(page.locator('.leaflet-overlay-pane path.lv-l-start').count() == 1, 'начало пути за день — точкой')
                 pins = page.eval_on_selector_all('.lv-npin', 'els => els.map(e => e.textContent)')
                 check(sorted(pins) == ['1', '2', '3'], f'номера магазинов по плану: {pins}')
+                cash_checks(page, check)
                 stats = page.eval_on_selector_all('#lvStats dt', 'els => els.map(e => e.textContent)')
                 for need in ('Պլանային երթուղի', 'Կմ՝ փաստ / պլան', 'Շեղում երթուղուց', 'Առավելագույն արագություն',
                              'Միջին արագություն ընթացքում', 'Ընթացքում / կանգնած', 'Արագության գերազանցում'):
