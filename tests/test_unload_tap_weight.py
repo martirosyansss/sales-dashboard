@@ -170,3 +170,69 @@ def test_facts_source_weighs_delivery_by_line_weights(cs):
     got = FactsSource(cs).day('CAR1', DAY)['stops']
     assert got[0]['delivered_share'] == pytest.approx(105.9 / 203.4)
     assert lr.plan_stops(got, {}, {})[0].delivered_kg == pytest.approx(105.9)
+
+
+# ============================== C. накладную переоформили после доставки ==============================
+# 17.10 «Գրիգոր Հակոբյան»: доставка записана по версии с колой (строки :0, :1 — кола, :2 — 6 л, :G0 — подарок),
+# колу не взяли, накладную переоформили — строки перенумерованы (:0 — теперь 6 л). По действующей версии строка :0
+# доставки (кола, 0 шт) читалась как 6 л: «Տրված 6 / 66,3 կգ, պակաս 60,3 կգ» при полной оплате.
+
+COLA = [{'line_id': 'g:0', 'product_id': 23, 'qty': 12.0, 'weight_kg': 19.8},
+        {'line_id': 'g:1', 'product_id': 29, 'qty': 12.0, 'weight_kg': 19.8}]
+SIX = {'line_id': 'g:2', 'product_id': 52, 'qty': 10.0, 'weight_kg': 60.3}
+GIFT = {'line_id': 'g:G0', 'product_id': 52, 'qty': 1.0, 'weight_kg': 6.03, 'gift': True}
+WAS = {'stop_id': 'S:g', 'customer_id': 101, 'weight_kg': 105.9, 'lines': [*COLA, SIX, GIFT]}
+NOW = {**WAS, 'weight_kg': 66.3, 'lines': [{**SIX, 'line_id': 'g:0'}, GIFT]}
+TAKEN = _delivery(('g:0', 0), ('g:1', 0), ('g:2', 10), ('g:G0', 1))
+
+
+def test_reissued_invoice_reads_delivery_lines_by_seen_version():
+    assert delivered_share(NOW, TAKEN) == pytest.approx(6.03 / 66.33)   # прежняя ошибка: строки не той версии
+    assert delivered_share(NOW, TAKEN, WAS) == 1.0                       # 66,33 кг отдано из 66,3 — не больше 1
+    row = {**NOW, 'delivered_share': delivered_share(NOW, TAKEN, WAS), 'delivered_at': None}
+    assert lr.plan_stops([row], {}, {})[0].delivered_kg == pytest.approx(66.3)
+
+
+def test_seen_version_scales_to_current_weight_and_same_lines_change_nothing():
+    grown = {**STOP, 'weight_kg': 253.4, 'lines': [BOTTLE, PACK, {'line_id': 'x:3', 'qty': 5.0, 'weight_kg': 50.0}]}
+    full = _delivery(('x:1', 10), ('x:2', 24))
+    assert delivered_share(grown, full, STOP) == pytest.approx(203.4 / 253.4)   # накладную увеличили — недовоз
+    half = _delivery(('x:1', 5), ('x:2', 24))
+    assert delivered_share(STOP, half, {**STOP, 'seq': 9}) == delivered_share(STOP, half)   # те же строки — как было
+    # те же line_id/товар/кол-во, иная цена или снимок до №65 без веса строк (02.10 «Կարինե Ներսիսյան»: было бы None)
+    priced = {**STOP, 'lines': [{**BOTTLE, 'price': 999, 'marked': True}, {k: v for k, v in PACK.items() if k != 'weight_kg'}]}
+    assert delivered_share(STOP, half, priced) == delivered_share(STOP, half)
+    assert delivered_share(NOW, None, WAS) is None
+    weightless = {**WAS, 'weight_kg': 0.0, 'lines': [{**ln, 'weight_kg': None} for ln in WAS['lines']]}
+    assert delivered_share(NOW, TAKEN, weightless) is None   # у версии нет веса — доля штук в кг не переводится
+    assert delivered_share({**NOW, 'lines': [{**ln, 'weight_kg': None} for ln in NOW['lines']]}, TAKEN, WAS) is None
+
+
+def test_seen_version_uses_exact_line_weights_not_rounded_stop_weight():
+    # weight_kg точки округлён до 0,1: 105,92 → 105,9, 66,26 → 66,3 — по нему вышло бы «Տրված 66,2 / 66,3 կգ»
+    was = {'weight_kg': 105.9, 'lines': [{'line_id': 'r:0', 'qty': 24.0, 'weight_kg': 39.66},
+                                         {'line_id': 'r:1', 'qty': 10.0, 'weight_kg': 66.26}]}
+    now = {'weight_kg': 66.3, 'lines': [{'line_id': 'r:0', 'qty': 10.0, 'weight_kg': 66.26}]}
+    assert delivered_share(now, _delivery(('r:0', 0), ('r:1', 10)), was) == 1.0
+    # накладную исправили по месту под факт (те же line_id, 10 → 7 бутылей): отдано всё, как до исправления
+    fixed = {**STOP, 'weight_kg': 144.9, 'lines': [{**BOTTLE, 'qty': 7.0, 'weight_kg': 136.5}, PACK]}
+    assert delivered_share(fixed, _delivery(('x:1', 7), ('x:2', 24)), STOP) == 1.0
+    assert delivered_share(fixed, _delivery(('x:1', 6), ('x:2', 24)), STOP) == pytest.approx((117 + 8.4) / 144.9)
+
+
+def test_facts_source_weighs_delivery_by_version_driver_saw(cs):
+    who = _who(cs)
+    sid = 'S:%08d-3333-4333-8333-333333333333' % 2
+    base = {'stop_id': sid, 'customer': {'id': 101}, 'lat': SHOP[0], 'lon': SHOP[1], 'seq': 1}
+    cs.save_day(DAY, 'CAR1', [{**WAS, **base, 'lines': [{**ln, 'line_id': ln['line_id'].replace('g', sid)}
+                                                         for ln in WAS['lines']]}], 'v1', DAY + 'T08:00:00+04:00')
+    deliv = {'id': _id(), 'type': 'delivery', 'stop_id': sid, 'date': DAY, 'at': DAY + 'T10:30:00+04:00',
+             'payload': {'lines': [{'line_id': sid + ':' + k, 'qty': q} for k, q in (('0', 0), ('1', 0), ('2', 10),
+                                                                                     ('G0', 1))],
+                         'reason_id': 'closed'}}
+    assert ev.ingest(cs, who, [_track([_pt(1), _pt(2)]), deliv]).json()['rejected'] == []
+    cs.save_day(DAY, 'CAR1', [{**NOW, **base, 'lines': [{**ln, 'line_id': ln['line_id'].replace('g', sid)}
+                                                         for ln in NOW['lines']]}], 'v2', DAY + 'T12:00:00+04:00')
+    got = FactsSource(cs).day('CAR1', DAY)['stops']
+    assert got[0]['weight_kg'] == 66.3 and got[0]['delivered_share'] == 1.0
+    assert lr.plan_stops(got, {}, {})[0].delivered_kg == pytest.approx(66.3)

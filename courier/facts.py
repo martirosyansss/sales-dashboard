@@ -68,7 +68,24 @@ def _number(x: Any) -> float:
     return float(x) if isinstance(x, (int, float)) and not isinstance(x, bool) else 0.0
 
 
-def delivered_share(stop: Mapping[str, Any], delivery: Mapping[str, Any] | None) -> float | None:
+SEEN_KG_TOL = 0.005   # кг: вес строк — до 0,001 на строку; разница версий меньше — округление, отдано всё
+
+
+def _lines_kg(stop: Mapping[str, Any]) -> float:
+    """Точный вес точки по строкам (кол-во > 0, вес > 0) — weight_kg точки округлён до 0,1."""
+    return math.fsum(w for ln in stop.get('lines') or () if isinstance(ln, dict)
+                     and _number(ln.get('qty')) > 0 and (w := _number(ln.get('weight_kg'))) > 0)
+
+
+def _line_keys(stop: Mapping[str, Any]) -> list[tuple[Any, Any, float]]:
+    """Смысл line_id версии: (line_id, товар, кол-во) по порядку — цена, маркировка, вес строки (снимок до №65 без
+    него) строку не меняют."""
+    return [(ln.get('line_id'), ln.get('product_id'), _number(ln.get('qty')))
+            for ln in stop.get('lines') or () if isinstance(ln, dict)]
+
+
+def delivered_share(stop: Mapping[str, Any], delivery: Mapping[str, Any] | None,
+                    seen: Mapping[str, Any] | None = None) -> float | None:
     """Доля доставленного по точке (0…1); learning.plan_stops умножает её на вес накладной — доставлено, кг.
 
     Правило №65 — по весу товаров: Σ по строкам min(доставлено, qty строки) / qty строки × weight_kg строки, делённое на
@@ -76,7 +93,21 @@ def delivered_share(stop: Mapping[str, Any], delivery: Mapping[str, Any] | None)
     прижимается к нему по каждой строке (лишние пачки 0,5 л не покрывают недовезённые бутыли 19 л); строка без веса
     (товара нет в ERP — null) — 0 кг, как в weight_kg точки. Полная доставка — ровно 1: доставлено = вес накладной.
     Снимок /day до №65 (у строк нет weight_kg) или вес строк 0 — прежняя доля штук: Σ qty доставки / Σ qty строк,
-    прижатая к 0…1 в целом. Доставки нет или строк нет — None (неизвестно: такая точка не идёт в обучение разгрузки)."""
+    прижатая к 0…1 в целом. Доставки нет или строк нет — None (неизвестно: такая точка не идёт в обучение разгрузки).
+
+    seen — версия точки, по которой записана доставка (snapshot_id события, как строки правила «Գումար»): line_id —
+    номер строки в ЭТОЙ версии. Накладную переоформили после доставки (17.10: убрали колу — «:0» стала другим товаром,
+    по действующей версии показывалось 6 из 66,3 кг) — доставлено, кг, считается по seen, доля — от веса stop
+    (действующей версии); веса — точные по строкам (_lines_kg), не меньше веса stop без SEEN_KG_TOL — ровно 1
+    (накладную исправили под факт — отдано всё). Вес строк одной из версий неизвестен — None: доля штук другой версии
+    не переводится в кг. seen None или те же строки (_line_keys) — по stop."""
+    if seen is not None and _line_keys(seen) != _line_keys(stop):
+        got = delivered_share(seen, delivery)
+        was, now = _lines_kg(seen), _lines_kg(stop)
+        if got is None or was <= 0 or now <= 0:
+            return None
+        done = got * was
+        return 1.0 if done >= now - SEEN_KG_TOL else done / now
     if delivery is None:
         return None
     lines = [ln for ln in stop.get('lines') or () if isinstance(ln, dict)]
@@ -124,15 +155,22 @@ class FactsSource:
         track = [tuple(p[:5]) for p in self.store.track(car_code, day)]
         stops = self.store.day_stops(day, car_code)
         deliveries = mg.latest_by_stop(self.store.events_for_day(day, 'delivery'), 'delivery')
+        # версия точки, по которой записана доставка (delivered_share: строки — её line_id); снимки только этой даты —
+        # как DayModel.versions на карте (LiveSource): снимок другой даты — по действующей версии
+        seen = {(sid, v['snapshot_id']): v['data']
+                for sid, vs in self.store.stop_versions([s.get('stop_id') for s in stops
+                                                         if s.get('stop_id') in deliveries]).items()
+                for v in vs if v['date'] == day}
         out = []
         for s in stops:
             cust = s.get('customer') or {}
             cid = cust.get('id')
             delivery = deliveries.get(s.get('stop_id'))
+            version = seen.get((s.get('stop_id'), delivery.get('snapshot_id'))) if delivery is not None else None
             out.append({'stop_id': s.get('stop_id'), 'customer_id': cid if isinstance(cid, int) and not
                         isinstance(cid, bool) else None, 'name': cust.get('name'), 'lat': s.get('lat'), 'lon': s.get('lon'),
                         'weight_kg': s.get('weight_kg'), 'seq': s.get('seq'),
-                        'delivered_share': delivered_share(s, delivery),
+                        'delivered_share': delivered_share(s, delivery, version),
                         'delivered_at': delivery.get('at') if delivery is not None else None})
         return {'track': track, 'stops': out}
 

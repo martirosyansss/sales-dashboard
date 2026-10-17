@@ -985,6 +985,35 @@ def test_live_source_share_via_absorbed_order_and_status():
     assert _share('S:1', invoice, 'covered', {}, {}, {}) == (1.0, None)
     assert _share('S:1', invoice, 'refused', {}, {}, {}) == (0.0, None)
     assert _share('S:1', invoice, 'pending', {}, {}, {}) == (None, None)
+    # строки доставки — по версии, которую видел водитель (snapshot_id события), а не по действующей
+    seen = {**order, 'lines': [{'line_id': 'o0', 'qty': 2, 'weight_kg': 60.0}, *order['lines']], 'weight_kg': 360.0}
+    now = {**order, 'lines': [{'line_id': 'o0', 'qty': 10, 'weight_kg': 300.0}]}   # строка 'o0' убрана, 'o1' → 'o0'
+    d['O:1'] = {**d['O:1'], 'snapshot_id': 7, 'payload': {'lines': [{'line_id': 'o0', 'qty': 0},
+                                                                     {'line_id': 'o1', 'qty': 5}]}}
+    assert _share('S:1', invoice, 'partial', d, {'S:1': ['O:1']}, {'O:1': now})[0] == 0.0   # без версии — ошибка
+    share, _ = _share('S:1', invoice, 'partial', d, {'S:1': ['O:1']}, {'O:1': now}, {'O:1': {7: seen}})
+    assert share == pytest.approx(150 / 200)
+
+
+def test_live_source_reissued_invoice_weighs_delivery_by_seen_version(courier_app):
+    """17.10 «Գրիգոր Հակոբյան»: доставка по версии с колой, потом накладную переоформили (строки перенумерованы) —
+    отдано 66,3 из 66,3 кг, а не «6 / 66,3 կգ, պակաս 60,3 կգ»."""
+    from courier import events as ev
+    from courier.live import LiveSource
+    store = courier_app.extensions['courier'].store
+    ds = DAY.isoformat()
+    cola = [(SID1 + ':0', 12, 1.65), (SID1 + ':1', 12, 1.65)]
+    store.save_day(ds, 'CAR1', [_day_stop(SID1, 1, A, [*cola, (SID1 + ':2', 10, 6.03), (SID1 + ':G0', 1, 6.03)], 1)],
+                   'v1', LIVE_NOW.isoformat())
+    who = _who(store, 'CAR1', 'Արամ', '1111')
+    taken = [{'line_id': SID1 + ':' + k, 'qty': q} for k, q in (('0', 0), ('1', 0), ('2', 10), ('G0', 1))]
+    r = ev.ingest(store, who, [_ev('delivery', SID1, {'lines': taken}, LIVE_NOW - timedelta(minutes=20))]).json()
+    assert r['rejected'] == [], r
+    store.save_day(ds, 'CAR1', [_day_stop(SID1, 1, A, [(SID1 + ':0', 10, 6.03), (SID1 + ':G0', 1, 6.03)], 1)],
+                   'v2', LIVE_NOW.isoformat())
+    with courier_app.app_context():
+        s = LiveSource(store).fleet(ds)['CAR1']['stops'][0]
+    assert s['weight_kg'] == pytest.approx(66.33) and s['share'] == 1.0
 
 
 # ============================== API и доступ ==============================

@@ -7,7 +7,8 @@ LiveSource.fleet(день) — сырые данные терминалов по
 (route_optimizer.attach_live_facts): пакет route_optimizer не импортирует courier. Только чтение; нет courier.db — пусто,
 файл не создаётся. Вызывается в запросе Flask (day_model берёт базу из состояния раздела).
 
-Доля доставленного точки (delivered_share, №65 — по весу строк): своя действующая доставка; нет своей, а точка
+Доля доставленного точки (delivered_share, №65 — по весу строк): своя действующая доставка — по строкам версии точки,
+которую видел водитель (snapshot_id события; накладную могли переоформить позже); нет своей, а точка
 поглотила другие (заказ, из которого сделана накладная, §5 п. 12) — доставленные кг поглощённых / вес точки (не больше
 1); иначе по статусу правила: full и covered (товар отдан по заказу) — 1, refused — 0, прочее — None (не доставлено).
 """
@@ -66,16 +67,21 @@ def _return_kg(payload: Mapping[str, Any], stop: Mapping[str, Any] | None, lines
 
 
 def _share(sid: str, stop: Mapping[str, Any], status: str, deliveries: Mapping[str, Mapping[str, Any]],
-           absorbed: Mapping[str, list[str]], data: Mapping[str, Mapping[str, Any]]
+           absorbed: Mapping[str, list[str]], data: Mapping[str, Mapping[str, Any]],
+           versions: Mapping[str, Mapping[int, Mapping[str, Any]]] | None = None
            ) -> tuple[float | None, datetime | None]:
-    """(доля доставленного 0…1 или None, момент отметки) — правило в описании модуля."""
+    """(доля доставленного 0…1 или None, момент отметки) — правило в описании модуля. versions — точка → снимок →
+    версия (DayModel.versions): строки доставки — по версии её snapshot_id (facts.delivered_share, seen)."""
+    def seen(x: str, d: Mapping[str, Any]) -> Mapping[str, Any] | None:
+        return (versions or {}).get(x, {}).get(d.get('snapshot_id'))   # type: ignore[arg-type]
     own = deliveries.get(sid)
     if own is not None:
-        return delivered_share(stop, own), own['at']
+        return delivered_share(stop, own, seen(sid, own)), own['at']
     kg = _number(stop.get('weight_kg'))
     parts = [(x, deliveries[x]) for x in absorbed.get(sid, ()) if x in deliveries]
     if parts and kg > 0:
-        done = math.fsum(_number(data[x].get('weight_kg')) * (delivered_share(data[x], d) or 0.0) for x, d in parts)
+        done = math.fsum(_number(data[x].get('weight_kg')) * (delivered_share(data[x], d, seen(x, d)) or 0.0)
+                         for x, d in parts)
         return min(1.0, done / kg), max(d['at'] for _, d in parts)
     if status in ('full', 'covered'):
         return 1.0, None
@@ -210,7 +216,7 @@ class LiveSource:
             for s in model.current.get(car, []):
                 sid = s['stop_id']
                 status = model.views[sid].status if sid in model.views else 'pending'
-                share, at = _share(sid, s, status, deliveries, absorbed, model.data)
+                share, at = _share(sid, s, status, deliveries, absorbed, model.data, model.versions)
                 cust = s.get('customer') or {}
                 cid = cust.get('id')
                 point = _point(s)
