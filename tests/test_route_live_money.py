@@ -89,7 +89,9 @@ def test_live_truck_money_only_for_admin(client, live_app):
 
 def test_live_page_cash_missed_point_red_and_blinks():
     """Пользователь 17.10: деньги надо было взять, а не взяты (ничего — no_payment, меньше — short) — точка на карте красная
-    и мигает (кольцо 1 Гц, «меньше движения» — ровное); взял больше / безнал — не мигает. ?v= подняты, знак — в легенде."""
+    в красном кольце и мигает 1 Гц сменой цвета — и при «меньше движения» (в Windows выключены «эффекты анимации» → Chrome
+    отдаёт prefers-reduced-motion: reduce; пользователь 17.10 «не мигает, просто красная»); взял больше / безнал — не
+    мигает. ?v= подняты, знак — в легенде."""
     from test_route_live import ROOT
     js = (ROOT / 'static' / 'js' / 'routes_live.js').read_text(encoding='utf-8')
     css = (ROOT / 'static' / 'css' / 'routes_live.css').read_text(encoding='utf-8')
@@ -99,8 +101,12 @@ def test_live_page_cash_missed_point_red_and_blinks():
     assert "const cash = cashMissed(s);" in js and "const color = cash ? '--rt-danger' : storeOf(s)[1];" in js
     assert "pinIcon(s.plan_no, color, !!lt, cash)" in js and "(cash ? ' is-cash' : '')" in js
     assert "className: 'lv-cash-dot'" in js   # точка вне плана (кружок SVG) — мигает заливкой
-    assert '.lv-npin.is-cash::before {\n' in css   # ровное кольцо — всегда
-    motion = css.index('@media (prefers-reduced-motion: no-preference) {\n    .lv-npin.is-cash::before')
-    assert css.index('.lv-npin.is-cash::before { inset: -2px; animation: lv-halo 1s ease-out infinite; }') > motion   # мигание
+    assert '.lv-npin.is-cash::before {\n' in css   # кольцо
+    # мигание — не внутри @media (prefers-reduced-motion): после правила последний открытый блок @media уже закрыт
+    for rule in ('.lv-npin.is-cash { position: relative; animation: lv-cash-pin 1s steps(1, end) infinite; }',
+                 '.leaflet-overlay-pane path.lv-cash-dot { animation: lv-cash-dot 1s steps(1, end) infinite; }'):
+        at = css.index(rule)
+        assert css.rfind('@media', 0, at) < css.rfind('\n}\n', 0, at), rule
+    assert '@keyframes lv-cash-pin { 50% { background-color: var(--rt-map-ink); color: var(--lv-alert); } }' in css
     assert '<i class="lv-npin-sq is-cash">' in html
-    assert "routes_live.js') }}?v=33" in html and "routes_live.css') }}?v=24" in html
+    assert "routes_live.js') }}?v=33" in html and "routes_live.css') }}?v=25" in html
