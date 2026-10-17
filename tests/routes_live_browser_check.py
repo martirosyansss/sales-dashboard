@@ -418,7 +418,7 @@ def cash_checks(page, check) -> None:
     calm = {p['no']: p for p in page.evaluate(CASH_JS)}.get('1') or {}
     calm_dot = dot.evaluate(DOT_JS) if dot.count() == 1 else {}
     check(calm.get('anim') == 'lv-cash-pin' and calm.get('on') == red and calm.get('off') == ink
-          and calm_dot.get('anim') == 'lv-cash-dot',
+          and calm_dot.get('anim') == 'lv-cash-dot' and calm_dot.get('on') == '1' and float(calm_dot.get('off') or 1) < 0.5,
           f'17.10: «меньше движения» (Windows без эффектов анимации) — номер и кружок всё равно мигают ({calm!r}, {calm_dot!r})')
     page.emulate_media(reduced_motion='no-preference')
     page.unroute(TRUCK_RE)

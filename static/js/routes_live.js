@@ -853,7 +853,7 @@
         .some(p => p.code === 'no_payment' || (p.code === 'short' && num(p.amd) >= CASH_SHORT_MIN));
 
     // номер магазина в плане машины за день: цвет — состояние; без цвета — магазин плана, которого нет у терминала;
-    // cash — деньги не взяты (мигающее кольцо)
+    // cash — деньги не взяты (красное кольцо, номер мигает цветом — routes_live.css .is-cash)
     function pinIcon(no, color, late, cash) {
         const el = h('span', { class: 'lv-npin' + (color ? '' : ' is-plan-only') + (late ? ' is-late' : '') + (cash ? ' is-cash' : ''),
             text: String(no) });
