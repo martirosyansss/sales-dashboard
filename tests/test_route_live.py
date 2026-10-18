@@ -997,7 +997,7 @@ def test_live_source_share_via_absorbed_order_and_status():
 
 def test_live_source_reissued_invoice_weighs_delivery_by_seen_version(courier_app):
     """17.10 «Գրիգոր Հակոբյան»: доставка по версии с колой, потом накладную переоформили (строки перенумерованы) —
-    отдано 66,3 из 66,3 кг, а не «6 / 66,3 կգ, պակաս 60,3 կգ»."""
+    не «6 / 66,3 կգ, պակաս 60,3 կգ»; вес — сколько везли (пользователь 17.10): отдано 66,3 из 105,9 кг, 39,6 — назад."""
     from courier import events as ev
     from courier.live import LiveSource
     store = courier_app.extensions['courier'].store
@@ -1013,7 +1013,14 @@ def test_live_source_reissued_invoice_weighs_delivery_by_seen_version(courier_ap
                    'v2', LIVE_NOW.isoformat())
     with courier_app.app_context():
         s = LiveSource(store).fleet(ds)['CAR1']['stops'][0]
-    assert s['weight_kg'] == pytest.approx(66.33) and s['share'] == 1.0
+    assert s['status'] == 'partial' and s['weight_kg'] == pytest.approx(105.93) and s['unweighed'] == 0
+    assert s['weight_kg'] * s['share'] == pytest.approx(66.33)   # отдано: вода 6 л ×10 + подарок; кола 39,6 кг — назад
+    # без переоформления — по действующей версии, как прежде
+    store.save_day(ds, 'CAR1', [_day_stop(SID1, 1, A, [*cola, (SID1 + ':2', 10, 6.03), (SID1 + ':G0', 1, 6.03)], 1)],
+                   'v3', LIVE_NOW.isoformat())
+    with courier_app.app_context():
+        s = LiveSource(store).fleet(ds)['CAR1']['stops'][0]
+    assert s['weight_kg'] == pytest.approx(105.93) and s['share'] == pytest.approx(66.33 / 105.93)
 
 
 # ============================== API и доступ ==============================
