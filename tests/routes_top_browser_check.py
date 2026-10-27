@@ -218,7 +218,7 @@ def main() -> int:
             d = pg.evaluate("""() => ({ links: [...document.querySelectorAll('#rtTop a')].map(a => a.getAttribute('href')),
                 cur: document.querySelector('#rtTop .rt-top-nav [aria-current="page"]')?.getAttribute('href'),
                 apps: !!document.getElementById('rtTopApps'), menu: !!document.getElementById('rtTopMenu') })""")
-            check(set(d['links']) == {'/routes/garage', '/routes/live', '/routes/drivers'} and d['cur'] == '/routes/garage'
+            check(set(d['links']) == {'/routes/garage', '/routes/refuels', '/routes/live', '/routes/drivers'} and d['cur'] == '/routes/garage'
                   and not d['apps'] and d['menu'], f'D «Гараж»: {d}')
             shot(pg, 'garage-role-dark', full=False)
             pg.context.close()

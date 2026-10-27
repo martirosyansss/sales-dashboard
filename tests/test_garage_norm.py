@@ -363,6 +363,7 @@ def test_public_allowlist_covers_norm_and_basemap_only():
         assert not app_v2._public_path_allowed(path, 'GET'), path
     assert app_v2._PUBLIC_STATIC == frozenset((
         '/favicon.ico', '/static/css/tokens.css', '/static/css/base.css', '/static/js/base.js', '/static/css/routes.css',
+        '/static/css/routes_refuels.css', '/static/js/routes_refuels.js',  # журнал заправок
         '/static/css/routes_garage.css', '/static/js/routes_garage.js', '/static/js/routes_basemap.js',
         '/static/css/routes_live.css', '/static/js/routes_live.js',    # карта машин «Մեքենաները առցանց» (№76)
         '/static/img/yandex_maps_logo_ru.svg',                          # её подложка — Яндекс, логотип обязателен

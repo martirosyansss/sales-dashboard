@@ -1,0 +1,61 @@
+{% extends "routes_base.html" %}
+{% set rt_nav = '/routes/refuels' %}
+{% block title %}Լիցքավորումներ{% if not is_garage %} — Sales Dashboard{% endif %}{% endblock %}
+{% block extra_css %}
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400..700&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+Armenian:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=30">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_ui.css') }}?v=5">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_refuels.css') }}?v=1">
+{% endblock %}
+{% block content %}
+<div class="rt-page rf-page" id="rfPage" lang="hy">
+    <header class="rt-pagehead">
+        <div>
+            <h1 class="rt-pagehead__title">Լիցքավորումներ</h1>
+            <p class="rt-pagehead__sub">Վարորդների գրանցած լիցքավորումները՝ մեկ տեղում</p>
+        </div>
+        <div class="rt-pagehead__actions">
+            <a class="rt-btn rt-btn--secondary" href="/routes/garage"><i class="fas fa-warehouse" aria-hidden="true"></i>Ավտոտնակ</a>
+        </div>
+    </header>
+
+    <section class="rt-card rf-filters" aria-label="Ցուցակի ֆիլտրեր">
+        <form id="rfFilters">
+            <div class="rt-field"><label for="rfSince">Սկսած</label><input class="rt-input" type="date" id="rfSince" value="{{ refuels_since }}" required></div>
+            <div class="rt-field"><label for="rfUntil">Մինչև</label><input class="rt-input" type="date" id="rfUntil" value="{{ refuels_until }}" required></div>
+            <div class="rt-field"><label for="rfCar">Մեքենա</label><select class="rt-select" id="rfCar"><option value="">Բոլոր մեքենաները</option></select></div>
+            <button class="rt-btn rt-btn--primary" type="submit" id="rfApply"><i class="fas fa-filter" aria-hidden="true"></i>Ցույց տալ</button>
+            <label class="rf-check"><input type="checkbox" id="rfCorrected">Ցույց տալ նաև ուղղված հին գրառումները</label>
+        </form>
+    </section>
+
+    <div class="rt-alert is-danger" id="rfError" role="alert" hidden><i class="fas fa-triangle-exclamation" aria-hidden="true"></i><span id="rfErrorText"></span></div>
+    <p class="rf-status" id="rfStatus" role="status" aria-live="polite">Բեռնվում է…</p>
+
+    <div id="rfResults" hidden>
+        <section class="rf-totals" aria-label="Ընտրված ժամանակահատվածի հանրագումարներ">
+            <div class="rt-card rf-total"><span>Լիցքավորումներ</span><strong id="rfCount">—</strong><small id="rfCars"></small></div>
+            <div class="rt-card rf-total rf-volume"><span>Վառելիք, լիտր</span><strong id="rfLiters">—</strong><small>Ըստ գրանցումների</small></div>
+            <div class="rt-card rf-total"><span>Գումար, ֏</span><strong id="rfAmount">—</strong><small id="rfMissing"></small></div>
+        </section>
+        <section class="rt-card rf-journal" aria-labelledby="rfTitle">
+            <div class="rt-card-head"><h2 class="rt-card-title" id="rfTitle">Գրանցումներ</h2><span class="rf-period" id="rfPeriod"></span></div>
+            <p class="rf-note">Հանրագումարները հաշվվում են ամբողջ ընտրված ցուցակով։ Ուղղված հին գրառումները չեն գումարվում։</p>
+            <div class="rf-empty" id="rfEmpty" hidden><i class="fas fa-gas-pump" aria-hidden="true"></i><h3>Լիցքավորումներ չկան</h3><p>Փոխեք ժամանակահատվածը կամ մեքենան։ Վարորդի ուղարկած գրառումները կհայտնվեն այստեղ։</p></div>
+            <div class="rt-table-scroll" id="rfTableBox">
+                <table class="rt-table rt-table--lined rf-table">
+                    <caption class="rt-sr-only">Լիցքավորումների գրանցումներ</caption>
+                    <thead><tr><th scope="col">Ամսաթիվ / ժամ</th><th scope="col">Մեքենա / վարորդ</th><th scope="col">Լիտր</th><th scope="col">Օդոմետր, կմ</th><th scope="col">Լրիվ բաք</th><th scope="col">Գումար, ֏</th><th scope="col">Նշում / լուսանկար</th></tr></thead>
+                    <tbody id="rfRows"></tbody>
+                </table>
+            </div>
+            <nav class="rf-pagination" id="rfPagination" aria-label="Ցուցակի էջեր" hidden>
+                <button class="rt-btn rt-btn--secondary" id="rfPrev" type="button">Նախորդը</button><span id="rfPageLabel"></span><button class="rt-btn rt-btn--secondary" id="rfNext" type="button">Հաջորդը</button>
+            </nav>
+        </section>
+    </div>
+</div>
+{% endblock %}
+{% block extra_js %}<script src="{{ url_for('static', filename='js/routes_refuels.js') }}?v=1" defer></script>{% endblock %}

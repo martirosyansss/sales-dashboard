@@ -19,6 +19,7 @@
         ('/routes/drivers', 'fa-id-card', 'Վարորդներ', 'Միավոր և ցուցանիշներ'),
         ('/routes/araqich', 'fa-people-carry-box', 'Առաքիչների KPI', 'Գնահատական և պլան'),
         ('/routes/garage', 'fa-warehouse', 'Ավտոտնակ', 'Վերանորոգում, վազք, նորմ'),
+        ('/routes/refuels', 'fa-gas-pump', 'Լիցքավորումներ', 'Վառելիք, գումար, գրանցումներ'),
     ]),
     ('Ֆինանսներ', [
         ('/routes/pay', 'fa-money-check-dollar', 'Աշխատավարձ', 'Առաքիչների վարձը ըստ ամսի'),
@@ -32,7 +33,7 @@
 {%- elif is_garage -%}
     {#- «Гараж»: журнал (его домашняя страница), карта машин, водители — app_v2._garage_path_allowed #}
     {%- set rt_ns = namespace(flat=[]) -%}
-    {%- for u in ['/routes/garage', '/routes/live', '/routes/drivers'] -%}
+    {%- for u in ['/routes/garage', '/routes/refuels', '/routes/live', '/routes/drivers'] -%}
         {%- set rt_ns.flat = rt_ns.flat + (rt_top_all | selectattr(0, 'equalto', u) | list) -%}
     {%- endfor -%}
     {%- set rt_top_flat = rt_ns.flat -%}

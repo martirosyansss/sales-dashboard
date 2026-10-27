@@ -15,7 +15,7 @@
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=30">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes_ui.css') }}?v=5">
 <!-- Машины на карте сейчас (№76): тема «Развоза», свои классы .lv-*; новые файлы статики — и в _PUBLIC_STATIC app_v2 -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_live.css') }}?v=19">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_live.css') }}?v=25">
 {% endblock %}
 
 {% block content %}
@@ -82,7 +82,7 @@
                 <button type="button" class="lv-card-x" id="lvCardClose" aria-label="Փակել մեքենայի քարտը" title="Փակել"><i class="fas fa-xmark" aria-hidden="true"></i></button>
             </div>
             <div class="lv-active" id="lvActive" hidden></div>
-            <dl class="lv-grid" id="lvGrid"></dl>
+            <div class="lv-stats lv-facts" id="lvGrid"></div>
             <!-- «ՀԱՋՈՐԴԸ» (макет Live.dc.html): следующие 3 незакрытых магазина — номер по плану, название, ожидаемое время;
                  «մինչև ЧЧ:ММ» — срок окна приёма, когда прогноз его уже считает (t.late, late_kind window) -->
             <div class="lv-next" id="lvNextBox" hidden>
@@ -91,7 +91,7 @@
             </div>
             <!-- Показатели дня (08.10): плановая линия, км факт / план, отклонение, скорость, время в движении -->
             <h3 class="lv-sec-title">Օրվա ցուցանիշներ</h3>
-            <dl class="lv-grid" id="lvStats"></dl>
+            <div class="lv-stats" id="lvStats"></div>
             <!-- Стоянки не по плану (владелец 08.10 «очень чётко покажи остановки вне маршрута»): t.stops_off — открыто сразу -->
             <details class="lv-more" id="lvOffBox" open hidden>
                 <summary>Կանգառներ ոչ խանութում</summary>
@@ -215,6 +215,7 @@
                     <span><i class="lv-sq is-unmarked"></i>GPS-ով այցելած, չնշված</span>
                     <span><i class="lv-sq is-pending"></i>դեռ ոչ</span>
                     <span><i class="lv-npin-sq">1</i>համարը՝ ըստ պլանի</span>
+                    <span><i class="lv-npin-sq is-cash">1</i>գումարը չի վերցրել կամ պակաս է (թարթում է)</span>
                 </div>
                 </details>
             </div>
@@ -253,5 +254,5 @@
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=4" data-yandex-key="{{ yandex_tiles_key }}"></script>
 <!-- Tesla+: стеклянные панели поверх карты сворачиваются (общий модуль с «Առաքում») -->
 <script src="{{ url_for('static', filename='js/rt_panels.js') }}?v=1"></script>
-<script src="{{ url_for('static', filename='js/routes_live.js') }}?v=28"></script>
+<script src="{{ url_for('static', filename='js/routes_live.js') }}?v=33"></script>
 {% endblock %}

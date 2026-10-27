@@ -506,6 +506,8 @@
         if (n > th.no_contact_min * 60) return 'is-bad';
         return n > th.stale_s ? 'is-mute' : '';
     };
+    // строка карточки: красным — только «нет связи», серое «давно» не выделяем (значение не мельчает)
+    const ageBad = (s) => (ageClass(s) === 'is-bad' ? 'is-bad' : null);
     // сверка расчёта топлива с заправками (этап 2): последняя заправка, интервал «полный бак → полный бак», расчёт после неё
     const fuelCheckText = (c) => {
         if (!c) return null;
@@ -785,9 +787,76 @@
     const gpsText = (g) => (!g ? null : g.here ? 'տեղում է ' + g.minutes + ' ր'
         : 'ժամանում ' + hm(g.arrive) + (g.leave ? ' · մեկնում ' + hm(g.leave) : '') + ' · ' + g.minutes + ' ր');
 
-    // номер магазина в плане машины за день: цвет — состояние; без цвета — магазин плана, которого нет у терминала
-    function pinIcon(no, color, late) {
-        const el = h('span', { class: 'lv-npin' + (color ? '' : ' is-plan-only') + (late ? ' is-late' : ''), text: String(no) });
+    // подсказка магазина на карте (пользователь 13.10 «слишком длинная, не профессионально»): карточка — номер по плану
+    // в цвете статуса и название, чип статуса, строки план / прибытие (± к плану) / отъезд / стоянка, прогноз «не успеет»
+    function storeTip(s, lt) {
+        const [label, color] = storeOf(s), g = s.gps;
+        const no = s.plan_no ? h('span', { class: 'lv-st-no', text: String(s.plan_no) }) : null;
+        if (no) no.style.background = 'var(' + (cashMissed(s) ? '--rt-danger' : color) + ')';   // как номер на карте
+        const chip = h('span', { class: 'lv-st-chip', text: label });
+        chip.style.setProperty('--lv-st-c', 'var(' + color + ')');
+        const rows = [];
+        const row = (k, v, extra) => rows.push(h('div', { class: 'lv-st-row' }, h('span', { text: k }), h('b', null, v, extra || null)));
+        if (s.planned_eta) row('Պլան', hm(s.planned_eta));
+        if (g && g.here) row('Տեղում է', dur(g.minutes));
+        else if (g) {
+            const off = s.planned_eta && g.arrive ? Math.round((epoch(g.arrive) - epoch(s.planned_eta)) / 60) : null;
+            row('Ժամանում', hm(g.arrive), off !== null && Math.abs(off) >= 5
+                ? h('em', { class: off > 60 ? 'is-bad' : off > 15 ? 'is-warn' : null, text: (off > 0 ? '+' : '−') + dur(Math.abs(off)) }) : null);
+            if (g.leave) row('Մեկնում', hm(g.leave));
+            row('Կանգառ', dur(g.minutes));
+        }
+        const block = (title, items) => (items.length ? h('div', { class: 'lv-st-rows' }, h('h5', { text: title }), items) : null);
+        const goods = [], cash = [], probs = [];
+        const line = (to, k, v, cls) => to.push(h('div', { class: 'lv-st-row' + (cls ? ' ' + cls : '') }, h('span', { text: k }), h('b', { text: v })));
+        // товар по весу: отдано / по накладной; не отдано — проблема (частично или отказ)
+        const kg = num(s.weight_kg), got = num(s.delivered_kg), closed = DONE.includes(s.status);
+        if (kg !== null && kg > 0) {
+            if (closed && got !== null) line(goods, 'Տրված', fmt(got, 1) + ' / ' + fmt(kg, 1) + ' կգ');
+            else line(goods, 'Ապրանքագրով', fmt(kg, 1) + ' կգ');
+            if (s.status === 'refused') probs.push('Մերժված է՝ ապրանքը չի տրվել (' + fmt(kg, 1) + ' կգ)');
+            else if (closed && got !== null && kg - got >= 0.1) probs.push('Տրված է պակաս՝ ' + fmt(kg - got, 1) + ' կգ');
+        }
+        // деньги (только администратору — сервер иначе отдаёт money: null): надо было взять / взято / проблемы
+        const m = s.money;
+        if (m) {
+            const amd = (v) => fmt(v) + ' ֏';
+            if (num(m.amount_due) !== null) line(cash, 'Ապրանքագիր', amd(m.amount_due));
+            if (m.collect === 'none') line(cash, 'Վճարում', 'անկանխիկ');
+            else if (num(m.expected) !== null) line(cash, 'Պետք էր վերցնել', amd(m.expected));
+            if (num(m.expected) !== null || num(m.paid) > 0) line(cash, 'Վերցրել է', amd(m.paid || 0),
+                (m.problems || []).some(p => p.code in CASH_WRONG) ? 'is-bad' : null);
+            if (num(m.debt) > 0) line(cash, 'Պարտքից', amd(m.debt));
+            for (const p of m.problems || []) {
+                const text = MONEY_PROBLEM[p.code];
+                if (text) probs.push(text + (num(p.amd) !== null ? ' ' + amd(p.amd) : ''));
+            }
+        }
+        return h('div', { class: 'lv-st' },
+            h('div', { class: 'lv-st-head' }, no, h('b', { text: s.name || s.stop_id })),
+            chip,
+            rows.length ? h('div', { class: 'lv-st-rows' }, rows) : null,
+            block('ԱՊՐԱՆՔ', goods), block('ԳՈՒՄԱՐ', cash),
+            probs.length ? h('ul', { class: 'lv-st-probs' }, probs.map(p => h('li', null, icon('fa-triangle-exclamation'), h('span', { text: p })))) : null,
+            lt ? h('div', { class: 'lv-st-late' }, icon('fa-hourglass-half'), lateText(lt) + ' · ≈ ' + hm(lt.eta)) : null);
+    }
+    // проблемы денег точки (courier.live.stop_money): текст + сумма, если есть
+    const CASH_WRONG = { no_payment: 1, short: 1, over: 1, noncash_paid: 1 };   // «Վերցրել է» — красным
+    const MONEY_PROBLEM = {
+        no_payment: 'Գումար չի վերցրել՝ պետք էր', short: 'Պակաս է վերցրել՝', over: 'Ավել է վերցրել՝',
+        noncash_paid: 'Անկանխիկ է, բայց վերցրել է', no_receipt: 'ՀԴՄ կտրոն չկա', conflict: 'Տվյալները հակասում են՝ ստուգել գրասենյակում',
+    };
+    // деньги надо было взять, а не взяты — ничего или меньше (пользователь 17.10): точка на карте красная и мигает;
+    // недостача меньше 10 ֏ — сдача монетами (монет мельче 10 ֏ нет), строка в подсказке есть, но не мигает
+    const CASH_SHORT_MIN = 10;
+    const cashMissed = (s) => ((s.money && s.money.problems) || [])
+        .some(p => p.code === 'no_payment' || (p.code === 'short' && num(p.amd) >= CASH_SHORT_MIN));
+
+    // номер магазина в плане машины за день: цвет — состояние; без цвета — магазин плана, которого нет у терминала;
+    // cash — деньги не взяты (красное кольцо, номер мигает цветом — routes_live.css .is-cash)
+    function pinIcon(no, color, late, cash) {
+        const el = h('span', { class: 'lv-npin' + (color ? '' : ' is-plan-only') + (late ? ' is-late' : '') + (cash ? ' is-cash' : ''),
+            text: String(no) });
         if (color) el.style.background = 'var(' + color + ')';
         return L.divIcon({ html: el.outerHTML, className: '', iconSize: [24, 24], iconAnchor: [12, 12] });
     }
@@ -1107,14 +1176,14 @@
         const lateOf = new Map((t.late || []).filter(x => x.stop_id).map(x => [lateKey(x), x]));
         for (const s of t.stops || []) {
             if (num(s.lat) === null || num(s.lon) === null) continue;
-            const [label, color] = storeOf(s);
+            const cash = cashMissed(s);   // деньги не взяты — красная мигающая точка поверх соседних
+            const color = cash ? '--rt-danger' : storeOf(s)[1];
             const lt = s.status === 'pending' ? lateOf.get(lateKey(s)) : null;   // №87: прогноз «не успеет» — красная обводка и строка в подсказке
-            const text = (s.name || s.stop_id) + ' — ' + label + (s.planned_eta ? ' · պլան՝ ' + hm(s.planned_eta) : '')
-                + (s.gps ? ' · GPS՝ ' + gpsText(s.gps) : '') + (lt ? ' · ' + lateText(lt) + ' (≈ ' + hm(lt.eta) + ')' : '');
             // магазин плана — с номером по плану; вне плана — кружок
-            (s.plan_no ? L.marker([s.lat, s.lon], { icon: pinIcon(s.plan_no, color, !!lt), keyboard: false, zIndexOffset: 500 })
-                : L.circleMarker([s.lat, s.lon], { radius: 7, ...paint({ color: lt ? '--rt-danger' : '--rt-map-ink', fillColor: color }), weight: lt ? 3 : 2, fillOpacity: 1 }))
-                .bindTooltip(tip((s.plan_no ? '№' + s.plan_no + ' · ' : '') + text)).addTo(state.layer);
+            (s.plan_no ? L.marker([s.lat, s.lon], { icon: pinIcon(s.plan_no, color, !!lt, cash), keyboard: false, zIndexOffset: cash ? 600 : 500 })
+                : L.circleMarker([s.lat, s.lon], { radius: 7, ...paint({ color: lt ? '--rt-danger' : '--rt-map-ink', fillColor: color }), weight: lt ? 3 : 2, fillOpacity: 1,
+                    ...(cash ? { className: 'lv-cash-dot' } : {}) }))
+                .bindTooltip(storeTip(s, lt), { className: 'lv-store-tip', direction: 'top', offset: [0, -10], opacity: 1 }).addTo(state.layer);
         }
         drawOffStops(t, state.layer);
         for (const a of t.alerts_log || []) {
@@ -1126,13 +1195,19 @@
     }
 
     // ---------- карточка ----------
-    function field(label, value, sub, cls, wide) {
-        const dd = h('dd', { class: cls || null });
-        dd.append(...(Array.isArray(value) ? value : [value]));
-        if (sub) dd.append(h('small', { text: sub }));
-        return h('div', { class: wide ? 'is-wide' : null }, h('dt', { text: label }), dd);
+    // единица после числа — мельче и серым, через неразрывный пробел: «16,5 կմ» не рвётся на две строки
+    const UNIT_RE = /(\d)[ \u00a0](կմ\/ժ|կմ|կգ|րոպե|ր|ժ|մ|վ|լ|֏)(?=$|[ \u00a0]*[·/,()]|[ \u00a0]+[\d+−-])/gu;
+    function withUnits(v) {
+        if (typeof v !== 'string') return [v];
+        const out = [];
+        let last = 0;
+        for (const m of v.matchAll(UNIT_RE)) {
+            out.push(v.slice(last, m.index + 1) + '\u00a0', h('span', { class: 'lv-u', text: m[2] }));
+            last = m.index + m[0].length;
+        }
+        out.push(v.slice(last));
+        return out.filter(x => x !== '');
     }
-
     function alertText(a) {
         const [, title] = ALERT[a.kind] || ['', a.kind];
         const when = hm(a.from) + (a.to ? '–' + hm(a.to) : ' — հիմա');
@@ -1207,33 +1282,29 @@
         $('lvActive').replaceChildren(...rows0);
         if (refocus) { const b = $('lvActive').querySelector('.lv-active-more'); if (b) b.focus({ preventScroll: true }); }
 
+        // карточка машины (пользователь 13.10 «всё очень крупное и непонятное», «очень много текста»): строки как в
+        // «Օրվա ցուցանիշներ» — подпись слева, значение справа; три группы: рейс, где машина, экипаж и терминал. Пояснение
+        // под строкой — только у проблемы (красная / жёлтая) и коротко, остальное — во всплывающей подсказке строки (quiet).
+        // Км дня — в «Օրվա ցուցանիշներ»
         const p = t.position;
         const off = noForecast(t), until = off ? untilText(t) : null;   // прогноза нет: данные — на момент последних данных
-        const rows = [];
-        rows.push(field(off ? 'Վերջին հայտնի դիրքը' : 'Դիրքը', p ? [ago(p.age_s)] : '—', p ? 'GPS՝ ' + hms(p.at) + ' · ' + p.lat.toFixed(5) + ', ' + p.lon.toFixed(5) : 'GPS կետ դեռ չկա', p ? ageClass(p.age_s) : 'is-mute'));
-        rows.push(field('Արագություն', p && p.speed_kmh !== null ? p.speed_kmh + ' կմ/ժ' : '—',
-            p && p.heading !== null ? 'ուղղություն՝ ' + p.heading + '°' : null));
-        const crew = [t.driver ? 'Վարորդ՝ ' + t.driver : null, t.helper ? 'Առաքիչ՝ ' + t.helper : null].filter(Boolean).join(' · ');
-        const term = (t.drivers || [])[0];
-        rows.push(field('Վարորդ / առաքիչ', crew || '—', term && term !== t.driver ? 'Տերմինալում՝ ' + term : null, null, true));
+        const past = t.closed || !!state.date;   // день закрыт / прошлый день: «давно» — не тревога, скорость — не нужна
+        const txt = (row) => (row.classList.add('is-txt'), row);   // значение — имя, не число: мельче, не в ширину цифр
+        // пояснение → подсказка строки; у проблемы под строкой остаётся short (если дан) или само пояснение
+        const quiet = (row, short) => {
+            const sm = row.querySelector('small');
+            if (!sm) return row;
+            row.title = [row.title, sm.textContent].filter(Boolean).join('\n');
+            if (!/\bis-(bad|warn)\b/.test(row.className)) sm.remove();
+            else if (short) sm.textContent = short;
+            return row;
+        };
+        const trip = [], car = [], crew = [];
         const sg = t.stores;
-        rows.push(field('Խանութներ', sg.done + ' / ' + sg.total + (sg.gps_visited ? ' · GPS-ով՝ ' + sg.gps_visited : ''),
-            [sg.in_progress ? 'ընթացքի մեջ՝ ' + sg.in_progress : null,
-                sg.unmarked ? 'GPS-ով այցելած, չնշված՝ ' + sg.unmarked : null].filter(Boolean).join(' · ') || null));
-        rows.push(field('Այսօր, կմ (GPS)', fmt(t.km, 1), until));
-        rows.push(field('Վառելիք', t.fuel_l === null ? '—' : ['≈ ' + fmt(t.fuel_l, 1) + ' լ', h('span', { class: 'lv-est', text: 'հաշվարկ' })],
-            [t.fuel_l === null ? 'մեքենայի ծախսը նշված չէ կարգավորումներում' : null, fuelCheckText(t.fuel_check), until].filter(Boolean).join(' · ')));
-        const ld = t.load;
-        // до выезда в машине ещё ничего — план рейса, а не «0 կգ»
-        const before = !ld.trips_gone && num(ld.planned_kg) !== null;
-        rows.push(field('Բեռի մնացորդ', before ? 'պլանով՝ ' + fmt(ld.planned_kg) + ' կգ' : fmt(ld.remaining_kg) + ' կգ',
-            [ld.trips_gone ? 'բեռնված այս երթում՝ ' + fmt(ld.trip_kg) + ' կգ, առաքված՝ ' + fmt(ld.delivered_kg) + ' կգ'
-                + (ld.trips > 1 ? ' · երթ ' + ld.trips_gone + '/' + ld.trips : '') : 'մեքենան դեռ չի մեկնել պահեստից',
-            ld.trips_gone && num(ld.planned_kg) !== null ? 'հաջորդ երթը՝ պլանով ' + fmt(ld.planned_kg) + ' կգ' : null,
-            ld.refused_kg ? 'չառաքված՝ ' + fmt(ld.refused_kg) + ' կգ (մեքենայում՝ մինչև պահեստ)' : null,
-            ld.returns_kg ? 'վերադարձ՝ ' + fmt(ld.returns_kg) + ' կգ (մեքենայում)' : null,
-            ld.returns_unweighed ? ld.returns_unweighed + ' վերադարձ առանց քաշի' : null,
-            ld.unweighed_lines ? ld.unweighed_lines + ' տող առանց քաշի' : null, until].filter(Boolean).join(' · ')));
+        trip.push(quiet(statRow('Խանութներ', sg.done + ' / ' + sg.total,
+            [sg.gps_visited ? 'GPS-ով հաստատված՝ ' + sg.gps_visited : null, sg.in_progress ? 'ընթացքի մեջ՝ ' + sg.in_progress : null,
+                sg.unmarked ? 'GPS-ով այցելած, չնշված՝ ' + sg.unmarked : null].filter(Boolean).join(' · ') || null,
+            sg.total && sg.done === sg.total ? 'is-ok' : sg.unmarked ? 'is-warn' : null), sg.unmarked ? 'չնշված՝ ' + sg.unmarked : null));
         const nx = t.next;
         if (nx) {
             const d = delayText(nx.delay_min);
@@ -1243,22 +1314,47 @@
                     : (!t.position ? 'GPS դիրք դեռ չկա' : 'կապ չկա ' + hm(t.data_until) + '-ից'));
             const when = nx.eta_unknown ? 'Ժամանումը անհայտ է՝ ' + why
                 : (nx.here ? 'տեղում է' : 'ժամանում ≈ ' + hm(nx.eta) + srcText(nx.eta_source));
-            rows.push(field('Հաջորդ խանութը', nx.name || nx.stop_id,
+            trip.push(quiet(txt(statRow('Հաջորդ խանութը', nx.name || nx.stop_id,
                 when + (nx.planned_eta ? ' · պլան՝ ' + hm(nx.planned_eta) : '') + (d ? ' · ' + d[0] : ''),
-                d && d[1] !== 'is-ok' ? d[1] : null, true));
+                d && d[1] !== 'is-ok' ? d[1] : (nx.eta_unknown ? 'is-warn' : null))), d && d[1] !== 'is-ok' ? d[0] : null));
         }
         const back = (t.late || []).find(x => x.late_kind === 'return');
-        rows.push(field('Վերադարձ պահեստ', t.return_eta ? '≈ ' + hm(t.return_eta) : '—',
+        trip.push(quiet(statRow('Վերադարձ պահեստ', t.return_eta ? '≈ ' + hm(t.return_eta) : '—',
             [t.return_eta ? srcText(t.return_source).trim().slice(1, -1) : null,
                 back ? 'բոլոր երթերից հետո ≈ ' + hm(back.eta) + '՝ ' + lateText(back).toLowerCase() : null].filter(Boolean).join(' · ') || null,
-            back ? 'is-bad' : null));
-        rows.push(field('Վերջին կապը', t.last_contact ? hms(t.last_contact) : '—', t.contact_age_s !== null ? ago(t.contact_age_s) : null,
-            ageClass(t.contact_age_s)));
+            back ? 'is-bad' : (t.return_eta ? null : 'is-mute')), back ? lateText(back) : null));
+        const ld = t.load;
+        // до выезда в машине ещё ничего — план рейса, а не «0 կգ»
+        const before = !ld.trips_gone && num(ld.planned_kg) !== null;
+        trip.push(quiet(statRow('Բեռի մնացորդ', before ? 'պլանով՝ ' + fmt(ld.planned_kg) + ' կգ' : fmt(ld.remaining_kg) + ' կգ',
+            [ld.trips_gone ? 'բեռնված այս երթում՝ ' + fmt(ld.trip_kg) + ' կգ, առաքված՝ ' + fmt(ld.delivered_kg) + ' կգ'
+                + (ld.trips > 1 ? ' · երթ ' + ld.trips_gone + '/' + ld.trips : '') : 'մեքենան դեռ չի մեկնել պահեստից',
+            ld.trips_gone && num(ld.planned_kg) !== null ? 'հաջորդ երթը՝ պլանով ' + fmt(ld.planned_kg) + ' կգ' : null,
+            ld.refused_kg ? 'չառաքված՝ ' + fmt(ld.refused_kg) + ' կգ (մեքենայում՝ մինչև պահեստ)' : null,
+            ld.returns_kg ? 'վերադարձ՝ ' + fmt(ld.returns_kg) + ' կգ (մեքենայում)' : null,
+            ld.returns_unweighed ? ld.returns_unweighed + ' վերադարձ առանց քաշի' : null,
+            ld.unweighed_lines ? ld.unweighed_lines + ' տող առանց քաշի' : null, until].filter(Boolean).join(' · '))));
+
+        const pos = statRow(off ? 'Վերջին հայտնի դիրքը' : 'Դիրքը', p ? hm(p.at) : '—',
+            p ? (past ? 'վերջին GPS կետը' : ago(p.age_s)) : 'GPS կետ դեռ չկա', p ? (past ? null : ageBad(p.age_s)) : 'is-mute');
+        if (p) pos.title = 'GPS՝ ' + hms(p.at) + ' · ' + p.lat.toFixed(5) + ', ' + p.lon.toFixed(5);
+        car.push(quiet(pos));
+        if (!past) car.push(statRow('Արագություն', p && p.speed_kmh !== null ? p.speed_kmh + ' կմ/ժ' : '—', null, p ? null : 'is-mute'));
+        car.push(quiet(statRow('Վառելիք', t.fuel_l === null ? '—' : '≈ ' + fmt(t.fuel_l, 1) + ' լ',
+            [t.fuel_l === null ? 'մեքենայի ծախսը նշված չէ կարգավորումներում' : 'հաշվարկով, ոչ սենսորից', fuelCheckText(t.fuel_check), until]
+                .filter(Boolean).join(' · '), t.fuel_l === null ? 'is-mute' : null)));
+
+        const term = (t.drivers || [])[0];
+        crew.push(quiet(txt(statRow('Վարորդ', t.driver || '—', term && term !== t.driver ? 'Տերմինալում՝ ' + term : null, t.driver ? null : 'is-mute'))));
+        if (t.helper) crew.push(txt(statRow('Առաքիչ', t.helper)));
         const dv = t.device;
-        rows.push(field('Տերմինալ', dv ? [(dv.battery !== null ? dv.battery + '%' : '—'), dv.charging ? ' ⚡' : '']
-            : '—', dv ? ['GPS՝ ' + (GPS[dv.gps] || '—'), 'ինտերնետ՝ ' + (NET[dv.net] || '—'), 'APK ' + (dv.app || '—'), 'տվյալ՝ ' + hm(dv.at)].join(' · ')
-            : 'տերմինալը չի ուղարկում իր վիճակը (հին տարբերակ)', dv && dv.gps && dv.gps !== 'on' ? 'is-bad' : null, true));
-        $('lvGrid').replaceChildren(...rows);
+        crew.push(quiet(statRow('Տերմինալ', dv ? (dv.battery !== null ? dv.battery + '%' : '—') + (dv.charging ? ' ⚡' : '') : '—',
+            dv ? ['GPS՝ ' + (GPS[dv.gps] || '—'), 'ինտերնետ՝ ' + (NET[dv.net] || '—'), 'APK ' + (dv.app || '—'), 'տվյալ՝ ' + hm(dv.at)].join(' · ')
+                : 'տերմինալը չի ուղարկում իր վիճակը (հին տարբերակ)', dv ? (dv.gps && dv.gps !== 'on' ? 'is-bad' : null) : 'is-mute'),
+            dv && dv.gps && dv.gps !== 'on' ? 'GPS՝ ' + (GPS[dv.gps] || '—') : null));
+        crew.push(quiet(statRow('Վերջին կապը', t.last_contact ? hm(t.last_contact) : '—', t.contact_age_s !== null && !past ? ago(t.contact_age_s) : null,
+            t.last_contact ? (past ? null : ageBad(t.contact_age_s)) : 'is-mute')));
+        $('lvGrid').replaceChildren(statGroup('ԵՐԹ', trip), statGroup('ՄԵՔԵՆԱՆ', car), statGroup('ԱՆՁՆԱԿԱԶՄ ԵՎ ՏԵՐՄԻՆԱԼ', crew));
         renderStats(t);
 
         $('lvStopsBox').hidden = !t.stops;
@@ -1443,46 +1539,80 @@
     }
     function clearPoint() { if (state.pin) { state.pin.remove(); state.pin = null; } }
 
+    // «Օրվա ցուցանիշներ» (пользователь 13.10, вариант B): сверху три главных числа с полосой — км, следование плану,
+    // лишний пробег; ниже строки по группам: точка статуса, подпись и пояснение слева, значение справа
+    function heroCell(label, value, note, cls, bar, title) {
+        const fill = h('i');
+        fill.style.width = (bar === null ? 0 : Math.max(0, Math.min(100, bar))).toFixed(1) + '%';
+        return h('div', { class: 'lv-hero-cell', title: title || null },
+            h('dt', { text: label }),
+            h('dd', { class: cls || null }, [value].flat().flatMap(withUnits)),
+            h('span', { class: 'lv-bar', 'aria-hidden': 'true' }, fill),
+            note ? h('small', { text: note }) : null);
+    }
+    function statRow(label, value, sub, cls) {
+        return h('div', { class: 'lv-li' + (cls ? ' ' + cls : '') }, h('dt', { text: label }),
+            h('dd', { class: cls || null }, h('span', { class: 'lv-v' }, [value].flat().flatMap(withUnits)),
+                sub ? h('small', { text: sub }) : null));
+    }
+    const statGroup = (title, rows) => h('section', { class: 'lv-grp' }, h('h4', { text: title }), h('dl', null, rows));
+
+    function statsHero(t) {
+        const r = t.route, plan = r ? num(r.km) : null;
+        const [, kmSub, kmCls] = kmText(t);
+        const pct = t.position && plan > 0 ? Math.round((t.km / plan - 1) * 100) : null;
+        const km = heroCell('Կմ՝ փաստ / պլան', t.position ? fmt(t.km, 1) + ' կմ' : NO_DATA,
+            pct !== null ? 'պլան՝ ' + fmt(plan, 1) + ' կմ · ' + (pct > 0 ? '+' : '') + pct + '%'
+                : (plan !== null ? 'պլանով՝ ' + fmt(plan, 1) + ' կմ' : null),
+            t.position ? kmCls : 'is-mute', pct !== null ? t.km / plan * 100 : null, kmSub);
+        const d = t.deviation, p = d ? num(d.adherence_pct) : null;
+        const [adh, adhSub, adhCls] = adherenceText(t);
+        const follow = heroCell('Երթուղուն հետևում', adh, p !== null ? 'դուրս՝ ' + fmt(d.off_km, 1) + ' կմ' : null, adhCls, p, adhSub);
+        const x = t.detour;
+        const [dt, dtSub, dtCls] = detourText(t);
+        const over = x && x.legs_over;
+        const detour = heroCell('Ավելորդ վազք', over ? '+' + fmt(x.excess_km, 1) + ' կմ' : dt,
+            over ? ['+' + dur(x.excess_min), amd(x.cost_amd)].filter(Boolean).join(' · ') : (x && x.legs ? fmt(x.legs) + ' հատված' : null),
+            dtCls, over && plan > 0 ? x.excess_km / plan * 100 : null, dtSub);
+        return h('dl', { class: 'lv-hero' }, km, follow, detour);
+    }
+
     function renderStats(t) {
         const st = t.stats || {}, th = state.data ? state.data.thresholds : {};
         const r = t.route;
-        const rows = [];
-        rows.push(field('Պլանային երթուղի', r ? r.trips + ' երթ · ' + r.stops + ' խանութ' : '—',
+        const route = [];
+        route.push(statRow('Պլանային երթուղի', r ? r.trips + ' երթ · ' + r.stops + ' խանութ' : '—',
             r ? (r.road ? 'ճանապարհներով, ինչպես «Առաքում» էջում'
                 + (r.straight ? ' · ' + r.straight + ' հատված՝ ուղիղ գծով (ճանապարհ չգտնվեց, այնտեղ շեղումը չի հաշվվում)' : '')
                 : 'ուղիղ գծով՝ ճանապարհների քարտեզը դեռ պատրաստ չէ') : noRouteText(t),
-            r ? null : 'is-mute', true));
-        const [km, kmSub, kmCls] = kmText(t);
-        rows.push(field('Կմ՝ փաստ / պլան', km, kmSub, kmCls));
-        const [dv, dvSub, dvCls] = deviationText(t);
-        rows.push(field('Շեղում երթուղուց', dv, dvSub, dvCls));
-        rows.push(field('Երթուղուն հետևում', ...adherenceText(t)));
-        rows.push(field('Ավելորդ վազք', ...detourText(t)));
-        rows.push(field('Հերթականություն', ...sequenceText(t), true));
+            r ? null : 'is-mute'));
+        route.push(statRow('Շեղում երթուղուց', ...deviationText(t)));
+        route.push(statRow('Հերթականություն', ...sequenceText(t)));
+        const speed = [], time = [];
         const ms = st.max_speed;
         let top = NO_DATA;
         if (ms) {
             top = h('button', { type: 'button', class: 'lv-linkbtn', title: 'Ցույց տալ քարտեզին' }, icon('fa-location-dot'), ms.kmh + ' կմ/ժ');
             top.addEventListener('click', () => showPoint(ms.lat, ms.lon, 'Առավելագույն արագություն՝ ' + ms.kmh + ' կմ/ժ · ' + hm(ms.at)));
         }
-        rows.push(field('Առավելագույն արագություն', top, ms ? 'ժամը ' + hm(ms.at) + ' · սեղմեք՝ քարտեզին' : null,
+        speed.push(statRow('Առավելագույն արագություն', top, ms ? 'ժամը ' + hm(ms.at) + ' · սեղմեք՝ քարտեզին' : null,
             ms ? (th && ms.kmh > th.speed_kmh ? 'is-bad' : null) : 'is-mute'));
-        rows.push(field('Միջին արագություն ընթացքում', num(st.avg_kmh) !== null ? st.avg_kmh + ' կմ/ժ' : NO_DATA, null,
+        speed.push(statRow('Միջին արագություն ընթացքում', num(st.avg_kmh) !== null ? st.avg_kmh + ' կմ/ժ' : NO_DATA, null,
             num(st.avg_kmh) !== null ? null : 'is-mute'));
-        rows.push(field('Ընթացքում / կանգնած', num(st.moving_min) !== null ? dur(st.moving_min) + ' / ' + dur(st.stopped_min) : NO_DATA,
+        time.push(statRow('Ընթացքում / կանգնած', num(st.moving_min) !== null ? dur(st.moving_min) + ' / ' + dur(st.stopped_min) : NO_DATA,
             st.nodata_min ? 'առանց տվյալի՝ ' + dur(st.nodata_min) : null, num(st.moving_min) !== null ? null : 'is-mute'));
         const off = offStops(t);
         if (Array.isArray(t.stops_off)) {
-            rows.push(field('Կանգառներ ոչ խանութում', off.length ? off.length + ' · ' + dur(off.reduce((m, s) => m + (num(s.minutes) || 0), 0)) : 'չկա',
+            time.push(statRow('Կանգառներ ոչ խանութում', off.length ? off.length + ' · ' + dur(off.reduce((m, s) => m + (num(s.minutes) || 0), 0)) : 'չկա',
                 off.length ? [off.some(s => s.off_line) ? 'երթուղուց դուրս՝ ' + off.filter(s => s.off_line).length : null,
                     off.some(s => s.long) ? 'երկար (ահազանգ)՝ ' + off.filter(s => s.long).length : null].filter(Boolean).join(' · ') || null : null,
                 off.some(s => s.long || s.off_line) ? 'is-warn' : 'is-ok'));
         }
         const ov = st.overspeed;
-        rows.push(field('Արագության գերազանցում', ov ? (ov.count ? ov.count + ' անգամ · ' + dur(ov.minutes) : 'չկա') : NO_DATA,
+        speed.push(statRow('Արագության գերազանցում', ov ? (ov.count ? ov.count + ' անգամ · ' + dur(ov.minutes) : 'չկա') : NO_DATA,
             th ? 'ավելի, քան ' + fmt(th.speed_kmh) + ' կմ/ժ՝ ' + fmt(th.speed_sec) + ' վ-ից երկար' : null,
             ov ? (ov.count ? 'is-warn' : 'is-ok') : 'is-mute'));
-        $('lvStats').replaceChildren(...rows);
+        $('lvStats').replaceChildren(statsHero(t), statGroup('ԵՐԹՈՒՂԻ', route), statGroup('ԱՐԱԳՈՒԹՅՈՒՆ', speed), statGroup('ԺԱՄԱՆԱԿ', time));
         // «план — факт» магазинов: та же сводка км и отклонений одной строкой
         $('lvPf').textContent = [r && num(r.km) !== null ? 'Կմ՝ պլան ' + fmt(r.km, 1) + (t.position ? ' · փաստ ' + fmt(t.km, 1) : '') : null,
             t.deviation && t.position ? 'շեղում՝ ' + (t.deviation.count ? t.deviation.count + ' անգամ, ' + fmt(t.deviation.km, 1) + ' կմ' : 'չկա') : null]

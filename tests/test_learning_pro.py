@@ -590,4 +590,6 @@ def test_learning_page_texts_armenian():
     djs = (ROOT / 'static' / 'js' / 'routes_dispatch.js').read_text(encoding='utf-8')
     assert 'dp-buffer-mark' in djs and 'ժամանակի պաշար երթի վերջում՝' in djs
     page = (ROOT / 'templates' / 'routes_dispatch.html').read_text(encoding='utf-8')
-    assert "routes_dispatch.js') }}?v=137" in page and "routes_dispatch.css') }}?v=89" in page
+    from asset_versions import assert_minimum_asset_version
+    assert_minimum_asset_version(page, 'routes_dispatch.js', 137)
+    assert_minimum_asset_version(page, 'routes_dispatch.css', 89)

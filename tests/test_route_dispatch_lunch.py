@@ -366,7 +366,9 @@ def test_settings_page_has_lunch_fields():
     assert all(f"key: '{k}'" in js for k in ('truck_lunch_min', 'truck_lunch_from', 'truck_lunch_to'))
     assert "routes_settings.js') }}?v=47" in (ROOT / 'templates' / 'routes_settings.html').read_text(encoding='utf-8')
     page = (ROOT / 'templates' / 'routes_dispatch.html').read_text(encoding='utf-8')
-    assert "routes_dispatch.js') }}?v=137" in page and "routes_dispatch.css') }}?v=89" in page
+    from asset_versions import assert_minimum_asset_version
+    assert_minimum_asset_version(page, 'routes_dispatch.js', 137)
+    assert_minimum_asset_version(page, 'routes_dispatch.css', 89)
     djs = (ROOT / 'static' / 'js' / 'routes_dispatch.js').read_text(encoding='utf-8')
     assert 'function lunchItem' in djs and 'dp-lunch-mark' in djs
 

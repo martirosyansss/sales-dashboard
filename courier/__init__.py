@@ -25,7 +25,7 @@ from typing import Any, Callable
 
 from flask import Flask, Request, Response
 
-from . import api, erp_day, views
+from . import api, erp_day, refuels, views
 from .day import DayService
 from .facts import FactsSource
 from .geo import DriverSource
@@ -66,6 +66,7 @@ def init_app(app: Flask, db: Any, db_path: str | None = None) -> None:
     )
     app.register_blueprint(api.bp)
     app.register_blueprint(views.bp)
+    app.register_blueprint(refuels.bp)
     for code in (404, 405, 413):
         app.register_error_handler(code, api.json_http_error)
     logger.info('[Courier] Раздел «Առաքիչ» подключён; база: %s; публичный хост: %s%s', path, host,

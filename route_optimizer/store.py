@@ -629,6 +629,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # «Развоз» (№74): менеджеры (agent_id), чьи заказы машины парка везут, хотя в ERP «везёт сам» (экспедитор = менеджер,
     # Rocarm A000), — кроме клиентов в городах dispatch_other_cities (адрес по умолчанию или название клиента): их везут
     # другие машины. Пусто — правила нет: «везёт сам» не для машин, как раньше. Города — стартовые ответа владельца
+    'dispatch_optional_agents': [],  # склад: только явно выбранные заказы менеджеров ERP
     'dispatch_fleet_agents': [],
     'dispatch_other_cities': ['Գյումրի', 'Կապան', 'Գորիս', 'Վանաձոր'],
     # «Развоз» (№74): клиенты (customer_id ERP), чьи заказы машины не везут никогда (внутренние счета, экспорт) —
@@ -1622,6 +1623,7 @@ def validate_settings(values: Mapping[str, Any],
 
     # «Развоз» (№74): менеджеры, чьи заказы «везёт сам» везут машины, и клиенты «машины не везут» — id ERP, как у №69
     for key, limit, what in (('dispatch_fleet_agents', MAX_FLEET_AGENTS, 'մենեջերների'),
+                             ('dispatch_optional_agents', MAX_FLEET_AGENTS, 'մենեջերների'),
                              ('dispatch_customers_off', MAX_CUSTOMERS_OFF, 'հաճախորդների')):
         ids = values.get(key, [])
         if not isinstance(ids, list) or len(ids) > limit:

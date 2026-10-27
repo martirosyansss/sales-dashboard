@@ -193,7 +193,9 @@ def test_same_day_options_fall_back_to_real_deadline():
 def test_dispatch_page_assets_tight_and_setting():
     js = (ROOT / 'static' / 'js' / 'routes_dispatch.js').read_text(encoding='utf-8')
     assert 'stop.window_tight' in js and 'քիչ ժամանակ կա՝ ' in js and 'u.tight' in js
-    assert "routes_dispatch.js') }}?v=137" in (ROOT / 'templates' / 'routes_dispatch.html').read_text(encoding='utf-8')
+    template = (ROOT / 'templates' / 'routes_dispatch.html').read_text(encoding='utf-8')
+    from asset_versions import assert_minimum_asset_version
+    assert_minimum_asset_version(template, 'routes_dispatch.js', 137)
     settings = (ROOT / 'static' / 'js' / 'routes_settings.js').read_text(encoding='utf-8')
     assert "key: 'until_buffer_min', label: 'Ժամկետի պաշար, րոպե'" in settings
     assert "routes_settings.js') }}?v=47" in (ROOT / 'templates' / 'routes_settings.html').read_text(encoding='utf-8')
@@ -560,7 +562,9 @@ def test_live_page_violet_info_for_until():
     js = (ROOT / 'static' / 'js' / 'routes_live.js').read_text(encoding='utf-8')
     assert "REORDER_TITLE = 'Վարորդը փոխեց հերթը՝ ժամկետի պատճառով'" in js
     assert "out.push(one('reorder', 3, REORDER_TITLE" in js and "r.reason === 'until'" in js
-    assert "routes_live.js') }}?v=28" in (ROOT / 'templates' / 'routes_live.html').read_text(encoding='utf-8')
+    template = (ROOT / 'templates' / 'routes_live.html').read_text(encoding='utf-8')
+    from asset_versions import assert_minimum_asset_version
+    assert_minimum_asset_version(template, 'routes_live.js', 28)
 
 
 # ============================== «Վարորդներ»: порядок со сменами ==============================

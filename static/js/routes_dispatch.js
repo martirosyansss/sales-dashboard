@@ -312,6 +312,14 @@
     }
     function showActionError(err) {
         $('dpActionErrorText').textContent = err.message || String(err);
+        if ($('dpSwapDlg').open) {
+            if (err.status === 409) $('dpSwapDlg').close();
+            else {
+                $('dpSwapErr').textContent = err.message || String(err);
+                $('dpSwapErr').focus();
+                return;
+            }
+        }
         // ошибка видна и в окне списка; план изменился (409) — окно закрываем: «Թարմացնել էջը» на странице
         if ($('dpBlDlg').open) {
             if (err.status === 409) $('dpBlDlg').close(); else $('dpBlErr').textContent = err.message || String(err);
@@ -325,7 +333,11 @@
 
     // ---------- Загрузка ----------
     // true — день загружен и показан; ошибка (видна в dpLoadError) или ответ на прежний запрос — false
-    async function load(day, refresh) {
+    async function load(day, refresh, leaveConfirmed = false, from = document.activeElement) {
+        if (state.data && isDay(day) && day !== state.day) {
+            if (state.busy) { resetDayInputs(); return false; }
+            if (!leaveConfirmed && prepSelectionDirty()) return requestDayDecision(day, refresh, from);
+        }
         const seq = ++state.loadSeq;
         $('dpLoading').hidden = false;
         $('dpLoading').classList.remove('d-none');
@@ -337,7 +349,7 @@
             const data = await api('GET', '/api/routes/dispatch' + (q.toString() ? '?' + q : ''));
             if (seq !== state.loadSeq) return false;
             $('dpBody').hidden = false;     // до отрисовки: карте Leaflet нужен настоящий размер блока, у скрытого он 0×0
-            setData(data);
+            setData(data, state.day === data.day && prepSelectionDirty());
             return true;
         } catch (e) {
             if (seq !== state.loadSeq) return false;
@@ -354,7 +366,7 @@
         load(day);
     }
 
-    function setData(data) {
+    function setData(data, keepSelection = false) {
         closeStopCard();   // карточка магазина — о прежних данных (и прежнем дне)
         state.erpDown = false;   // день пришёл с сервера — заказы ERP только что прочитаны (P2 №9)
         if (!state.data || !data || state.data.day !== data.day) state.progress = null;   // ход дня — своего дня
@@ -383,7 +395,7 @@
         const url = new URL(window.location.href);
         url.searchParams.set('date', data.day);
         window.history.replaceState(null, '', url);
-        render();
+        render(keepSelection);
     }
 
     // ---------- Даты по-человечески ----------
@@ -410,9 +422,628 @@
         return '';
     }
 
+
+
+    // Preparation has one entry; the existing controls and server safeguards stay authoritative.
+    const guide = { step: 0, day: null, seen: new Set(), homes: new Map(), loading: false, inspect: false, issues: false, steps: new Map(), sameDayOrigin: null };
+    const guideTitles = ['Պատվերներ և առաքման օր', 'Մեքենաներ և վարորդներ', 'Երթերի ստուգում', 'Ուղարկում վարորդներին'];
+    const guideMobileTitles=['Պատվերներ','Մեքենաներ','Երթեր','Ուղարկել'];
+    const guidePublished=()=>!!(state.data?.sent&&!state.data.unsent&&!prepSelectionDirty());
+    const guideTitle=()=>{
+        const mobile=window.matchMedia('(max-width:640px)').matches;
+        if(guide.step===3&&guidePublished())return mobile?'Վիճակ':'Առաքման վիճակն ու փաստաթղթերը';
+        return mobile?guideMobileTitles[guide.step]:guideTitles[guide.step];
+    };
+    const guideLeads = ['Ընտրեք օրը և ստուգեք պատվերները։', 'Նշեք դուրս եկող մեքենաները։',
+        'Ստուգեք բաշխումն ու նշված խնդիրները։', 'Ստորև նշված պլանը կուղարկվի վարորդներին։'];
+
+    const GUIDE_STEPS_KEY='dpGuideSteps:v1';
+    function restoreGuideSteps() {
+        try {
+            const saved=JSON.parse(window.sessionStorage.getItem(GUIDE_STEPS_KEY)||'[]');
+            if(Array.isArray(saved))saved.slice(-20).forEach(row=>{if(Array.isArray(row)&&isDay(row[0])&&Number.isInteger(row[1])&&row[1]>=0&&row[1]<=3)guide.steps.set(row[0],row[1]);});
+        }catch(e){ /* In-memory resumption remains available. */ }
+    }
+    const rememberedGuideStep=day=>guide.steps.get(day)??(state.data?.day===day&&guidePublished()?3:0);
+    function rememberGuideStep() {
+        if(!isDay(guide.day)||guide.steps.get(guide.day)===guide.step)return;
+        guide.steps.delete(guide.day);guide.steps.set(guide.day,guide.step);
+        while(guide.steps.size>20)guide.steps.delete(guide.steps.keys().next().value);
+        try{window.sessionStorage.setItem(GUIDE_STEPS_KEY,JSON.stringify([...guide.steps]));}catch(e){ /* Private/disabled storage. */ }
+    }
+    const prepSelectionDirty=()=>!!(state.data&&(trucksChanged()||agentsDirty()));
+    let prepLeaveGuardOn=false;
+    function protectPrepLeave(event) {
+        if(!prepSelectionDirty())return;
+        event.preventDefault();event.returnValue=true;
+    }
+    function syncPrepLeaveGuard() {
+        const on=prepSelectionDirty();
+        if(on===prepLeaveGuardOn)return;
+        if(on)window.addEventListener('beforeunload',protectPrepLeave);
+        else window.removeEventListener('beforeunload',protectPrepLeave);
+        prepLeaveGuardOn=on;
+    }
+    const PREP_DRAFT_PREFIX='dpPrepDraft:v1:';
+    const prepDraft={key:null,value:null,error:false};
+    const prepUser=()=>String($('rtDispatch').dataset.prepUser||'');
+    const prepDraftKey=day=>PREP_DRAFT_PREFIX+encodeURIComponent(prepUser())+':'+day;
+    const savedTruckSelection=d=>d.trucks.filter(t=>t.ready&&t.selected).map(t=>t.car_code);
+    function prepBaseline(d) {
+        return JSON.stringify([d.rev??0,!!d.plan,!!d.approved,!!d.agents_rule,
+            d.trucks.map(t=>[t.car_code,!!t.ready,!!t.selected]).sort((a,b)=>a[0].localeCompare(b[0])),
+            [...(d.agents_off||[])].sort((a,b)=>a-b),
+            (d.agents||[]).map(a=>a.agent_id).sort((a,b)=>a-b)]);
+    }
+    function readPrepDraft() {
+        const key=prepDraftKey(state.day);
+        if(prepDraft.key===key)return prepDraft.value;
+        prepDraft.key=key;prepDraft.value=null;prepDraft.error=false;
+        if(!prepUser()||!isDay(state.day))return null;
+        try{
+            const raw=window.localStorage.getItem(key);
+            if(!raw||raw.length>64000)return null;
+            const v=JSON.parse(raw),now=Date.now();
+            if(!isObj(v)||v.version!==1||v.user!==prepUser()||v.day!==state.day||typeof v.base!=='string'
+                ||!Number.isFinite(v.at)||v.at>now+300000||now-v.at>7*86400000
+                ||!Number.isInteger(v.step)||v.step<0||v.step>1
+                ||!Array.isArray(v.trucks)||v.trucks.length>2000||!v.trucks.every(x=>typeof x==='string'&&x.length<=100)
+                ||new Set(v.trucks).size!==v.trucks.length
+                ||!Array.isArray(v.agents_off)||v.agents_off.length>2000||!v.agents_off.every(Number.isInteger)
+                ||new Set(v.agents_off).size!==v.agents_off.length)return null;
+            prepDraft.value=v;
+        }catch(e){prepDraft.error=true;}
+        return prepDraft.value;
+    }
+    function clearPrepDraft() {
+        const key=prepDraftKey(state.day);
+        const previous=prepDraft.key===key?prepDraft.value:null;
+        prepDraft.key=key;prepDraft.value=null;prepDraft.error=false;
+        if(!prepUser())return;
+        try{window.localStorage.removeItem(key);}catch(e){prepDraft.value=previous;prepDraft.error=true;}
+    }
+    function prepDraftValid(v) {
+        const d=state.data;
+        if(!v||!d||d.is_past||d.approved||v.base!==prepBaseline(d))return false;
+        const ready=new Set(d.trucks.filter(t=>t.ready).map(t=>t.car_code));
+        const agents=new Set([...(d.agents_off||[]),...(d.agents||[]).map(a=>a.agent_id)]);
+        return v.trucks.every(x=>ready.has(x))&&v.agents_off.every(x=>agents.has(x));
+    }
+    function capturePrepDraft() {
+        if(!state.data)return;
+        if(!prepSelectionDirty()){clearPrepDraft();return;}
+        const key=prepDraftKey(state.day);
+        prepDraft.key=key;prepDraft.error=false;
+        const v={version:1,user:prepUser(),day:state.day,base:prepBaseline(state.data),at:Date.now(),
+            step:$('dpWizard').open?Math.min(1,guide.step):1,trucks:selectedTrucks(),agents_off:[...agentsOff()]};
+        try{
+            if(!v.user)throw Error('No draft owner');
+            window.localStorage.setItem(key,JSON.stringify(v));
+            prepDraft.value=v;
+            // Keep only this user's latest twenty preparations on this origin.
+            const prefix=PREP_DRAFT_PREFIX+encodeURIComponent(v.user)+':',keys=[];
+            for(let i=0;i<window.localStorage.length;i++){
+                const k=window.localStorage.key(i);
+                if(k&&k.startsWith(prefix)&&k!==key){
+                    try{keys.push([k,JSON.parse(window.localStorage.getItem(k)||'null')?.at||0]);}catch(e){keys.push([k,0]);}
+                }
+            }
+            keys.sort((a,b)=>b[1]-a[1]);keys.slice(19).forEach(([k])=>window.localStorage.removeItem(k));
+        }catch(e){prepDraft.error=true;}
+    }
+    function renderPrepDraft() {
+        const d=state.data,v=readPrepDraft(),dirty=prepSelectionDirty();
+        if(v&&!dirty&&sameSet(new Set(v.trucks),new Set(savedTruckSelection(d)))
+            &&sameSet(new Set(v.agents_off),new Set(d.agents_off||[])))clearPrepDraft();
+        const current=prepDraft.value,valid=prepDraftValid(current);
+        $('dpPrepDraft').hidden=dirty||!current;
+        $('dpPrepDraftRestore').hidden=!valid;
+        $('dpPrepDraftRestore').disabled=$('dpPrepDraftRemove').disabled=state.busy||guide.loading;
+        $('dpPrepDraftText').textContent=prepDraft.error&&current?'Պահված ընտրությունը ջնջել չհաջողվեց։ Փորձեք կրկին։':valid?'Ընտրությունը պահված է այս դիտարկիչում։ Վերականգնելը չի փոխի երթերը և չի ուղարկի վարորդներին։'
+            :'Պլանը կամ մեքենաների պայմանները փոխվել են։ Հին ընտրությունը չի կիրառվել։ Շարունակեք ընթացիկ տարբերակից կամ ջնջեք պահվածը։';
+        const saved=dirty&&!prepDraft.error&&valid&&sameSet(new Set(current.trucks),new Set(selectedTrucks()))
+            &&sameSet(new Set(current.agents_off),agentsOff());
+        $('dpPrepDraftStatus').hidden=!dirty;
+        $('dpPrepDraftStatus').classList.toggle('is-warning',!saved);
+        $('dpPrepDraftStatus').textContent=saved?'Ընտրությունը պահված է այս դիտարկիչում · երթերը դեռ չեն փոխվել։'
+            :'Ընտրությունը չի պահպանվել այս դիտարկիչում։ Նախ կիրառեք այն, ապա փակեք էջը։';
+        return !!current&&!dirty;
+    }
+    function restorePrepDraft() {
+        const v=readPrepDraft();
+        if(state.busy||guide.loading||prepSelectionDirty()||!prepDraftValid(v))return;
+        const selected=new Set(v.trucks);
+        $('dpTrucks').querySelectorAll('input.dp-tkpick').forEach(cb=>{cb.checked=selected.has(cb.value);syncFleetRow(cb.closest('tr'));});
+        state.agentsPick={day:state.day,off:new Set(v.agents_off)};
+        if(!agentsDirty())state.agentsPick=null;
+        renderTruckCount();applyFleetFilter();renderAgents();renderOrders();renderFresh();
+        guideStep(v.step);capturePrepDraft();renderGuide();
+        announce('Ընտրությունը վերականգնված է։ Երթերը կիրառելու համար վերակազմեք։');
+    }
+    function guideCoverage() {
+        const d=state.data,p=d.plan,assigned=new Set();
+        p.trucks.forEach(t=>t.trips.forEach(tr=>tr.stops.forEach(s=>assigned.add(String(s.customer_id)))));
+        const outside=new Set((p.unassigned||[]).map(s=>String(s.customer_id)));
+        (d.stops_no_coords||[]).forEach(s=>outside.add(String(s.customer_id)));
+        assigned.forEach(id=>outside.delete(id));
+        const planned=assigned.size,total=Math.max(Number(d.orders.customers)||0,planned+outside.size);
+        return {planned,total,outside:Math.max(0,total-planned)};
+    }
+    function showGuideIssues(on) {
+        if(state.busy||guide.loading)return;
+        guide.issues=on;renderGuide();
+        if(on){$('dpGuideIssuesTitle').focus({preventScroll:true});$('dpGuideScroll').scrollTop=0;}
+        else guideFocus();
+    }
+    let dayLeave=null;
+    function resetDayInputs() {
+        if(!state.day)return;
+        $('dpDate').value=state.day;$('dpGuideDate').value=state.day;
+    }
+    function lockDayDecision(on) {
+        $('dpLeaveDay').setAttribute('aria-busy',String(on));
+        $('dpLeaveStay').disabled=$('dpLeaveDiscard').disabled=on;
+        $('dpLeaveApply').disabled=on||!!state.data.approved||!!state.data.is_past||!state.data.depot||!selectedTrucks().length;
+    }
+    function cancelDayDecision() {
+        if(!dayLeave||dayLeave.busy)return;
+        const pending=dayLeave;dayLeave=null;resetDayInputs();$('dpLeaveDay').close();pending.resolve(false);
+        setTimeout(()=>{if(pending.from?.isConnected&&!pending.from.disabled)pending.from.focus({preventScroll:true});},0);
+    }
+    function requestDayDecision(day,refresh,from=document.activeElement) {
+        resetDayInputs();
+        if(dayLeave)return Promise.resolve(false);
+        return new Promise(resolve=>{
+            dayLeave={day,refresh,resolve,busy:false,from};
+            $('dpLeaveText').textContent=dayHuman(state.day)+' օրվա մեքենաների կամ պատվերների ընտրությունը փոխված է։ '+dayHuman(day)+'-ին անցնելուց առաջ ընտրեք՝ ինչ անել։';
+            $('dpLeaveError').hidden=true;lockDayDecision(false);$('dpLeaveDay').showModal();$('dpLeaveStay').focus();
+        });
+    }
+    async function leaveForDay(apply) {
+        const pending=dayLeave;
+        if(!pending||pending.busy||state.busy)return;
+        pending.busy=true;lockDayDecision(true);$('dpLeaveError').hidden=true;
+        if(apply){
+            hideActionError();
+            const ok=await build();
+            if(ok!==true){
+                pending.busy=false;lockDayDecision(false);$('dpLeaveError').hidden=false;
+                $('dpLeaveError').textContent=$('dpActionErrorText').textContent||'Երթերի կազմումը չի ավարտվել։ Օրը չի փոխվել։';
+                $('dpLeaveError').focus();return;
+            }
+        }else discardPrep(true);
+        dayLeave=null;$('dpLeaveDay').close();
+        pending.resolve(await load(pending.day,pending.refresh,true));
+    }
+
+    const prepPending = () => !!(state.data?.plan && prepSelectionDirty());
+    const publicationBlocked = () => prepPending() || !!state.data?.plan?.order_split?.length;
+    function guidePark(node, slot) {
+        if (!node || !slot) return;
+        if (!guide.homes.has(node)) { const home=document.createComment('guide-home'); node.before(home); guide.homes.set(node,home); }
+        if (node.parentNode!==slot) slot.appendChild(node);
+    }
+    function syncGuideNodes() {
+        if (!$('dpWizard').open) return;
+        $('dpGuideTitle').textContent=guideTitle();
+        [['dpStep2','dpGuideOrders'],['dpStep1','dpGuideFleet'],['dpActionError','dpGuideErrors'],['dpLoadError','dpGuideErrors'],
+            ['dpRun','dpGuideBuild'],['dpApprove','dpGuidePublish'],['dpMapBox','dpGuideMap'],['dpUnassigned','dpGuideIssuesList']].forEach(([n,s])=>guidePark($(n),$(s)));
+        ['dpStep1','dpStep2'].forEach(id=>$(id).classList.remove('is-folded'));
+        $('dpStep1Body').hidden=$('dpStep2Body').hidden=false;
+    }
+    function openGuide(step) {
+        if (!state.data || state.busy) return;
+        openMenu(false); openSheet(null);
+        guide.step=step ?? (guide.inspect && guide.day===state.day ? 2 : rememberedGuideStep(state.day));
+        guide.day=state.day; guide.seen.add(state.day); guide.inspect=false;guide.issues=false;
+        if (!$('dpWizard').open) $('dpWizard').showModal();
+        document.body.classList.add('dp-guide-on'); renderGuide(); guideFocus();
+    }
+    function closeGuide() { if (!state.busy && !guide.loading) $('dpWizard').close(); }
+    function restoreGuide() {
+        vehicleExchange.from=vehicleExchange.to=null;
+        guide.homes.forEach((home,node)=>{if(home.parentNode){home.after(node);home.remove();}});
+        guide.homes.clear(); document.body.classList.remove('dp-guide-on');
+        wsNodes().forEach(([node])=>wsUnpark(node)); renderSteps(); layoutWs(); renderGuide();
+        if(state.map)setTimeout(()=>state.map.invalidateSize({pan:false}),0);
+        $('dpWizardStart').focus({preventScroll:true});
+    }
+    function guideFocus() {
+        $('dpGuideScroll').scrollTop=0; $('dpGuideTitle').focus({preventScroll:true});
+        if(state.map)setTimeout(()=>{state.map.invalidateSize({pan:false});if(state.mapBounds&&!state.mapUserMoved)fitMap(state.map,state.mapBounds);},0);
+    }
+    function guideStep(step) {
+        if(state.busy||guide.loading||(step>1&&!state.data.plan))return;
+        if(step!==2&&guide.step===2&&vehicleExchange.to){
+            $('dpVehiclePreviewTitle').focus();
+            $('dpVehiclePreviewNote').textContent='Նախ կիրառեք կամ չկիրառեք մեքենաների փոխանակումը։';
+            return;
+        }
+        if(step!==2)vehicleExchange.from=null;
+        guide.step=step;guide.issues=false;renderGuide();guideFocus();
+    }
+    function guideWarnings() {
+        const d=state.data,p=d.plan,rows=[];
+        const compact=guide.step===2&&window.matchMedia('(max-width:680px)').matches;
+        const add=(n,text,step,label)=>{if(n)rows.push('<button type="button" class="dp-guide-warning is-advisory" '+(step==='build'?'data-guide-rebuild':'data-guide-fix="'+step+'"')+'><i class="fas fa-triangle-exclamation" aria-hidden="true"></i><span><small>Ստուգեք</small>'+esc(pl(n,text))+'</span><b>'+esc(label)+' →</b></button>');};
+        if(p?.order_split?.length)rows.push('<button type="button" class="dp-guide-warning is-blocker" data-guide-split><i class="fas fa-circle-xmark" aria-hidden="true"></i><span><small>Ուղարկումն արգելափակված է</small>Մեկ խանութը բաշխված է մի քանի մեքենաների միջև։ Տվեք այն մեկ մեքենայի։</span><b>Ուղղել →</b></button>');
+        add(p?.unassigned?.length,'խանութ դեռ երթում չէ․ այդ պատվերները չեն ուղարկվի',2,'Տեսնել խանութները');
+        add(d.orders.no_coords,'խանութ՝ առանց քարտեզի կետի',0,'Նշել քարտեզի կետերը');
+        const missing=p?noDriver().length:0;
+        if(d.crew_problems?.length)add(d.crew_problems.length,compact?'մեքենայի վարորդի խնդիր':'մեքենայի վարորդի խնդիր․ ուղարկումը կպահանջի ձեր հաստատումը',1,'Նշել վարորդին');
+        else add(missing,compact?'մեքենա՝ առանց նշված վարորդի':'մեքենա՝ առանց նշված վարորդի․ ուղարկումը կպահանջի ձեր հաստատումը',1,'Նշել վարորդին');
+        add(d.new_since_build?.count,'նոր պատվեր․ ներառելու համար վերակազմեք երթերը','build','Վերակազմել երթերը');
+        add(d.removed_since_build?.count,'պատվեր փոխվել կամ հանվել է․ ստուգեք և վերակազմեք','build','Վերակազմել երթերը');
+        if(d.settings_differ&&Object.keys(d.settings_differ).length)rows.push('<p class="dp-guide-warning is-advisory"><span><small>Ստուգեք</small>Օրվա ընտրությունը տարբերվում է կարգավորումներից։</span></p>');
+        return rows.join('');
+    }
+    function discardPrep(force=false) {
+        if(state.busy||(guide.loading&&force!==true))return;
+        clearPrepDraft();
+        state.agentsPick=null;renderTrucks(false);renderAgents();renderOrders();renderFresh();renderGuide();
+        announce('Ընտրությունը վերադարձված է գործող պլանին։');
+    }
+    function lockApprovedPrep(busy) {
+        const d=state.data;
+        $('dpTrucks').querySelectorAll('input.dp-tkpick').forEach(cb=>{cb.disabled=busy||!!d.approved||!truckBy(cb.value)?.ready;});
+        $('dpAgentsList').querySelectorAll('input').forEach(cb=>{cb.disabled=busy||!!d.approved||!!d.agents_rule;});
+        ['dpAgentsAll','dpAgentsNone','dpAgentsApply'].forEach(id=>{ $(id).disabled=busy||!!d.approved||!!d.agents_rule; });
+    }
+    function guideInvoiceTotals() {
+        const sd=state.data?.same_day;
+        if(!sd?.today)return {count:0,kg:0,revenue:0};
+        const orders=Array.isArray(sd.orders)?sd.orders.filter(o=>o.invoiced&&!o.taken):[];
+        return {count:num(sd.invoiced?.count)??orders.length,
+            kg:num(sd.invoiced?.kg)??orders.reduce((s,o)=>s+(num(o.kg)||0),0),
+            revenue:num(sd.invoiced?.revenue)??orders.reduce((s,o)=>s+(num(o.revenue)||0),0)};
+    }
+    function renderGuideInvoices(busy) {
+        const inv=guideInvoiceTotals();
+        ['dpGuideTodayOrders','dpGuideFinalTodayOrders'].forEach(id=>{
+            const box=$(id);box.hidden=!inv.count;
+            box.innerHTML=inv.count?'<div><strong>'+esc(pl(inv.count,'այսօրվա պատվեր՝ հաշիվ-ապրանքագրով'))+'</strong>'
+                +'<p>Դեռ այս երթերում չեն․ '+esc(kgText(inv.kg))+' · '+esc(money(inv.revenue))+'։ Ստուգեք՝ ինչպես են տարվում այսօր։</p></div>'
+                +'<button type="button" class="rt-btn rt-btn-ghost" data-guide-same-day'+(busy?' disabled':'')+'>Դիտել պատվերները</button>':'';
+        });
+    }
+    async function openGuideSameDay(origin) {
+        if(state.busy||guide.loading)return;
+        guide.sameDayOrigin=origin;guide.loading=true;renderGuide();
+        let ok=false;
+        try { await reloadQuiet();ok=true; } catch(e) { showActionError(e); }
+        finally { guide.loading=false;renderGuide(); }
+        if(ok&&sdData())openSameDay();
+        else { guide.sameDayOrigin=null;guideFocus(); }
+    }
+    function guideStepStates() {
+        const d=state.data,p=d.plan,invoice=guideInvoiceTotals().count;
+        const pending=prepSelectionDirty(),split=!!p?.order_split?.length;
+        const changed=!!(d.new_since_build?.count||d.removed_since_build?.count);
+        const crew=!!(d.crew_problems?.length||(p&&noDriver().length));
+        const routeIssues=!!(p?.unassigned?.length||d.orders.no_coords||p?.overflow?.trips
+            ||p?.trucks?.some(t=>t.trips.some(tr=>tr.over_capacity||tr.over_time||tr.vehicle_miss)));
+        return [
+            !d.orders.count?'pending':d.orders.no_coords||invoice||changed||d.erp_ok===false||state.erpDown?'warning':'complete',
+            !d.depot||!selectedTrucks().length?'blocked':pending||crew?'warning':p?'complete':'ready',
+            !p?'pending':split||!p.summary.stops?'blocked':pending||routeIssues||changed?'warning':'complete',
+            !p?'pending':publicationBlocked()?'blocked':invoice||d.unsent?'warning':guidePublished()?'complete':'ready',
+        ];
+    }
+    function renderGuideStepStates(busy) {
+        const statuses=guideStepStates();
+        const names={pending:'Չի ավարտվել',ready:'Պատրաստ',complete:'Պատրաստ',warning:'Ստուգեք',blocked:'Ուղղեք'};
+        $('dpWizard').querySelectorAll('[data-guide-step]').forEach(b=>{
+            const i=Number(b.dataset.guideStep),status=statuses[i];
+            const text=i===3&&status==='complete'&&guidePublished()?'Ուղարկված է':names[status];
+            b.disabled=busy||(i>1&&!state.data.plan);
+            if(i===guide.step)b.setAttribute('aria-current','step');else b.removeAttribute('aria-current');
+            b.dataset.status=status;b.classList.toggle('is-complete',status==='complete');
+            const circle=b.querySelector('span');
+            circle.textContent=status==='complete'?'✓':status==='blocked'||status==='warning'?'!':String(i+1);
+            circle.setAttribute('aria-hidden','true');
+            b.querySelector('.dp-guide-step-state').textContent=text;
+            b.setAttribute('aria-label',(i+1)+'. '+b.querySelector('b').textContent+'՝ '+text);
+        });
+    }
+    const vehicleExchange={day:null,rev:null,from:null,to:null,notice:'',error:false,last:null,flashUntil:0,order:[]};
+    let vehicleDrag=null;
+    const vehicleTrips=code=>state.data?.plan?.trucks.find(t=>t.car_code===code)?.trips||[];
+    const vehiclePeak=code=>Math.max(0,...vehicleTrips(code).map(tr=>num(tr.kg)||0));
+    const vehicleShopCount=code=>new Set(vehicleTrips(code).flatMap(tr=>tr.stops.map(s=>s.customer_id))).size;
+    const vehicleExchangeReady=()=>!!state.data?.plan&&!state.busy&&!guide.loading&&!state.data.is_past&&!prepPending()&&swapChoices().length>=2;
+    function vehicleCanUse(code){return vehicleExchangeReady()&&swapChoices().some(t=>t.car_code===code);}
+    function vehiclePairOver(from,to){
+        return [[from,to],[to,from]].some(([source,target])=>{
+            const capacity=num(truckBy(target).capacity_kg);
+            return capacity===null||vehiclePeak(source)>capacity+1e-6;
+        });
+    }
+    function renderVehicleExchange(){
+        const d=state.data,p=d?.plan,g=vehicleExchange;
+        if(!p)return;
+        if(g.day!==d.day)g.order=[];
+        if(g.day!==d.day||g.rev!==d.rev){
+            g.day=d.day;g.rev=d.rev;g.from=g.to=null;g.notice='';g.error=false;
+            if(g.last?.day!==d.day||g.last?.rev!==d.rev)g.last=null;
+        }
+        const ready=vehicleExchangeReady(),choices=new Set(swapChoices().map(t=>t.car_code));
+        if(g.from&&!choices.has(g.from)||g.to&&!choices.has(g.to)||prepPending())g.from=g.to=null;
+        const available=[...new Set([...p.trucks.map(t=>t.car_code),...choices])];
+        g.order=[...g.order.filter(code=>available.includes(code)),...available.filter(code=>!g.order.includes(code))];
+        const codes=g.order;
+        const compact=window.matchMedia('(max-width:680px)').matches;
+        $('dpVehicleHint').textContent=d.is_past?'Անցած օրվա երթերը միայն դիտելու համար են։':prepPending()?'Նախ կիրառեք կամ վերադարձրեք մեքենաների ընտրությունը։':choices.size<2?'Փոխանակման համար ընտրեք առնվազն երկու աշխատող մեքենա։':g.to?'Ստուգեք ստորև․ փոփոխությունը դեռ չի կիրառվել։':g.from?'Ընտրեք մյուս մեքենան․ զբաղված մեքենայի հետ երթերը կփոխանակվեն։':compact?'Ընտրեք մեքենան, ապա՝ մյուսը։':'Քաշեք երթերի բլոկը մեկ այլ մեքենայի վրա կամ ընտրեք կոճակով։';
+        $('dpVehicleGrid').innerHTML=codes.map(code=>{
+            const truck=truckBy(code),trips=vehicleTrips(code),peak=vehiclePeak(code),capacity=num(truck.capacity_kg),pct=capacity>0?Math.round(peak/capacity*100):0;
+            const selected=g.from===code,target=g.to===code,enabled=ready&&choices.has(code),arrived=g.last?.codes.includes(code)&&performance.now()<g.flashUntil;
+            const tripRows=trips.slice(0,2).map((tr,i)=>'<div class="dp-workload-trip"><span>'+(i+1)+'</span><b>'+esc(pl(tr.stops.length,'խանութ'))+'</b><small>'+esc(kgText(tr.kg))+'</small>'+(tr.loaded?'<i class="fas fa-lock" aria-label="Բեռնված է"></i>':'')+'</div>').join('');
+            const pick=trips.length?'<button type="button" class="dp-vehicle-pick" data-vehicle-pick="'+esc(code)+'" aria-pressed="'+selected+'" aria-label="Ընտրել '+esc(code)+' մեքենայի բոլոր երթերը" '+(!enabled?'disabled':'')+'><i class="fas '+(selected?'fa-check':'fa-arrow-right-arrow-left')+'" aria-hidden="true"></i><span>'+(selected?'Ընտրված է':'Փոխել մեքենան')+'</span></button>':'';
+            const targetText=trips.length?'Փոխանակել երթերը':'Տեղափոխել այստեղ';
+            const targetButton=g.from&&g.from!==code?'<button type="button" class="dp-vehicle-target" data-vehicle-target="'+esc(code)+'" aria-pressed="'+target+'" '+(!enabled?'disabled':'')+'><i class="fas '+(trips.length?'fa-right-left':'fa-arrow-down')+'" aria-hidden="true"></i><span>'+targetText+'</span><span class="rt-sr-only">՝ '+esc(code)+'</span></button>':'';
+            return '<article class="dp-vehicle-card'+(selected?' is-source':'')+(target?' is-target':'')+(arrived?' is-arrived':'')+'" data-vehicle-truck="'+esc(code)+'" aria-label="'+esc(truckLabel(truck))+'">'
+                +'<header class="dp-vehicle-head"><span class="dp-vehicle-symbol"><i class="fas fa-truck" aria-hidden="true"></i></span><div><b class="dp-vehicle-plate">'+esc(code)+'</b><span>'+esc(truck.name||'Մեքենա')+'</span></div><span class="dp-vehicle-capacity">'+esc(kgText(capacity))+'</span></header>'
+                +'<p class="dp-vehicle-crew"><i class="fas fa-user" aria-hidden="true"></i>'+esc(crewText(code)||'Վարորդը նշված չէ')+'</p>'
+                +'<div class="dp-workload'+(!trips.length?' is-empty':'')+'" data-vehicle-bundle="'+esc(code)+'" draggable="'+!!(enabled&&trips.length)+'" aria-describedby="dpVehicleHint">'
+                +(trips.length?'<div class="dp-workload-head"><span class="dp-workload-grip" aria-hidden="true">⠿</span><strong>'+esc(pl(trips.length,'երթ'))+'</strong><span class="dp-workload-count">'+esc(pl(vehicleShopCount(code),'խանութ'))+'</span>'+(trips.some(tr=>tr.loaded)?'<span class="dp-workload-loaded"><i class="fas fa-lock" aria-hidden="true"></i> Բեռնված երթ կա</span>':'')+'</div><div class="dp-workload-trips">'+tripRows+'</div>'+(trips.length>2?'<p class="dp-workload-more">Եվ ևս '+esc(pl(trips.length-2,'երթ'))+'՝ նույն բլոկում</p>':'')+pick:'<i class="fas fa-plus" aria-hidden="true"></i><b>Պահեստային մեքենա</b><span>Կարող է ընդունել երթերը</span>')+'</div>'
+                +'<div class="dp-vehicle-load'+(pct>100?' is-over':pct>90?' is-reserve':'')+'"><div><span>Ամենածանր երթը</span><b>'+esc(kgText(peak))+' <small>/ '+esc(kgText(capacity))+'</small></b></div><div class="dp-vehicle-meter" aria-hidden="true"><span style="--load:'+Math.min(100,pct)+'%"></span><i></i></div></div>'+targetButton+'</article>';
+        }).join('');
+        $('dpVehicleGrid').querySelectorAll('[data-vehicle-truck]').forEach(el=>el.style.setProperty('--v-route',truckColor(el.dataset.vehicleTruck)));
+        $('dpVehiclePreview').hidden=!g.to;
+        if(g.to){
+            let over=false,reserve=false;
+            const transfer=!vehicleTrips(g.to).length;
+            $('dpVehiclePreview').classList.toggle('is-transfer',transfer);
+            $('dpVehiclePreviewTitle').textContent=transfer?'Տեղափոխումից հետո':'Փոխանակումից հետո';
+            $('dpVehicleApply').querySelector('span').textContent=transfer?'Տեղափոխել երթերը':'Կիրառել փոխանակումը';
+            $('dpVehiclePreview').querySelector('.dp-vehicle-preview-icon i').className='fas '+(transfer?'fa-arrow-right':'fa-right-left');
+            $('dpVehiclePreviewRows').innerHTML=(transfer?[[g.from,g.to]]:[[g.from,g.to],[g.to,g.from]]).map(([from,to])=>{
+                const peak=vehiclePeak(from),cap=num(truckBy(to).capacity_kg)||0,pct=cap?Math.round(peak/cap*100):0,bad=peak>cap+1e-6;
+                over ||= bad;reserve ||= peak>cap*.9+.5;
+                return '<div class="dp-vehicle-after'+(bad?' is-over':pct>90?' is-reserve':'')+'"><p><span>'+esc(from)+'</span><i class="fas fa-arrow-right" aria-hidden="true"></i><strong>'+esc(to)+'</strong></p><b>'+esc(pl(vehicleTrips(from).length,'երթ'))+' · '+esc(pl(vehicleShopCount(from),'խանութ'))+'</b><span>'+esc(fmt(peak,1)+NB+'կգ')+' / '+esc(fmt(cap)+NB+'կգ')+' · '+pct+'%</span>'+(bad?'<small>Բեռը գերազանցում է մեքենայի տարողությունը</small>':'')+'</div>';
+            }).join('');
+            $('dpVehiclePreview').classList.toggle('is-over',over);
+            $('dpVehiclePreviewNote').textContent=over?'Ընտրեք ավելի տարողունակ մեքենա․ բեռը չի տեղավորվում։':reserve?'Բեռը 90%-ից բարձր է․ անհրաժեշտության դեպքում պահուստը կհաստատեք առանձին։':'Կպահպանվեն բոլոր խանութներն ու դրանց հերթականությունը։ Վարորդներին կուղարկեք հաջորդ քայլում։';
+            $('dpVehicleApply').disabled=!ready||over||!choices.has(g.from)||!choices.has(g.to);
+            $('dpVehicleCancel').disabled=state.busy||guide.loading;
+        }
+        const message=$('dpVehicleMessage');
+        message.hidden=!g.notice;message.textContent=g.notice;message.setAttribute('role',g.error?'alert':'status');message.classList.toggle('is-error',g.error);
+        $('dpVehicleUndo').hidden=!g.last||!canUndo();$('dpVehicleUndo').disabled=state.busy||guide.loading;
+        $('dpVehicleUndo').lastChild.textContent=g.last?.transfer?'Չեղարկել տեղափոխումը':'Չեղարկել փոխանակումը';
+        $('dpVehicleExchange').setAttribute('aria-busy',String(state.busy||guide.loading));
+        if(guide.step===2&&g.to){$('dpGuideNext').disabled=true;$('dpGuideFootnote').textContent='Նախ կիրառեք կամ չկիրառեք մեքենաների փոխանակումը։';}
+    }
+    function chooseVehicleSource(code,keyboard=false){
+        if(!vehicleCanUse(code)||!vehicleTrips(code).length)return;
+        const g=vehicleExchange;g.from=g.from===code?null:code;g.to=null;g.notice='';g.error=false;renderGuide();
+        if(keyboard&&g.from)$('dpVehicleGrid').querySelector('[data-vehicle-target]:not(:disabled)')?.focus();
+        else $('dpVehicleGrid').querySelector('[data-vehicle-pick="'+CSS.escape(code)+'"]')?.focus({preventScroll:true});
+    }
+    function chooseVehicleTarget(from,to){
+        if(from===to||!vehicleCanUse(from)||!vehicleCanUse(to)||!vehicleTrips(from).length)return;
+        const g=vehicleExchange;g.from=from;g.to=to;g.day=state.day;g.rev=state.data.rev;g.notice='';g.error=false;renderGuide();
+        $('dpVehiclePreviewTitle').focus({preventScroll:true});$('dpVehiclePreview').scrollIntoView({block:'nearest'});
+    }
+    function cancelVehiclePreview(){
+        if(state.busy||guide.loading)return;
+        const from=vehicleExchange.from;vehicleExchange.from=vehicleExchange.to=null;renderGuide();
+        $('dpVehicleGrid').querySelector('[data-vehicle-pick="'+CSS.escape(from||'')+'"]')?.focus({preventScroll:true});
+    }
+    async function applyVehicleExchange(){
+        const g=vehicleExchange;
+        if(!g.to||!vehicleExchangeReady()||$('dpVehicleApply').disabled)return;
+        const {from,to,day,rev}=g;
+        if(day!==state.day||rev!==state.data.rev)return;
+        const transfer=!vehicleTrips(to).length;
+        const result=await edit({action:'swap_trucks',truck:from,other_truck:to,date:day,rev});
+        if(!result){
+            g.error=!$('dpActionError').classList.contains('d-none');
+            g.notice=g.error?$('dpActionErrorText').textContent:'Փոփոխությունը չկիրառվեց։';
+            renderGuide();$('dpVehicleMessage').focus({preventScroll:true});return;
+        }
+        state.undo={day,rev:result.rev};g.last={day,rev:result.rev,codes:[from,to],transfer};g.flashUntil=performance.now()+700;
+        const done=transfer?'Երթերը տեղափոխվեցին։':'Երթերը փոխանակվեցին։';
+        g.notice=done+' Վարորդներին ուղարկեք հաջորդ քայլում։';g.error=false;
+        renderGuide();$('dpVehicleMessage').focus({preventScroll:true});
+        toast(done,{label:'Չեղարկել',run:undoResize});
+    }
+    async function undoVehicleExchange(){
+        if(!canUndo()||!vehicleExchange.last)return;
+        const result=await edit({action:'undo',date:state.undo.day,rev:state.undo.rev});
+        if(result){state.undo=null;vehicleExchange.last=null;vehicleExchange.notice='Փոփոխությունը չեղարկվեց։';vehicleExchange.error=false;renderGuide();$('dpVehicleMessage').focus({preventScroll:true});}
+    }
+    function endVehicleDrag(){
+        vehicleDrag=null;$('dpVehicleGrid').classList.remove('is-dragging');
+        $('dpVehicleGrid').querySelectorAll('.is-drag-source,.is-drop-over,.is-drop-invalid').forEach(el=>el.classList.remove('is-drag-source','is-drop-over','is-drop-invalid'));
+    }
+    function initVehicleExchange(){
+        const grid=$('dpVehicleGrid');
+        grid.addEventListener('click',e=>{
+            const pick=e.target.closest('[data-vehicle-pick]'),target=e.target.closest('[data-vehicle-target]');
+            if(pick)chooseVehicleSource(pick.dataset.vehiclePick,e.detail===0);
+            if(target)chooseVehicleTarget(vehicleExchange.from,target.dataset.vehicleTarget);
+        });
+        grid.addEventListener('dragstart',e=>{
+            const bundle=e.target.closest('[data-vehicle-bundle]'),code=bundle?.dataset.vehicleBundle;
+            if(!code||!vehicleCanUse(code)||!vehicleTrips(code).length){e.preventDefault();return;}
+            vehicleDrag={code,day:state.day,rev:state.data.rev};e.dataTransfer.effectAllowed='move';e.dataTransfer.setData('text/plain',code);
+            grid.classList.add('is-dragging');bundle.closest('[data-vehicle-truck]').classList.add('is-drag-source');
+            $('dpVehicleHint').textContent='Բաց թողեք մեկ այլ մեքենայի վրա՝ փոխանակումը նախ դիտելու համար։';
+        });
+        grid.addEventListener('dragover',e=>{
+            const card=e.target.closest('[data-vehicle-truck]'),code=card?.dataset.vehicleTruck;
+            if(!vehicleDrag||!code||code===vehicleDrag.code||!vehicleCanUse(code))return;
+            e.preventDefault();e.dataTransfer.dropEffect='move';
+            grid.querySelectorAll('.is-drop-over,.is-drop-invalid').forEach(el=>{if(el!==card)el.classList.remove('is-drop-over','is-drop-invalid');});
+            card.classList.add(vehiclePairOver(vehicleDrag.code,code)?'is-drop-invalid':'is-drop-over');
+        });
+        grid.addEventListener('dragleave',e=>{
+            const card=e.target.closest('[data-vehicle-truck]');
+            if(card&&!card.contains(e.relatedTarget))card.classList.remove('is-drop-over','is-drop-invalid');
+        });
+        grid.addEventListener('drop',e=>{
+            const drag=vehicleDrag,code=e.target.closest('[data-vehicle-truck]')?.dataset.vehicleTruck;
+            if(!drag)return;
+            e.preventDefault();endVehicleDrag();
+            if(drag.day===state.day&&drag.rev===state.data.rev&&code)chooseVehicleTarget(drag.code,code);
+        });
+        grid.addEventListener('dragend',()=>{endVehicleDrag();renderGuide();});
+        $('dpVehicleApply').addEventListener('click',applyVehicleExchange);
+        $('dpVehicleCancel').addEventListener('click',cancelVehiclePreview);
+        $('dpVehicleUndo').addEventListener('click',undoVehicleExchange);
+    }
+    function guideRouteRows(p) {
+        return p.trucks.map(t=>{
+            const truck=truckBy(t.car_code)||t,cap=num(truck.capacity_kg);
+            return '<article class="dp-guide-route"><div class="dp-guide-route-truck"><b>'+esc(truckLabel(truck))+'</b><span>'
+                +esc(driverOf(t.car_code)||'Վարորդը նշված չէ')+'</span></div><div class="dp-guide-trip-list">'
+                +t.trips.map((tr,i)=>{
+                    const kg=num(tr.kg),pct=num(tr.load_pct)??(kg!==null&&cap>0?Math.round(kg/cap*100):null);
+                    const load=kg===null?'Բեռը՝ —':kgText(kg)+(cap>0?' / '+kgText(cap):'')+(pct!==null?' · '+fmt(pct)+'%':'');
+                    return '<div class="dp-guide-trip" data-trip-id="'+esc(tr.id)+'"><b>Երթ '+(i+1)+' · '+esc(pl(tr.stops.length,'խանութ'))+'</b>'
+                        +'<span class="dp-guide-trip-load'+(tr.over_capacity?' is-warning':'')+'">'+esc(load)+'</span>'
+                        +'<span class="dp-guide-trip-time">Մեկնում՝ '+esc(tr.depart||'—')+' · Վերադարձ՝ '+esc(tr.return||'—')+'</span></div>';
+                }).join('')+'</div></article>';
+        }).join('');
+    }
+    function renderGuide() {
+        syncPrepLeaveGuard();
+        const d=state.data,dlg=$('dpWizard');
+        $('dpWizardStart').disabled=state.busy||!d;
+        if(!d)return;
+        const savedDraft=renderPrepDraft();
+        const resume=guide.inspect||(guide.steps.has(d.day)&&rememberedGuideStep(d.day)>0);
+        $('dpWizardStart').lastElementChild.textContent=savedDraft&&prepDraftValid(prepDraft.value)?'Վերականգնել պատրաստումը':guidePublished()?'Վիճակ և տպում':resume?'Շարունակել պատրաստումը':'Պատրաստել առաքումը';
+        $('dpWizardStart').classList.toggle('rt-btn-primary',!d.plan||resume);
+        $('dpWizardStart').classList.toggle('rt-btn-ghost',!!d.plan&&!resume);
+        lockApprovedPrep(state.busy||guide.loading);
+        if(!dlg.open){
+            if($('dpApproveBtn'))$('dpApproveBtn').disabled=state.busy;
+            if(!d.plan&&!d.is_past&&!guide.seen.has(d.day)){guide.seen.add(d.day);setTimeout(()=>{if(state.day===d.day&&!state.busy)openGuide();},0);}
+            return;
+        }
+        if(guide.day!==d.day){guide.day=d.day;guide.step=rememberedGuideStep(d.day);guide.seen.add(d.day);guide.issues=false;}
+        if(!d.plan&&guide.step>1)guide.step=1;
+        rememberGuideStep();
+        const step=guide.step,p=d.plan,busy=state.busy||guide.loading,pending=prepPending(),blocked=publicationBlocked();
+        dlg.dataset.step=step;
+        $('dpGuideTitle').textContent=guideTitle();$('dpGuideLead').textContent=step===3&&guidePublished()?'Վարորդները տեսնում են ուղարկված տարբերակը։ Կարող եք դիտել կամ տպել այն։':guideLeads[step];
+        $('dpGuideLead').hidden=guide.issues;
+        $('dpGuideProgress').textContent=(step+1)+' / 4 · '+(window.matchMedia('(max-width:640px)').matches?d.day.slice(8,10)+'.'+d.day.slice(5,7):dayShort(d.day));
+        $('dpGuideDate').value=d.day;
+        renderGuideStepStates(busy);renderGuideInvoices(busy);
+        dlg.querySelectorAll('[data-guide-panel]').forEach(el=>{el.hidden=guide.issues||Number(el.dataset.guidePanel)!==step;});
+        $('dpGuideIssues').hidden=!guide.issues;
+        $('dpGuideIssuesEmpty').hidden=!!p?.unassigned?.length;
+        $('dpGuideIssuesDone').disabled=busy;
+        syncGuideNodes();
+        $('dpGuidePending').hidden=!pending;
+        $('dpGuideApply').hidden=step===1;
+        $('dpGuideApply').disabled=busy||!!d.approved||!!d.is_past||!selectedTrucks().length;
+        $('dpGuideDiscard').disabled=busy;
+        const planCodes=new Set((p?.trucks||[]).map(t=>t.car_code));
+        const spare=d.trucks.filter(t=>t.ready&&t.selected&&!planCodes.has(t.car_code)).length;
+        $('dpGuideFleetScope').hidden=!p;
+        $('dpGuideFleetScope').textContent=p?'Պլանում՝ '+pl(p.summary.trucks,'մեքենա')+' · Պահեստային՝ '+pl(spare,'մեքենա')+' · '+(pending?'Նոր ընտրություն՝ ':'Ընտրված՝ ')+pl(selectedTrucks().length,'մեքենա'):'';
+        $('dpGuideApproved').hidden=step!==1||!d.approved;
+        $('dpGuideUnlock').disabled=busy||!!d.is_past;
+        $('dpGuideBack').hidden=step===0&&!guide.issues;$('dpGuideBack').disabled=busy;
+        $('dpGuideClose').disabled=busy;$('dpGuideDate').disabled=$('dpGuideRefresh').disabled=busy;
+        $('dpGuideNext').hidden=step===1&&!d.approved||step===3&&!(d.sent&&!d.unsent&&!pending&&!blocked);
+        $('dpGuideNext').disabled=busy||(step===0&&!d.orders.count)||(step===2&&(!p?.summary.stops||pending));
+        const nextText=step===2?'Անցնել ուղարկելուն →':step===3?'Ավարտել':step===1?'Դիտել երթերը →':'Ընտրել մեքենաները →';
+        const shortNext=step===2?'Ուղարկելուն →':step===3?'Ավարտել':step===1?'Երթերը →':'Մեքենաները →';
+        $('dpGuideNext').innerHTML='<span class="dp-guide-long-label">'+esc(nextText)+'</span><span class="dp-guide-short-label" aria-hidden="true">'+esc(shortNext)+'</span>';
+        $('dpGuideNext').setAttribute('aria-label',nextText);
+        $('dpBuild').dataset.guideShort=busy?'Սպասեք…':p?'Վերակազմել':'Կազմել';
+        $('dpBuild').setAttribute('aria-label',$('dpBuildText').textContent);
+        $('dpGuideBuild').hidden=step!==1||!!d.approved;
+        $('dpGuidePublish').hidden=step!==3||!!d.approved;
+        $('dpGuideSend').hidden=step!==3||!d.approved||!d.unsent||!!d.is_past;
+        $('dpGuideSend').disabled=busy||blocked;
+        if($('dpApproveBtn'))$('dpApproveBtn').disabled=busy||blocked;
+        $('dpGuideFootnote').textContent=busy?'Խնդրում ենք սպասել…':pending?'Նախ կիրառեք կամ վերադարձրեք ընտրությունը։':step===1?(d.approved?'Մեքենաների ընտրությունն ամրացված է։':'Կազմելը պահում է սևագիր․ դեռ չի ուղարկում։'):step===3?(blocked?'Ուղարկելուց առաջ ուղղեք կարմիր նշված խնդիրը։':d.sent&&!d.unsent?'Վարորդները տեսնում են այս տարբերակը։':'Ուղարկելուց հետո վարորդները կտեսնեն այս պլանը։'):'Կարող եք վերադառնալ նախորդ քայլին։';
+        $('dpGuideMessage').hidden=true;
+        if(step===0&&!d.orders.count){$('dpGuideMessage').hidden=false;$('dpGuideMessage').textContent='Պատվերներ չկան։ Ընտրեք այլ օր կամ թարմացրեք։';}
+        if(step===1){const selected=selectedTrucks().length;$('dpBuild').disabled=busy||!selected||!d.depot||!!d.approved||!d.orders.count;if(!selected||!d.depot){$('dpGuideMessage').hidden=false;$('dpGuideMessage').textContent=!d.depot?'Նշեք պահեստի տեղը կարգավորումներում։':'Նշեք առնվազն մեկ մեքենա։';}}
+        if(step<2&&d.problems?.length){const problem=problemsInfo(d.problems),link=document.createElement('a');$('dpGuideMessage').hidden=false;$('dpGuideMessage').textContent=problem.lines.join(' ')+' ';link.href=problem.link;link.textContent='Բացել կարգավորումները';$('dpGuideMessage').appendChild(link);}
+        if(p){
+            const sm=p.summary;
+            $('dpGuideStats').innerHTML=[[sm.trucks,'մեքենա'],[sm.trips,'երթ'],[sm.stops,'խանութ'],[kgText(sm.kg),'բեռ']].map(([v,t])=>'<div><b>'+esc(v)+'</b><span>'+esc(t)+'</span></div>').join('');
+            const warnings=guideWarnings();$('dpGuideWarnings').innerHTML=warnings;$('dpGuideFinalWarnings').innerHTML=warnings;
+            $('dpGuideRoutes').innerHTML=guideRouteRows(p);
+            renderVehicleExchange();
+            const sent=d.sent&&!d.unsent&&!pending;
+            $('dpGuideFinal').innerHTML='<i class="fas '+(sent?'fa-circle-check':blocked?'fa-circle-xmark':'fa-paper-plane')+'" aria-hidden="true"></i><h3>'+(blocked?'Նախ ուղղեք նշվածը':sent?'Պլանն ուղարկված է':d.unsent?'Ուղարկեք փոփոխությունները':'Պատրա՞ստ եք ուղարկել')+'</h3><p>'+esc(dayHuman(d.day))+' · '+esc(pl(sm.trucks,'մեքենա'))+' · '+esc(pl(sm.stops,'խանութ'))+' · '+esc(kgText(sm.kg))+'</p>';
+            $('dpGuideFinal').classList.toggle('is-blocked',blocked);
+            const coverage=guideCoverage();
+            $('dpGuideCoverage').innerHTML='<div><span>Երթերում</span><b>'+coverage.planned+' / '+coverage.total+'</b><small>խանութ</small></div><div class="'+(coverage.outside?'has-issues':'')+'"><span>Պլանից դուրս</span><b>'+coverage.outside+'</b><small>խանութ</small></div>';
+            const built=p.built_at||d.built_at;
+            $('dpGuideReviewAsOf').textContent=(built?'Հաշվարկը՝ '+builtWhen(built):'')+(d.data_as_of?(built?' · ':'')+'ERP-ից՝ '+String(d.data_as_of).slice(11,16):'');
+            $('dpGuidePaper').hidden=!sent;$('dpGuideSwap').disabled=busy||swapChoices().length<2||!!d.is_past||pending;
+            $('dpMapBox').open=true;
+        }
+        if(guide.issues){
+            ['dpGuideNext','dpGuideBuild','dpGuidePublish','dpGuideSend'].forEach(id=>$(id).hidden=true);
+            $('dpGuideFootnote').textContent='Ուղղեք պատճառը, ապա վերադարձեք պլանի ստուգմանը։';
+        }
+    }
+    function initGuide() {
+        initVehicleExchange();
+        restoreGuideSteps();
+        $('dpPrepDraftRestore').addEventListener('click',restorePrepDraft);
+        $('dpPrepDraftRemove').addEventListener('click',()=>{if(!state.busy&&!guide.loading){clearPrepDraft();renderGuide();guideFocus();}});
+        $('dpGuideIssuesDone').addEventListener('click',()=>showGuideIssues(false));
+        $('dpLeaveStay').addEventListener('click',cancelDayDecision);
+        $('dpLeaveDiscard').addEventListener('click',()=>leaveForDay(false));
+        $('dpLeaveApply').addEventListener('click',()=>leaveForDay(true));
+        $('dpLeaveDay').addEventListener('cancel',e=>{e.preventDefault();cancelDayDecision();});
+        $('dpPlanMore').addEventListener('toggle',()=>{if(state.data)layoutWs();});
+        $('dpWizardStart').addEventListener('click',()=>openGuide());
+        $('dpGuideClose').addEventListener('click',closeGuide);
+        $('dpWizard').addEventListener('cancel',e=>{if(state.busy||guide.loading)e.preventDefault();});
+        $('dpWizard').addEventListener('close',restoreGuide);
+        $('dpGuideBack').addEventListener('click',()=>{if(guide.issues)showGuideIssues(false);else guideStep(guide.step-1);});
+        $('dpGuideNext').addEventListener('click',()=>{if(guide.step===3)closeGuide();else guideStep(guide.step+1);});
+        $('dpGuideApply').addEventListener('click',()=>{guideStep(1);build();});
+        $('dpGuideDiscard').addEventListener('click',discardPrep);
+        $('dpGuideUnlock').addEventListener('click',()=>{if(!state.busy)$('dpUnapprove')?.click();});
+        $('dpWizard').addEventListener('click',e=>{
+            if(e.target.closest('[data-guide-split]')&&!state.busy)openSplit(state.data.plan.order_split);
+            const step=e.target.closest('[data-guide-step]'),fix=e.target.closest('[data-guide-fix]');
+            if(step)guideStep(Number(step.dataset.guideStep));
+            if(fix&&!state.busy&&!guide.loading){
+                const i=Number(fix.dataset.guideFix);
+                if(i===2)showGuideIssues(true);
+                else{
+                    guideStep(i);
+                    if(i===0&&state.data.orders.no_coords){$('dpNoCoords').open=true;$('dpNoCoords').scrollIntoView({block:'start'});}
+                    if(i===1){const code=state.data.crew_problems?.[0]?.truck||noDriver()[0]?.car_code;if(code)openDriver(code);}
+                }
+            }
+            if(e.target.closest('[data-guide-rebuild]')&&!state.busy&&!guide.loading){guideStep(1);if(state.data.approved)$('dpGuideUnlock').focus();else build();}
+        });
+        $('dpGuideFleet').addEventListener('change',renderGuide);$('dpGuideOrders').addEventListener('change',renderGuide);
+        $('dpGuideFleet').addEventListener('click',e=>{const cell=e.target.closest('.dp-fl-ck'),input=cell?.querySelector('input');if(input&&e.target!==input&&!input.disabled&&!state.busy)input.click();});
+        const reload=async(day,refresh)=>{if(state.busy||guide.loading)return;const from=document.activeElement;guide.loading=true;renderGuide();try{await load(day,refresh,false,from);}finally{guide.loading=false;renderGuide();}};
+        $('dpGuideDate').addEventListener('change',()=>{if(isDay($('dpGuideDate').value))reload($('dpGuideDate').value);});
+        $('dpGuideRefresh').addEventListener('click',()=>reload(state.day,true));
+        $('dpGuideMapOpen').addEventListener('click',()=>{guide.inspect=true;closeGuide();});
+        $('dpGuideMapFold').addEventListener('toggle',()=>{if($('dpGuideMapFold').open)guideFocusMap();});
+        $('dpGuideSwap').addEventListener('click',()=>openSwap());$('dpGuideSend').addEventListener('click',sendPlan);
+        $('dpGuideReviewPlan').addEventListener('click',()=>guideStep(2));
+        $('dpWizard').addEventListener('click',e=>{
+            const button=e.target.closest('[data-guide-same-day]');
+            if(button)openGuideSameDay(button.closest('.dp-guide-today-orders').id);
+        });
+        $('dpGuidePrint').addEventListener('click',()=>{closeGuide();$('dpPrint').click();});
+        $('dpGuideExcel').addEventListener('click',()=>{closeGuide();$('dpExcel').click();});
+    }
+    function guideFocusMap() { if(state.map)setTimeout(()=>{state.map.invalidateSize({pan:false});if(state.mapBounds&&!state.mapUserMoved)fitMap(state.map,state.mapBounds);},0); }
+
     // ---------- Отрисовка ----------
     const MONTH_SHORT = ['հնվ', 'փտվ', 'մրտ', 'ապր', 'մյս', 'հնս', 'հլս', 'օգս', 'սեպ', 'հոկ', 'նոյ', 'դեկ'];
-    function render() {
+    function render(keepSelection = true) {
         const d = state.data;
         const rel = relDay(d.day);
         $('dpTitle').textContent = (rel ? rel + '՝ ' : '') + dayHuman(d.day, true);
@@ -423,7 +1054,7 @@
         $('dpDate').value = d.day;
         $('dpTomorrow').hidden = d.day === d.default_day;
         renderDateNote();
-        renderTrucks(false);
+        renderTrucks(keepSelection === true || ($('dpWizard').open && guide.day === d.day));
         renderNoDriver();
         renderOrders();
         renderAgents();
@@ -453,6 +1084,7 @@
         renderTabs();
         layoutWs();      // и пункты меню «⋯» (syncMenu) — по уже отрисованным блокам
         renderFresh();
+        renderGuide();
     }
 
     // «Պատվերներ՝ երկ, 12 հոկ · ERP 16:42» — коротко в панели дня (№99); полностью — в подсказке
@@ -724,7 +1356,7 @@
     const interacting = () => {
         const a = document.activeElement;
         return state.dragging || !!state.mapDrag || (!!state.stopCard && state.stopCard.isOpen() && wsOn()) || $('dpGeoDlg').open || $('dpUnloadDlg').open || $('dpCondDlg').open || $('dpUntilDlg').open || $('dpDriverDlg').open
-            || $('dpSameDayDlg').open || $('dpAbsentDlg').open || $('dpSendFirstDlg').open || $('dpSplitDlg').open || $('dpErpDlg').open || $('dpAddDlg').open || $('dpWhyDlg').open || $('dpCmpDlg').open
+            || $('dpLeaveDay').open || $('dpSameDayDlg').open || $('dpAbsentDlg').open || $('dpSendFirstDlg').open || $('dpSplitDlg').open || $('dpErpDlg').open || $('dpAddDlg').open || $('dpWhyDlg').open || $('dpCmpDlg').open
             || (!!a && $('dpBody').contains(a) && /^(SELECT|INPUT|TEXTAREA)$/.test(a.tagName));
     };
     async function poll() {
@@ -820,7 +1452,7 @@
             + 'Բոլոր երթերը կամրացվեն։ Հետո՝ միայն ձեռքով փոփոխություններ և այսօրվա նոր պատվերներ, ամբողջական վերակազմում՝ միայն հաստատումը չեղարկելուց հետո։';
         box.append(b, note);
     }
-    const approvePlan = () => edit({ action: 'approve' }, 'Օրվա պլանը հաստատված է և ուղարկված վարորդներին');
+    const approvePlan = () => { if (!$('dpWizard').open) { openGuide(3); return; } return edit({ action: 'approve' }, 'Օրվա պլանը հաստատված է և ուղարկված վարորդներին'); };
 
     // ---------- Что видят водители (ответ владельца №81, как «Publish changes» у Routific) ----------
     // Утверждение отправляет план на терминалы «Առաքիչ»; правки после него копятся в черновике (unsent ответа дня), пока
@@ -828,6 +1460,7 @@
     const SENT_OK = 'Փոփոխություններն ուղարկվեցին վարորդներին';
     const onRoad = (u) => (u && Array.isArray(u.on_road) ? u.on_road : []).map(c => { const t = truckBy(c); return t ? truckLabel(t) : c; });
     function sendPlan() {
+        if (!$('dpWizard').open || publicationBlocked()) { openGuide(3); return; }
         const road = onRoad(state.data.unsent);
         if (road.length && !window.confirm(road.join(', ') + (road.length > 1 ? ' մեքենաներն' : ' մեքենան') + ' արդեն բեռնվում է կամ '
             + 'ճանապարհին է՝ վարորդը փոփոխությունը կտեսնի «Առաքիչ»-ում ճանապարհին։ Զանգահարեք նրան։ Ուղարկե՞լ։')) return;
@@ -1238,7 +1871,9 @@
         const o = d.orders;
         const nd = noDriver();
         if (nd.length && !d.is_past && wsOn()) add('is-bad', 'fa-id-card', 'Առանց վարորդի', nd.length, () => openDriver(nd[0].car_code));
-        const bl = d.backlog || [];
+        const warehouse = (d.backlog || []).filter(o => o.warehouse);
+        if (warehouse.length || d.warehouse_enabled || d.warehouse_available) add('', 'fa-warehouse', 'Պահեստից առաքումներ', warehouse.length, () => openBacklog(true), null, 'dpWarehouseChip');
+        const bl = (d.backlog || []).filter(o => !o.warehouse);
         const blOpen = blTodo(bl).length;
         if (bl.length) add(blOpen ? 'is-warn' : '', 'fa-clock-rotate-left', 'Նախորդ օրերից', blOpen || bl.length, () => openFold('dpBacklog'), null, 'dpBlChip');
         if (o.no_coords) add('is-warn', 'fa-location-dot', 'Առանց կետի', o.no_coords, () => openFold('dpNoCoords'));
@@ -1344,6 +1979,8 @@
     const sdOutside = (o) => o.invoiced && (o.no_coords || o.started);
     const SD_OUTSIDE = 'գնում է այսօր պլանից դուրս (գրասենյակի որոշում)';
     const sdTaken = () => { const sd = sdData(); return sd ? sd.orders.filter(o => o.taken) : []; };
+    const sdNoVehicles = (o) => isObj(o.vehicle_access) && o.vehicle_access.mode === 'allow'
+        && Array.isArray(o.vehicle_access.trucks) && !o.vehicle_access.trucks.length;
     const sdTotals = (os) => ({ kg: os.reduce((a, o) => a + (num(o.kg) || 0), 0), revenue: os.reduce((a, o) => a + (num(o.revenue) || 0), 0) });
     const sdTruck = (code, name) => code + (name ? ' · ' + name : '');
     function sdTruckName(code) {
@@ -1470,8 +2107,24 @@
         if (!o.taken && sdOutside(o)) tag('b-gps', SD_OUTSIDE);   // на завтра он не останется — не «մնում է վաղվան»
         else if (left) tag('b-danger', SD_BLOCKED[left] || left);
         if (o.no_coords) tag('b-danger', 'Տեղը քարտեզում չկա');
+        const access = isObj(o.vehicle_access) && Array.isArray(o.vehicle_access.trucks) ? o.vehicle_access : null;
+        if (!o.taken && access && (access.mode === 'allow' || access.trucks.length))
+            tag(sdNoVehicles(o) ? 'b-danger' : 'b-warn', vehicleText(access));
         if (!o.taken && !o.invoiced && sdLater(state.day).has(o.isn)) tag('b-warn', 'Թողնված է վաղվան');
         if (tags.children.length) main.appendChild(tags);
+        if (!o.taken && access && (access.mode === 'allow' || access.trucks.length)) {
+            const acts = document.createElement('div');
+            acts.className = 'dp-sd-acts';
+            const edit = document.createElement('button');
+            edit.type = 'button';
+            edit.className = 'rt-btn rt-btn-ghost rt-btn-sm';
+            edit.textContent = 'Փոխել մեքենաների թույլտվությունը';
+            edit.disabled = state.sd.busy;
+            edit.setAttribute('aria-label', 'Փոխել մեքենաների թույլտվությունը՝ ' + (o.name || o.code));
+            edit.addEventListener('click', () => openCond(o));
+            acts.appendChild(edit);
+            main.appendChild(acts);
+        }
         const n = document.createElement('span');
         n.className = 'dp-sd-num';
         n.textContent = kgText(o.kg) + ' · ' + money(o.revenue);
@@ -1545,7 +2198,7 @@
         };
         if (open.length) {
             group(inv.length ? 'Նոր պատվերներ' : '', fresh, 'Նոր պատվերներ');
-            group('Հաշիվ-ապրանքագիրն արդեն գրված է — գնում է այսօր', inv, 'Հաշիվ-ապրանքագիրն արդեն գրված է');
+            group('Հաշիվ-ապրանքագիրն արդեն գրված է — դեռ երթում չէ', inv, 'Հաշիվ-ապրանքագիրն արդեն գրված է');
             const acts = document.createElement('div');
             acts.className = 'dp-sd-acts';
             const go = document.createElement('button');
@@ -1583,7 +2236,12 @@
             } else if (state.sd.forIsns && state.sd.forIsns.length) {
                 const p = document.createElement('p');
                 p.className = 'dp-note';
-                p.textContent = 'Ոչ մի մեքենա չի հասցնում մինչև աշխատանքային օրվա ավարտը կամ բեռը չի տեղավորվում։ Փորձեք ընտրել ավելի քիչ պատվեր կամ թողեք վաղվան։';
+                const denied = open.filter(o => state.sd.forIsns.includes(o.isn) && sdNoVehicles(o));
+                p.textContent = denied.length
+                    ? 'Պատճառը՝ խանութի մեքենաների թույլտվությունը։ '
+                      + [...new Set(denied.map(o => o.code || o.name || ('#' + o.customer_id)))].join(', ')
+                      + '՝ «Միայն ընտրված մեքենաները» կանոնում ոչ մի մեքենա ընտրված չէ։ Բացեք վերևի «Փոխել մեքենաների թույլտվությունը» և ընտրեք թույլատրված մեքենաները։'
+                    : 'Այս ընտրության համար թույլատրելի երթ չգտնվեց։ Ստուգեք խանութների մեքենաների թույլտվությունները, ընդունման ժամերը, բեռը և աշխատանքային օրվա սահմանը։';
                 box.appendChild(p);
             }
         }
@@ -1764,6 +2422,7 @@
                 renderTruckCount();
                 renderFresh();
                 if (state.data.plan) renderUnassigned(state.data.plan);
+                capturePrepDraft();renderGuide();
             });
             td('dp-fl-ck').appendChild(cb);
             const nm = document.createElement('b');
@@ -1826,7 +2485,7 @@
                 btn.append(av, who);
             } else {
                 btn.className = 'dp-setdrv';
-                btn.textContent = '+ Նշել վարորդ';
+                btn.textContent = '+ Վարորդ';
             }
             btn.setAttribute('aria-label', (name ? 'Վարորդ՝ ' + name + '․ փոխել' : 'Նշել վարորդ') + ' — ' + truckLabel(t));
             btn.addEventListener('click', () => { if (!state.busy) state.driverFrom = t.car_code; openDriver(t.car_code); });
@@ -1934,13 +2593,14 @@
         const txt = document.createElement('span');
         txt.textContent = 'Աշխատում է՝ ' + (ready > picked.length ? picked.length + ' / ' + ready + NB + 'մեքենա' : pl(picked.length, 'մեքենա'));
         sum.append(dots, txt);
+        syncPrepLeaveGuard();
     }
 
     // Шаги 1–2: пока рейсов нет — открыты; после сборки — свёрнуты в строку, «Բացել» раскрывает
     function renderSteps() {
         const d = state.data, plan = !!d.plan, o = d.orders;
         [['dpStep1', 'dpStep1Tog'], ['dpStep2', 'dpStep2Tog']].forEach(([id, tog]) => {
-            const open = !plan || state.stepsOpen.has(id) || !$('dpDrawer').hidden;   // №82: в панели шаги открыты
+            const open = $('dpWizard').open || !plan || state.stepsOpen.has(id) || !$('dpDrawer').hidden;   // №82: в панели шаги открыты
             $(id).classList.toggle('is-done', plan);
             $(id).classList.toggle('is-folded', !open);
             $(tog).hidden = !plan;
@@ -1974,6 +2634,8 @@
         $('dpPhoneMore').setAttribute('aria-expanded', String(open));
     }
     function unfoldStep(id) {
+        if (!$('dpWizard').open) openGuide(id === 'dpStep1' ? 1 : 0);
+        else guideStep(id === 'dpStep1' ? 1 : 0);
         phoneMore(true);
         if (!state.data.plan || state.stepsOpen.has(id)) return;
         state.stepsOpen.add(id);
@@ -1988,6 +2650,8 @@
         b.innerHTML = '<i class="fas fa-arrow-up" aria-hidden="true"></i><span></span>';
         b.lastChild.textContent = text;
         b.addEventListener('click', () => {
+            if($('dpWizard').open){guideStep(id==='dpStep1'?1:0);return;}
+            if (tabsOn() && state.tab !== 'day') setTab('day');
             if ($('rtDispatch').classList.contains('is-ws') && $('dpDrawer').hidden) openDrawer(true);   // №82: шаги — в панели
             unfoldStep(id);
             $(id).scrollIntoView({ behavior: calm() ? 'auto' : 'smooth', block: 'start' });
@@ -2056,7 +2720,7 @@
         };
         if (o.no_coords) add('is-warn', 'fa-location-dot', pl(o.no_coords, 'խանութի') + ' տեղը քարտեզում նշված չէ (' + kgText(o.no_coords_kg)
             + ')։ Մինչև չնշեք, դրանք երթերի մեջ չեն մտնի։', 'Նշել քարտեզում', 'dpNoCoords', ['Առանց կետի', pl(o.no_coords, 'խանութ')]);
-        const bl = state.data.backlog || [];
+        const bl = (state.data.backlog || []).filter(o => !o.warehouse);
         const blOpen = blTodo(bl).length;   // решённые («Տանել այսօր» / «Չտանել») — не напоминаем
         if (blOpen) add('', 'fa-clock-rotate-left', 'Նախորդ օրերից մնացել է ' + pl(blOpen, 'չառաքված պատվեր')
             + '։ Որոշեք՝ տանե՞լ դրանք այսօր։', 'Որոշել', 'dpBacklog', ['Նախորդ օրերից', pl(blOpen, 'պատվեր')]);
@@ -2118,6 +2782,8 @@
         if (!agentsDirty()) state.agentsPick = null;
         renderAgents();
         renderOrders();
+        capturePrepDraft();
+        renderGuide();
     }
     function renderAgents() {
         const list = state.data.agents || [];
@@ -2723,6 +3389,7 @@
             lockCond(false, true);
         }
         $('dpCondDlg').close();
+        if (state.sd) { state.sd.options = null; state.sd.forIsns = null; $('dpSdErr').textContent = ''; }
         const text = '«' + (stop.name || stop.code) + '»՝ առաքման պայմանները պահպանված են բոլոր օրերի համար։' + (state.data.plan ? ' ' + UNLOAD_REBUILD : '');
         toast(text);
         // Под окном — «Ավելացնել խանութներ»: уведомление скрыто его фоном — тот же текст и в окне. «Ավելացնել» ждёт свежих
@@ -2732,6 +3399,10 @@
         if (add) { add.reloading = (add.reloading || 0) + 1; addSummary(); $('dpAddOk').textContent = text; }
         let failed = null;
         try { await reloadQuiet(); } catch (e) { failed = e; showActionError(e); }   // плашки допуска, окна и центра у точек
+        if (state.sd && $('dpSameDayDlg').open) {
+            if (failed) $('dpSdErr').textContent = failed.message;
+            else $('dpSdPropose')?.focus();
+        }
         if (add) add.reloading--;
         if (!add || state.addFor !== add || !$('dpAddDlg').open) return;
         if (failed) { $('dpAddErr').textContent = failed.message; addSummary(); return; }   // ошибка под страницей за окном не видна
@@ -2909,7 +3580,7 @@
     // «Երբ տանել» (later_to) — тоже решён: его везут в тот день
     const blUndecided = (bl) => bl.filter(o => !o.taken && !o.dismissed && !o.deferred && !o.later_to);
     // напоминаем и берём «Տանել բոլորը» — только заказы менеджеров, которых везём: снятого фильтром — по одному, явно
-    const blTodo = (bl) => blUndecided(bl).filter(o => !o.agent_off);
+    const blTodo = (bl) => blUndecided(bl).filter(o => !o.agent_off && !o.warehouse);
     async function takeBacklog(isns) {
         if (state.busy || !needPlan()) return;
         const data = await edit(isns.length > 1 ? { action: 'include', orders: isns } : { action: 'include', order: isns[0] });
@@ -2968,7 +3639,7 @@
         if (o.taken) {
             btn('Հանել', 'rt-btn-ghost', () => { if (needPlan()) edit({ action: 'exclude', order: o.isn }, 'Պատվերը հանվեց այսօրվա առաքումից'); });
         } else {
-            btn('Տանել այսօր', 'rt-btn-primary', () => takeBacklog([o.isn]));
+            btn(o.warehouse ? 'Ավելացնել երթերին' : 'Տանել այսօր', 'rt-btn-primary', () => takeBacklog([o.isn]));
             if (!o.dismissed && !o.deferred && !o.later_to) btn('Չտանել', 'rt-btn-ghost', () => { if (needPlan()) edit({ action: 'exclude', order: o.isn }, 'Պատվերն այսօր չենք տանում'); });
         }
         act.querySelectorAll('button').forEach(b => b.setAttribute('aria-label', b.textContent + ' — ' + label));
@@ -3087,7 +3758,7 @@
         // выбранное, но ещё не сохранённое значение не сбрасываем перерисовкой
         sel.value = String(state.blDaysWant || n);
         // даты окна: от backlog_since до дня перед окном заказов дня
-        const until = new Date(Date.parse(d.order_dates.since) - 864e5).toISOString().slice(0, 10);
+        const until = state.blWarehouse ? d.day : new Date(Date.parse(d.order_dates.since) - 864e5).toISOString().slice(0, 10);
         const from = d.backlog_since;
         $('dpBacklogRange').textContent = from && from <= until
             ? dateRu(from).slice(0, 5) + (from < until ? '–' + dateRu(until).slice(0, 5) : '') : '';
@@ -3133,17 +3804,24 @@
         // фокус на строке окна переживает любую перерисовку списка (не только после своей кнопки)
         const had = document.activeElement && document.activeElement.closest && document.activeElement.closest('#dpBlDlg li[data-isn]');
         if (had && !state.blFocus) state.blFocus = [had.dataset.isn];
-        const bl = state.data.backlog || [];
+        const warehouse = state.blWarehouse === true;
+        $('dpBlDlg').dataset.warehouse = String(warehouse);
+        const bl = (state.data.backlog || []).filter(o => !!o.warehouse === warehouse);
+        $('dpBlTitle').textContent = warehouse ? 'Պահեստից առաքումներ · Rocarm' : 'Նախորդ օրերից չառաքված պատվերներ';
+        $('dpWarehouseHint').hidden = !warehouse;
+        $('dpWarehouseApply').hidden = !warehouse || state.data.warehouse_enabled;
+        $('dpWarehouseApply').disabled = state.busy || !state.data.plan;
+        $('dpWarehouseActivation').hidden = !warehouse || state.data.warehouse_enabled;
         const hasPlan = !!state.data.plan;
         renderBacklogDays();
-        const open = blUndecided(bl), todo = blTodo(bl), taken = bl.filter(o => o.taken || ((o.deferred || o.later_to) && !o.dismissed)),
+        const open = blUndecided(bl), todo = warehouse ? blUndecided(bl) : blTodo(bl), taken = bl.filter(o => o.taken || ((o.deferred || o.later_to) && !o.dismissed)),
             off = bl.filter(o => !o.taken && o.dismissed);
         const nTaken = bl.filter(o => o.taken).length;
         const note = !bl.length ? 'չառաքված պատվեր չկա'
             : [pl(bl.length, 'պատվեր'), nTaken ? nTaken + '-ը տանում ենք' : '', todo.length ? todo.length + '-ը չորոշված' : ''].filter(Boolean).join(' · ');
         $('dpBlNote').textContent = note + (state.data.backlog_since ? ' · ' + dayHuman(state.data.day, true) : '');
         const all = $('dpBacklogAll');
-        all.hidden = !hasPlan || todo.length < 2;
+        all.hidden = warehouse || !hasPlan || todo.length < 2;
         all.textContent = 'Տանել բոլորը (' + todo.length + ')';
         all.onclick = () => takeBacklog(blTodo(state.data.backlog || []).map(o => o.isn));
         // итоги окна
@@ -3167,7 +3845,12 @@
         const shown = [...open, ...taken];
         const box = $('dpBacklogList');
         box.textContent = '';
-        backlogGroups(shown).forEach(g => box.appendChild(backlogGroup(g, hasPlan)));
+        if (warehouse) {
+            const ul = document.createElement('ul');
+            ul.className = 'dp-bl';
+            shown.forEach(o => ul.appendChild(backlogRow(o, hasPlan, false)));
+            box.appendChild(ul);
+        } else backlogGroups(shown).forEach(g => box.appendChild(backlogGroup(g, hasPlan)));
         $('dpBacklogHd').hidden = !shown.length;
         const empty = $('dpBacklogEmpty');
         empty.hidden = !!shown.length;
@@ -3190,7 +3873,8 @@
         }
     }
     // Список — в большом окне (владелец 10.10 «тесно в боковой панели»): из сводки, плашки «Նախորդ օրերից» и напоминания
-    function openBacklog() {
+    function openBacklog(warehouse = false) {
+        state.blWarehouse = warehouse === true;
         $('dpBlErr').textContent = '';
         renderBacklog();
         const dlg = $('dpBlDlg');
@@ -3204,7 +3888,7 @@
         // браузер возвращает фокус открывавшему элементу после события close — проверяем на следующем шаге
         setTimeout(() => {
             if (document.activeElement && document.activeElement !== document.body) return;
-            const b = $('dpBlChip') || document.querySelector('#dpTodo [data-chip="backlog"]');
+            const b = (state.blWarehouse ? $('dpWarehouseChip') : $('dpBlChip')) || document.querySelector('#dpTodo [data-chip="backlog"]');
             if (b) b.focus();
         }, 0);
     }
@@ -3233,9 +3917,12 @@
     }
 
     function renderPlan(plan) {
+        const canSwap = swapChoices().length >= 2 && !state.data.is_past;
+        $('dpSwap').disabled = $('dpMenuSwap').disabled = !canSwap;
         const sm = plan.summary, base = plan.baseline;
-        statTiles($('dpPlanStats'), [[fmt(sm.trucks), 'մեքենա'], [fmt(sm.trips), 'երթ'], [fmt(sm.stops), 'խանութ'], [kgText(sm.kg), 'քաշը'],
-            ['≈ ' + fmt(sm.km) + NB + 'կմ', 'ճանապարհ'], ['≈ ' + fmt(sm.liters) + NB + 'լ', 'դիզել'],
+        statTiles($('dpPlanStats'), [[fmt(sm.trucks), 'մեքենա'], [fmt(sm.stops), 'խանութ'], [kgText(sm.kg), 'քաշը'],
+            ['≈ ' + fmt(sm.km) + NB + 'կմ', 'ճանապարհ']]);
+        statTiles($('dpPlanExtra'), [[fmt(sm.trips), 'երթ'], ['≈ ' + fmt(sm.liters) + NB + 'լ', 'դիզել'],
             ['≈ ' + fmt(sm.operating_cost_amd) + NB + '֏', 'դիզել և մաշվածք']]);
         // Под цифрами — сравнение с обычной развозкой по менеджерам и чего не хватает в расчёте
         const lead = $('dpMainLead');
@@ -3814,7 +4501,21 @@
         sel.className = 'rt-select dp-move';
         const placeholder = tripId === null ? 'Ավելացնել երթին…' : 'Տեղափոխել այլ երթ…';
         sel.setAttribute('aria-label', placeholder + ' «' + (stop.name || stop.code) + '»');
-        tripOptions(tripId, placeholder, stop).forEach(([v, t]) => sel.add(new Option(t, v)));
+        const options = tripOptions(tripId, placeholder, stop);
+        // Нет подходящей машины: вместо пустого списка показываем причину и переход к выбору машин.
+        if (options.length === 1) {
+            const box = document.createElement('div');
+            box.className = 'dp-move-empty';
+            box.style.flexBasis = '100%';
+            const reason = document.createElement('p');
+            reason.className = 'rt-card-lead';
+            reason.textContent = 'Ավելացնելու համար թույլատրված մեքենա ընտրված չէ։'
+                + (stop.vehicle_access ? ' ' + vehicleText(stop.vehicle_access) + '։' : '')
+                + ' 1-ին քայլում ընտրեք մեքենան և վերակազմեք երթերը, կամ փոխեք «Առաքման պայմաններ»-ը։';
+            box.append(reason, stepButton('dpStep1', 'Ընտրել մեքենան'));
+            return box;
+        }
+        options.forEach(([v, t]) => sel.add(new Option(t, v)));
         sel.addEventListener('change', () => {
             const v = sel.value;
             if (!v) return;
@@ -4937,6 +5638,22 @@
                 grp.setAttribute('role', 'rowgroup');
                 setTruckColor(grp, t.car_code);
                 grp.hidden = closed;
+                const tripHead = document.createElement('div');
+                tripHead.className = 'dp-st-triphead';
+                tripHead.setAttribute('role', 'row');
+                const tripMeta = document.createElement('span');
+                tripMeta.className = 'dp-st-tripmeta';
+                tripMeta.setAttribute('role', 'cell');
+                const tripName = document.createElement('b');
+                tripName.textContent = 'Երթ ' + (ti + 1);
+                const tripTime = document.createElement('span');
+                tripTime.textContent = tr.depart + ' → ' + tr.return;
+                tripMeta.append(tripName, tripTime);
+                const tripAction = document.createElement('span');
+                tripAction.setAttribute('role', 'cell');
+                tripAction.appendChild(tripEditButton(t, tr, ti, 'stops'));
+                tripHead.append(tripMeta, tripAction);
+                grp.appendChild(tripHead);
                 const lunch = tr.lunch;
                 if (lunch && lunch.after_stop === null) grp.appendChild(stopLunchRow(lunch));
                 tr.stops.forEach((s, si) => {
@@ -5050,11 +5767,16 @@
     }
     // Владелец (№77, ответ 4): машины без водителя в «Վարորդ» — не предупреждение у каждой карточки, а одна строка вверху
     // «N մեքենայի վարորդ նշված չէ» и «Նշել» — диалог «Վարորդ» первой такой машины (сохранили — следующая)
-    const noDriver = () => (state.data ? state.data.trucks.filter(t => t.ready && t.selected && !driverOf(t.car_code)) : []);
+    const noDriver = () => {
+        const d=state.data;
+        if(!d)return [];
+        if(d.plan)return d.plan.trucks.filter(t=>!driverOf(t.car_code)).map(t=>truckBy(t.car_code)||t);
+        return d.trucks.filter(t=>t.ready&&t.selected&&!driverOf(t.car_code));
+    };
     function renderNoDriver() {
         const list = noDriver(), box = $('dpNoDriver');
         box.hidden = !list.length || !!state.data.is_past || !state.data.plan;
-        $('dpNoDriverText').textContent = list.length ? list.length + NB + 'մեքենայի վարորդ նշված չէ՝ '
+        $('dpNoDriverText').textContent = list.length ? 'Պլանում՝ ' + list.length + NB + 'մեքենայի վարորդ նշված չէ՝ '
             + list.slice(0, 4).map(truckLabel).join(', ') + (list.length > 4 ? '…' : '') : '';
     }
     function toggleTruck(code) {
@@ -5091,15 +5813,7 @@
         onMap.innerHTML = '<i class="fas fa-map-location-dot" aria-hidden="true"></i><span>Քարտեզում</span>';
         onMap.setAttribute('aria-label', 'Ցույց տալ քարտեզում՝ ' + truckLabel(t) + ', երթ ' + (i + 1));
         onMap.addEventListener('click', () => showTripOnMap(t, tr));
-        const tog = document.createElement('button');
-        tog.type = 'button';
-        tog.className = 'rt-btn rt-btn-sm dp-editbtn ' + (editing ? 'rt-btn-primary' : 'rt-btn-ghost');
-        tog.dataset.trip = String(tr.id);
-        tog.setAttribute('aria-expanded', String(editing));
-        tog.innerHTML = '<i class="fas ' + (editing ? 'fa-check' : 'fa-pen') + '" aria-hidden="true"></i><span></span>';
-        tog.lastChild.textContent = editing ? 'Պատրաստ է' : 'Փոփոխել';
-        tog.setAttribute('aria-label', (editing ? 'Ավարտել փոփոխությունը՝ ' : 'Փոփոխել՝ ') + truckLabel(t) + ', երթ ' + (i + 1));
-        tog.addEventListener('click', () => toggleEdit(tr.id));
+        const tog = tripEditButton(t, tr, i);
         acts.append(onMap);
         if (!state.data.is_past) {
             const add = document.createElement('button');
@@ -5224,12 +5938,27 @@
         return tools;
     }
 
-    function toggleEdit(tripId) {
+    function tripEditButton(t, tr, i, origin = 'cards') {
+        const editing = state.editing.has(tr.id);
+        const tog = document.createElement('button');
+        tog.type = 'button';
+        tog.className = 'rt-btn rt-btn-sm dp-editbtn ' + (editing ? 'rt-btn-primary' : 'rt-btn-ghost');
+        tog.dataset.trip = String(tr.id);
+        tog.setAttribute('aria-expanded', String(editing));
+        tog.innerHTML = '<i class="fas ' + (editing ? 'fa-check' : 'fa-pen') + '" aria-hidden="true"></i><span></span>';
+        tog.lastChild.textContent = editing ? 'Պատրաստ է' : 'Փոփոխել';
+        tog.setAttribute('aria-label', (editing ? 'Ավարտել փոփոխությունը՝ ' : 'Փոփոխել՝ ') + truckLabel(t) + ', երթ ' + (i + 1));
+        tog.addEventListener('click', () => toggleEdit(tr.id, origin));
+        return tog;
+    }
+
+    function toggleEdit(tripId, origin = 'cards') {
         if (state.editing.has(tripId)) state.editing.delete(tripId); else state.editing.add(tripId);
         const t = state.data.plan.trucks.find(x => x.trips.some(tr => tr.id === tripId));
         if (t) state.open.add(t.car_code);      // правка — внутри раскрытой карточки; «Պատրաստ է» её не сворачивает
         renderTruckCards(state.data.plan);
-        const b = $('dpTruckCards').querySelector('.dp-editbtn[data-trip="' + tripId + '"]');
+        const box = origin === 'stops' ? $('dpStopsTable') : $('dpTruckCards');
+        const b = box.querySelector('.dp-editbtn[data-trip="' + tripId + '"]');
         if (b) b.focus();
     }
 
@@ -6171,11 +6900,12 @@
     function setBusy(on) {
         state.busy = on;
         // в окне «Նախորդ օրերից» — кнопки строк и «Տանել բոլորը» (список дней — нет: фокус ушёл бы с него)
-        document.querySelectorAll('#dpBody button, #dpBody select, #dpAgentsList input, #dpSendState button, #dpWsActs button, #dpBlDlg .dp-bl-act button, #dpBacklogAll').forEach(x => {
+        document.querySelectorAll('#dpBody button, #dpBody select, #dpAgentsList input, #dpSendState button, #dpWsActs button, #dpBlDlg .dp-bl-act button, #dpBacklogAll, #dpWizard button, #dpWizard input, #dpWizard select').forEach(x => {
             if (on) { x.dataset.wasDisabled = x.disabled ? '1' : ''; x.disabled = true; } else if (x.dataset.wasDisabled !== undefined) { x.disabled = x.dataset.wasDisabled === '1'; delete x.dataset.wasDisabled; }
         });
         $('rtDispatch').setAttribute('aria-busy', String(on));
         $('dpBlDlg').setAttribute('aria-busy', String(on));
+        if (state.data) renderGuide();
     }
 
     // false — сборка не начата (занято, проверки, подтверждение отклонено): «Կիրառել» сравнения возвращает галочки шага 1
@@ -6214,11 +6944,14 @@
             state.geoChanged = null;
             state.agentsPick = null;
             setBusy(false);
+            if ($('dpWizard').open && data.plan) guide.step = 2;
             setData(data);
+            if ($('dpWizard').open) guideFocus();
             if (data.plan) toast('Երթերը կազմված են՝ ' + pl(data.plan.summary.trips, 'երթ') + ', ≈ ' + fmt(data.plan.summary.km) + NB + 'կմ');
             if (!$('dpDrawer').hidden) { $('dpDrawer').hidden = true; $('dpPrepOpen').setAttribute('aria-expanded', 'false'); renderSteps(); }
             if ($('rtDispatch').classList.contains('is-ws')) { window.scrollTo(0, 0); $('dpBoard').querySelector('.dp-blabel')?.focus({ preventScroll: true }); }
             else $('dpStep3Title').focus();
+            return true;
         } catch (e) {
             setBusy(false);
             render();
@@ -6229,16 +6962,26 @@
 
     async function edit(body, okText) {
         if (state.busy) return null;
+        if (['approve', 'send'].includes(body.action) && publicationBlocked()) {
+            if ($('dpSendFirstDlg').open) $('dpSendFirstDlg').close();
+            openGuide(3); return null;
+        }
         hideActionError();
         setBusy(true);
+        const requestBody = { date: state.day, rev: state.data.rev, ...body };
         try {
-            const data = await api('POST', '/api/routes/dispatch/edit', { date: state.day, rev: state.data.rev, ...body });
+            const data = await api('POST', '/api/routes/dispatch/edit', requestBody);
             setBusy(false);
             setData(data);
             if (okText) toast(okText + (data.delta_km !== undefined && data.delta_km !== null ? ' — ' + deltaText(data.delta_km) : '') + '։');
             return data;
         } catch (e) {
             setBusy(false);
+            if (body.action === 'swap_trucks' && e.data?.reserve_confirm === true && !body.confirm_reserve) {
+                if (window.confirm(e.message)) return edit({ ...requestBody, confirm_reserve: true }, okText);
+                render();
+                return null;
+            }
             // ответ владельца 12.10, п. 2: «Բեռնված է» рейса машины, которая ещё не вернулась, — только с согласия логиста
             if (e.data && e.data.away_confirm === true && !body.confirm_away) {
                 if (window.confirm(e.message)) return edit({ ...body, confirm_away: true }, okText);
@@ -6638,6 +7381,7 @@
         }
         box.hidden = !box.children.length;
         fitChips();
+        syncGuideNodes();
         panelsRefresh();   // таблетка свёрнутой верхней панели — со счётчиком «требует внимания»
     }
 
@@ -6659,17 +7403,19 @@
     const wsHome = new Map();
     function wsPark(node, slot) {
         if (!node || !slot) return;
+        if($('dpWizard').open&&guide.homes.has(node))return;
         if (!wsHome.has(node)) { const c = document.createComment('dp-home'); node.parentNode.insertBefore(c, node); wsHome.set(node, c); }
         if (node.parentNode !== slot) slot.appendChild(node);
     }
     function wsUnpark(node) {
+        if($('dpWizard').open&&guide.homes.has(node))return;
         const c = node && wsHome.get(node);
         if (c && c.parentNode && node.previousSibling !== c) c.parentNode.insertBefore(node, c.nextSibling);
     }
     // Tesla+: подсказка дня и счётчики — в верхней стеклянной панели над картой; не поместилось, «как посчитано» и
     // «для руководителя» — в выдвижной панели #dpSheet (открывают счётчики, «Ցույց տալ» и меню «⋯»)
     const wsNodes = () => [[$('dpApprove'), 'dpWsActs'],
-        [$('dpPlanStats'), 'dpWsKpi'], [$('dpInbox'), 'dpWsTop'], [$('dpMapBox'), 'dpWsMap'],
+        [$('dpPlanOverview'), 'dpWsKpi'], [$('dpInbox'), 'dpWsTop'], [$('dpMapBox'), 'dpWsMap'],
         [$('dpBoard'), 'dpWsBottom'], [$('dpTruckCards'), 'dpWsSide'],
         [$('dpOverflow'), 'dpSheetTrips'], [$('dpUnassigned'), 'dpSheetTrips'], [$('dpMainLead'), 'dpSheetCalc'], [$('dpWhy'), 'dpSheetCalc'],
         [$('dpAnalysis'), 'dpSheetBoss'],
@@ -6715,6 +7461,7 @@
         // M3: подписи Яндекса / Leaflet справа внизу — не под карточкой машины
         $('dpWs').classList.toggle('has-side', on && !!state.mapFocus);
         fitChips();
+        syncGuideNodes();
         panelsRefresh();   // свёртка панелей — только на рабочем экране
     }
     // шапка рабочего экрана — одной строкой: не помещается — подписи кнопок ступенями уходят в подсказки (сначала второстепенные)
@@ -6779,6 +7526,7 @@
         $('dpSheetClose').focus();
     }
     function openDrawer(open) {
+        if (open) { openGuide(1); return; }
         if (open) openSheet(null);
         $('dpDrawer').hidden = !open;
         $('dpPrepOpen').setAttribute('aria-expanded', String(open));
@@ -6809,6 +7557,7 @@
         $('dpMenuUnlock').hidden = !lockedCount();
         $('dpMenuCompare').hidden = !(state.data && state.data.plan);
         $('dpMenuPrint').hidden = $('dpMenuExcel').hidden = !(state.data && state.data.plan);
+        $('dpMenuErpXlsm').hidden = !(state.data && state.data.sent && !state.data.is_past);
         $('dpMenuTrips').hidden = !($('dpOverflow').children.length || $('dpUnassigned').children.length);
         $('dpMenuBoss').hidden = $('dpAnalysis').hidden;
         $('dpMenuNorms').hidden = !normsMissing();
@@ -6875,6 +7624,7 @@
         });
         // меню «⋯»: пункты нажимают настоящие кнопки (там же подтверждение), сами кнопки на рабочем экране скрыты
         $('dpWsMore').addEventListener('click', () => openMenu($('dpWsMenu').hidden));
+        $('dpMenuErpXlsm').addEventListener('click', () => { openMenu(false, true); exportErpXlsm(); });
         [['dpMenuPrint', 'dpPrint'], ['dpMenuExcel', 'dpExcel'], ['dpMenuUnapprove', 'dpUnapprove'], ['dpMenuDiscard', 'dpDiscardBtn']].forEach(([item, real]) => $(item).addEventListener('click', () => {
             openMenu(false, true);
             const b = $(real);
@@ -7018,6 +7768,7 @@
             + '.sheet{page-break-after:always;break-after:page}.sheet:last-child{page-break-after:auto;break-after:auto}'
             + 'h1{font-size:24px;margin:0 0 4px}h2{font-size:19px;margin:18px 0 6px}.sub{font-size:15px;margin:0 0 10px}'
             + 'table{width:100%;border-collapse:collapse}th,td{border:1px solid #000;padding:7px 8px;vertical-align:top;text-align:left}'
+            + 'thead{display:table-header-group}tbody tr{break-inside:avoid;page-break-inside:avoid}.trip-id th{font-size:12px;background:#fff}'
             + 'th{font-size:13px;background:#eee}td.n{font-size:22px;font-weight:700;width:38px;text-align:center}td.kg{font-size:18px;font-weight:700;white-space:nowrap;width:90px}'
             + 'td.ok{width:60px}td.ld{font-size:18px;text-align:center;width:56px}td.t{font-size:17px;font-weight:700;white-space:nowrap;width:110px}.win{font-size:13px;font-weight:400}'
             + '.addr{font-size:17px}.nm{font-weight:700}@media screen{body{background:#fff}}'
@@ -7030,7 +7781,8 @@
                 + ' · ≈ ' + esc(fmt(t.km)) + ' կմ</p>';
             t.trips.forEach((tr, i) => {
                 html += '<h2>Երթ ' + (i + 1) + '՝ մեկնում ' + esc(tr.depart) + ', ' + esc(kgText(tr.kg)) + ', ≈ ' + esc(fmt(tr.km)) + ' կմ</h2>'
-                    + '<table><thead><tr><th>№</th><th>Խանութ և հասցե</th><th>Ժամանում</th><th>Բեռ</th><th>Բեռն. №</th><th>Նշում</th></tr></thead><tbody>';
+                    + '<table><thead><tr class="trip-id"><th colspan="6">'+esc(truckLabel(t))+' · Երթ '+(i+1)+' · '+esc(dateRu(d.day))+'</th></tr>'
+                    + '<tr><th>№</th><th>Խանութ և հասցե</th><th>Ժամանում</th><th>Բեռ</th><th>Բեռն. №</th><th>Նշում</th></tr></thead><tbody>';
                 tr.stops.forEach((s, si) => {
                     const win = windowText(s.window);
                     // №87 п. 4: номер погрузки — обратный объезду (последняя точка грузится первой)
@@ -7052,6 +7804,45 @@
         setTimeout(() => { try { w.print(); } catch (e) { /* окно закрыли раньше */ } }, 300);
     }
 
+    // «Excel ERP-ի համար» (владелец 13.10): файл официального импорта ArmSoft (SalesOrder.xlsm, лист «Խմբագրում») с
+    // առաքիչ и машиной заказов ОТПРАВЛЕННОГО плана — оператор загружает его в ERP кнопкой листа; сайт в ERP не пишет.
+    // Неотправленные правки в файл не попадут — сначала спросить. Ошибка сервера — JSON, файл — blob. Файл — снимок шапок
+    // заказов: загружать сразу, старый не загружать (вернёт прежние значения) — об этом подсказка.
+    async function exportErpXlsm() {
+        const d = state.data;
+        if (!d || !d.sent || d.is_past) return;
+        if (d.unsent && !window.confirm('Կան չուղարկված փոփոխություններ։ Ֆայլը կլինի վարորդներին ուղարկված պլանով։ Շարունակե՞լ։')) return;
+        toast('ERP-ի ֆայլը պատրաստվում է…');
+        try {
+            let resp;
+            try {
+                resp = await fetch('/api/routes/dispatch/erp-import?' + new URLSearchParams({ date: d.day }), { credentials: 'same-origin', cache: 'no-store' });
+            } catch (e) { throw new Error('Սերվերի հետ կապ չկա։'); }
+            const type = resp.headers.get('Content-Type') || '';
+            if (!resp.ok || type.indexOf('json') >= 0) {
+                let data = null;
+                try { data = await resp.json(); } catch (e) { data = null; }
+                const msg = isObj(data) && typeof data.error === 'string' && data.error.trim() ? serverText(data.error)
+                    : (HTTP_TEXT[resp.status] || ('Սերվերի սխալ (կոդ ' + resp.status + ')։'));
+                throw Object.assign(new Error(msg), { status: resp.status === 409 ? 0 : resp.status });
+            }
+            const rows = resp.headers.get('X-Erp-Rows') || '?', skipped = resp.headers.get('X-Erp-Skipped') || '0';
+            const blob = await resp.blob();
+            const a = document.createElement('a');
+            const name = /filename="([^"]+)"/.exec(resp.headers.get('Content-Disposition') || '');
+            a.href = URL.createObjectURL(blob);
+            a.download = name ? name[1] : 'ERP-araqich-' + d.day + '.xlsm';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+            toast('ERP-ի ֆայլը ներբեռնված է՝ ' + pl(+rows, 'պատվեր') + (skipped !== '0' ? ', բաց թողնված՝ ' + skipped : '')
+                + '։ Բացեք այն Excel-ում հիմա և սեղմեք «Խմբագրում» թերթի կոճակը․ հին ֆայլը կրկին մի բեռնեք։');
+        } catch (e) {
+            hideToast($('dpToast'));
+            showActionError(e);
+        }
+    }
     function exportExcel() { paper(null, exportExcelGo); }
     async function exportExcelGo(send, draft) {
         if (send && !(await sendForPaper())) return;
@@ -7089,6 +7880,67 @@
     // где они уже есть, иначе из заказов; тяжёлый магазин на несколько рейсов делится целыми упаковками). Печать — окно с
     // листом на рейс, Excel — файл машины, лист на рейс. Ответ сверяется с планом на экране (rev и состав каждого рейса):
     // разошлись — ошибка «обновите страницу», а не накладная по другому плану.
+    // Exchange complete workloads; crew remains assigned to its vehicle.
+    const swapChoices = () => state.data ? state.data.trucks.filter(t => t.ready && t.selected && !t.unmanned) : [];
+    let swapContext = null;
+    function openSwap(code) {
+        if (state.busy || !state.data || state.data.is_past) return;
+        const choices = swapChoices();
+        if (choices.length < 2) return;
+        swapContext = { day: state.day, rev: state.data.rev };
+        const a = $('dpSwapA'), b = $('dpSwapB');
+        [a, b].forEach(select => {
+            select.textContent = '';
+            choices.forEach(t => select.add(new Option(truckLabel(t), t.car_code)));
+        });
+        a.value = choices.some(t => t.car_code === code) ? code : choices[0].car_code;
+        b.value = choices.find(t => t.car_code !== a.value).car_code;
+        $('dpSwapErr').textContent = '';
+        renderSwap();
+        $('dpSwapDlg').showModal();
+    }
+    function renderSwap() {
+        const a = $('dpSwapA').value, b = $('dpSwapB').value;
+        for (const option of $('dpSwapB').options) option.disabled = option.value === a;
+        if (a === b) $('dpSwapB').value = [...$('dpSwapB').options].find(o => !o.disabled)?.value || '';
+        const count = c => state.data.plan.trucks.find(t => t.car_code === c)?.trips.length || 0;
+        const first = count(a), second = count($('dpSwapB').value);
+        $('dpSwapPreview').textContent = a + ' → ' + $('dpSwapB').value + '՝ ' + pl(first, 'երթ')
+            + '։ ' + $('dpSwapB').value + ' → ' + a + '՝ ' + pl(second, 'երթ') + '։';
+        const loads = $('dpSwapLoads');
+        loads.textContent = '';
+        for (const [from, to] of [[a, $('dpSwapB').value], [$('dpSwapB').value, a]]) {
+            const trips = state.data.plan.trucks.find(t => t.car_code === from)?.trips || [];
+            const capacity = num(truckBy(to)?.capacity_kg);
+            if (!trips.length || capacity === null) continue;
+            const line = document.createElement('p');
+            line.className = 'dp-unload-hint';
+            line.textContent = from + ' → ' + to + '՝ ' + trips.map(tr => fmt(tr.kg, 1) + NB + 'կգ').join(', ')
+                + '։ Մեքենայի տարողությունը՝ ' + fmt(capacity) + NB + 'կգ։';
+            loads.appendChild(line);
+        }
+        $('dpSwapSave').disabled = state.busy || !a || !$('dpSwapB').value || !first && !second;
+        $('dpSwapErr').textContent = '';
+    }
+    async function saveSwap() {
+        if (state.busy || !swapContext || $('dpSwapSave').disabled) return;
+        if (swapContext.day !== state.day || swapContext.rev !== state.data.rev) {
+            $('dpSwapErr').textContent = 'Պլանը փոխվել է․ փակեք պատուհանը և նորից ընտրեք մեքենաները։';
+            $('dpSwapErr').focus();
+            return;
+        }
+        const controls = ['dpSwapA', 'dpSwapB', 'dpSwapSave', 'dpSwapCancel'];
+        controls.forEach(id => { $(id).disabled = true; });
+        $('dpSwapDlg').setAttribute('aria-busy', 'true');
+        const data = await edit({ action: 'swap_trucks', truck: $('dpSwapA').value, other_truck: $('dpSwapB').value });
+        controls.forEach(id => { $(id).disabled = false; });
+        $('dpSwapDlg').setAttribute('aria-busy', 'false');
+        if (!data) return;
+        $('dpSwapDlg').close();
+        state.undo = { day: state.day, rev: data.rev };
+        toast('Մեքենաների երթերը փոխանակվեցին։', { label: 'Չեղարկել', run: undoResize });
+    }
+
     function waybillActs(t) {
         const box = document.createElement('div');
         box.className = 'dp-tacts';
@@ -7105,6 +7957,11 @@
         };
         const drv = mk('fa-user-pen', 'Վարորդ', 'Վարորդ և առաքիչ՝ ', openDriver);
         drv.classList.add('dp-drvbtn');
+        const swap = mk('fa-right-left', 'Փոխանակել', 'Փոխանակել մեքենայի երթերը՝ ', openSwap);
+        swap.disabled = state.busy || state.data.is_past || swapChoices().length < 2
+            || !swapChoices().some(c => c.car_code === t.car_code);
+        swap.setAttribute('aria-haspopup', 'dialog');
+        box.appendChild(swap);
         // сервер сам помечает Բեռնագիր неотправленного плана (draft) — пометка «ՍԵՎԱԳԻՐ» и без выбора в окне
         box.append(drv, mk('fa-print', 'Բեռնագիր', 'Տպել բեռնագիրը՝ ', (c, b) => paper(c, (send) => printWaybill(c, b, send))),
             mk('fa-file-excel', 'Excel', 'Բեռնագիրը Excel-ով՝ ', (c, b) => paper(c, (send) => excelWaybill(c, b, send))));
@@ -7501,10 +8358,19 @@
         $('dpAgentsAll').addEventListener('click', () => pickAllAgents(true));
         $('dpAgentsNone').addEventListener('click', () => pickAllAgents(false));
         $('dpAgentsApply').addEventListener('click', applyAgents);
+        $('dpWarehouseApply').addEventListener('click', () => edit({ action: 'apply_settings' }));
         $('dpRuleApply').addEventListener('click', () => edit({ action: 'apply_settings' }, 'Օրվա ընտրությունը համապատասխանեցվեց կարգավորումներին'));
         $('dpAgentsUndo').addEventListener('click', () => { state.agentsPick = null; renderAgents(); renderOrders(); });
         $('dpReset').addEventListener('click', reset);
         $('dpPrint').addEventListener('click', printSheets);
+        $('dpSwap').addEventListener('click', () => openSwap());
+        $('dpMenuSwap').addEventListener('click', () => { openMenu(false, true); openSwap(); });
+        $('dpSwapA').addEventListener('change', renderSwap);
+        $('dpSwapB').addEventListener('change', renderSwap);
+        $('dpSwapSave').addEventListener('click', saveSwap);
+        $('dpSwapCancel').addEventListener('click', () => $('dpSwapDlg').close());
+        $('dpSwapDlg').addEventListener('cancel', e => { if (state.busy) e.preventDefault(); });
+        $('dpSwapDlg').addEventListener('close', () => { swapContext = null; });
         $('dpExcel').addEventListener('click', exportExcel);
         $('dpFactBtn').addEventListener('click', loadFact);
         $('dpActionReload').addEventListener('click', () => { hideActionError(); load(state.day); });
@@ -7532,7 +8398,14 @@
         $('dpAbsentUntil').addEventListener('input', () => { $('dpAbsentLong').checked = true; $('dpAbsentErr').textContent = ''; });
         $('dpDriverCancel').addEventListener('click', () => $('dpDriverDlg').close());
         $('dpSdClose').addEventListener('click', () => $('dpSameDayDlg').close());
-        $('dpSameDayDlg').addEventListener('close', () => { state.sd = null; });
+        $('dpSameDayDlg').addEventListener('close', () => {
+            state.sd=null;
+            const origin=guide.sameDayOrigin;guide.sameDayOrigin=null;
+            if(origin&&$('dpWizard').open){
+                renderGuide();
+                setTimeout(()=>($(origin).querySelector('[data-guide-same-day]')||$('dpGuideTitle')).focus({preventScroll:true}),0);
+            }
+        });
         $('dpDriverDlg').addEventListener('close', () => {
             const card = [...$('dpTruckCards').querySelectorAll('.dp-tcard')].find(c => c.dataset.truck === state.driverCar);
             const btn = card && card.querySelector('.dp-drvbtn'), from = state.driverFrom;
@@ -7635,6 +8508,7 @@
         setInterval(loadProgress, PROGRESS_MS);   // №82: ход дня на шкале — сегодня
         document.addEventListener('visibilitychange', () => { if (!document.hidden) loadProgress(); });
         document.addEventListener('visibilitychange', poll);
+        initGuide();
         load(day);
     }
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();

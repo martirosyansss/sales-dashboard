@@ -59,8 +59,8 @@ def test_store_holidays_default_roundtrip_and_validation(store):
 
 
 def test_api_dispatch_skips_holiday(client, monkeypatch):
-    """Завтра (02.10, пт) нерабочее: «Развоз» по умолчанию открывает субботу 03.10, её окно заказов — с 01.10;
-    сам праздник открыть можно — со знаком day_off."""
+    """Открытие до 16:00 — сегодня, после — завтра, включая праздник. Ссылка default_day по-прежнему пропускает
+    нерабочую дату 02.10 и ведёт на 03.10; окно заказов и знак day_off сохраняют календарь рабочих дней."""
     from route_optimizer import views
     monkeypatch.setattr(views, '_yerevan_now', lambda: datetime(2026, 10, 1, 10, 0).replace(tzinfo=views.ac.YEREVAN))
     calls = _dispatch_setup(client, [_dorder(1, 101, 400.0, day=date(2026, 10, 1))])
@@ -68,6 +68,8 @@ def test_api_dispatch_skips_holiday(client, monkeypatch):
     assert r.status_code == 200, r.get_json()
     assert client.get('/api/routes/settings').get_json()['settings']['holidays'] == ['2026-10-02']
     d = client.get('/api/routes/dispatch').get_json()
+    assert d['day'] == '2026-10-01' and d['default_day'] == '2026-10-03' and d['day_off'] is False
+    d = client.get('/api/routes/dispatch?date=' + d['default_day']).get_json()
     assert d['day'] == '2026-10-03' and d['default_day'] == '2026-10-03' and d['day_off'] is False
     assert d['order_dates'] == {'since': '2026-10-01', 'until': '2026-10-02'}       # заказы чт и пт-праздника
     assert d['orders']['count'] == 1
@@ -75,6 +77,9 @@ def test_api_dispatch_skips_holiday(client, monkeypatch):
     h = client.get('/api/routes/dispatch?date=2026-10-02').get_json()
     assert h['day_off'] is True
     assert client.get('/api/routes/dispatch?date=2026-10-04').get_json()['day_off'] is True   # воскресенье
+    monkeypatch.setattr(views, '_yerevan_now', lambda: datetime(2026, 10, 1, 16, 0).replace(tzinfo=views.ac.YEREVAN))
+    after_cutoff = client.get('/api/routes/dispatch').get_json()
+    assert after_cutoff['day'] == '2026-10-02' and after_cutoff['day_off'] is True
 
 
 def test_api_dispatch_holidays_with_agents_filter(client, monkeypatch):

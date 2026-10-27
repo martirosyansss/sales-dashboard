@@ -148,6 +148,10 @@ class LoadedEdit(DispatchError):
     """Правка меняет загруженный рейс (№78): товар уже в машине — повторить с подтверждением логиста."""
 
 
+class ReserveEdit(DispatchError):
+    """Manual vehicle exchange uses the planning reserve; requires explicit confirmation."""
+
+
 # --- Данные ERP ---
 
 @dataclass(frozen=True)
@@ -534,12 +538,14 @@ class FleetRule:
     agents: frozenset[int] = frozenset()
     cities: tuple[str, ...] = ()
     customers_off: frozenset[int] = frozenset()
+    optional_agents: frozenset[int] = frozenset()  # заказы склада — только по явному выбору
 
     @classmethod
     def from_settings(cls, settings: Mapping[str, Any]) -> FleetRule:
         return cls(frozenset(settings.get('dispatch_fleet_agents') or ()),
                    tuple(settings.get('dispatch_other_cities') or ()),
-                   frozenset(settings.get('dispatch_customers_off') or ()))
+                   frozenset(settings.get('dispatch_customers_off') or ()),
+                   frozenset(settings.get('dispatch_optional_agents') or ()))
 
     @classmethod
     def from_json(cls, raw: Any) -> FleetRule:
@@ -548,24 +554,25 @@ class FleetRule:
             return NO_RULE
         ids = lambda key: frozenset(x for x in (raw.get(key) or [])[:MAX_FLEET_IDS] if _is_int(x))   # noqa: E731
         return cls(ids('agents'), tuple(c for c in (raw.get('cities') or [])[:MAX_FLEET_IDS] if isinstance(c, str)),
-                   ids('customers_off'))
+                   ids('customers_off'), ids('optional_agents'))
 
     @property
     def active(self) -> bool:
-        return bool(self.agents or self.customers_off)
+        return bool(self.agents or self.customers_off or self.optional_agents)
 
     def to_json(self) -> dict[str, Any] | None:
         """Для черновика дня: пустое правило — None (поля в черновике нет)."""
         if not self.active:
             return None
-        return {'agents': sorted(self.agents), 'cities': list(self.cities), 'customers_off': sorted(self.customers_off)}
+        return {'agents': sorted(self.agents), 'cities': list(self.cities), 'customers_off': sorted(self.customers_off),
+                **({'optional_agents': sorted(self.optional_agents)} if self.optional_agents else {})}
 
     def same_as(self, other: FleetRule) -> bool:
         """Правила отбирают заказы одинаково (города — без регистра и порядка; у пустых правил города не важны)."""
         if not (self.active or other.active):
             return True
-        return (self.agents, self.customers_off, frozenset(map(fold_text, self.cities))) == \
-            (other.agents, other.customers_off, frozenset(map(fold_text, other.cities)))
+        return (self.agents, self.customers_off, self.optional_agents, frozenset(map(fold_text, self.cities))) == \
+            (other.agents, other.customers_off, other.optional_agents, frozenset(map(fold_text, other.cities)))
 
     @cached_property
     def _keys(self) -> tuple[tuple[str, str], ...]:
@@ -595,6 +602,8 @@ class FleetRule:
         исключение; CUSTOMER_OFF — клиент из списка «машины не везут»."""
         if o.customer_id in self.customers_off:
             return CUSTOMER_OFF
+        if o.agent_id in self.optional_agents:
+            return 'optional'
         if not o.self_delivery:
             return FLEET
         if o.agent_id not in self.agents:
@@ -667,7 +676,8 @@ def to_deliver(orders: Sequence[DispatchOrder], day: date, since: date, rule: Fl
     def of_kind(kind: str) -> list[DispatchOrder]:
         return sorted((o for o, k in kinds if k == kind and of_day(o, since, day)), key=key)
     return Selection(main=sorted((o for o in trucks if of_day(o, since, day)), key=key),
-                     backlog=sorted((o for o in trucks if before_day(o, since)), key=key),
+                     backlog=sorted([*(o for o in trucks if before_day(o, since)),
+                                     *(o for o, k in kinds if k == 'optional' and o.order_date <= day)], key=key),
                      shipped_before=sum(1 for o in orders if of_day(o, since, day)) - len(
                          [o for o in pending if of_day(o, since, day)]),
                      self_delivery=of_kind(SELF_DELIVERY), other_vehicle=of_kind(OTHER_VEHICLE),
@@ -2261,6 +2271,8 @@ def _guard_loaded(draft: Draft, edit: Mapping[str, Any], routable: Mapping[int, 
         touched = edit.get('trip') in loaded
     elif action == 'pin':
         touched = edit.get('trip') in loaded and edit.get('truck') != loaded[edit.get('trip')].truck
+    elif action == 'swap_trucks':
+        touched = any(t.truck in (edit.get('truck'), edit.get('other_truck')) for t in loaded.values())
     elif action == 'move':
         touched = edit.get('from_trip') in loaded or edit.get('to_trip') in loaded
     elif action == 'trip_stops':   # рейс сам или рейс, из которого берут магазин
@@ -2393,6 +2405,77 @@ def _defer_store(day: date, stops: Sequence[Stop], draft: Draft, edit: Mapping[s
     return draft
 
 
+def _swap_trucks(ctx: DayContext, stops: Sequence[Stop], draft: Draft,
+                 edit: Mapping[str, Any], loaded_ok: bool) -> Draft:
+    """Exchange complete vehicle workloads atomically; keep trip IDs, stop order and publication state."""
+    a, b = edit.get('truck'), edit.get('other_truck')
+    if not isinstance(a, str) or not isinstance(b, str) or not a or not b or a == b:
+        raise DispatchError('Ընտրեք երկու տարբեր մեքենա')
+    if any(c not in ctx.trucks or c not in draft.trucks or c in draft.unmanned for c in (a, b)):
+        raise DispatchError('Ընտրված մեքենան այսօր չի աշխատում — թարմացրեք էջը')
+    trial = copy.deepcopy(draft)
+    routable = {s.customer_id: s for s in stops if s.point is not None}
+    _clean(trial, routable)
+    affected = [t for t in trial.trips if t.truck in (a, b)]
+    if not affected:
+        raise DispatchError('Ընտրված մեքենաները փոխանակելու երթեր չունեն')
+    _guard_loaded(trial, edit, routable, loaded_ok)
+    shares = _shares(trial.trips)
+    before = _timeline(ctx, trial.trips, routable, shares, kg_of=trip_kgs(trial, routable)[0])
+    codes = {a: b, b: a}
+    for t in affected:
+        t.truck = codes[t.truck]
+    kgs, _ = trip_kgs(trial, routable)
+    selected = _selected(ctx, trial.trucks)
+    reserve = []
+
+    def kg_text(value: float) -> str:
+        return f'{value:,.1f}'.replace(',', ' ')
+
+    for t in affected:
+        _require_vehicle(ctx, t.stops, t.truck)
+        if any(_central(ctx, routable[c]) and not ctx.trucks[t.truck].center_ok for c in t.stops):
+            raise DispatchError('Փոխանակումը հնարավոր չէ՝ մեքենան կենտրոն մուտք գործելու թույլտվություն չունի')
+        weights = [kgs.get((t.id, c), routable[c].kg / shares[c]) for c in t.stops]
+        limit = fl.load_limit(weights, [_central(ctx, routable[c]) for c in t.stops],
+                              [_allowed_trucks(ctx, c) for c in t.stops], ctx.trucks[t.truck], selected)
+        kg = math.fsum(weights)
+        capacity = ctx.trucks[t.truck].capacity_kg
+        if kg > capacity + _EPS:
+            raise DispatchError(f'{t.truck}՝ երթ №{t.id}, բեռը {kg_text(kg)} կգ է, '
+                                f'մեքենայի տարողությունը՝ {kg_text(capacity)} կգ։ '
+                                f'Տեղափոխեք առնվազն {kg_text(kg - limit)} կգ այլ երթ։')
+        if kg > limit + 0.5:
+            reserve.append(f'{t.truck}՝ երթ №{t.id}, բեռը {kg_text(kg)} կգ է։ '
+                           f'Պլանավորման սահմանը՝ {kg_text(limit)} կգ '
+                           f'({fl.LOAD_CAP:.0%}), մեքենայի տարողությունը՝ {kg_text(capacity)} կգ։ '
+                           f'Պահուստից կօգտագործվի {kg_text(kg - limit)} կգ։')
+    after = _timeline(ctx, trial.trips, routable, shares, kg_of=kgs)
+    end = ctx.overtime_minutes if trial.overtime_ok and ctx.overtime_minutes is not None else ctx.tn.work_minutes
+    for t in affected:
+        start, minutes, arrivals = after[t.id]
+        old_start, old_minutes, old_arrivals = before[t.id]
+        if start + minutes > max(end, old_start + old_minutes) + _EPS:
+            raise DispatchError('Փոխանակումը հնարավոր չէ՝ մեքենան չի հասցնում վերադառնալ աշխատանքային օրվա ավարտին')
+        if any(at > max(_real_end(ctx, c), old_at) + _EPS
+               for c, at, old_at in zip(t.stops, arrivals, old_arrivals)):
+            raise DispatchError('Փոխանակումը հնարավոր չէ՝ մեքենան չի հասցնում խանութի ընդունման ժամին')
+    if reserve and edit.get('confirm_reserve') is not True:
+        raise ReserveEdit('\n\n'.join(reserve) + '\n\nՕգտագործե՞լ պահուստը և փոխանակել երթերը։')
+    trial.locks = {c: codes.get(code, code) for c, code in trial.locks.items()}
+    owners: dict[int, set[str]] = {}
+    for t in trial.trips:
+        for c in t.stops:
+            owners.setdefault(c, set()).add(t.truck)
+    for t in affected:
+        for c in t.stops:
+            if len(owners[c]) == 1:
+                trial.locks[c] = t.truck
+    trial.solo_spare = None  # the old automatic vehicle choice no longer describes this manual decision
+    trial.undo = {k: v for k, v in draft.to_json().items() if k not in ('prediction', 'undo', 'sent')}
+    return trial
+
+
 def apply_edit(ctx: DayContext, stops: Sequence[Stop], draft: Draft, edit: Mapping[str, Any],
                order_ids: set[str], backlog_ids: set[str] = frozenset(), defer_since: date | None = None,
                carried: Collection[str] = (), now_min: float | None = None, loaded_ok: bool = False,
@@ -2411,6 +2494,7 @@ def apply_edit(ctx: DayContext, stops: Sequence[Stop], draft: Draft, edit: Mappi
           других рейсов; одна правка — одна «Չեղարկել» (Draft.undo, как resize);
       {"action": "pin", "trip": id, "truck": код} — закрепить машину за рейсом (рейс уходит к ней);
       {"action": "unpin", "trip": id};
+      {"action": "swap_trucks", "truck": код, "other_truck": код} — обменять все рейсы двух машин;
       {"action": "whole_store", "customer_id", "truck": код} — «Տանել ամբողջը»: магазин, который план везёт несколькими
           машинами, — целиком машине truck (одна из его машин): из рейсов других машин он уходит, решение — ручное (Draft.locks;
           один заказ ERP — одна машина, решение владельца 12.10 «Запрещать»);
@@ -2433,6 +2517,8 @@ def apply_edit(ctx: DayContext, stops: Sequence[Stop], draft: Draft, edit: Mappi
           dispatch_backlog_days — можно: следующий день его держит, backlog_held) — ошибка: завтра его не будет видно,
           решать надо сегодня.
     Ошибка — DispatchError с текстом для логиста."""
+    if edit.get('action') == 'swap_trucks':
+        return _swap_trucks(ctx, stops, draft, edit, loaded_ok)
     routable = {s.customer_id: s for s in stops if s.point is not None}
     _clean(draft, routable)
     _guard_loaded(draft, edit, routable, loaded_ok)

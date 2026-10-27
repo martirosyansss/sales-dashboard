@@ -480,6 +480,21 @@ OUTER APPLY (SELECT COUNT(*) AS n FROM DOCPARENTS p WITH (NOLOCK) WHERE p.fPAREN
 WHERE o.fISN IN ({ph})
 """
 
+# Шапка заказа как есть — для «Excel ERP-ի համար» (erp_import: всё, кроме առաքիչ и машины, кладётся в файл без изменений).
+# NOLOCK, как всё чтение ERP (боевую базу не блокируем); файл — снимок, оператор загружает его сразу
+# ? ORDERS ??? fASSIGNOR (?? ???? ? ?????????/?????????): ????? ??????? ??????? ????????? ??????.
+SQL_ORDER_HEADS = """
+SELECT CAST(o.fISN AS nvarchar(36)), RTRIM(o.fDOCNUM), o.fDATE, a.fCODE, c.fCODE, RTRIM(o.fSALESAREA), o.fCOMMENT,
+       RTRIM(o.fPRICELISTTYPE), RTRIM(o.fTAXSERIANUMBER), o.fSUBMITDATE, o.fCOSIGNDATE, CAST(N'' AS nvarchar(6)) AS assignor,
+       RTRIM(o.fORGANIZATIONACCOUNT), RTRIM(o.fDOCGROUP), o.fDELAYDAYS, RTRIM(o.fPAYTYPE), o.fPRIORITY, o.fCONTACT,
+       RTRIM(o.fCREATEMETHOD), RTRIM(o.fDIVISION), RTRIM(o.fOTHSYSSENDSTATUS), o.fDELIVERYDATE,
+       ISNULL(o.fDELIVERYADDRESSID, 0)
+FROM ORDERS o WITH (NOLOCK)
+LEFT JOIN SALESAGENTS a WITH (NOLOCK) ON a.fID = o.fSALESAGENTID
+LEFT JOIN CUSTOMERS c WITH (NOLOCK) ON c.fID = o.fCUSTOMERID
+WHERE o.fISN IN ({ph})
+"""
+
 
 # --- Справочники ---
 
@@ -877,6 +892,36 @@ def load_order_states(connection_string: str, isns: Sequence[str]
     conn = connect(connection_string)
     try:
         return order_states(conn, isns), agents(conn), cars(conn)
+    finally:
+        close_quietly(conn)
+
+
+def _opt_day(x: Any) -> date | None:
+    return None if x is None else _day(x)
+
+
+def order_heads(conn: Any, isns: Sequence[str]) -> dict[str, dict[str, Any]]:
+    """fISN → шапка заказа (поля erp_import.ImportRow, кроме courier и car; address_id — id адреса доставки, 0 — нет);
+    заказа нет — нет и в словаре."""
+    out: dict[str, dict[str, Any]] = {}
+    for chunk in _chunks(sorted({i.upper() for i in isns})):  # type: ignore[arg-type]
+        for r in _select(conn, SQL_ORDER_HEADS.format(ph=_placeholders(len(chunk))), chunk):
+            out[_str(r[0]).upper()] = {
+                'doc_num': _str(r[1]), 'day': _day(r[2]), 'agent': _str(r[3]), 'customer': _str(r[4]),
+                'sales_area': _str(r[5]), 'comment': r[6] or '', 'price_type': _str(r[7]), 'tax_number': _str(r[8]),
+                'submit_date': _opt_day(r[9]), 'cosign_date': _opt_day(r[10]), 'assignor': _str(r[11]),
+                'account': _str(r[12]), 'doc_group': _str(r[13]), 'delay_days': r[14], 'pay_type': _str(r[15]),
+                'priority': r[16], 'contact': r[17] or '', 'create_method': _str(r[18]), 'division': _str(r[19]),
+                'send_status': _str(r[20]), 'delivery_date': _opt_day(r[21]), 'address_id': int(r[22] or 0)}
+    return out
+
+
+def load_order_import(connection_string: str, isns: Sequence[str]) -> tuple[
+        dict[str, OrderState], dict[int, Agent], dict[str, Car], dict[str, dict[str, Any]]]:
+    """«Excel ERP-ի համար»: то же, что load_order_states, и шапки заказов — одним соединением, только чтение."""
+    conn = connect(connection_string)
+    try:
+        return order_states(conn, isns), agents(conn), cars(conn), order_heads(conn, isns)
     finally:
         close_quietly(conn)
 

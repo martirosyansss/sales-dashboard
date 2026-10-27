@@ -1,7 +1,7 @@
 """Верхняя панель раздела «Маршруты» (Tesla+, решение владельца 11.10, вариант A «группы»: вместо меню слева №92 и тёмной
 шапки дашборда). Одно место — templates/_routes_top.html через routes_base.html: на каждой странице раздела те же группы,
 пункты и порядок, текущая группа и страница отмечены ровно один раз. Роли: администратор — все группы и разделы Sales
-Dashboard; «Гараж» — плоско свои три страницы, «Склад» — свою; ссылок, которые сервер не откроет роли, нет.
+Dashboard; «Гараж» — плоско свои четыре страницы, «Склад» — свою; ссылок, которые сервер не откроет роли, нет.
 Рендер — настоящий app_v2 (гейт, роли, шаблоны) с временной базой маршрутов (фикстура test_garage_public).
 Поведение в браузере — tests/routes_top_browser_check.py.
 """
@@ -18,7 +18,8 @@ ROOT = Path(__file__).resolve().parents[1]
 GROUPS = [
     ('Պլանավորում', [('/routes', 'Ակնարկ'), ('/routes/optimize', 'Օպտիմալացում'), ('/routes/learning', 'Ուսուցում')]),
     ('Առաքում', [('/routes/dispatch', 'Առաքում'), ('/routes/live', 'Մեքենաները առցանց')]),
-    ('Թիմ', [('/routes/drivers', 'Վարորդներ'), ('/routes/araqich', 'Առաքիչների KPI'), ('/routes/garage', 'Ավտոտնակ')]),
+    ('Թիմ', [('/routes/drivers', 'Վարորդներ'), ('/routes/araqich', 'Առաքիչների KPI'), ('/routes/garage', 'Ավտոտնակ'),
+             ('/routes/refuels', 'Լիցքավորումներ')]),
     ('Ֆինանսներ', [('/routes/pay', 'Աշխատավարձ'), ('/routes/cost', 'Առաքման արժեք')]),
 ]
 SETTINGS = ('/routes/settings', 'Կարգավորումներ')
@@ -26,10 +27,11 @@ LINKS = [x for _, items in GROUPS for x in items]
 PAGES = {'routes_overview.html': '/routes', 'routes_optimize.html': '/routes/optimize',
          'routes_dispatch.html': '/routes/dispatch', 'routes_learning.html': '/routes/learning',
          'routes_settings.html': '/routes/settings', 'routes_garage.html': '/routes/garage',
+         'routes_refuels.html': '/routes/refuels',
          'routes_pay.html': '/routes/pay', 'routes_araqich.html': '/routes/araqich',
          'routes_cost.html': '/routes/cost', 'routes_drivers.html': '/routes/drivers', 'routes_live.html': '/routes/live',
          'routes_warehouse.html': '/routes/warehouse'}
-GARAGE_PAGES = ['/routes/garage', '/routes/live', '/routes/drivers']
+GARAGE_PAGES = ['/routes/garage', '/routes/refuels', '/routes/live', '/routes/drivers']
 ITEM_RE = re.compile(r'<a class="rt-top-item" href="([^"]+)"( aria-current="page")?>\s*<span class="rt-top-ico" aria-hidden="true">'
                      r'<i class="fas fa-[\w-]+"></i></span>\s*<span class="rt-top-txt"><span class="rt-top-lbl">([^<]+)</span>'
                      r'<span class="rt-top-hint">[^<]+</span></span></a>')

@@ -2102,6 +2102,11 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
                        'lat': s.get('lat'), 'lon': s.get('lon'),
                        'status': s.get('status'), 'seq': s.get('seq'), 'trip': trips[s['stop_id']] + 1,
                        'weight_kg': round(float(s.get('weight_kg') or 0.0), 1),
+                       # отдано по весу (доля × вес точки; None — неизвестно) и деньги точки (courier.live.stop_money):
+                       # подсказка магазина на карте (пользователь 13.10); деньги API отдаёт только администратору
+                       'delivered_kg': (round(float(s.get('weight_kg') or 0.0) * min(1.0, float(s['share'])), 1)
+                                        if isinstance(s.get('share'), (int, float)) else None),
+                       'money': s.get('money'),
                        'planned_eta': _iso(own.get(s['stop_id'])),
                        'eta': _iso(etas[s['stop_id']][0]) if s['stop_id'] in etas else None,
                        'eta_source': ('road' if etas[s['stop_id']][1] else 'model') if s['stop_id'] in etas else None,

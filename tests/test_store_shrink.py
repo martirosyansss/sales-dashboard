@@ -565,7 +565,9 @@ def test_dispatch_dialog_and_learning_page_describe_active_rule():
     # заголовки правил в причинах журнала — те же слова, что на странице (ревью L3)
     for title in lr.STORE_RULE_TITLES.values():
         assert f'«{title}»' in ' '.join(html.split()), title
-    assert "routes_dispatch.js') }}?v=137" in (ROOT / 'templates' / 'routes_dispatch.html').read_text(encoding='utf-8')
+    from asset_versions import assert_minimum_asset_version
+    assert_minimum_asset_version((ROOT / 'templates' / 'routes_dispatch.html').read_text(encoding='utf-8'),
+                                 'routes_dispatch.js', 137)
 
 
 def test_run_learning_passes_active_rule_chains_and_size(client, monkeypatch):

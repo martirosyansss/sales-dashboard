@@ -380,6 +380,10 @@ curl.exe -i https://araqich.orix.am/api/courier/v1/ping
    location = /api/routes/drivers/scorecard { include snippets/araqich-garage-public.conf; }
    location = /static/css/routes_drivers.css { include snippets/araqich-garage-public.conf; }
    location = /static/js/routes_drivers.js  { include snippets/araqich-garage-public.conf; }
+   # Журнал заправок: те же права администратора/гаража, только чтение
+   location = /routes/refuels               { include snippets/araqich-garage-public.conf; }
+   location = /static/css/routes_refuels.css { include snippets/araqich-garage-public.conf; }
+   location = /static/js/routes_refuels.js  { include snippets/araqich-garage-public.conf; }
    # №78 «Պահեստ» (склад; приложение пускает только сессию роли «Склад», чужие сессии — 404)
    location = /routes/warehouse             { include snippets/araqich-garage-public.conf; }
    location = /api/routes/warehouse         { include snippets/araqich-garage-public.conf; }
@@ -406,13 +410,13 @@ curl.exe -i https://araqich.orix.am/api/courier/v1/ping
    192.168.1.11:
    ```yaml
      - hostname: araqich.orix.am
-       path: '^/(login|logout|favicon\.ico|routes/garage|routes/live|routes/warehouse|routes/drivers)$'
+       path: '^/(login|logout|favicon\.ico|routes/garage|routes/live|routes/warehouse|routes/drivers|routes/refuels)$'
        service: <как у правила ^/api/courier/v1/>
      - hostname: araqich.orix.am
        path: '^/api/routes/((garage|live|warehouse)(/[a-z0-9_-]+)*|drivers/scorecard)$'
        service: <как у правила ^/api/courier/v1/>
      - hostname: araqich.orix.am
-       path: '^/static/(css/(tokens|base|routes|routes_ui|routes_garage|routes_live|routes_warehouse|routes_drivers)\.css|js/(base|routes_top|rt_panels|routes_garage|routes_basemap|routes_live|routes_warehouse|routes_drivers)\.js|img/yandex_maps_logo_ru\.svg)$'
+       path: '^/static/(css/(tokens|base|routes|routes_ui|routes_garage|routes_live|routes_warehouse|routes_drivers|routes_refuels)\.css|js/(base|routes_top|rt_panels|routes_garage|routes_basemap|routes_live|routes_warehouse|routes_drivers|routes_refuels)\.js|img/yandex_maps_logo_ru\.svg)$'
        service: <как у правила ^/api/courier/v1/>
    ```
    Проверка и перезапуск: `cloudflared tunnel --config <config.yml> ingress validate`;

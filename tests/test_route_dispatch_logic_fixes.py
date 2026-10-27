@@ -311,8 +311,8 @@ def test_one_today_by_yerevan_when_server_clock_is_utc(client, monkeypatch):
     assert page['is_past'] is True and page['today'] == '2026-10-01'
     r = _post(client, '/api/routes/dispatch/edit', {'date': '2026-09-30', 'rev': d['rev'], 'action': 'approve'})
     assert r.status_code == 400 and r.get_json()['errors']['_'] == views.PAST_DAY_APPROVE
-    # день по умолчанию — следующий рабочий после сегодняшнего по Еревану (01.10 → 02.10), не после 30.09
-    assert _ok(client.get('/api/routes/dispatch'))['day'] == '2026-10-02'
+    # Правило 27.10: до 16:00 открывается сегодняшний день по Еревану (01.10), а не дата сервера UTC (30.09).
+    assert _ok(client.get('/api/routes/dispatch'))['day'] == '2026-10-01'
 
 
 def _real_clocks():

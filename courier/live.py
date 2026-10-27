@@ -7,7 +7,12 @@ LiveSource.fleet(день) — сырые данные терминалов по
 (route_optimizer.attach_live_facts): пакет route_optimizer не импортирует courier. Только чтение; нет courier.db — пусто,
 файл не создаётся. Вызывается в запросе Flask (day_model берёт базу из состояния раздела).
 
-Доля доставленного точки (delivered_share, №65 — по весу строк): своя действующая доставка; нет своей, а точка
+Вес точки — сколько везли: своя действующая доставка записана по другой версии точки (накладную переоформили после неё,
+пользователь 17.10 «вес от загруженного»: «Տրված 66,3 / 105,9 կգ», а не «66,3 / 66,3» при «մասնակի») — вес, строки
+без веса и доля — по той версии (_loaded); иначе — по действующей.
+
+Доля доставленного точки (delivered_share, №65 — по весу строк): своя действующая доставка — по строкам версии точки,
+которую видел водитель (snapshot_id события; накладную могли переоформить позже); нет своей, а точка
 поглотила другие (заказ, из которого сделана накладная, §5 п. 12) — доставленные кг поглощённых / вес точки (не больше
 1); иначе по статусу правила: full и covered (товар отдан по заказу) — 1, refused — 0, прочее — None (не доставлено).
 """
@@ -21,7 +26,7 @@ from datetime import date, datetime, timedelta
 from typing import Any, Mapping
 
 from . import clock, merge as mg
-from .facts import delivered_share
+from .facts import _line_keys, delivered_share
 from .store import Store
 
 TTL_TODAY_S = 10.0     # расчёт флота за сегодня переиспользуется столько секунд (опрос карты — раз в 15 с на зрителя)
@@ -65,23 +70,76 @@ def _return_kg(payload: Mapping[str, Any], stop: Mapping[str, Any] | None, lines
     return qty * unit if unit else None
 
 
+def _loaded(sid: str, stop: Mapping[str, Any], deliveries: Mapping[str, Mapping[str, Any]],
+            versions: Mapping[str, Mapping[int, Mapping[str, Any]]]) -> Mapping[str, Any]:
+    """Версия точки для веса на карте (описание модуля): своя действующая доставка записана по версии с другими
+    строками — та версия, иначе stop."""
+    own = deliveries.get(sid)
+    seen = versions.get(sid, {}).get(own.get('snapshot_id')) if own is not None else None   # type: ignore[arg-type]
+    return seen if seen is not None and _line_keys(seen) != _line_keys(stop) else stop
+
+
 def _share(sid: str, stop: Mapping[str, Any], status: str, deliveries: Mapping[str, Mapping[str, Any]],
-           absorbed: Mapping[str, list[str]], data: Mapping[str, Mapping[str, Any]]
+           absorbed: Mapping[str, list[str]], data: Mapping[str, Mapping[str, Any]],
+           versions: Mapping[str, Mapping[int, Mapping[str, Any]]] | None = None
            ) -> tuple[float | None, datetime | None]:
-    """(доля доставленного 0…1 или None, момент отметки) — правило в описании модуля."""
+    """(доля доставленного 0…1 или None, момент отметки) — правило в описании модуля. versions — точка → снимок →
+    версия (DayModel.versions): строки доставки — по версии её snapshot_id (facts.delivered_share, seen)."""
+    def seen(x: str, d: Mapping[str, Any]) -> Mapping[str, Any] | None:
+        return (versions or {}).get(x, {}).get(d.get('snapshot_id'))   # type: ignore[arg-type]
     own = deliveries.get(sid)
     if own is not None:
-        return delivered_share(stop, own), own['at']
+        return delivered_share(stop, own, seen(sid, own)), own['at']
     kg = _number(stop.get('weight_kg'))
     parts = [(x, deliveries[x]) for x in absorbed.get(sid, ()) if x in deliveries]
     if parts and kg > 0:
-        done = math.fsum(_number(data[x].get('weight_kg')) * (delivered_share(data[x], d) or 0.0) for x, d in parts)
+        done = math.fsum(_number(data[x].get('weight_kg')) * (delivered_share(data[x], d, seen(x, d)) or 0.0)
+                         for x, d in parts)
         return min(1.0, done / kg), max(d['at'] for _, d in parts)
     if status in ('full', 'covered'):
         return 1.0, None
     if status == 'refused':
         return 0.0, None
     return None, None
+
+
+MONEY_TOL = 1.0   # ֏: расхождение меньше — округление, не проблема
+
+
+def stop_money(v: Any, collect: str | None, amount_due: Any, pays: list[Mapping[str, Any]]) -> dict[str, Any] | None:
+    """Деньги точки для подсказки карты (пользователь 13.10 «сколько взял и сколько должно было быть, проблема — пиши»).
+    Правило — как «Գումար» (views.money_drivers), но по точке, а не по водителю:
+    - due — стоимость отданного по последнему заявлению (partial — меньше накладной), covered — 0; без заявления — None;
+    - expected — сколько надо было взять: только cash / cash_ecr (covered — 0); безнал и «ask» — None;
+    - paid — по накладной всеми водителями (StopView.paid: без отменённых, с поглощёнными и covered-сёстрами);
+      debt — в счёт старого долга (payments_total платежей, чей получатель — эта точка);
+    - problems — коды: no_payment (надо взять, ничего не взято), short (взято меньше), over (взято больше стоимости),
+      noncash_paid (безнал, а деньги взяты), no_receipt (ՀԴՄ без чека), conflict (заявления расходятся — в офис).
+    v — StopView правила или None (точки нет в правиле): тогда None."""
+    if v is None:
+        return None
+    from .events import payments_total
+    from .views import CASH_COLLECT, _money
+    paid = _money(v.paid)
+    due = _money(v.due) if v.statement is not None or v.status == 'covered' else None
+    expected = (0.0 if v.status == 'covered' else due) if collect in CASH_COLLECT else None
+    flags = {f for e in pays for f in e.get('flags') or ()} | set(v.flags)
+    problems: list[dict[str, Any]] = []
+    if expected is not None and expected > MONEY_TOL:
+        if paid <= 0:
+            problems.append({'code': 'no_payment', 'amd': expected})
+        elif paid < expected - MONEY_TOL:
+            problems.append({'code': 'short', 'amd': round(expected - paid, 2)})
+    if collect not in CASH_COLLECT and collect != 'ask' and paid > MONEY_TOL:
+        problems.append({'code': 'noncash_paid', 'amd': paid})
+    elif due is not None and paid > due + MONEY_TOL:
+        problems.append({'code': 'over', 'amd': round(paid - due, 2)})
+    if 'no_ecr_receipt' in flags:
+        problems.append({'code': 'no_receipt'})
+    if 'merge_conflict' in flags:
+        problems.append({'code': 'conflict'})
+    return {'collect': collect, 'amount_due': _number(amount_due) if amount_due is not None else None, 'due': due,
+            'expected': expected, 'paid': paid, 'debt': payments_total(pays)['debt'], 'problems': problems}
 
 
 class _Entry:
@@ -131,8 +189,9 @@ class LiveSource:
 
     def _compute(self, day: str) -> dict[str, dict[str, Any]]:
         """Машина → факт дня (рабочий день day, YYYY-MM-DD):
-        - stops — точки последнего /day машины: stop_id, customer_id, name, lat, lon, seq, weight_kg, unweighed (строк
-          без веса), status (§5 п. 12), share (доля доставленного или None), delivered_at (ISO или None);
+        - stops — точки последнего /day машины: stop_id, customer_id, name, lat, lon, seq, weight_kg и unweighed (строк
+          без веса) — сколько везли (_loaded), status (§5 п. 12), share (доля доставленного или None), delivered_at (ISO или None), money
+          (stop_money: сколько взято / надо было взять и проблемы; None — точки нет в правиле);
         - track — [(at_ms, lat, lon, acc, spd, brg)] по возрастанию момента;
         - drivers — водители, входившие на терминал машины (по последнему событию, последний — первым);
         - last_contact — последняя связь терминала машины (получение события или любой запрос терминала), ISO;
@@ -158,6 +217,10 @@ class LiveSource:
         absorbed: dict[str, list[str]] = {}
         for x, owner in model.absorbed_by.items():
             absorbed.setdefault(owner, []).append(x)
+        pays: dict[str, list[dict[str, Any]]] = {}   # точка-получатель (как «Գումար») → её платежи
+        for e in events:
+            if e['type'] == 'payment':
+                pays.setdefault(model.payee(e['stop_id']) or '', []).append(e)
         cars = sorted(set(model.current) | {e['car_code'] for e in events + beats})
         out: dict[str, dict[str, Any]] = {}
         units: dict[str, dict[Any, float]] = {}   # машина → вес единицы товара по product_id (из строк её точек)
@@ -166,15 +229,19 @@ class LiveSource:
             for s in model.current.get(car, []):
                 sid = s['stop_id']
                 status = model.views[sid].status if sid in model.views else 'pending'
-                share, at = _share(sid, s, status, deliveries, absorbed, model.data)
+                loaded = _loaded(sid, s, deliveries, model.versions)
+                share, at = _share(sid, loaded, status, deliveries, absorbed, model.data, model.versions)
                 cust = s.get('customer') or {}
                 cid = cust.get('id')
                 point = _point(s)
                 stops.append({'stop_id': sid, 'customer_id': cid if isinstance(cid, int) and not isinstance(cid, bool)
                               else None, 'name': cust.get('name'), 'lat': point[0] if point else None,
                               'lon': point[1] if point else None, 'seq': s.get('seq'),
-                              'weight_kg': _number(s.get('weight_kg')), 'unweighed': _unweighed(s), 'status': status,
-                              'share': share, 'delivered_at': clock.iso(at) if at is not None else None})
+                              'weight_kg': _number(loaded.get('weight_kg')), 'unweighed': _unweighed(loaded),
+                              'status': status,
+                              'share': share, 'delivered_at': clock.iso(at) if at is not None else None,
+                              'money': stop_money(model.views.get(sid), model.collect.get(sid, s.get('collect')),
+                                                  s.get('amount_due'), pays.get(sid, []))})
             units[car] = {ln.get('product_id'): _number(ln['weight_kg']) / _number(ln['qty'])
                           for s in model.current.get(car, []) for ln in s.get('lines') or ()
                           if isinstance(ln, dict) and _number(ln.get('qty')) > 0 and _number(ln.get('weight_kg')) > 0}
