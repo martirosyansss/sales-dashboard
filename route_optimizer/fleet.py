@@ -110,6 +110,7 @@ if TYPE_CHECKING:
 
 FLEET_SAMPLES = 30          # проб Монте-Карло на день доставки (год и пик — по 30)
 _EPS = 1e-9
+LOAD_CAP = 0.90     # предел по умолчанию; рабочее значение приходит из настроек в TruckNorms.load_cap
 BUFFER_CAP_REL = 0.40       # запас на рейс (№66) — не больше 40% минут рейса
 NO_PACE = (1.0, 1.0)        # темп машины без выученных множителей: (разгрузка, путь)
 BIG_YEREVAN_KM = 3.0        # приоритет малых машин в Ереване (№68) по умолчанию: точка зоны на большой — как 3 км её пути
@@ -178,6 +179,7 @@ class TruckNorms:
     # запас в конце дня (№78, «Развоз»): последний рейс машины возвращается не позже work_minutes − max(этот запас, запас
     # рейса) — запасы не складываются (end_limit, tail); 0 — без запаса, расчёт прежний
     end_reserve: float = 0.0
+    load_cap: float = LOAD_CAP   # доля тоннажа обычного рейса; исключение для одного тяжёлого заказа — в _load_limit
 
     @classmethod
     def from_settings(cls, s: Mapping[str, Any], lunch: bool = False) -> TruckNorms:
@@ -199,6 +201,7 @@ class TruckNorms:
                    warehouse_load_fixed_min=float(s.get('warehouse_load_fixed_min') or 0),
                    warehouse_load_min_per_tonne=float(s.get('warehouse_load_min_per_tonne') or 0),
                    work_start_minute=float(h1 * 60 + m1),
+                   load_cap=float(s.get('truck_load_cap_pct', LOAD_CAP * 100)) / 100.0,
                    loading_configured=(s.get('warehouse_load_fixed_min') is not None and s.get('warehouse_load_min_per_tonne') is not None),
                    **meal)
 
@@ -648,7 +651,7 @@ def _cut(seq: Sequence[int], stops: Sequence[_Stop], cap: float) -> list[list[in
 
 def _load_limit(seq: Sequence[int], stops: Sequence[_Stop], truck: FleetTruck,
                 trucks: Sequence[FleetTruck], load_cap: float | None) -> float:
-    """Предел рейса; исключение выше 90% — только отдельный неизбежно тяжёлый заказ."""
+    """Предел рейса; выше выбранной доли — только отдельный неизбежно тяжёлый заказ."""
     if load_cap is None:
         return truck.capacity_kg
     if len(seq) == 1:
@@ -708,11 +711,11 @@ def _leg_climbs(nodes: Sequence[Point], norms: Norms) -> list[float | None] | No
 
 
 def trip_running_cost(points: Sequence[Point], kgs: Sequence[float], depot: Point,
-                      norms: Norms, truck: FleetTruck, terrain_on: bool = True) -> RunningCost:
+                      norms: Norms, truck: FleetTruck, terrain_on: bool = True, origin: Point | None = None) -> RunningCost:
     """Литры и износ рейса «склад → points → склад»; terrain_on — с рельефом (№85: показанные литры), False — ровные
     (сравнение вариантов плана при выключенном terrain.IN_PLAN)."""
     norms = norms.for_trucks()
-    nodes = [depot, *points, depot]
+    nodes = [origin or depot, *points, depot]
     return route_cost([norms.km(a, b) for a, b in zip(nodes, nodes[1:])], kgs, truck,
                       _leg_climbs(nodes, norms) if terrain_on else None)
 
@@ -1462,9 +1465,6 @@ def _balance(trips: list[Trip], stops: Sequence[_Stop], d: Matrix, m: Matrix, tr
 
 # --- Решатель PyVRP поверх сборки (ответ владельца №45) ---
 
-LOAD_CAP = 0.90     # предел загрузки рейса (ответ №45): тяжелее — только заказ, который иначе не увезти
-
-
 def _shared(trips: Sequence[Trip], stops: Sequence[_Stop], tn: TruckNorms) -> list[_Stop]:
     """Заказы с грузом одной поездки: заказ в k рейсах (тяжёлый) — в каждом 1/k его кг (как dispatch._shares)."""
     share = Counter(i for t in trips for i in t.items)
@@ -1542,9 +1542,9 @@ def _late(rows: Sequence[tuple[int, float, float, float]], tn: TruckNorms, buffe
     return bool(rows) and rows[-1][1] + rows[-1][2] > tn.end_limit(buffer) + _EPS
 
 
-def _over_cap(trips: Sequence[Trip]) -> int:
-    """Рейсов тяжелее предела загрузки LOAD_CAP."""
-    return sum(1 for t in trips if t.kg > LOAD_CAP * t.capacity_kg + 1e-6)
+def _over_cap(trips: Sequence[Trip], load_cap: float = LOAD_CAP) -> int:
+    """Рейсов тяжелее выбранного предела загрузки."""
+    return sum(1 for t in trips if t.kg > load_cap * t.capacity_kg + 1e-6)
 
 
 def _polish_orders(trips: list[Trip], stops: Sequence[_Stop], d: Matrix, m: Matrix,
@@ -1714,14 +1714,15 @@ def _better(new: Sequence[Trip], old: Sequence[Trip], tn: TruckNorms | None = No
     extra = (bias(new), bias(old)) if bias is not None else (0.0, 0.0)
     return (math.fsum(t.liters * price + t.wear_amd for t in new) + extra[0]
             <= math.fsum(t.liters * price + t.wear_amd for t in old) + extra[1] + 1e-6
-            or _over_cap(new) < _over_cap(old))
+            or _over_cap(new, tn.load_cap if tn is not None else LOAD_CAP)
+            < _over_cap(old, tn.load_cap if tn is not None else LOAD_CAP))
 
 
 def _solver(trips: list[Trip], stops: Sequence[_Stop], d: Matrix, m: Matrix, trucks: Sequence[FleetTruck],
             tn: TruckNorms, used: Mapping[str, float] | None,
             fixed: Sequence[tuple[str, Sequence[int], float]] | None, fed: Collection[str] = (),
             iterations: int = vrp.ITERATIONS) -> list[Trip] | None:
-    """Рейсы дня решателем PyVRP (vrp.solve: цель — литры, рейс не тяжелее LOAD_CAP; если так всё не помещается — без
+    """Рейсы дня решателем PyVRP (vrp.solve: цель — литры, предел tn.load_cap; если так всё не помещается — без
     предела) со стартом от сборки trips. None — решателя нет или его рейсы не проходят проверку «Развоза»: каждый
     заказ сборки — в рейсах целиком (те же поездки), повторов нет, тоннаж, центр, окна и конец рабочего дня (рейсы
     машины подряд с used, как dispatch._timeline), ожидание у окон за день выросло не больше WAIT_MERGE_SLACK,
@@ -1835,20 +1836,37 @@ def _solver(trips: list[Trip], stops: Sequence[_Stop], d: Matrix, m: Matrix, tru
                  for f in (1.0, RESERVE_RETRY)]
     got: list[Trip] | None = None
     why: str | None = None
-    for kw in tries:
-        got, why = _solver_try(trips, stops, d, m, trucks, tn, fed, pieces, origin, vehicles, shifts, begin, kw, keep,
-                               when, placed, start0, locked, pinned, pins, wait0)
-        if got is not None or why != 'time':
-            break
-        if kw is not tries[-1]:
-            logger.info('[Routes] PyVRP: с запасом на рейс не прошло проверку (%s) — ещё попытка с запасом × %s',
-                        why, RESERVE_RETRY)
+    # Короткая проба входит в итоговый поиск: больше итераций улучшает цель
+    # решателя, но не обязательно точную стоимость остаточного груза. Дополнительные
+    # старты воспроизводимы и ограничены числом итераций, а не скоростью сервера.
+    searches = [(vrp.SEED, iterations)]
+    if iterations > QUALITY_PROBE_ITERATIONS and len(pieces) >= QUALITY_MIN_PIECES:
+        searches = [(vrp.SEED, QUALITY_PROBE_ITERATIONS), *searches,
+                    (7, QUALITY_PROBE_ITERATIONS), (23, QUALITY_PROBE_ITERATIONS)]
+    bias = lambda rows: math.fsum(_yerevan_bias(t.items, stops, by_code[t.truck], tn) for t in rows)
+    for seed, budget in searches:
+        candidate = None
+        for kw in tries:
+            options = {**kw, 'iterations': budget, 'seed': seed}
+            candidate, why = _solver_try(trips, stops, d, m, trucks, tn, fed, pieces, origin, vehicles, shifts, begin,
+                                         options, keep, when, placed, start0, locked, pinned, pins, wait0)
+            if candidate is not None or why != 'time':
+                break
+            if kw is not tries[-1]:
+                logger.info('[Routes] PyVRP: с запасом на рейс не прошло проверку (%s) — ещё попытка с запасом × %s',
+                            why, RESERVE_RETRY)
+        if candidate is not None:
+            candidate = _polish_orders(candidate, stops, d, m, trucks, tn, used, fixed, fed)
+            if got is None or _better(candidate, got, tn, bias):
+                got = candidate
     if got is None and why in ('load', 'time', 'wait'):
         logger.warning('[Routes] PyVRP: рейсы не прошли проверку «Развоза» — рейсы своим расчётом')
     return got
 
 
 RESERVE_RETRY = 1.5   # решение PyVRP с запасом на рейс не уложилось по времени — ещё попытка с запасом × 1,5 (№66)
+QUALITY_PROBE_ITERATIONS = 5000
+QUALITY_MIN_PIECES = 12
 
 
 def _solver_try(trips: list[Trip], stops: Sequence[_Stop], d: Matrix, m: Matrix, trucks: Sequence[FleetTruck],
@@ -1862,7 +1880,7 @@ def _solver_try(trips: list[Trip], stops: Sequence[_Stop], d: Matrix, m: Matrix,
     тоннаж, центр, предел загрузки; 'time' — окно приёма или конец дня по точной шкале; 'wait' — ожидание у окон выросло
     больше WAIT_MERGE_SLACK или закреплённый рейс выезжает позже."""
     by_code = {t.car_code: t for t in trucks}
-    res = vrp.solve(pieces, d, m, vehicles, shifts, begin, LOAD_CAP, **kw)
+    res = vrp.solve(pieces, d, m, vehicles, shifts, begin, tn.load_cap, **kw)
     if res is None:
         res = vrp.solve(pieces, d, m, vehicles, shifts, begin, None, **kw)
     if res is None:
@@ -1895,9 +1913,11 @@ def _solver_try(trips: list[Trip], stops: Sequence[_Stop], d: Matrix, m: Matrix,
     if any(not _vehicle_allowed(vs2[i], by_code[t.truck]) for t in out for i in t.items):
         logger.warning('[Routes] PyVRP: нарушены ограничения машин магазинов — рейсы своим расчётом')
         return None, 'vehicle'
-    ok = all(t.kg <= by_code[t.truck].capacity_kg + 1e-6 and (by_code[t.truck].center_ok or not any(vs2[v].center for v in t.items))
+    # закреплённый рейс — как есть: его тоннаж (допуск dispatch.TRIP_OVERLOAD) не отменяет решения; центр — проверяется
+    ok = all((t.kg <= by_code[t.truck].capacity_kg + 1e-6 or (t.truck, t.items) in pinned)
+             and (by_code[t.truck].center_ok or not any(vs2[v].center for v in t.items))
              for t in out if t.truck not in locked)
-    ok = ok and all(t.kg <= _load_limit(t.items, vs2, by_code[t.truck], trucks, LOAD_CAP) + 1e-6
+    ok = ok and all(t.kg <= _load_limit(t.items, vs2, by_code[t.truck], trucks, tn.load_cap) + 1e-6
                     for t in out if t.truck not in locked and (t.truck, t.items) not in pinned)
     ok = ok and all(len(t.items) == 1 for t in out if t.truck not in locked and (t.truck, t.items) not in pinned
                     and any(vs2[i].solo for i in t.items))   # отдельный рейс (№78); закреплённые — как есть
@@ -1951,7 +1971,7 @@ def route_day(points: Sequence[Point], kgs: Sequence[float], revenues: Sequence[
     расчёт прежний."""
     if (balance or solver) and (overflow or busy is not None or departs is not None):
         raise ValueError('balance и solver — только для сборки плана развоза: overflow=False, без busy и departs')
-    load_cap = LOAD_CAP if solver else load_cap
+    load_cap = tn.load_cap if solver else load_cap
     if load_cap is not None and not 0 < load_cap <= 1:
         raise ValueError('load_cap должен быть в пределах (0, 1]')
     uniq = sorted(set(points))
@@ -2001,7 +2021,7 @@ def route_day(points: Sequence[Point], kgs: Sequence[float], revenues: Sequence[
                 shared = _shared(rows, stops, tn)
                 truck_by_code = {t.car_code: t for t in trucks}
                 return all((t.truck, t.items) in fixed_keys or
-                           t.kg <= _load_limit(t.items, shared, truck_by_code[t.truck], trucks, LOAD_CAP) + 1e-6
+                           t.kg <= _load_limit(t.items, shared, truck_by_code[t.truck], trucks, load_cap) + 1e-6
                            for t in rows)
 
             if not valid_load(best):
@@ -2018,7 +2038,8 @@ def route_day(points: Sequence[Point], kgs: Sequence[float], revenues: Sequence[
                     if yerevan else None)
             if _better(alt, best, tn, bias):
                 best = alt
-        trips = best
+        from .route_quality import improve_routes
+        trips = improve_routes(best, stops, d, m, trucks, tn, used, fixed, fed) if solver else best
     if priority is not None and any(priority):   # №98: старшие заказы — в рейсы вместо младших
         trips, gave = _prioritize(trips, stops, d, m, trucks, tn, used, fixed, fed, load_cap)
         why.update({i: 'yield' for i in gave})   # уступил место заказу, который ждёт дольше
@@ -2047,7 +2068,7 @@ def _reported(trips: list[Trip], stops: Sequence[_Stop], d: Matrix, pts: Sequenc
 
 def route_trip(points: Sequence[Point], kgs: Sequence[float], depot: Point, norms: Norms,
                tn: TruckNorms, reorder: bool = True, windows: Sequence[Window] | None = None,
-               start: float = 0.0, truck: str | None = None) -> tuple[list[int], float, float]:
+               start: float = 0.0, truck: str | None = None, origin: Point | None = None) -> tuple[list[int], float, float]:
     """Рейс «склад → points → склад»: (порядок объезда — номера points, км, минуты: езда + разгрузка).
     reorder — улучшить порядок 2-opt (от заданного; длина не растёт), иначе — как задан. windows — окна
     приёма точек: если с выезда start (минуты от начала дня машины) заданный порядок их соблюдает, 2-opt
@@ -2056,7 +2077,7 @@ def route_trip(points: Sequence[Point], kgs: Sequence[float], depot: Point, norm
     if not points:
         return [], 0.0, 0.0
     pace, yer = tn.pace_of(truck), tn.yerevan_of(truck)
-    d, m = _matrices(points, depot, norms, tn)
+    d, m = _matrices(points, depot, norms, tn, origin=origin)
     stops = [_Stop(i + 1, float(kg), 0.0, tn.unload_at(float(kg), points[i]), yerevan=tn.in_yerevan(points[i]))
              for i, kg in enumerate(kgs)]
     if windows is not None:
@@ -2076,7 +2097,8 @@ def route_trip(points: Sequence[Point], kgs: Sequence[float], depot: Point, norm
 def trip_schedule(points: Sequence[Point], kgs: Sequence[float], depot: Point, norms: Norms, tn: TruckNorms,
                   start: float = 0.0, windows: Sequence[Window] | None = None,
                   parts: dict[str, Any] | None = None,
-                  lunch: tuple[bool, bool] | None = None, truck: str | None = None) -> tuple[float, list[float], float]:
+                  lunch: tuple[bool, bool] | None = None, truck: str | None = None,
+                  origin: Point | None = None) -> tuple[float, list[float], float]:
     """Рейс «склад → points → склад» в заданном порядке, машина свободна с start (минуты от начала дня машины):
     (выезд, прибытия к точкам, минуты рейса от выезда — езда + разгрузка + ожидание у окон). Окно первой точки
     позже, чем машина туда доедет, — выезд позже, чтобы не ждать у неё (как ставит рейсы _plan_timed); выезд не
@@ -2087,7 +2109,7 @@ def trip_schedule(points: Sequence[Point], kgs: Sequence[float], depot: Point, n
     (№68, tn.yerevan_of: разгрузка точки в parts['legs'] — с ней)."""
     if not points:
         return start, [], 0.0
-    _, m = _matrices(points, depot, norms, tn)
+    _, m = _matrices(points, depot, norms, tn, origin=origin)
     stops = [_Stop(i + 1, float(kg), 0.0, tn.unload_at(float(kg), points[i]),
                    *(windows[i] if windows is not None else (0.0, math.inf)), yerevan=tn.in_yerevan(points[i]))
              for i, kg in enumerate(kgs)]
@@ -2127,13 +2149,13 @@ def trip_forecast(points: Sequence[Point], kgs: Sequence[float], depot: Point, n
 
 
 def load_limit(kgs: Sequence[float], center: Sequence[bool], allowed: Sequence[Collection[str] | None],
-               truck: FleetTruck, trucks: Sequence[FleetTruck]) -> float:
-    """Предел груза рейса из заказов kgs (в центре, допустимые машины) для машины truck по правилу сборки LOAD_CAP
-    (_load_limit): 90% тоннажа; рейс из одного заказа тяжелее 90% самой большой подходящей ему машины из trucks — весь
+               truck: FleetTruck, trucks: Sequence[FleetTruck], load_cap: float = LOAD_CAP) -> float:
+    """Предел груза рейса из заказов kgs (в центре, допустимые машины) для машины truck по правилу сборки load_cap
+    (_load_limit): выбранная доля тоннажа; рейс из одного заказа тяжелее этой доли самой большой подходящей машины — весь
     тоннаж (такой заказ иначе не увезти)."""
     stops = [_Stop(0, float(kg), 0.0, 0.0, center=c, allowed_trucks=None if a is None else frozenset(a))
              for kg, c, a in zip(kgs, center, allowed)]
-    return _load_limit(range(len(stops)), stops, truck, trucks, LOAD_CAP)
+    return _load_limit(range(len(stops)), stops, truck, trucks, load_cap)
 
 
 # --- День доставки: Монте-Карло ---
@@ -2198,8 +2220,28 @@ class FleetDay:
         return self.peak_kg_total / self.peak_capacity * 100.0 if self.peak_capacity > 0 else None
 
 
+class MatrixMemo:
+    """Матрицы рейсов на один расчёт (Norms.matrices; _remove_saves — тот же рейс без одной точки, по разу на магазин): _matrices
+    на часть точек уже посчитанного рейса берёт срез — те же числа без нового обхода всех пар. pts[0] — начало рейса: у
+    среза оно то же. Точки с одинаковыми координатами срезом не берутся (диагональ матрицы — нули, _matrices посчитает сам)."""
+
+    def __init__(self) -> None:
+        self.rows: list[tuple[dict[Point, int], Matrix, Matrix, Matrix, list[bool]]] = []
+
+    def put(self, pts: Sequence[Point], d: Matrix, m: Matrix, v: Matrix, city: list[bool]) -> None:
+        self.rows.append(({p: i for i, p in reversed(list(enumerate(pts)))}, d, m, v, city))
+
+    def get(self, pts: Sequence[Point]) -> tuple[Matrix, Matrix, Matrix, list[bool]] | None:
+        for index, d, m, v, city in reversed(self.rows):
+            at = [index.get(p) for p in pts]
+            if at[0] == 0 and None not in at and len(set(at)) == len(at):
+                return ([[d[a][b] for b in at] for a in at], [[m[a][b] for b in at] for a in at],
+                        [[v[a][b] for b in at] for a in at], [city[a] for a in at])
+        return None
+
+
 def _matrices(points: Sequence[Point], depot: Point, norms: Norms, tn: TruckNorms | None = None,
-              climb: bool = False) -> tuple[Matrix, Matrix]:
+              climb: bool = False, origin: Point | None = None) -> tuple[Matrix, Matrix]:
     """Км (norms.km — по дорогам или по прямой × извилистость) и минуты езды между складом (0) и точками дня —
     направленно: d[a][b] — от a до b (одностороннее движение, Valhalla). Дороги — профиль грузовика
     (Norms.for_trucks); скорость участка — Norms.leg_speed (время Valhalla; иначе скорость города, если оба конца в
@@ -2207,44 +2249,52 @@ def _matrices(points: Sequence[Point], depot: Point, norms: Norms, tn: TruckNorm
     norms = norms.for_trucks()
     if norms.traffic is not None and tn is not None and tn.work_start_minute is not None:
         norms = replace(norms, traffic_start_min=tn.work_start_minute)
-    pts = [depot, *points]
-    if norms.roads is not None:
-        norms.roads.ensure(pts)
-    n = len(pts)
-    city = [in_city(p, norms.city_center, norms.city_radius_km) for p in pts]
-    d = [[0.0] * n for _ in range(n)]
-    m = [[0.0] * n for _ in range(n)]
-    v = [[0.0] * n for _ in range(n)]   # скорость участка, км/ч (до часового профиля)
-    for a in range(n):
-        pa = pts[a]
-        for b in range(n):
-            if a == b:
-                continue
-            pb = pts[b]
-            km = norms.km(pa, pb)
-            both = city[a] and city[b]
-            speed = v[a][b] = norms.leg_speed(pa, pb, km, both)
-            if norms.traffic is not None:
-                speed *= norms.traffic.minimum(both)
-            d[a][b] = km
-            m[a][b] = km / speed * 60.0
-            if norms.provider is not None:
-                m[a][b] = norms.provider.minutes(pa, pb)
+    pts = [origin or depot, *points]
+    memo = None if climb else norms.matrices
+    hit = memo.get(pts) if memo is not None else None
+    if hit is not None:
+        d, m, v, city = hit
+    else:
+        if norms.roads is not None:
+            norms.roads.ensure([*pts, depot] if origin else pts)
+        n = len(pts)
+        city = [in_city(p, norms.city_center, norms.city_radius_km) for p in pts]
+        d = [[0.0] * n for _ in range(n)]
+        m = [[0.0] * n for _ in range(n)]
+        v = [[0.0] * n for _ in range(n)]   # скорость участка, км/ч (до часового профиля)
+        for a in range(n):
+            pa = pts[a]
+            for b in range(n):
+                if a == b:
+                    continue
+                pb = depot if origin is not None and b == 0 else pts[b]
+                km = norms.km(pa, pb)
+                both = city[a] and (in_city(depot, norms.city_center, norms.city_radius_km) if origin is not None and b == 0 else city[b])
+                speed = v[a][b] = norms.leg_speed(pa, pb, km, both)
+                if norms.traffic is not None:
+                    speed *= norms.traffic.minimum(both)
+                d[a][b] = km
+                m[a][b] = km / speed * 60.0
+                if norms.provider is not None:
+                    m[a][b] = norms.provider.minutes(pa, pb)
+        if memo is not None:
+            memo.put(pts, d, m, v, city)
     if norms.provider is not None or norms.traffic is not None or (tn is not None and tn.load(1000) > 0):
         from .traffic_validation import TravelMatrix
-        m = TravelMatrix(m, d, city, norms, tn, pts, v)
-    return (_with_climbs(d, pts, norms) if climb else d), m
+        m = TravelMatrix(m, d, city, norms, tn, pts, v, return_point=depot if origin else None)
+    return (_with_climbs(d, pts, norms, return_point=depot if origin else None) if climb else d), m
 
 
-def _with_climbs(d: Matrix, pts: Sequence[Point], norms: Norms) -> Matrix:
+def _with_climbs(d: Matrix, pts: Sequence[Point], norms: Norms, return_point: Point | None = None) -> Matrix:
     """Км d между точками pts (0 — склад) с подъёмами участков (KmMatrix, №85); у дорог нет высот или подъёмы ещё считает
     фоновый поток — d как есть."""
     roads = norms.roads
-    if roads is None or not getattr(roads, 'terrain', False) or not roads.ensure_climb(pts):
+    if roads is None or not getattr(roads, 'terrain', False) or not roads.ensure_climb([*pts, return_point] if return_point else pts):
         return d
     n = len(pts)
     out = KmMatrix(d)
-    out.climb = [[0.0 if a == b else roads.climb(pts[a], pts[b]) for b in range(n)] for a in range(n)]
+    out.climb = [[0.0 if a == b else roads.climb(pts[a], return_point if b == 0 and return_point else pts[b])
+                  for b in range(n)] for a in range(n)]
     return out
 
 

@@ -108,6 +108,10 @@ class CrewFacts(Protocol):
         """Человек (id водителя «Առաքիչ») → имя."""
         ...
 
+    def terminal_people(self, day: str) -> dict[str, tuple[int, str]]:
+        """Машина → (id, имя) человека, чей PIN на её терминале последний за день (без помощника)."""
+        ...
+
 
 @dataclass(frozen=True)
 class CarDay:

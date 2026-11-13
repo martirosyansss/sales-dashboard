@@ -32,6 +32,24 @@ class ProviderMatrix:
         return self.durations.get((a, b))
 
 
+def on_preferred_roads(matrix, norms):
+    """Темп прогноза Яндекса применяется к выбранным основным дорогам; его срезки не заменяют путь.
+
+    Это оценка времени по среднему темпу пары, а не прогноз пробок на точной геометрии выбранного коридора.
+    """
+    if matrix is None:
+        return None
+    from .route_policy import POLICY_ID
+    distances, durations = {}, {}
+    for pair, raw_km in matrix.distances.items():
+        km = norms.km(*pair)
+        distances[pair] = km
+        durations[pair] = matrix.durations[pair] * km / raw_km if raw_km > 0 else 0.
+    return ProviderMatrix(distances, durations, {**matrix.report, 'policy': POLICY_ID,
+        'distance_source': getattr(norms.roads, 'km_source', 'straight'), 'time_method': 'provider_pace_on_main_roads',
+        'scope': 'Средний темп прогноза Яндекса на расстоянии выбранных основных дорог; оценка, не трафик точного пути'})
+
+
 def fetch(points, departure, key, *, get=requests.get, budget_seconds=30):
     """Блоки ≤100 элементов, только готовая полная матрица может участвовать в расчёте."""
     distances, durations = {}, {}

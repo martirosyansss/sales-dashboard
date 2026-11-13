@@ -125,3 +125,8 @@
     .rs-toc { position: static; max-width: none; flex-basis: 100%; max-height: none; }
     .rs-search { width: 100%; }
 }
+
+.rs-center-role { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr)); gap: 14px 22px; margin: 16px 0; }
+.rs-center-role > div { min-width: 0; }
+.rs-center-role label { display: block; margin-bottom: 6px; }
+.rs-center-role .rt-input { width: 100%; max-width: 100%; min-width: 0; box-sizing: border-box; }

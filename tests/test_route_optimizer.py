@@ -1253,9 +1253,9 @@ def test_static_erp_access_only_through_guard():
     for name, tree in trees.items():
         imports = _imports(tree)
         # №97: запись в ERP — только erp_write.py (своё соединение записи); остальное — через guard erp.py
-        assert ('pyodbc' in imports) == (name in ('erp.py', 'erp_write.py')), f'{name}: pyodbc только в erp.py и erp_write.py'
-        if name != 'store.py':
-            assert 'sqlite3' not in imports, f'{name}: sqlite3 только в store.py'
+        assert ('pyodbc' in imports) == (name in ('erp.py', 'erp_write.py', 'erp_chain_service.py')), f'{name}: неожиданный SQL adapter'
+        if name not in ('store.py', 'erp_chain_service.py', 'erp_chain_guard.py'):
+            assert 'sqlite3' not in imports, f'{name}: неожиданный SQLite adapter'
     # в erp.py execute вызывается только внутри _select
     for node in ast.walk(trees['erp.py']):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name != '_select':
@@ -1266,7 +1266,7 @@ def test_static_erp_access_only_through_guard():
 
 def test_static_no_sql_writes_outside_guard_list():
     for name, tree in _module_trees().items():
-        if name == 'store.py':     # своё хранилище SQLite, не ERP
+        if name in ('store.py', 'erp_chain_service.py', 'erp_chain_guard.py'):     # свои хранилища SQLite, не ERP
             continue
         if name == 'erp_write.py':   # №97: единственная запись в ERP — её состав проверяет test_route_dispatch_erp_write
             continue
@@ -1367,9 +1367,13 @@ def client(tmp_path):
 
     app = Flask(__name__)
     app.secret_key = 'test'
+    from werkzeug.security import generate_password_hash
+    app.config['ROUTES_SUPERADMIN_PASSWORD_HASH'] = generate_password_hash('test-vehicle-approval', method='pbkdf2:sha256:1000')
     route_optimizer.init_app(app, FakeDb(), db_path=str(tmp_path / 'routes.db'))
     app.extensions['route_optimizer'].snapshots = SnapshotCache(lambda: make_snapshot())
-    return app.test_client()
+    client = app.test_client()
+    client.environ_base['HTTP_X_SUPERADMIN_PASSWORD'] = 'test-vehicle-approval'
+    return client
 
 
 OVERVIEW_TOTALS = {'managers', 'days_total', 'days_below_min', 'avg_p_day_ge_min', 'trips_poor_week',

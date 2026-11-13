@@ -386,7 +386,7 @@
         const bounds = [];
         const planned = d.planned.map(line => {
             bounds.push(...line);
-            return [L.polyline(line, { ...PLAN_STYLE(), weight: 3, opacity: .85, dashArray: '6 6', rtStyle: PLAN_STYLE }).addTo(map.layers), line];
+            return [L.polyline([], { ...PLAN_STYLE(), weight: 3, opacity: .85, dashArray: '6 6', rtStyle: PLAN_STYLE }).addTo(map.layers), line];
         });
         if (d.track.length > 1) {
             L.polyline(d.track, { ...TRACK_STYLE(), weight: 3, opacity: .85, rtStyle: TRACK_STYLE }).bindTooltip('Փաստացի ճանապարհ (GPS)').addTo(map.layers);
@@ -407,14 +407,14 @@
         if (bounds.length) map.obj.fitBounds(bounds, { padding: [24, 24], maxZoom: 15, animate: false });
         roadLines(planned, gen);
     }
-    // Плановые рейсы сначала по прямой, затем — по дорогам, как у «Развоза» (в объезд малого центра, как считаются км
-    // плана); нет карты дорог — прямые
+    // Рисуем только подтверждённые дорожные участки; разрывы не соединяем.
     async function roadLines(planned, gen) {
         if (!planned.length) return;
         let data;
         try { data = await api('/api/routes/road-lines', { lines: planned.map(([, line]) => line), avoid_center: true }); } catch (e) { return; }
-        if (gen !== map.gen || !Array.isArray(data.lines)) return;
-        planned.forEach(([pl], i) => { const road = data.lines[i]; if (Array.isArray(road) && road.length > 1) pl.setLatLngs(road); });
+        const paths = Array.isArray(data.segments) ? data.segments : data.lines;
+        if (gen !== map.gen || !Array.isArray(paths)) return;
+        planned.forEach(([pl], i) => { const road = paths[i]; if (Array.isArray(road) && map.layers.hasLayer(pl)) pl.setLatLngs(road); });
     }
 
     function init() {

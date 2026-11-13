@@ -93,7 +93,8 @@ def test_api_road_lines(client):
     state = client.application.extensions['route_optimizer']
     body = {'lines': [[list(RN[1]), list(RN[0])]]}
     r = client.post('/api/routes/road-lines', json=body)
-    assert r.status_code == 200 and r.get_json()['lines'] is None       # карты дорог нет — по прямой
+    assert r.status_code == 200 and r.get_json()['lines'] == [[]]
+    assert r.get_json()['line_status'] == ['unavailable']
     state.roads = NS(get=_roads)
     d = client.post('/api/routes/road-lines', json=body).get_json()
     assert d['success'] and any(_near(p, RN[2]) for p in d['lines'][0])
@@ -101,6 +102,19 @@ def test_api_road_lines(client):
                 {'lines': [[[10.0, 10.0]]]}, {'lines': [[list(RN[0])] * (2 * 3000)]}):
         assert client.post('/api/routes/road-lines', json=bad).status_code == 400, bad
     assert client.post('/api/routes/road-lines', data='x', content_type='text/plain').status_code == 415
+
+
+def test_api_road_lines_prefers_main_road_over_shortcut(client):
+    nodes = {0: (40.30, 44.30), 1: (40.30, 44.31), 2: (40.31, 44.305), 3: (40.30, 44.32)}
+    graph = rd.RoadGraph.from_ways(nodes, [([0, 1, 3], 0, rd.way_factor({'highway': 'residential'})),
+                                          ([0, 2, 3], 0, rd.way_factor({'highway': 'primary'}))])
+    roads = rd.RoadDistances.for_graph(graph)
+    client.application.extensions['route_optimizer'].roads = NS(get=lambda: roads)
+    response = client.post('/api/routes/road-lines', json={'lines':[[nodes[0],nodes[3]]]})
+    assert response.status_code == 200
+    line = response.get_json()['lines'][0]
+    assert any(_near(p, nodes[2]) for p in line)
+    assert not any(_near(p, nodes[1]) for p in line)
 
 
 def test_leg_lines_mark_found_path_even_when_drawn_as_two_points():

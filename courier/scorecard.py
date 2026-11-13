@@ -46,6 +46,12 @@ class CrewSource:
     def names(self) -> dict[int, str]:
         return self.store.driver_names() if self._exists() else {}
 
+    def terminal_people(self, day: str) -> dict[str, tuple[int, str]]:
+        """Машина → (id, имя) водителя последней записи экипажа дня (crew_log по at_utc); помощник не в счёт."""
+        if not self._exists():
+            return {}
+        return {row['car_code']: (row['driver_id'], row['driver_name']) for row in self.store.crew_for_day(day)}
+
     def day(self, day: str) -> dict[str, Any]:
         """{'stops': закрытые точки дня с водителем и առաքիչ, 'cash': водитель → деньги, 'tare': водитель → штук}."""
         if not self._exists():

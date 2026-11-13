@@ -32,7 +32,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tests'))
 
-from routes_dispatch_browser_check import TILE_PNG, FakeClient, build_app, is_ignorable  # noqa: E402
+from routes_dispatch_browser_check import AUTO_CONFIRM, TILE_PNG, FakeClient, build_app, is_ignorable  # noqa: E402
 from route_optimizer import store as st  # noqa: E402
 from route_optimizer import views  # noqa: E402
 from route_optimizer.actuals import YEREVAN  # noqa: E402
@@ -66,10 +66,11 @@ def main() -> int:
         with sync_playwright() as pw:
             browser = pw.chromium.launch()
             page = browser.new_context(viewport={'width': 1440, 'height': 950}).new_page()
-            page.add_init_script("try { localStorage.setItem('dpLayout', 'list'); } catch (e) {}")
+            page.add_init_script("(() => { const m = matchMedia.bind(window); window.matchMedia = q => m(q === '(min-width: 1101px)' ? '(min-width: 99999px)' : q); })();")
             page.on('pageerror', lambda e: errors.append('pageerror: ' + str(e)))
             page.on('console', lambda m: errors.append('console: ' + m.text) if m.type == 'error' and not is_ignorable(m) else None)
             page.on('dialog', lambda d: d.accept())
+            page.add_init_script(AUTO_CONFIRM)   # системный confirm заменён окном на странице
             page.on('request', lambda r: posts.append((r.url.rsplit('/', 1)[-1], json.loads(r.post_data or '{}')))
                     if r.method == 'POST' and '/api/routes/dispatch/' in r.url else None)
             for pat in ('https://tiles.api-maps.yandex.ru/**', 'https://*.tile.openstreetmap.org/**'):
@@ -118,7 +119,7 @@ def main() -> int:
                 '(els) => els.map(e => e.dataset.cid)')]
             cid = cids[-1]
             acts = row(cid).locator('.dp-stop-acts button').all_inner_texts()
-            check('Մինչև ժամը' in acts and acts.index('Մինչև ժամը') == acts.index('Այսօր չենք տանում') + 1,
+            check('Մինչև ժամը' in acts and acts.index('Մինչև ժամը') == acts.index('Վաղը չենք տանում') + 1,
                   'A «Մինչև ժամը» after «Այսօր չենք տանում»: ' + str(acts))
             check(row(cid).locator('.dp-untilbtn i.fa-clock').count() == 1, 'A clock icon')
             open_until(cid)

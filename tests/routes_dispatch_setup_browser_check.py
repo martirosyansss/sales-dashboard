@@ -153,14 +153,12 @@ def main() -> int:
             body = lambda: page.inner_text('#rtDispatch')  # noqa: E731
 
             # A
-            check(page.locator('.dp-dayboard #dpBuild').count() == 1 and vis('#dpBuild') and vis('#dpSetAi') and vis('#dpHelpBtn'),
-                  'A one toolbar: build, AI and help in it')
+            check(page.locator('.dp-dayboard #dpBuild').count() == 1 and vis('#dpBuild') and vis('#dpSetAi'),
+                  'A one toolbar: build and AI in it')
             check(not vis('.dp-todo-k') and not vis('#dpNoDriver') and not vis('#dpCrew') and not vis('#dpAiOpen')
                   and page.locator('#dpTodo.is-setup').count() == 1, 'A no «Ի՞նչ անել հիմա», no-driver strip, crew list, floating AI')
-            page.click('#dpHelpBtn')
-            check(vis('#dpHelp') and page.get_attribute('#dpHelpBtn', 'aria-expanded') == 'true', 'A help opens under the toolbar')
-            page.click('#dpHelpBtn')
-            check(not vis('#dpHelp'), 'A help closes')
+            # 13.11.2026: помощь одна — значок «?» верхней панели, своей «Օգնություն» на странице нет
+            check(page.locator('#dpHelpBtn, #dpHelp').count() == 0, 'A no page help button, only the top bar «?»')
             page.click('#dpSetAi')
             check(vis('#dpAi'), 'A AI button opens the chat')
             page.click('#dpAiClose')
@@ -168,7 +166,7 @@ def main() -> int:
             # B
             todo = page.inner_text('#dpTodo')
             check('Այս օրվա համար պատվերներ դեռ չկան' in todo and 'Վաղը կարող է դուրս գալ 6 մեքենա՝ որից 5-ը առանց նշված վարորդի' in todo
-                  and 'եկել է 7 վարորդից 1-ը' in todo, f'B honest status — as many trucks as the build takes: {todo!r}')
+                  and 'սպասվում է 7 վարորդից 1-ը' in todo, f'B honest status — as many trucks as the build takes: {todo!r}')
             chips = {c.get_attribute('data-chip'): ' '.join(c.inner_text().split())
                      for c in page.locator('#dpTodo .dp-chipbtn').all()}
             want = {'backlog': f'{BACKLOG} պատվեր նախորդ օրերից', 'absent': '5 մեքենայի վարորդը չի աշխատում',
@@ -206,7 +204,7 @@ def main() -> int:
             check(page.locator('#dpFleetRows tr:visible').count() == 1, 'C «Պատրաստ» — 1 row')
             page.click('#dpFleetSeg [data-f="all"]')
             armen = rows.filter(has_text='333DN33')
-            check('եկել է' in armen.inner_text() and 'APK' in armen.inner_text() and 'ՀԱ' in armen.inner_text(),
+            check('սպասվում է' in armen.inner_text() and 'APK' in armen.inner_text() and 'ՀԱ' in armen.inner_text(),
                   'C row: truck, driver with initials and APK, «եկել է»')
             armen.locator('.dp-pres input').uncheck()
             page.wait_for_selector('#dpAbsentDlg[open]', timeout=5000)
@@ -219,12 +217,12 @@ def main() -> int:
             check('մինչև 05.10' in sergey.inner_text(), 'C absent driver: «մինչև 05.10»')
             sergey.locator('.dp-pres input').check()
             page.wait_for_function("() => document.getElementById('dpTrucksCount').textContent.includes('7 / 11')", timeout=10000)
-            check('եկել է' in rows.filter(has_text='123AV61').inner_text(), 'C «մինչև» → returned, counter 7 / 11')
+            check('սպասվում է' in rows.filter(has_text='123AV61').inner_text(), 'C «մինչև» → returned, counter 7 / 11')
             # сообщение «Sergey՝ եկել է։» показано и после скрытия не остаётся в тексте страницы (ни в живом регионе)
             check('Sergey' in (page.text_content('#dpToast') or ''), 'C toast shown')
             page.wait_for_function("() => !(document.getElementById('dpToast') || {}).textContent"
                                    " && !document.getElementById('dpStatus').textContent", timeout=12000)
-            check('Sergey՝ եկել է' not in page.text_content('body'), 'C hidden message is gone from the page text')
+            check('Sergey՝ սպասվում է' not in page.text_content('body'), 'C hidden message is gone from the page text')
             rows.filter(has_text='123AV61').locator('.dp-pres input').uncheck()
             page.wait_for_selector('#dpAbsentDlg[open]', timeout=5000)
             page.fill('#dpAbsentUntil', '2026-10-05')

@@ -47,6 +47,7 @@ def test_map_pages_get_tiles_key(client, monkeypatch, path):
     ctx = rendered(client, path)
     if path == '/routes/dispatch':      # «Развоз» получает ещё флаг чата «Հարցրու AI-ին» (ответ владельца №52)
         assert isinstance(ctx.pop('ai_enabled'), bool)
+        assert ctx.pop('erp_chain_enabled') is False
     assert ctx == {'template': MAP_PAGES[path] + '.html', 'yandex_tiles_key': KEY}
 
 

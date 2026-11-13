@@ -109,6 +109,10 @@
         if (top < 0) window.scrollBy({ top, behavior: 'auto' });
         if (tabId === 'gjTabNorm') resumeNorm();   // считается только при открытии вкладки
         try { localStorage.setItem('gjTab', tabId); } catch (e) { /* без памяти вкладки */ }
+        const key = ['costs', 'odo', 'sum', 'norm'][TABS.findIndex(([t]) => t === tabId)];
+        const url = new URL(window.location.href);
+        url.searchParams.set('tab', key);
+        window.history.replaceState(null, '', url.pathname + url.search + url.hash);
     }
     TABS.forEach(([t], i) => {
         $(t).addEventListener('click', () => selectTab(t));
@@ -220,14 +224,14 @@
     function fillCars() {
         const trucks = state.data.trucks;
         const cur = $('gjCar').value, curFilter = $('gjFilterCar').value;
-        const active = trucks.filter(t => t.active);
+        const label = (t) => t.car_code + (t.name ? ' · ' + t.name : '') + (t.active ? '' : ' · չի աշխատում');
         $('gjCar').replaceChildren(h('option', { value: '', text: 'Ընտրեք մեքենան' }),
-            ...active.map(t => h('option', { value: t.car_code, text: t.car_code + (t.name ? ' · ' + t.name : '') })));
+            ...trucks.map(t => h('option', { value: t.car_code, text: label(t) })));
         // правка записи машины, которая уже не в работе, — её номер всё равно в списке
-        if (cur && !active.some(t => t.car_code === cur)) $('gjCar').append(h('option', { value: cur, text: truckName(cur) }));
+        if (cur && !trucks.some(t => t.car_code === cur)) $('gjCar').append(h('option', { value: cur, text: truckName(cur) }));
         $('gjCar').value = cur;
         $('gjFilterCar').replaceChildren(h('option', { value: '', text: 'Բոլոր մեքենաները' }),
-            ...trucks.map(t => h('option', { value: t.car_code, text: t.car_code + (t.name ? ' · ' + t.name : '') })));
+            ...trucks.map(t => h('option', { value: t.car_code, text: label(t) })));
         $('gjFilterCar').value = curFilter;
         syncOdoHint();
     }
@@ -648,7 +652,8 @@
                 const repair = g ? [h('span', { text: fmt(g.repair_amd) }),
                     g.status !== 'none' && g.cost_amd !== g.repair_amd ? h('small', { class: 'gj-sub', text: 'հաշվարկում՝ ' + fmt(g.cost_amd) }) : null] : ['—'];
                 return h('tr', { class: [r.active ? null : 'is-closed', r.active && isHigh(r, fleet) ? 'is-problem' : null].filter(Boolean).join(' ') || null },
-                    h('td', { class: 'rt-cell-name' }, h('span', { class: 'n', text: r.car_code }), h('span', { class: 'c', text: r.name || (r.active ? '' : 'չի աշխատում') })),
+                    h('td', { class: 'rt-cell-name' }, h('span', { class: 'n', text: r.car_code }), h('span', { class: 'c', text: r.name || '' }),
+                        r.active ? null : h('span', { class: 'c', text: 'չի աշխատում' })),
                     h('td', { class: 'gj-num w-half', 'data-label': 'Վերանորոգում, ֏' }, ...repair),
                     h('td', { class: 'gj-num w-half', 'data-label': 'Վթար, ֏', text: g ? fmt(g.accident_amd) : '—' }),
                     h('td', { class: 'gj-num w-half', 'data-label': 'Ապահովագրություն, հարկ, ֏', text: g ? fmt(g.fixed_amd) : '—' }),
@@ -796,7 +801,8 @@
                 t.fuel.too_low ? h('span', { class: 'rt-badge b-danger', text: fmt(t.fuel.too_low) + ' կասկածելի լիցքավորում՝ պակաս քան ' + fmt(lim[0]) + ' լ/100 կմ' }) : null,
                 t.km.over ? h('span', { class: 'rt-badge b-danger', text: 'Կմ ' + signed(t.km.delta_pct, 1) + '%' }) : null].filter(Boolean);
             const row = h('tr', { class: (flags.length ? 'is-over' : '') + (t.active ? '' : ' is-closed') || null },
-                h('td', { class: 'rt-cell-name' }, h('span', { class: 'n', text: t.car_code }), h('span', { class: 'c', text: t.name || (t.active ? '' : 'չի աշխատում') }),
+                h('td', { class: 'rt-cell-name' }, h('span', { class: 'n', text: t.car_code }), h('span', { class: 'c', text: t.name || '' }),
+                    t.active ? null : h('span', { class: 'c', text: 'չի աշխատում' }),
                     flags.length ? h('span', { class: 'gj-flags' }, ...flags) : null),
                 h('td', { class: 'gj-num w-half', 'data-label': 'Նորմ, լ/100 կմ' }, t.norm.l100 !== null
                     ? [h('b', { class: 'gj-price', text: fmt(t.norm.l100, 1) }),
@@ -893,7 +899,7 @@
         const bounds = [];
         d.planned.forEach(line => {
             bounds.push(...line);
-            L.polyline(line, { ...PLAN_STYLE(), weight: 3, opacity: .85, dashArray: '6 6', rtStyle: PLAN_STYLE }).addTo(map.layers);
+            RoutesBasemap.roadLine(line, { ...PLAN_STYLE(), weight: 3, opacity: .85, dashArray: '6 6', rtStyle: PLAN_STYLE }, map.layers, true, '/api/routes/garage/road-lines');
         });
         if (d.track.length > 1) {
             L.polyline(d.track, { ...TRACK_STYLE(), weight: 3, opacity: .85, rtStyle: TRACK_STYLE }).addTo(map.layers);
@@ -952,6 +958,9 @@
         $('gjOdoForm').addEventListener('keydown', enterNext);
         let tab = 'gjTabCosts';
         try { tab = localStorage.getItem('gjTab') || tab; } catch (e) { /* без памяти вкладки */ }
+        const entry = new URLSearchParams(window.location.search);
+        const requested = { costs: 'gjTabCosts', odo: 'gjTabOdo', sum: 'gjTabSum', norm: 'gjTabNorm' }[entry.get('tab')];
+        if (TABS.some(([t]) => t === requested)) tab = requested;
         selectTab(TABS.some(([t]) => t === tab) ? tab : 'gjTabCosts');
         $('gjForm').addEventListener('submit', saveEntry);
         $('gjCancel').addEventListener('click', resetForm);
@@ -978,7 +987,12 @@
         try {
             await reload();
             resetForm();
-            if (state.data.journal_empty) openForm();   // журнал пуст — сразу с чего начать
+            if (entry.get('new') === '1') {
+                newEntry();
+                const url = new URL(window.location.href);
+                url.searchParams.delete('new');
+                window.history.replaceState(null, '', url.pathname + url.search + url.hash);
+            } else if (state.data.journal_empty) openForm();   // журнал пуст — сразу с чего начать
         } catch (e) {
             showError(e.message);
             $('gjRows').replaceChildren(h('tr', {}, h('td', { colspan: 7, class: 'rt-empty', text: 'Չհաջողվեց բեռնել' })));

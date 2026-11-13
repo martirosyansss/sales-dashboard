@@ -344,6 +344,15 @@ FROM ORDERS o WITH (NOLOCK)
 WHERE o.fISN IN ({ph})
 """
 
+# Только действующие накладные недовезённых заказов, выбранных отправленным планом новой даты.
+# Дата документа и машина в ERP не меняются.
+SQL_REDELIVERY_SALES = """
+SELECT CAST(s.fISN AS nvarchar(36)), RTRIM(s.fDOCNUM), s.fCUSTOMERID, s.fSALESAGENTID,
+       LTRIM(RTRIM(ISNULL(s.fPAYTYPE, ''))), s.fTOTALSUM, CAST(s.fDATE AS date)
+FROM SALES s WITH (NOLOCK)
+WHERE s.fSTATE = 2 AND s.fDATE < ? AND s.fISN IN ({ph})
+"""
+
 SQL_DOC_LINES = """
 SELECT CAST(d.fISN AS nvarchar(36)), d.fROWNUM, d.fPRODUCTID, d.fQUANTITY, d.fDISCOUNTEDPRICE, d.fSUM
 FROM SALEDOCDETAILS d WITH (NOLOCK)
@@ -492,6 +501,18 @@ def plan_sales(conn: Any, order_isns: Sequence[str], day: date) -> list[Doc]:
             doc = _sale_doc(r)
             out[doc.isn] = doc   # накладная из нескольких заказов разных чанков — одна точка
     return sorted(out.values(), key=lambda d: (d.customer_id, d.doc_number))
+
+
+def redelivery_sales(conn: Any, picked: Sequence[DispatchOrder], day: date) -> list[Doc]:
+    """Существующие накладные прошлой даты из разрешённого отбора машины; подарки — на исходную дату."""
+    ids = {o.invoice for o in picked if o.invoice and o.shipped is not None and o.shipped < day}
+    out = []
+    for chunk in _chunks(sorted(ids)):
+        for r in _select(conn, SQL_REDELIVERY_SALES.format(ph=_ph(len(chunk))), (day, *chunk)):
+            d = _sale_doc(r)
+            out.append(Doc(d.stop_id, d.source, d.isn, d.doc_number, d.customer_id, d.agent_id, d.pay_type, d.amount,
+                           doc_date=erp._day(r[6])))
+    return out
 
 
 def sale_parents(conn: Any, isns: Sequence[str]) -> dict[str, tuple[str, ...]]:
@@ -744,11 +765,18 @@ def load_day(connection_string: str, car_code: str, day: date, orders_window: tu
     try:
         sales = day_sales(conn, car_code, day)
         own = {d.isn for d in sales}
-        picked = pick_orders(erp.dispatch_orders(conn, *orders_window), lambda ids: erp.place_texts(conn, ids))
+        orders = erp.dispatch_orders(conn, *orders_window)
+        missing = set(getattr(pick_orders, 'held_order_ids', ())) - {o.isn for o in orders}
+        if missing:
+            orders += erp.dispatch_orders_by_isns(conn, sorted(missing))
+        picked = pick_orders(orders, lambda ids: erp.place_texts(conn, ids))
         shipped = [o.isn for o in picked if o.shipped is not None
                    and invoice_owner is not None and invoice_owner(o.customer_id)]
         if shipped:
             sales += [d for d in plan_sales(conn, shipped, day) if d.isn not in own]
+        if invoice_owner is not None:
+            known = {d.isn for d in sales}
+            sales += [d for d in redelivery_sales(conn, picked, day) if d.isn not in known]
         parents = sale_parents(conn, [d.isn for d in sales]) if sales else {}
         if invoice_owner is not None and len(sales) > len(own):
             # накладная без машины из заказов разных машин (ревью ветки 12.10, P1) — у одной: владелец по её заказам
@@ -756,7 +784,7 @@ def load_day(connection_string: str, car_code: str, day: date, orders_window: tu
             sales = [d for d in sales if d.isn in own
                      or invoice_owner(d.customer_id, [r[2:] for r in parents.get(d.isn, ())])]
         sales = [Doc(d.stop_id, d.source, d.isn, d.doc_number, d.customer_id, d.agent_id, d.pay_type, d.amount,
-                     parents.get(d.isn, ())) for d in sales]
+                     parents.get(d.isn, ()), d.doc_date) for d in sales]
         pending = pending_orders(picked, sales)
         docs = sales + (order_docs(conn, pending) if pending else [])
         lines = doc_lines(conn, [d.isn for d in docs]) if docs else {}

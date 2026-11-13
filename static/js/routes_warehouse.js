@@ -233,7 +233,8 @@
         if (!d) return;
         if (!d.planned) { list.append(h('p', { class: 'wh-empty', text: 'Այս օրվա պլանը դեռ կազմված չէ։' })); return; }
         if (!d.approved) {
-            list.append(h('p', { class: 'wh-empty', text: 'Պլանը դեռ հաստատված չէ — սպասեք լոգիստի «Հաստատել»-ին։' }));
+            list.append(h('p', { class: 'wh-empty', text: d.unsent ? 'Պլանը հաստատված է, բայց դեռ չի ուղարկվել վարորդներին — սպասեք լոգիստի «Ուղարկել»-ին։'
+                : 'Պլանը դեռ հաստատված չէ — սպասեք լոգիստի «Հաստատել»-ին։' }));
             return;
         }
         const trips = d.trucks.flatMap(t => t.trips);

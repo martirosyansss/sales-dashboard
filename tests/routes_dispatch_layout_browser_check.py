@@ -155,7 +155,7 @@ RECTS = """() => { const r = (s) => { const e = document.querySelector(s); if (!
            sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth,
            sh: document.documentElement.scrollHeight, theme: document.documentElement.dataset.rtTheme }; }"""
 # точки выбранного рейса: центр каждой — сама точка (не панель поверх карты), и она внутри карты
-HOT_VISIBLE = """() => { const pins = [...document.querySelectorAll('#dpWsMap .dp-npin.is-hot')];
+HOT_VISIBLE = """() => { const pins = [...document.querySelectorAll('#dpWsMap .dp-npin.is-hot, #dpWsMap .dp-cpin')];
   const bad = pins.filter(p => { const b = p.getBoundingClientRect(), x = b.left + b.width / 2, y = b.top + b.height / 2;
     const e = document.elementFromPoint(x, y); return !e || !p.contains(e); });
   return { n: pins.length, hidden: bad.length, muted: document.querySelectorAll('#dpWsMap .dp-dpin.is-muted').length }; }"""
@@ -254,7 +254,8 @@ def main() -> int:
                     check(code in pg.inner_text('#dpStopsTitle') and rows.count() == n_stops and pg.locator('#dpStops .dp-st-g').count() == 0
                           and pg.locator('#dpStops .dp-st-num.is-hot').count() == n_stops,
                           f'B {tag}: «Խանութներ · {code}» below the map — {rows.count()}/{n_stops} rows, numbers in the accent as on the map')
-                    labels_map = sorted(pg.eval_on_selector_all('#dpWsMap .dp-npin.is-hot span', 'els => els.map(e => e.textContent)'))
+                    labels_map = sorted(pg.eval_on_selector_all('#dpWsMap .dp-npin.is-hot span', 'els => els.map(e => e.textContent)')
+                                        + pg.eval_on_selector_all('#dpWsMap .dp-cpin span[data-labels]', 'els => els.flatMap(e => e.dataset.labels.split(" "))'))
                     labels_list = sorted(pg.eval_on_selector_all('#dpStops .dp-st-num.is-hot', 'els => els.map(e => e.textContent)'))
                     check(labels_map == labels_list, f'B {tag}: list numbers = map numbers {labels_list[:4]}…')
                     hv = pg.evaluate(HOT_VISIBLE)

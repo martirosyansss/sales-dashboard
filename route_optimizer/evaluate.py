@@ -454,6 +454,7 @@ class Norms:
     traffic_start_min: float = 540.0
     provider: Any = field(default=None, compare=False, repr=False)
     traffic_status: Any = field(default=None, compare=False, repr=False)
+    matrices: Any = field(default=None, compare=False, repr=False)   # fleet.MatrixMemo: матрицы рейсов на один расчёт; None — без него
 
     @classmethod
     def from_settings(cls, s: Mapping[str, Any], calib: Calibration | None = None,

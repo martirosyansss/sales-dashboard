@@ -2056,6 +2056,8 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
     if detail and route is not None:
         out['route'].update({
             'lines': route.geo.shown(),
+            'segments': ([ac.simplify(list(part)) for part in route.geo.road_parts]
+                         if route.geo.straight else None),
             'points': [{'customer_id': c, 'no': nos[c], 'lat': round(p[0], 6), 'lon': round(p[1], 6)}
                       for c, p in where.items()],
             # номера магазинов каждой линии рейса по порядку (подсказка участка плана); не сходится с линиями — пусто

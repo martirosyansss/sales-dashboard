@@ -113,18 +113,22 @@ class TravelMatrix(list):
     """Минуты участков по часу выезда. speeds[a][b] — скорость участка до часового профиля (Norms.leg_speed:
     время Valhalla или скорость зоны); None — скорость зоны."""
 
-    def __init__(self, values, distances, cities, norms, tn, points, speeds=None):
+    def __init__(self, values, distances, cities, norms, tn, points, speeds=None, return_point=None):
         super().__init__(values)
         self.distances, self.cities, self.norms, self.tn = distances, cities, norms, tn
         self.points, self.speeds = points, speeds
+        self.return_point = return_point
 
     def load(self, kg):
         return self.tn.load(kg) if self.tn is not None else 0.
 
     def travel(self, a, b, minute):
+        end = self.return_point if b == 0 and self.return_point is not None else self.points[b]
         if self.norms.provider is not None:
-            return self.norms.provider.minutes(self.points[a], self.points[b])
-        city = self.cities[a] and self.cities[b]
+            return self.norms.provider.minutes(self.points[a], end)
+        from .geo import in_city
+        city = self.cities[a] and (in_city(end, self.norms.city_center, self.norms.city_radius_km)
+                                  if b == 0 and self.return_point is not None else self.cities[b])
         speed = (self.speeds[a][b] if self.speeds is not None and a != b else
                  self.norms.speed_city_kmh if city else self.norms.speed_region_kmh)
         if self.norms.traffic is None:

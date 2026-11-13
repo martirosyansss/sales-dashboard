@@ -12,14 +12,16 @@
 """
 from __future__ import annotations
 
+import base64
 import logging
 import re
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from typing import Any, Iterator, Sequence
+from typing import Any, Iterator, Mapping, Sequence
 
 import pyodbc
 
+from .actuals import YEREVAN
 from .cost_to_serve import Sale, SalesData
 from .crew_pay import CrewData, Invoice
 from .demand import SaleDoc
@@ -362,9 +364,9 @@ GROUP BY LTRIM(RTRIM(s.fDELIVERYCAR)), CAST(s.fDATE AS date)
 SQL_DISPATCH_ORDERS = f"""
 SELECT CAST(o.fISN AS nvarchar(36)), RTRIM(o.fDOCNUM), CAST(o.fDATE AS date), o.fCUSTOMERID,
        o.fSALESAGENTID, LTRIM(RTRIM(ISNULL(o.fDELIVERYCAR, ''))), o.fTOTALSUM, ISNULL(k.kg, 0), sh.shipped,
-       o.fVANAGENTID, cr.entered, sh.invoice
+       o.fVANAGENTID, cr.entered, sh.invoice, cr.comment
 FROM ORDERS o WITH (NOLOCK)
-OUTER APPLY (SELECT MIN(CAST(d.fCREATIONDATE AS date)) AS entered
+OUTER APPLY (SELECT MIN(CAST(d.fCREATIONDATE AS date)) AS entered, MIN(CAST(d.fCOMMENT AS nvarchar(500))) AS comment
              FROM DOCUMENTS d WITH (NOLOCK)
              WHERE d.fISN = o.fISN) cr
 {_KG_O}
@@ -482,9 +484,10 @@ WHERE o.fISN IN ({ph})
 
 # Шапка заказа как есть — для «Excel ERP-ի համար» (erp_import: всё, кроме առաքիչ и машины, кладётся в файл без изменений).
 # NOLOCK, как всё чтение ERP (боевую базу не блокируем); файл — снимок, оператор загружает его сразу
+# ? ORDERS ??? fASSIGNOR (?? ???? ? ?????????/?????????): ????? ??????? ??????? ????????? ??????.
 SQL_ORDER_HEADS = """
 SELECT CAST(o.fISN AS nvarchar(36)), RTRIM(o.fDOCNUM), o.fDATE, a.fCODE, c.fCODE, RTRIM(o.fSALESAREA), o.fCOMMENT,
-       RTRIM(o.fPRICELISTTYPE), RTRIM(o.fTAXSERIANUMBER), o.fSUBMITDATE, o.fCOSIGNDATE, RTRIM(o.fASSIGNOR),
+       RTRIM(o.fPRICELISTTYPE), RTRIM(o.fTAXSERIANUMBER), o.fSUBMITDATE, o.fCOSIGNDATE, CAST(N'' AS nvarchar(6)) AS assignor,
        RTRIM(o.fORGANIZATIONACCOUNT), RTRIM(o.fDOCGROUP), o.fDELAYDAYS, RTRIM(o.fPAYTYPE), o.fPRIORITY, o.fCONTACT,
        RTRIM(o.fCREATEMETHOD), RTRIM(o.fDIVISION), RTRIM(o.fOTHSYSSENDSTATUS), o.fDELIVERYDATE,
        ISNULL(o.fDELIVERYADDRESSID, 0)
@@ -666,8 +669,40 @@ def dispatch_orders(conn: Any, since: date, until: date) -> list[DispatchOrder]:
                           revenue=float(r[6] or 0), kg=float(r[7] or 0),
                           shipped=_day(r[8]) if r[8] is not None else None, van_agent_id=int(r[9] or 0),
                           entered=_day(r[10]) if r[10] is not None else None,
-                          invoice=_str(r[11]).upper() if len(r) > 11 and r[11] is not None else '')
+                          invoice=_str(r[11]).upper() if len(r) > 11 and r[11] is not None else '',
+                          comment=_str(r[12]) if len(r) > 12 else '')
             for r in _select(conn, SQL_DISPATCH_ORDERS, (since, until))]
+
+
+def dispatch_orders_by_isns(conn: Any, isns: Sequence[str]) -> list[DispatchOrder]:
+    """Только известные заказы собственного складского реестра, независимо от их возраста; ERP — SELECT."""
+    sql = SQL_DISPATCH_ORDERS.replace('o.fDATE >= ? AND o.fDATE < ?', 'o.fISN IN ({ph})')
+    out = []
+    for chunk in _chunks(sorted(set(isns))):
+        for r in _select(conn, sql.format(ph=_placeholders(len(chunk))), chunk):
+            out.append(DispatchOrder(_str(r[0]).upper(), _str(r[1]), _day(r[2]), int(r[3]), int(r[4] or 0),
+                                     _str(r[5]), float(r[6] or 0), float(r[7] or 0),
+                                     _day(r[8]) if r[8] is not None else None, int(r[9] or 0),
+                                     _day(r[10]) if r[10] is not None else None,
+                                     _str(r[11]).upper() if len(r) > 11 and r[11] else '',
+                                     _str(r[12]) if len(r) > 12 else ''))
+    return out
+
+
+def _read_at() -> datetime:
+    """Момент чтения ERP по Еревану без пояса: часы сервера идут в UTC, а «Развоз» показывает это время как есть."""
+    return datetime.now(YEREVAN).replace(tzinfo=None, microsecond=0)
+
+
+def load_known_dispatch_data(connection_string: str, isns: Sequence[str], day: date) -> DispatchData:
+    conn = connect(connection_string)
+    try:
+        orders = dispatch_orders_by_isns(conn, isns)
+        ids = sorted({o.customer_id for o in orders})
+        names = {c.id: (c.code, c.name) for c in customers(conn, ids).values()}
+        return DispatchData(tuple(orders), names, address_texts(conn, ids), {}, _read_at())
+    finally:
+        close_quietly(conn)
 
 
 def address_texts(conn: Any, ids: Sequence[int]) -> dict[int, str]:
@@ -718,7 +753,7 @@ def load_dispatch_data(connection_string: str, since: date, until: date, day: da
         names = {c.id: (c.code, c.name) for c in customers(conn, ids).values()}
         return DispatchData(orders=tuple(orders), customers=names, addresses=address_texts(conn, ids),
                             agent_cars=agent_cars(conn, day - timedelta(days=AGENT_CARS_DAYS), day),
-                            loaded_at=datetime.now().replace(microsecond=0))
+                            loaded_at=_read_at())
     finally:
         close_quietly(conn)
 
@@ -733,7 +768,7 @@ def load_same_day_data(connection_string: str, day: date) -> SameDayData:
         ids = sorted({o.customer_id for o in orders})
         names = {c.id: (c.code, c.name) for c in customers(conn, ids).values()}
         return SameDayData(orders=tuple(orders), created=created, customers=names, addresses=address_texts(conn, ids),
-                           loaded_at=datetime.now().replace(microsecond=0))
+                           loaded_at=_read_at())
     finally:
         close_quietly(conn)
 
@@ -913,6 +948,128 @@ def order_heads(conn: Any, isns: Sequence[str]) -> dict[str, dict[str, Any]]:
                 'priority': r[16], 'contact': r[17] or '', 'create_method': _str(r[18]), 'division': _str(r[19]),
                 'send_status': _str(r[20]), 'delivery_date': _opt_day(r[21]), 'address_id': int(r[22] or 0)}
     return out
+
+
+SQL_ORDER_DIVISIONS = """
+SELECT d.fISN, d.fDIVISION FROM DOCUMENTS d WITH (NOLOCK) WHERE d.fISN IN ({ph})
+"""
+
+SQL_ORDER_DOCUMENTS = """
+SELECT DISTINCT p.fPARENTISN FROM DOCPARENTS p WITH (NOLOCK) WHERE p.fDOCTYPE <> 29 AND p.fPARENTISN IN ({ph})
+"""
+
+SQL_DIVISION_NAMES = """
+SELECT t.fCODE, t.fCAPTION FROM TREES t WITH (NOLOCK) WHERE t.fTREEID = 'Division'
+"""
+
+# Տրամադրում заказа: номер, кто и когда её сделал (первая запись журнала документа). Только подпись в окне цепочки.
+SQL_ORDER_PROVIDINGS = """
+SELECT p.fPARENTISN, c.fDOCNUM, l.fUSERID, l.fDATE FROM DOCPARENTS p WITH (NOLOCK)
+JOIN DOCUMENTS c WITH (NOLOCK) ON c.fISN = p.fISN
+OUTER APPLY (SELECT TOP 1 g.fUSERID, g.fDATE FROM DOCUMENTSLOG g WITH (NOLOCK) WHERE g.fISN = c.fISN ORDER BY g.fDATE) l
+WHERE p.fDOCTYPE = 19 AND p.fPARENTISN IN ({ph})
+"""
+
+# Склады, где за заказом ещё держится резерв: RSV — дебет, снятие (PRV при տրամադրում, UNR) — кредит.
+# Остаток считается по каждому товару: лишнее снятие одного товара не скрывает висящий резерв другого.
+SQL_ORDER_HELD_RESERVATIONS = """
+SELECT DISTINCT x.fORDERISN, x.fSTORAGE FROM (
+    SELECT h.fORDERISN, h.fSTORAGE FROM HIRESERVATION h WITH (NOLOCK) WHERE h.fORDERISN IN ({ph})
+    GROUP BY h.fORDERISN, h.fSTORAGE, h.fPRODUCTID
+    HAVING SUM(CASE WHEN h.fDBCR = 'D' THEN h.fQUANTITY ELSE -h.fQUANTITY END) > 0) x
+"""
+
+
+def load_order_warehouses(connection_string: str, isns: Sequence[str]) -> dict[str, dict[str, Any]]:
+    """ERP-цепочка: fISN заказа → направление и его название, есть ли документы, склады удерживаемого резерва,
+    տրամադրում оформленного заказа (номер, пользователь, время). Склад резерва склад заказа не меняет, только требует
+    явного выбора. Одним соединением, только чтение."""
+    wanted = sorted({i.upper() for i in isns})
+    divisions: dict[str, str] = {}
+    documented: set[str] = set()
+    reserved: dict[str, set[str]] = {}
+    providings: dict[str, list[dict[str, Any]]] = {}
+    conn = connect(connection_string)
+    try:
+        for chunk in _chunks(wanted):
+            for r in _select(conn, SQL_ORDER_DIVISIONS.format(ph=_placeholders(len(chunk))), chunk):
+                divisions[_str(r[0]).upper()] = _str(r[1])
+            for r in _select(conn, SQL_ORDER_DOCUMENTS.format(ph=_placeholders(len(chunk))), chunk):
+                documented.add(_str(r[0]).upper())
+            for r in _select(conn, SQL_ORDER_HELD_RESERVATIONS.format(ph=_placeholders(len(chunk))), chunk):
+                reserved.setdefault(_str(r[0]).upper(), set()).add(_str(r[1]))
+        try:
+            names = {_str(r[0]): _str(r[1]) for r in _select(conn, SQL_DIVISION_NAMES)}
+        except ErpError:   # название — только подпись в окне, без него всё работает
+            logger.warning('[Routes] ERP-цепочка: названия направлений не прочитаны', exc_info=True)
+            names = {}
+        try:   # тоже только подпись: кто уже оформил заказ
+            for chunk in _chunks(sorted(documented)):
+                for r in _select(conn, SQL_ORDER_PROVIDINGS.format(ph=_placeholders(len(chunk))), chunk):
+                    providings.setdefault(_str(r[0]).upper(), []).append(
+                        {'number': _str(r[1]), 'user': None if r[2] is None else int(r[2]),
+                         'made': r[3].strftime('%Y-%m-%d %H:%M') if r[3] is not None else None})
+        except (ErpError, TypeError, ValueError, AttributeError):   # и неожиданный тип поля журнала — тоже только без подписи
+            logger.warning('[Routes] ERP-цепочка: տրամադրում оформленных заказов не прочитаны', exc_info=True)
+            providings = {}
+        return {i: {'division': divisions.get(i, ''), 'division_name': names.get(divisions.get(i, ''), ''),
+                    'documents': i in documented, 'reserved': sorted(reserved.get(i, ())),
+                    'providings': sorted(providings.get(i, ()), key=lambda p: p['number'])} for i in wanted}
+    finally:
+        close_quietly(conn)
+
+
+# Ход записи ERP-цепочки для окна (владелец 13.11: 31 заказ писался 73 с без признаков жизни). Native пишет по нагрузкам:
+# առաքիչ и машина в каждый заказ, затем տրամադրում, затем վաճառք на каждый заказ. Чтение без моста (он занят записью)
+# и без блокировок (NOLOCK): это только подпись хода, итог окно берёт из ответа записи. Առաքիչ записан, когда штамп
+# заказа (fTS) уже не тот, что в предпросмотре: во время записи native сам отказывает, если заказ меняли другие, а
+# առաքիչ и машина могли стоять в заказе и до записи (№97 «Գրել ERP-ում»), так что по ним шаг не узнать.
+SQL_CHAIN_ORDER_STAMPS = """
+SELECT CAST(d.fISN AS nvarchar(36)), d.fTS FROM DOCUMENTS d WITH (NOLOCK) WHERE d.fDOCTYPE = 1 AND d.fISN IN ({ph})
+"""
+
+SQL_CHAIN_ORDER_CHILDREN = """
+SELECT CAST(p.fPARENTISN AS nvarchar(36)), p.fDOCTYPE, CAST(p.fISN AS nvarchar(36)) FROM DOCPARENTS p WITH (NOLOCK)
+JOIN DOCUMENTS d WITH (NOLOCK) ON d.fISN = p.fISN
+WHERE p.fDOCTYPE IN (2, 19) AND d.fDOCSTATE = 2 AND p.fPARENTISN IN ({ph})
+"""
+
+
+def chain_progress(loads: Sequence[Mapping[str, Any]], stamps: Mapping[str, str],
+                   children: Sequence[tuple[str, int, str]]) -> dict[str, list[int]]:
+    """Сколько шагов цепочки уже в ERP: вид → [сделано, всего]. loads — нагрузки предпросмотра (orders — {isn, version}:
+    fISN заказа и его штамп fTS в base64 на момент предпросмотра); stamps — fISN → штамп сейчас; children — (заказ, тип,
+    документ) его активных տրամադրում (19) и վաճառք (2). Нет штампа предпросмотра или заказа — առաքիչ не считается."""
+    kinds: dict[str, dict[int, set[str]]] = {}
+    for parent, kind, isn in children:
+        kinds.setdefault(parent.upper(), {}).setdefault(int(kind), set()).add(isn.upper())
+    assigned = providings = sales = orders = 0
+    for load in loads:
+        items = [(str(o['isn']).upper(), str(o.get('version') or '')) for o in load['orders']]
+        orders += len(items)
+        assigned += sum(1 for i, version in items if version and stamps.get(i) and stamps[i] != version)
+        providings += 1 if any(kinds.get(i, {}).get(19) for i, _ in items) else 0
+        sales += sum(1 for i, _ in items if kinds.get(i, {}).get(2))
+    return {'assignment': [assigned, orders], 'providing': [providings, len(loads)], 'sale': [sales, orders]}
+
+
+def load_chain_progress(connection_string: str, loads: Sequence[Mapping[str, Any]]) -> dict[str, list[int]]:
+    """chain_progress по ERP сейчас — одним соединением, только чтение. Окно опрашивает раз в 2 с и ждёт 8 с:
+    короткие тайм-ауты, чтобы зависшее чтение не держало потоки waitress."""
+    wanted = sorted({str(o['isn']).upper() for load in loads for o in load['orders']})
+    stamps: dict[str, str] = {}
+    children: list[tuple[str, int, str]] = []
+    conn = connect(connection_string, login_timeout=5, query_timeout=6)
+    try:
+        for chunk in _chunks(wanted):  # type: ignore[arg-type]
+            for r in _select(conn, SQL_CHAIN_ORDER_STAMPS.format(ph=_placeholders(len(chunk))), chunk):
+                if isinstance(r[1], (bytes, bytearray)):
+                    stamps[_str(r[0]).upper()] = base64.b64encode(bytes(r[1])).decode('ascii')
+            for r in _select(conn, SQL_CHAIN_ORDER_CHILDREN.format(ph=_placeholders(len(chunk))), chunk):
+                children.append((_str(r[0]), int(r[1]), _str(r[2])))
+    finally:
+        close_quietly(conn)
+    return chain_progress(loads, stamps, children)
 
 
 def load_order_import(connection_string: str, isns: Sequence[str]) -> tuple[

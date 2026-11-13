@@ -94,6 +94,15 @@ ANSWER = 'Պատասխան՝ CAR1-ը վերադառնում է ամենաուշ�
 TILE_PNG = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGM4AQAAygDJmcpdfgAAAABJRU5ErkJggg==')
 EXTERNAL = ('cdn.jsdelivr.net', 'fonts.googleapis.com', 'fonts.gstatic.com', 'tiles.api-maps.yandex.ru',
             'tile.openstreetmap.org', 'cdnjs.cloudflare.com', 'yandex.ru')
+# window.confirm заменён окном на странице (#dpConfirmDlg): как page.on('dialog', accept) — подтверждать сразу;
+# если на странице есть window.__dpConfirmed (page.expose_function) — передать ей текст вопроса
+AUTO_CONFIRM = """new MutationObserver(() => {
+    const d = document.getElementById('dpConfirmDlg');
+    if (!d || !d.open || d.dataset.auto) return;
+    d.dataset.auto = '1';
+    if (window.__dpConfirmed) window.__dpConfirmed(document.getElementById('dpConfirmText').textContent);
+    setTimeout(() => { delete d.dataset.auto; document.getElementById('dpConfirmOk').click(); }, 0);
+}).observe(document, { subtree: true, attributes: true, attributeFilter: ['open'] });"""
 
 
 class FakeClient:
@@ -161,10 +170,11 @@ def main() -> int:
             browser = pw.chromium.launch()
             ctx = browser.new_context(viewport={'width': 1440, 'height': 950}, accept_downloads=True)
             page = ctx.new_page()
-            page.add_init_script("try { localStorage.setItem('dpLayout', 'list'); } catch (e) {}")   # №82: рабочий экран — блок Y
+            page.add_init_script("(() => { const m = matchMedia.bind(window); window.matchMedia = q => m(q === '(min-width: 1101px)' ? '(min-width: 99999px)' : q); })();")   # №82: рабочий экран — блок Y
             page.on('pageerror', lambda e: errors.append('pageerror: ' + str(e)))
             page.on('console', lambda m: errors.append('console: ' + m.text) if m.type == 'error' and not is_ignorable(m) else None)
             page.on('dialog', lambda d: d.accept())
+            page.add_init_script(AUTO_CONFIRM)   # системный confirm заменён окном на странице
             for pat in ('https://tiles.api-maps.yandex.ru/**', 'https://*.tile.openstreetmap.org/**'):
                 page.route(pat, lambda r: r.fulfill(status=200, content_type='image/png', body=TILE_PNG))
             vis = lambda sel: page.locator(sel).is_visible()     # noqa: E731
@@ -811,6 +821,7 @@ def main() -> int:
             views._yerevan_now = lambda: fixed.replace(tzinfo=ZoneInfo('Asia/Yerevan'))
             ws = ctx.new_page()
             ws.add_init_script("try { localStorage.setItem('dpLayout', 'ws'); } catch (e) {}")
+            ws.add_init_script(AUTO_CONFIRM)
             ws_errors = []
             ws.on('pageerror', lambda e: ws_errors.append(str(e)))
             ws.goto(f'{BASE}/routes/dispatch?date={DAY2}')
@@ -835,7 +846,8 @@ def main() -> int:
             ws.wait_for_selector('#dpWsSide:not([hidden]) .dp-tcard.is-focus', timeout=5000)
             ws.wait_for_selector('#dpStops .dp-stop.is-flash', state='attached', timeout=5000)
             check(ws.locator('#dpStops .dp-stop.is-flash').count() == 1, 'Y click a map point → truck card, the store row flashes in «Խանութներ» below')
-            ws.click('#dpWsClose')
+            ws.click('#dpWsMore')
+            ws.click('#dpMenuAll')
             ws.wait_for_timeout(600)
             map_moves = []
             ws.on('request', lambda r: map_moves.append(r.post_data) if r.method == 'POST' and r.url.endswith('/dispatch/edit') else None)
@@ -870,7 +882,8 @@ def main() -> int:
                 src.drag_to(tgt)
                 ws.wait_for_timeout(1500)
                 check(any('"move"' in (m or '') for m in moves), f'Y drag a stop from the truck card onto another bar → move ({len(moves)} edit)')
-            ws.click('#dpWsClose')
+            ws.click('#dpWsMore')
+            ws.click('#dpMenuAll')
             check(ws.locator('#dpWsSide').is_hidden() and ws.evaluate("document.activeElement && document.activeElement.classList.contains('dp-blabel')"),
                   'Y side closed, focus back on the truck row')
             ws.click('#dpPrepOpen')
@@ -881,7 +894,7 @@ def main() -> int:
             bar = ws.evaluate("(() => { const b = document.querySelector('#rtDispatch .dp-dayboard'), p = document.querySelector('#dpSendState .dp-sendpill');"
                               " return [b.scrollWidth, b.clientWidth, p ? p.scrollWidth <= p.clientWidth : true]; })()")
             check(bar[0] <= bar[1] and bar[2], f'Y toolbar fits one line, status not clipped {bar}')
-            check(ws.locator('#dpViewList').is_hidden() and ws.locator('#dpWsMore').is_visible(), 'Y «Ցուցակով» is inside the «⋯» menu')
+            check(ws.locator('#dpViewList').count() == 0 and ws.locator('#dpWsMore').is_visible(), 'Y no switch to the old list')
             ws.click('#dpWsMore')
             check(ws.get_attribute('#dpWsMore', 'aria-expanded') == 'true' and ws.evaluate("document.activeElement.getAttribute('role')") == 'menuitem',
                   'Y «⋯» opens the menu, focus on the first item')
@@ -908,22 +921,15 @@ def main() -> int:
             opts = sel.locator('option').evaluate_all("os => os.map(o => o.value)")
             sel.select_option(next((v for v in opts if v.startswith('t:')), None) or next(v for v in opts if v.startswith('n:')))
             ws.wait_for_selector('#dpSendState .dp-sendpill.is-unsent', timeout=15000)
-            ws.click('#dpWsClose')
+            ws.click('#dpWsMore')
+            ws.click('#dpMenuAll')
             ws.click('#dpWsMore')
             asked = []
-            ws.once('dialog', lambda d: (asked.append(d.message), d.accept()))
+            ws.expose_function('__dpConfirmed', lambda m: asked.append(m))
             ws.click('#dpMenuDiscard')
             ws.wait_for_selector('#dpSendState .dp-sendpill.is-sent', timeout=15000)
             check(asked and any('"discard"' in (m or '') for m in moves) and ws.locator('#dpMenuDiscard').is_hidden(),
                   f'Y «⋯» discard: confirmation, edit discard, item gone ({len(asked)} dialog)')
-            ws.click('#dpWsMore')
-            ws.click('#dpViewList')
-            check(ws.locator('#rtDispatch.is-ws').count() == 0 and ws.locator('.dp-split #dpTruckCards').count() == 1
-                  and ws.locator('.dp-mapcol #dpMapBox').count() == 1 and ws.locator('#dpViewWs').is_visible(),
-                  'Y «Ցուցակով»: the old layout, nodes back home')
-            ws.click('#dpViewWs')
-            check(ws.locator('#rtDispatch.is-ws').count() == 1 and ws.evaluate("localStorage.getItem('dpLayout')") == 'ws',
-                  'Y back to the workspace, remembered')
             ws.set_viewport_size({'width': 1000, 'height': 900})
             ws.wait_for_timeout(300)
             check(ws.locator('#rtDispatch.is-ws').count() == 0, 'Y narrow window: no workspace')

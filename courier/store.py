@@ -591,6 +591,12 @@ class Store:
 
     def __init__(self, path: str):
         self.path = path
+        self.late_marks: dict[str, int] = {}   # дата → поздних delivery, принятых процессом: кэши этой даты устарели
+
+    def mark_late(self, day: str) -> None:
+        """Принята delivery за прошедшую дату: /day даты, факт терминалов (LiveSource) и закрытые точки «Развоза»
+        (views.closed_points) сверяют эту метку и не ждут TTL — иначе заказ ещё минуты открыт на терминале."""
+        self.late_marks[day] = self.late_marks.get(day, 0) + 1
 
     @property
     def photos_dir(self) -> str:
@@ -1452,7 +1458,7 @@ class Store:
         return [x for r in rows if (x := _suggestion(r)) is not None]
 
     def decide_suggestion(self, event_id: str, decision: str, user: str | None,
-                          apply: Callable[[dict[str, Any]], None]) -> dict[str, Any] | None:
+                          apply: Callable[[dict[str, Any]], None], *, latest_only: bool = False) -> dict[str, Any] | None:
         """Решение по открытому предложению. Решение пишется в транзакции courier.db, apply(предложение) вызывается
         внутри неё до COMMIT: исключение в apply — решения нет, предложение остаётся открытым. apply пишет в другую
         базу (ручная точка — route_optimizer.db) и фиксирует её сам, поэтому это не одна атомарная транзакция: если
@@ -1460,6 +1466,9 @@ class Store:
         (повторное «принять» безопасно — та же точка). Параллельное решение ждёт (BEGIN IMMEDIATE) и получает None.
         accepted — остальные открытые предложения того же клиента закрываются как rejected с decided_by
         SUPERSEDED_BY (точка уже выбрана); их id — в поле superseded результата.
+        latest_only (автоприменение отметок, routes_link.apply_driver_marks): решение только если отметку можно применить
+        без логиста (_auto_moment). Нельзя — решения нет, apply не вызывается, предложение остаётся открытым, в результате
+        held: True; можно — apply получает ещё и момент отметки (moment).
         None — предложения нет, клиент неизвестен или решение уже есть."""
         if decision not in ('accepted', 'rejected'):
             raise ValueError('decision: accepted или rejected')
@@ -1469,6 +1478,10 @@ class Store:
             sug = _suggestion(r) if r is not None else None
             if sug is None:
                 return None
+            if latest_only:
+                sug['moment'] = _auto_moment(conn, event_id, sug['customer_id'])
+                if sug['moment'] is None:
+                    return {**sug, 'held': True}
             now = _now()
             conn.execute('INSERT INTO geo_suggest_decision(event_id, decision, decided_at, decided_by) '
                          'VALUES(?, ?, ?, ?)', (event_id, decision, now, user))
@@ -1639,6 +1652,14 @@ class Store:
         self._transaction(write, 'не удалось сохранить сдачу денег')
 
     # --- настройки: маркировка, тара, причины ---
+
+    def answers_required(self, car_code: str) -> bool:
+        """Обязательные ответы водителя по каждому магазину для машины: meta `require_answers_cars` — `*` (все машины)
+        или коды через запятую (пробелы не в счёт, код — точно); нет строки или пусто — нет. Постепенное включение и
+        аварийный выключатель: строка правится в базе, без схемы и без выкладки."""
+        row = self._read(lambda c: c.execute("SELECT value FROM meta WHERE key = 'require_answers_cars'").fetchone())
+        codes = {x.strip() for x in str(row[0] if row else '').split(',')} - {''}
+        return '*' in codes or car_code in codes
 
     def mark_settings(self) -> dict[int, MarkSetting]:
         rows = self._read(lambda c: c.execute('SELECT product_id, marked, pack_qty FROM marked_products').fetchall())
@@ -1811,9 +1832,35 @@ def _stop_customer_sql(path: str) -> str:
 
 
 # открытые предложения водителей: событие geo_suggest без строки в geo_suggest_decision
-_SUGGEST_SQL = (f"SELECT e.id, e.date, e.at_device, dr.name, e.payload, {_stop_customer_sql('$.customer')} "
+_SUGGEST_SQL = (f"SELECT e.id, e.date, e.at_device, dr.name, e.payload, {_stop_customer_sql('$.customer')}, "
+                f"{_stop_customer_sql('$.lat')}, {_stop_customer_sql('$.lon')} "
                 "FROM events e LEFT JOIN drivers dr ON dr.id = e.driver_id WHERE e.type = 'geo_suggest' "
                 "AND NOT EXISTS (SELECT 1 FROM geo_suggest_decision g WHERE g.event_id = e.id)")
+# отметки водителей, которые ещё действуют (открыты или приняты): отклонённые и закрытые другой отметкой не считаются
+_LIVE_MARKS_SQL = (f"SELECT e.id, e.at_utc, e.received_at, e.flags, {_stop_customer_sql('$.customer.id')} FROM events e "
+                   "LEFT JOIN geo_suggest_decision g ON g.event_id = e.id "
+                   "WHERE e.type = 'geo_suggest' AND (g.decision IS NULL OR g.decision = 'accepted')")
+# сколько разных клиентов было у точки события ? во всех снимках /day
+_STOP_CUSTOMERS_SQL = ("SELECT COUNT(DISTINCT json_extract(d.data, '$.customer.id')) FROM snapshot_stops s "
+                       "JOIN stop_data d ON d.hash = s.data_hash WHERE s.stop_id = (SELECT stop_id FROM events WHERE id = ?)")
+
+
+def _mark_moment(at_utc: str, received_at: str) -> datetime:
+    """Момент отметки: по часам терминала, но не позже получения сервером — спешащие часы не делают её самой новой."""
+    return min(datetime.fromisoformat(at_utc), datetime.fromisoformat(received_at))
+
+
+def _auto_moment(conn: sqlite3.Connection, event_id: str, customer_id: int) -> datetime | None:
+    """Момент отметки, которую можно применить без логиста. None — решает логист: у точки в снимках менялся клиент
+    (отметка могла относиться к другому магазину), дата под подозрением (date_suspicious) или по магазину есть отметка
+    новее, открытая либо принятая."""
+    if conn.execute(_STOP_CUSTOMERS_SQL, (event_id,)).fetchone()[0] != 1:
+        return None
+    marks = [(r[0], _mark_moment(r[1], r[2]), r[3]) for r in conn.execute(_LIVE_MARKS_SQL).fetchall() if r[4] == customer_id]
+    own = next((m for m in marks if m[0] == event_id), None)
+    if own is None or 'date_suspicious' in json.loads(own[2] or '[]') or any(m[1] > own[1] for m in marks):
+        return None
+    return own[1]
 
 
 def _suggestion(r: Sequence[Any]) -> dict[str, Any] | None:
@@ -1829,7 +1876,8 @@ def _suggestion(r: Sequence[Any]) -> dict[str, Any] | None:
         return None
     return {'event_id': r[0], 'customer_id': cid, 'code': customer.get('code'), 'name': customer.get('name'),
             'lat': payload.get('lat'), 'lon': payload.get('lon'), 'accuracy': payload.get('accuracy'),
-            'note': payload.get('note'), 'driver_name': r[3], 'date': r[1], 'at': r[2]}
+            'note': payload.get('note'), 'driver_name': r[3], 'date': r[1], 'at': r[2], 'source': payload.get('source'),
+            'stop_lat': r[6], 'stop_lon': r[7]}
 
 
 # Правило помощника события (контракт v1.4 §8): помощник подтверждён своим PIN на этом терминале у этого водителя, дата

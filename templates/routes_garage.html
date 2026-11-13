@@ -15,7 +15,7 @@
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=30">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_ui.css') }}?v=5">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_ui.css') }}?v=6">
 <!-- Журнал гаража (ответ владельца №53): страница на армянском, телефон и ПК — свои стили поверх routes.css -->
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes_garage.css') }}?v=12">
 {% endblock %}
@@ -36,20 +36,7 @@
                 մեկ կիլոմետրի համար (֏/կմ) վերջին 12 ամսում և, երբ վազքը ծածկում է 6 ամիս, օգտագործում է այն առաքման հաշվարկում։</p>
             </details>
         </div>
-        <div class="rt-pagehead__actions">
-            <div class="rt-seg--tabs gj-tabs" id="gjTabs" role="tablist" aria-label="Ավտոտնակի բաժիններ">
-                <button type="button" role="tab" id="gjTabCosts" aria-controls="gjCosts" aria-selected="true">
-                    <i class="fas fa-wrench" aria-hidden="true"></i>Ծախսեր</button>
-                <button type="button" role="tab" id="gjTabOdo" aria-controls="gjOdo" aria-selected="false" tabindex="-1">
-                    <i class="fas fa-gauge" aria-hidden="true"></i>Վազք</button>
-                <button type="button" role="tab" id="gjTabSum" aria-controls="gjSum" aria-selected="false" tabindex="-1">
-                    <i class="fas fa-chart-column" aria-hidden="true"></i>Ամփոփում</button>
-                <button type="button" role="tab" id="gjTabNorm" aria-controls="gjNorm" aria-selected="false" tabindex="-1">
-                    <i class="fas fa-gas-pump" aria-hidden="true"></i>Նորմ և փաստ</button>
-            </div>
-            <button id="gjGoOdo" type="button" class="rt-btn rt-btn--secondary">Լրացնել վազքը</button>
-            <button id="gjNew" type="button" class="rt-btn rt-btn--primary" aria-controls="gjForm" aria-expanded="false"><i class="fas fa-plus" aria-hidden="true"></i>Նոր գրառում</button>
-        </div>
+        {% include "_garage_navigation.html" %}
     </header>
 
     <div id="gjStatus" class="rt-sr-only" role="status" aria-live="polite"></div>
@@ -323,6 +310,6 @@
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
 <!-- подложка карт раздела (№47) — без ключа Яндекса: страница открыта из интернета, ключ сюда не выдаётся → OpenStreetMap -->
-<script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=4" data-yandex-key=""></script>
-<script src="{{ url_for('static', filename='js/routes_garage.js') }}?v=16"></script>
+<script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=7" data-yandex-key=""></script>
+<script src="{{ url_for('static', filename='js/routes_garage.js') }}?v=20"></script>
 {% endblock %}

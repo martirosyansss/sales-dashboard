@@ -1126,6 +1126,14 @@
     function drawPlan(t, layer) {
         const r = t.route;
         if (!state.showPlan || !r || !Array.isArray(r.lines)) return;
+        if (!r.road) return;
+        if (Array.isArray(r.segments)) {
+            r.segments.forEach(line => {
+                if (line.length>=2) L.polyline(line, { ...paint({ color: LN.plan }), weight: 12, opacity: .3,
+                    interactive: false, className: 'lv-l-plan' }).addTo(layer);
+            });
+            return;
+        }
         r.lines.forEach((line, i) => {
             if (line.length < 2) return;
             L.polyline(line, { ...paint({ color: LN.plan }), weight: 12, opacity: 0.3, interactive: false, className: 'lv-l-plan' }).addTo(layer);
@@ -1583,7 +1591,7 @@
         const route = [];
         route.push(statRow('Պլանային երթուղի', r ? r.trips + ' երթ · ' + r.stops + ' խանութ' : '—',
             r ? (r.road ? 'ճանապարհներով, ինչպես «Առաքում» էջում'
-                + (r.straight ? ' · ' + r.straight + ' հատված՝ ուղիղ գծով (ճանապարհ չգտնվեց, այնտեղ շեղումը չի հաշվվում)' : '')
+                + (r.straight ? ' · ' + r.straight + ' հատված չի ցուցադրվում (ճանապարհ չգտնվեց, այնտեղ շեղումը չի հաշվվում)' : '')
                 : 'ուղիղ գծով՝ ճանապարհների քարտեզը դեռ պատրաստ չէ') : noRouteText(t),
             r ? null : 'is-mute'));
         route.push(statRow('Շեղում երթուղուց', ...deviationText(t)));

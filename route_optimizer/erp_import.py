@@ -9,6 +9,7 @@ ArmSoft импорта заказов (SalesOrder.xlsm, лист «Խմբագր�
   остальные поля шапки заказа — ровно текущие значения ERP (erp.order_heads). Макрос ArmSoft отправляет адрес доставки
   (AC) всегда, и пустым: в ERP хранится id, шаблон ждёт код — заказ с адресом в файл не попадает (views, has_address);
 - файл — снимок: загруженный позже вернёт в заказ значения шапки на момент скачивания (имя файла — со временем);
+- при открытии выбран заполненный лист «Խմբագրում», а не пустой лист создания заказов «Ներմուծում»;
 - лист «Կարգավորումներ»: пересчёт цен, скидок, тары и подарков выключен (C6:C9 и сами флажки) — правка шапки не должна
   пересчитывать строки товаров и 10+1;
 - строк товаров нет: таблицы шаблона в режиме «Ավելացնել տողերը» (пустая ничего не добавляет); режим «Վերարտագրել
@@ -161,9 +162,20 @@ def _settings_off(xml: str) -> str:
     return xml
 
 
+def _view_attribute(xml: str, tag: str, name: str, value: str) -> str:
+    """Правим только атрибут вида: макросы, кнопки и содержимое листов не переписываем."""
+    def replace(match: re.Match[str]) -> str:
+        attrs = re.sub(rf'\s{name}="[^"]*"', '', match.group(1))
+        return f'<{tag}{attrs} {name}="{value}"{match.group(2)}'
+    xml, n = re.subn(rf'<{tag}\b([^>]*?)(/?>)', replace, xml, count=1)
+    if n != 1:
+        raise TemplateError(f'в шаблоне нет {tag}')
+    return xml
+
+
 def build_xlsm(template: bytes, rows: Sequence[ImportRow]) -> bytes:
-    """Шаблон ArmSoft + строки заказов → файл .xlsm (тот же архив, изменены только три вида частей: лист правки, лист
-    настроек, флажки настроек)."""
+    """Шаблон ArmSoft + строки заказов → файл .xlsm: строки правки, настройки и флажки пересчёта, выбор листа при открытии.
+    Остальные части архива сохранены без изменений."""
     with zipfile.ZipFile(io.BytesIO(template)) as src:
         infos = src.infolist()
         files = {i.filename: src.read(i) for i in infos}
@@ -173,7 +185,14 @@ def build_xlsm(template: bytes, rows: Sequence[ImportRow]) -> bytes:
     changed = {
         sheets[EDIT_SHEET]: _fill_edit_sheet(files[sheets[EDIT_SHEET]].decode('utf-8'), rows),
         sheets[SETTINGS_SHEET]: _settings_off(files[sheets[SETTINGS_SHEET]].decode('utf-8')),
+        'xl/workbook.xml': _view_attribute(files['xl/workbook.xml'].decode('utf-8'), 'workbookView',
+                                           'activeTab', str(list(sheets).index(EDIT_SHEET))),
     }
+    # Шаблон открывает пустое «Ներմուծում». Выбираем только «Խմբագրում», где находятся строки экспорта.
+    for name, part in sheets.items():
+        xml = changed.get(part, files[part].decode('utf-8'))
+        if name == EDIT_SHEET or re.search(r'<sheetView\b[^>]*\btabSelected="1"', xml):
+            changed[part] = _view_attribute(xml, 'sheetView', 'tabSelected', '1' if name == EDIT_SHEET else '0')
     for part in _sheet_rels(files, sheets[SETTINGS_SHEET]):
         text = files.get(part, b'').decode('utf-8', 'replace')
         if part.startswith('xl/ctrlProps/') and 'objectType="CheckBox"' in text:

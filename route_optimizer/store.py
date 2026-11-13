@@ -23,14 +23,15 @@ from datetime import date, datetime, timedelta
 from enum import Enum
 from typing import Any, Callable, Collection, Literal, Mapping, Sequence
 
-from . import cost_to_serve, crew_pay
+from . import cost_to_serve, crew_pay, warehouse
+from .erp_chain_guard import PlanLocked
 from .geo import ARMENIA_LAT, ARMENIA_LON, Point, is_valid_point
 from .garage import KM_PER_DAY_MAX, SPREAD_MONTHS
 from .patterns import parse_freq_key, parse_pattern_key, parse_plan_freq_key, parse_transfer_key
 from .running_costs import LOAD_COST_FIELDS, profile_fields
 from .vehicle_access import VehicleAccess, check_access
 
-SCHEMA_VERSION = 29
+SCHEMA_VERSION = 30
 logger = logging.getLogger(__name__)
 CREW_PAY_KEY = 'crew_pay'   # строка settings с параметрами «Աշխատավարձ» (Store.crew_pay_params); не ключ DEFAULT_SETTINGS
 # строка settings: какие виды тревог карты знала программа, сохранившая live_alert_kinds (№87); не ключ
@@ -94,6 +95,15 @@ SCENARIOS_KEPT = 5
 _GEO_OVERRIDE_TABLE = (
     "CREATE TABLE IF NOT EXISTS customer_geo_override(customer_id INTEGER PRIMARY KEY, "
     "lat REAL NOT NULL, lon REAL NOT NULL, updated_at TEXT NOT NULL, updated_by TEXT)")
+_GEO_OVERRIDE_UPSERT = ('INSERT INTO customer_geo_override(customer_id, lat, lon, updated_at, updated_by) '
+                        'VALUES(?, ?, ?, ?, ?) ON CONFLICT(customer_id) DO UPDATE SET lat = excluded.lat, '
+                        'lon = excluded.lon, updated_at = excluded.updated_at, updated_by = excluded.updated_by')
+# Журнал точек из отметок водителей (применяются без логиста): prev_* — ручная точка до отметки (её вернёт отмена; нет —
+# ручной точки не было), was_* — точка, которую показывал терминал (для «на сколько метров»)
+_GEO_MARK_TABLE = (
+    "CREATE TABLE IF NOT EXISTS customer_geo_mark(event_id TEXT PRIMARY KEY, customer_id INTEGER NOT NULL, "
+    "lat REAL NOT NULL, lon REAL NOT NULL, prev_lat REAL, prev_lon REAL, was_lat REAL, was_lon REAL, source TEXT, "
+    "driver TEXT, code TEXT, name TEXT, marked_at TEXT, applied_at TEXT NOT NULL, undone_at TEXT, undone_by TEXT)")
 _DISPATCH_TABLE = (
     "CREATE TABLE IF NOT EXISTS dispatch_plan(day TEXT PRIMARY KEY, data TEXT NOT NULL, "
     "rev INTEGER NOT NULL DEFAULT 1, updated_at TEXT NOT NULL, updated_by TEXT)")
@@ -366,7 +376,9 @@ _SCHEMA = (
     _ERP_WRITE_LOG_INDEX,
     _ERP_WRITE_LEASE_TABLE,
     _GEO_OVERRIDE_TABLE,
+    _GEO_MARK_TABLE,
     _DISPATCH_TABLE,
+    *warehouse.DDL,
     _TRUCKS_ONE_VAN,
 )
 
@@ -524,6 +536,7 @@ _MIGRATIONS: dict[int, tuple[str, ...]] = {
     27: (_LIVE_ACK_TABLE,),
     # 28 → 29 (№97): только добавляем — журнал записи сайта в заказы ERP; прежнее не меняется.
     28: (_ERP_WRITE_LOG_TABLE, _ERP_WRITE_LOG_INDEX, _ERP_WRITE_LEASE_TABLE),
+    29: warehouse.DDL,
 }
 
 FUEL_TYPES = ('diesel', 'petrol', 'lpg')
@@ -586,6 +599,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # Нет ключа в базе — значение по умолчанию: миграция не нужна
     'truck_work_start': '09:00',
     'truck_work_end': '18:00',
+    # Предел обычного рейса, % тоннажа; один неизбежно тяжёлый заказ сохраняет исключение до полного тоннажа.
+    'truck_load_cap_pct': 90,
     # Форс-мажор (ответ владельца №32): «Везти после конца дня» в «Развозе» — машины возвращаются не позже
     'truck_overtime_end': '20:00',
     # Запас в конце дня (ответ владельца №78): сборка «Развоза» возвращает машины не позже truck_work_end минус столько
@@ -629,11 +644,17 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # «Развоз» (№74): менеджеры (agent_id), чьи заказы машины парка везут, хотя в ERP «везёт сам» (экспедитор = менеджер,
     # Rocarm A000), — кроме клиентов в городах dispatch_other_cities (адрес по умолчанию или название клиента): их везут
     # другие машины. Пусто — правила нет: «везёт сам» не для машин, как раньше. Города — стартовые ответа владельца
+    'dispatch_optional_agents': [],  # склад: только явно выбранные заказы менеджеров ERP
     'dispatch_fleet_agents': [],
     'dispatch_other_cities': ['Գյումրի', 'Կապան', 'Գորիս', 'Վանաձոր'],
     # «Развоз» (№74): клиенты (customer_id ERP), чьи заказы машины не везут никогда (внутренние счета, экспорт) —
     # отмечает владелец. Пусто — везём всех
     'dispatch_customers_off': [],
+    # Машина центра: {truck: код, from: YYYY-MM-DD}; вне городской зоны она не работает.
+    # None сохраняет прежнее поведение; дата не меняет исторические расчёты.
+    'dispatch_center_role': None,
+    'dispatch_balanced': False,
+    'dispatch_extra_cost_amd': 3000,
     # Телефон менеджера у водителя (запрос владельца 09.10 «телефон менеджера у водителя»): agent_id ERP
     # (SALESAGENTS.fID, ключ — строка JSON) → номер; «Առաքիչ» показывает менеджера магазина и кнопку звонка. В ERP
     # телефона менеджера нет — вводит владелец. Нет ключа — пусто (кнопки нет)
@@ -757,6 +778,8 @@ _NUMERIC: dict[str, tuple[float, float, bool]] = {
     'unload_min_per_tonne': (0, 120, False),
     'truck_lunch_min': (0, 120, False),
     'truck_end_reserve_min': (0, 120, False),
+    'truck_load_cap_pct': (1, 100, False),
+    'dispatch_extra_cost_amd': (0, 1000000, False),
     'until_buffer_min': (0, 120, False),     # и целое (validate_settings; /day отдаёт целым)
     'solo_spare_max_pct': (0, 100, False),
     'dispatch_buffer_pct': (50, 95, False),
@@ -990,6 +1013,18 @@ def _crew_upsert(conn: sqlite3.Connection, table: str, car_code: str, day: str, 
 
 def _crew_drop_substitute(conn: sqlite3.Connection, table: str, car_code: str, day: str) -> None:
     conn.execute(f'DELETE FROM {table} WHERE car_code = ? AND from_day = ? AND only_day = 1', (car_code, day))
+
+
+def _crew_restore_day(conn: sqlite3.Connection, role: str, car_code: str, day: str,
+                      previous: Sequence[Any] | None) -> None:
+    """Restore the exact day substitution inside the caller's local SQLite transaction."""
+    if role not in ('driver', 'helper'):
+        raise ValueError('Unknown crew role')
+    table = 'truck_' + role
+    _crew_drop_substitute(conn, table, car_code, day)
+    if previous is not None:
+        conn.execute(f'INSERT INTO {table}(car_code,from_day,only_day,name,updated_at,updated_by) '
+                     'VALUES(?,?,1,?,?,?)', (car_code, day, *previous))
 
 
 def check_driver_name(raw: Any) -> tuple[str | None, str | None]:
@@ -1545,6 +1580,19 @@ def validate_settings(values: Mapping[str, Any],
     out: dict[str, Any] = {}
     errors: dict[str, str] = {}
 
+    from .center_role import KEY as center_key, parse as parse_center_role
+    role, error = parse_center_role(values.get(center_key))
+    if error:
+        errors[center_key] = error
+    else:
+        out[center_key] = role
+
+    balanced = values.get('dispatch_balanced', False)
+    if not isinstance(balanced, bool):
+        errors['dispatch_balanced'] = 'Ընտրեք հավասարակշռված գնահատումը'
+    else:
+        out['dispatch_balanced'] = balanced
+
     mode = values.get('traffic_mode', 'gps')
     if mode not in ('gps', 'static', 'yandex'):
         errors['traffic_mode'] = 'ընտրեք պատմական GPS-ը կամ մշտական արագությունը'
@@ -1622,6 +1670,7 @@ def validate_settings(values: Mapping[str, Any],
 
     # «Развоз» (№74): менеджеры, чьи заказы «везёт сам» везут машины, и клиенты «машины не везут» — id ERP, как у №69
     for key, limit, what in (('dispatch_fleet_agents', MAX_FLEET_AGENTS, 'մենեջերների'),
+                             ('dispatch_optional_agents', MAX_FLEET_AGENTS, 'մենեջերների'),
                              ('dispatch_customers_off', MAX_CUSTOMERS_OFF, 'հաճախորդների')):
         ids = values.get(key, [])
         if not isinstance(ids, list) or len(ids) > limit:
@@ -1655,6 +1704,12 @@ def validate_settings(values: Mapping[str, Any],
             errors[key] = err
         else:
             out[key] = v
+    if 'truck_load_cap_pct' in out:
+        if not float(out['truck_load_cap_pct']).is_integer():
+            errors['truck_load_cap_pct'] = 'ամբողջ թիվ՝ տոկոսներով'
+            del out['truck_load_cap_pct']
+        else:
+            out['truck_load_cap_pct'] = int(out['truck_load_cap_pct'])
     # порог «не успеет» без окна (№87) и эскалация бота (№91) — целые минуты, как у полей страницы
     for key in ('late_nowin_min', 'tg_escalate_min', 'until_buffer_min'):
         if key in out and not float(out[key]).is_integer():
@@ -2122,6 +2177,12 @@ def validate_payload(payload: Any, current: Bundle,
     manual = tuple(_validate_manual_trucks(payload['manual_trucks'], current.trucks, ref, errors)) \
         if 'manual_trucks' in payload else None
 
+    role = settings.get('dispatch_center_role')
+    if role:
+        known = set(ref.car_codes) | set(current.trucks) | {t.car_code for t in (manual or ())}
+        if role['truck'] not in known:
+            errors['settings.dispatch_center_role'] = 'Կենտրոնի մեքենան չի գտնվել՝ թարմացրեք էջը'
+
     if errors:
         return None, errors
     return Changes(settings, depot_set, depot, tuple(trucks), tuple(managers), manual), {}
@@ -2221,7 +2282,8 @@ _FIX_HINT = ' — ուղղեք կամ ջնջեք ֆայլը։ Ծրագիրը լ�
 class Store:
     """Доступ к route_optimizer.db. Соединение открывается на каждую операцию."""
 
-    def __init__(self, path: str):
+    def __init__(self, path: str, authorize_vehicle_change: Callable[[], None] | None = None):
+        self._authorize_vehicle_change = authorize_vehicle_change
         self.path = path
 
     def _name(self) -> str:
@@ -2258,6 +2320,7 @@ class Store:
                 Store._migrate(conn)
             Store._live_explain_stops(conn)   # и после миграции: база 26 первой версии ветки могла прийти без stops
             Store._live_ack_table(conn)
+            Store._geo_mark_table(conn)
             return
         if tables:
             raise StoreError('Ֆայլը երթուղիների բազա չէ (կան օտար աղյուսակներ)')
@@ -2267,6 +2330,7 @@ class Store:
                 conn.execute(ddl)
             conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
                          (str(SCHEMA_VERSION),))
+            warehouse.bootstrap(conn)
             conn.execute('COMMIT')
         except BaseException:
             conn.execute('ROLLBACK')
@@ -2288,6 +2352,13 @@ class Store:
         except BaseException:
             conn.execute('ROLLBACK')
             raise
+
+    @staticmethod
+    def _geo_mark_table(conn: sqlite3.Connection) -> None:
+        """Журнал отметок водителей: таблица только добавляется и номер схемы не повышает — прежняя версия программы её
+        не читает, откат выпуска безопасен."""
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'customer_geo_mark'").fetchone() is None:
+            conn.execute(_GEO_MARK_TABLE)
 
     @staticmethod
     def _live_ack_table(conn: sqlite3.Connection) -> None:
@@ -2325,6 +2396,7 @@ class Store:
                     conn.execute(ddl)
                 version += 1
             conn.execute("UPDATE meta SET value = ? WHERE key = 'schema_version'", (str(version),))
+            warehouse.bootstrap(conn)
             conn.execute('COMMIT')
         except BaseException:
             conn.execute('ROLLBACK')
@@ -2491,6 +2563,11 @@ class Store:
             try:
                 conn.execute('BEGIN IMMEDIATE')
                 try:
+                    if self._authorize_vehicle_change is not None and 'dispatch_center_role' in changes.settings:
+                        row = conn.execute("SELECT value FROM settings WHERE key='dispatch_center_role'").fetchone()
+                        previous = json.loads(row[0]) if row is not None else None
+                        if previous != changes.settings['dispatch_center_role']:
+                            self._authorize_vehicle_change()
                     self._write(conn, changes, now, user)
                     conn.execute('COMMIT')
                 except BaseException:
@@ -2580,11 +2657,14 @@ class Store:
         except sqlite3.Error as e:
             raise StoreError(f'{self._name()}: վնասված է կամ հասանելի չէ{_FIX_HINT}') from e
 
-    def _transaction(self, write: Callable[[sqlite3.Connection], Any], failure: str) -> Any:
-        """Запись одной транзакцией: всё или ничего. Возвращает то, что вернула write."""
+    def _transaction(self, write: Callable[[sqlite3.Connection], Any], failure: str, busy_ms: int | None = None) -> Any:
+        """Запись одной транзакцией: всё или ничего. Возвращает то, что вернула write. busy_ms — своё ожидание занятой
+        базы вместо обычного."""
         try:
             conn = self._connect()
             try:
+                if busy_ms is not None:
+                    conn.execute(f'PRAGMA busy_timeout = {int(busy_ms)}')
                 conn.execute('BEGIN IMMEDIATE')
                 try:
                     out = write(conn)
@@ -2595,6 +2675,8 @@ class Store:
             finally:
                 conn.close()
         except sqlite3.Error as e:
+            if str(e) == 'erp_chain_plan_locked':
+                raise PlanLocked() from e
             raise StoreError(f'{self._name()}: {failure}') from e
         return out
 
@@ -2718,7 +2800,8 @@ class Store:
 
     # --- План развоза: ручные точки клиентов и черновики плана на дату ---
 
-    def save_geo_override(self, customer_id: int, point: Point | None, user: str | None) -> None:
+    def save_geo_override(self, customer_id: int, point: Point | None, user: str | None, *,
+                          busy_ms: int | None = None) -> None:
         """Ручная точка клиента (проверенная: в Армении); None — убрать, снова ERP/GPS."""
         if not _is_int(customer_id) or not 0 < customer_id < 2 ** 31:
             raise ValueError('customer_id: положительное целое')
@@ -2729,12 +2812,78 @@ class Store:
             if point is None:
                 conn.execute('DELETE FROM customer_geo_override WHERE customer_id = ?', (customer_id,))
             else:
-                conn.execute('INSERT INTO customer_geo_override(customer_id, lat, lon, updated_at, updated_by) '
-                             'VALUES(?, ?, ?, ?, ?) ON CONFLICT(customer_id) DO UPDATE SET lat = excluded.lat, '
-                             'lon = excluded.lon, updated_at = excluded.updated_at, updated_by = excluded.updated_by',
-                             (customer_id, float(point[0]), float(point[1]), _now(), user))
+                conn.execute(_GEO_OVERRIDE_UPSERT, (customer_id, float(point[0]), float(point[1]), _now(), user))
 
-        self._transaction(write, 'не удалось сохранить точку клиента')
+        self._transaction(write, 'не удалось сохранить точку клиента', busy_ms)
+
+    def geo_override_stamp(self, customer_id: int) -> tuple[datetime, str | None] | None:
+        """Когда (момент с зоной) и кем поставлена ручная точка клиента. Точки нет, но логист отменил отметку водителя
+        (снова «авто») — когда и кем отменена: отметка, сделанная раньше отмены, не должна вернуть точку сама. Ничего — None."""
+        row = self._read(lambda conn: conn.execute(
+            'SELECT updated_at, updated_by FROM customer_geo_override WHERE customer_id = ?', (customer_id,)).fetchone()
+            or conn.execute('SELECT undone_at, undone_by FROM customer_geo_mark WHERE customer_id = ? AND undone_at IS NOT NULL '
+                            'ORDER BY undone_at DESC LIMIT 1', (customer_id,)).fetchone())
+        return (datetime.fromisoformat(row[0]).astimezone(), row[1]) if row else None
+
+    def apply_geo_mark(self, event_id: str, customer_id: int, point: Point, by: str | None, *, driver: str | None = None,
+                       code: str | None = None, name: str | None = None, source: str | None = None,
+                       marked_at: str | None = None, was: Point | None = None, busy_ms: int | None = None) -> None:
+        """Отметка водителя — ручная точка клиента и строка журнала одной транзакцией: журнал помнит, какая ручная точка
+        была до отметки. Повтор той же отметки (её решение не записалось) первую строку не меняет."""
+        if not _is_int(customer_id) or not 0 < customer_id < 2 ** 31:
+            raise ValueError('customer_id: положительное целое')
+        if not is_valid_point(*point):
+            raise ValueError('точка вне Армении')
+        was_lat, was_lon = was if was is not None else (None, None)
+
+        def write(conn: sqlite3.Connection) -> None:
+            prev = conn.execute('SELECT lat, lon FROM customer_geo_override WHERE customer_id = ?', (customer_id,)).fetchone()
+            now = _now()
+            conn.execute(_GEO_OVERRIDE_UPSERT, (customer_id, float(point[0]), float(point[1]), now, by))
+            conn.execute('INSERT OR IGNORE INTO customer_geo_mark(event_id, customer_id, lat, lon, prev_lat, prev_lon, was_lat, '
+                         'was_lon, source, driver, code, name, marked_at, applied_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                         (event_id, customer_id, float(point[0]), float(point[1]), prev[0] if prev else None,
+                          prev[1] if prev else None, was_lat, was_lon, source, driver, code, name, marked_at, now))
+
+        self._transaction(write, 'не удалось сохранить отметку водителя', busy_ms)
+
+    def geo_marks(self, since: str, limit: int) -> list[dict[str, Any]]:
+        """Журнал отметок с applied_at не раньше since, новые первыми. can_undo — отметка не отменена и её точка всё ещё
+        действует (самая новая неотменённая у клиента, и логист точку не менял)."""
+        rows = self._read(lambda conn: conn.execute(
+            'SELECT m.event_id, m.customer_id, m.lat, m.lon, m.was_lat, m.was_lon, m.source, m.driver, m.code, m.name, m.marked_at, '
+            'm.applied_at, m.undone_at, m.undone_by, o.lat, o.lon, m.prev_lat, m.prev_lon, '
+            '(SELECT MAX(x.rowid) FROM customer_geo_mark x WHERE x.customer_id = m.customer_id AND x.undone_at IS NULL) = m.rowid '
+            'FROM customer_geo_mark m '
+            'LEFT JOIN customer_geo_override o ON o.customer_id = m.customer_id WHERE m.applied_at >= ? '
+            'ORDER BY m.applied_at DESC, m.event_id LIMIT ?', (since, limit)).fetchall())
+        return [{'event_id': r[0], 'customer_id': r[1], 'lat': r[2], 'lon': r[3], 'was_lat': r[4], 'was_lon': r[5], 'source': r[6],
+                 'driver': r[7], 'code': r[8], 'name': r[9], 'marked_at': r[10], 'applied_at': r[11], 'undone_at': r[12],
+                 'undone_by': r[13], 'prev_lat': r[16], 'prev_lon': r[17],
+                 'can_undo': r[12] is None and (r[14], r[15]) == (r[2], r[3]) and bool(r[18])} for r in rows]
+
+    def undo_geo_mark(self, event_id: str, user: str | None) -> dict[str, Any] | None:
+        """Отмена отметки логистом: вернуть ручную точку, которая была до неё, а если её не было — убрать ручную («авто»).
+        None — такой отметки нет; stale — уже отменена, есть более новая или точку с тех пор меняли, ничего не тронуто."""
+        def write(conn: sqlite3.Connection) -> dict[str, Any] | None:
+            mark = conn.execute('SELECT customer_id, lat, lon, prev_lat, prev_lon, undone_at, rowid FROM customer_geo_mark WHERE event_id = ?',
+                                (event_id,)).fetchone()
+            if mark is None:
+                return None
+            cid = mark[0]
+            current = conn.execute('SELECT lat, lon FROM customer_geo_override WHERE customer_id = ?', (cid,)).fetchone()
+            newest = conn.execute('SELECT MAX(rowid) FROM customer_geo_mark WHERE customer_id = ? AND undone_at IS NULL', (cid,)).fetchone()[0]
+            if mark[5] is not None or mark[6] != newest or current is None or (current[0], current[1]) != (mark[1], mark[2]):
+                return {'customer_id': cid, 'stale': True}
+            now = _now()
+            if mark[3] is None:
+                conn.execute('DELETE FROM customer_geo_override WHERE customer_id = ?', (cid,))
+            else:
+                conn.execute(_GEO_OVERRIDE_UPSERT, (cid, mark[3], mark[4], now, user))
+            conn.execute('UPDATE customer_geo_mark SET undone_at = ?, undone_by = ? WHERE event_id = ?', (now, user, event_id))
+            return {'customer_id': cid, 'stale': False}
+
+        return self._transaction(write, 'չհաջողվեց չեղարկել վարորդի կետը')
 
     def save_customer_window(self, customer_id: int, window: CustomerWindow | None, user: str | None) -> None:
         """Окно приёма клиента (проверенное check_window); None — убрать: клиент принимает в любое время."""
@@ -2781,9 +2930,10 @@ class Store:
                            (customer_id,)).fetchone()
         return None if row is None else VehicleAccess(row[0], tuple(sorted(set(json.loads(row[1])))))
 
-    @staticmethod
-    def _write_customer_vehicles(conn: sqlite3.Connection, customer_id: int,
+    def _write_customer_vehicles(self, conn: sqlite3.Connection, customer_id: int,
                                  access: VehicleAccess | None, user: str | None) -> None:
+        if self._authorize_vehicle_change is not None and self.customer_access_in(conn, customer_id) != access:
+            self._authorize_vehicle_change()
         if access is None:
             conn.execute('DELETE FROM customer_vehicle_access WHERE customer_id = ?', (customer_id,))
         else:
@@ -3365,6 +3515,10 @@ class Store:
 
         self._transaction(write, 'не удалось сохранить отсутствие водителя')
 
+    def _approve_locks(self, before: Mapping[str, Any], after: Mapping[str, Any]) -> None:
+        if self._authorize_vehicle_change is not None and (before.get('locks') or {}) != (after.get('locks') or {}):
+            self._authorize_vehicle_change()
+
     def load_dispatch(self, day: str) -> tuple[dict[str, Any], int] | None:
         """Черновик плана развоза на дату (YYYY-MM-DD): (данные, номер правки) или None."""
         row = self._read(lambda conn: conn.execute(
@@ -3379,6 +3533,11 @@ class Store:
             raise StoreError(f'{self._name()}: վնասված է {day} օրվա առաքման պլանը{_FIX_HINT}')
         return data, row[1]
 
+    def dispatch_candidates(self, day: str, max_rev: int) -> list[dict[str, Any]]:
+        """Версии состава рейсов для сравнения при сборке; ничего не восстанавливает в базе."""
+        from .dispatch_candidates import read
+        return self._read(lambda conn: read(conn, day, max_rev))
+
     def dispatch_revs(self, since: str, until: str) -> dict[str, int]:
         """Номер правки черновика развоза по дням since…until (YYYY-MM-DD): без чтения самих черновиков."""
         return {r[0]: r[1] for r in self._read(lambda conn: conn.execute(
@@ -3386,7 +3545,8 @@ class Store:
 
     def save_dispatch(self, day: str, data: Mapping[str, Any], user: str | None,
                       expected_rev: int | None = None,
-                      also: Callable[[sqlite3.Connection], None] | None = None) -> int | None:
+                      also: Callable[[sqlite3.Connection], None] | None = None,
+                      warehouse_context: Mapping[str, Any] | None = None) -> int | None:
         """Сохранить черновик на дату; возвращает новый номер правки. expected_rev — номер, от которого
         делалась правка: черновик с тех пор изменён (другая вкладка) — None, ничего не записано.
         also — ещё запись в той же транзакции после проверки номера (правило магазина «×» с причиной): план и правило
@@ -3395,21 +3555,38 @@ class Store:
         now = _now()
 
         def write(conn: sqlite3.Connection) -> int | None:
-            row = conn.execute('SELECT rev FROM dispatch_plan WHERE day = ?', (day,)).fetchone()
+            row = conn.execute('SELECT rev, data FROM dispatch_plan WHERE day = ?', (day,)).fetchone()
             current = row[0] if row is not None else 0
             if expected_rev is not None and expected_rev != current:
                 return None
+            self._approve_locks(json.loads(row[1]) if row is not None else {}, data)
             if also is not None:
                 also(conn)
             rev = current + 1
+            warehouse.record_plan(conn, json.loads(row[1]) if row is not None else {}, data, day, rev, now, user,
+                                  warehouse_context)
             conn.execute('INSERT INTO dispatch_plan(day, data, rev, updated_at, updated_by) VALUES(?, ?, ?, ?, ?) '
                          'ON CONFLICT(day) DO UPDATE SET data = excluded.data, rev = excluded.rev, '
                          'updated_at = excluded.updated_at, updated_by = excluded.updated_by',
                          (day, raw, rev, now, user))
-            conn.execute('DELETE FROM dispatch_plan WHERE day < date(?, ?)', (day, f'-{DISPATCH_KEPT_DAYS} days'))
+            from .forecast_history import append
+            append(conn, day, rev, data)
+            # от min(день, сегодня): дальняя дата не должна упираться в замок недавнего дня
+            conn.execute("DELETE FROM dispatch_plan WHERE day < date(min(?, date('now','+4 hours')), ?)", (day, f'-{DISPATCH_KEPT_DAYS} days'))
             return rev
 
         return self._transaction(write, 'не удалось сохранить план развоза')
+
+    def warehouse_orders(self) -> dict[str, dict[str, Any]]:
+        """Известные складские заказы и последнее устойчивое состояние, без ограничения возраста."""
+        return self._read(warehouse.rows)
+
+    def observe_warehouse(self, known: Mapping[str, Sequence[Any]], pending: Mapping[str, Any],
+                          closed: Collection[str], day: str, user: str | None) -> None:
+        """Проверенный факт терминала обновляет только складской реестр; планы и отправки не меняются."""
+        self._transaction(lambda conn: warehouse.record_plan(conn, {}, {}, day, 0, _now(), user,
+                          {'known': known, 'pending': pending, 'closed': closed}),
+                          'не удалось сверить складской остаток')
 
     @staticmethod
     def add_customer_off(conn: sqlite3.Connection, customer_id: int) -> None:
@@ -3427,8 +3604,7 @@ class Store:
                      'ON CONFLICT(key) DO UPDATE SET value = excluded.value',
                      (json.dumps(sorted({*off, customer_id})),))
 
-    @staticmethod
-    def rewrite_dispatch_after(conn: sqlite3.Connection, day: str,
+    def rewrite_dispatch_after(self, conn: sqlite3.Connection, day: str,
                                change: Callable[[str, dict[str, Any]], dict[str, Any] | None], user: str | None) -> None:
         """Черновики дней после day внутри чужой транзакции: change(день, черновик) → новый черновик (номер правки
         растёт: открытая страница того дня получит «план изменён») или None — день не трогать."""
@@ -3438,10 +3614,14 @@ class Store:
                 data = json.loads(raw)
             except ValueError:
                 continue
+            old_locks = dict(data.get('locks') or {}) if isinstance(data, dict) else {}
             new = change(d, data) if isinstance(data, dict) else None
             if new is not None:
+                self._approve_locks({'locks': old_locks}, new)
                 conn.execute('UPDATE dispatch_plan SET data = ?, rev = ?, updated_at = ?, updated_by = ? WHERE day = ?',
                              (json.dumps(new, ensure_ascii=False, sort_keys=True), rev + 1, _now(), user, d))
+                from .forecast_history import append
+                append(conn, d, rev + 1, new)
 
     def dispatch_range(self, since: str, until: str) -> list[tuple[str, dict[str, Any] | None, int]]:
         """Черновики планов развоза за [since, until] (YYYY-MM-DD) по дням: (день, данные, номер правки); битая запись —
@@ -3482,6 +3662,9 @@ class Store:
                 row = conn.execute('SELECT rev FROM dispatch_plan WHERE day = ?', (day,)).fetchone()
                 if (row[0] if row is not None else 0) != expected_rev:
                     return False
+            existing = conn.execute('SELECT data FROM dispatch_plan WHERE day = ?', (day,)).fetchone()
+            if existing is not None:
+                self._approve_locks(json.loads(existing[0]), {})
             conn.execute('DELETE FROM dispatch_plan WHERE day = ?', (day,))
             return True
         return self._transaction(drop, 'не удалось удалить план развоза')

@@ -45,6 +45,7 @@ from route_optimizer.store import StoreError as RoutesStoreError
 from route_optimizer.tsp import Distance
 
 from . import clock
+from .store import StoreError as MarksStoreError
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,7 @@ DETOUR = 1.3   # участок без дороги — по прямой × и�
 class RoutesView:
     depot: Point | None = None
     geo_overrides: Mapping[int, Point] = field(default_factory=dict)
+    driver_points: Mapping[int, Point] = field(default_factory=dict, kw_only=True)
     workdays: tuple[int, ...] = DEFAULT_WORKDAYS
     holidays: frozenset[date] = frozenset()                # нерабочие даты настроек (№64)
     plan_exists: bool = False                              # логист собрал план «Развоза» на дату
@@ -87,6 +89,9 @@ class RoutesView:
     # заказы отправленного снимка (ревью логики 12.10): fISN → машина (dp.published_orders, без доставленного позже №98);
     # None — снимок без заказов (отправлен до ревью): отбор по плану (pick_orders)
     published: Mapping[str, str] | None = None
+    replacements: tuple[dict[str, Any], ...] = ()  # только отправленный журнал замен дня
+    route_roads: Any = None  # линии APK: та же модель основных дорог и объезда центра, что на страницах
+    redelivery: frozenset[str] = frozenset()  # недовезённое из отправленного снимка, включая накладные прошлой даты
 
     def car_customers(self, car_code: str) -> list[int]:
         """Клиенты машины по плану: порядок рейсов черновика, внутри — порядок объезда; повтор (тяжёлый
@@ -117,6 +122,8 @@ def routes_view(state: Any, day: date) -> RoutesView:
     if state is None:
         return RoutesView()
     bundle = state.store.load()   # RoutesStoreError — наружу (№80, docstring модуля)
+    from route_optimizer import driver_points
+    points = driver_points(state)
     workdays = tuple(bundle.settings.get('workdays') or DEFAULT_WORKDAYS)
     holidays = dp.holidays_of(bundle.settings)
     roads = None
@@ -128,9 +135,11 @@ def routes_view(state: Any, day: date) -> RoutesView:
     s = bundle.settings
     h, m = map(int, s['truck_work_start'].split(':'))
     # №93: срок магазина на день, запас и матрица рейса — для терминала (courier.day)
-    timing = dict(windows={cid: w.span() for cid, w in bundle.windows_on(day).items()},
+    timing = dict(driver_points=points, windows={cid: w.span() for cid, w in bundle.windows_on(day).items()},
                   until_buffer_min=int(round(float(s['until_buffer_min']))), work_start_min=float(h * 60 + m),
-                  road=lambda customers, car: _trip_road(state, day, customers, car))
+                  road=lambda customers, car: _trip_road(state, day, customers, car),
+                  route_roads=state.roads.bypass(roads, tuple(tuple(p) for p in s['center_zone']))
+                              if roads is not None else None)
     phones = {int(a): p for a, p in (s.get('agent_phones') or {}).items()}   # ключи JSON — строки
     base = RoutesView(depot=bundle.depot, geo_overrides=dict(bundle.geo_overrides), workdays=workdays,
                       holidays=holidays, fleet=dp.FleetRule.from_settings(bundle.settings), roads=roads,
@@ -152,6 +161,8 @@ def routes_view(state: Any, day: date) -> RoutesView:
     draft = dp.Draft.from_json(stored[0]).for_drivers()
     # №98: недовезённое вчера — из отправленного снимка, без доставленного позже
     auto = set(draft.auto_carried) - _released(state, day, draft.auto_carried, workdays, holidays)
+    if day >= clock.today():
+        auto -= {isn for isn, row in state.store.warehouse_orders().items() if row['state'] == 'closed'}
     sent_orders = (draft.sent or {}).get('orders')
     published = None if sent_orders is None else {
         isn: v[0] for isn, v in sent_orders.items() if isn not in set(draft.auto_carried) - auto}
@@ -162,7 +173,8 @@ def routes_view(state: Any, day: date) -> RoutesView:
                       carried=frozenset(carried | auto), carried_since=carried_since, dropped=frozenset(draft.dropped),
                       agents_off=frozenset(dp.agents_off_of(draft, bundle.settings)), same_day=frozenset(draft.same_day),
                       taken=frozenset(taken - auto), fleet=dp.fleet_rule_of(draft, bundle.settings), roads=roads, seen=seen,
-                      departs=_departs(draft), agent_phones=phones, published=published, **timing)
+                      departs=_departs(draft), agent_phones=phones, published=published,
+                      replacements=tuple(draft.replacements), redelivery=frozenset(auto), **timing)
 
 
 def _trip_road(state: Any, day: date, customers: Mapping[int, Point], car: str) -> Any:
@@ -257,6 +269,60 @@ def record_crew(state: Any, car_code: str, day: date, role: str, name: str, only
     logger.info('[Courier] Экипаж машины %s на %s из терминала %s: %s%s', car_code, day, terminal_id, role,
                 ' (на день)' if only_day else '')
     return True
+
+
+AUTO_MARK_BY = 'auto: terminal'   # decided_by и updated_by отметки водителя, применённой без логиста
+AUTO_MARK_BUSY_MS = 1000          # ожидание занятой базы «Маршрутов»: всё это время запись в courier.db занята
+
+
+class _LaterManualPoint(Exception):
+    """Логист поставил точку магазина позже отметки водителя."""
+
+
+def apply_driver_marks(state: Any, marks: Any) -> int:
+    """Отметка водителя «точка неверная — здесь» (geo_suggest) сразу становится ручной точкой магазина, без логиста
+    (решение владельца 2026-11-10); действует самая новая. Зовётся после записи пачки в courier.db. Разбирает все открытые
+    отметки, новые первыми: принятие закрывает более старые того же магазина, а отметка, которую раньше не удалось
+    применить, применяется здесь. В сомнении (courier.store._auto_moment) или если логист поставил точку позже отметки —
+    отметка остаётся открытой у логиста. Необязательно для терминала: раздела нет — ничего; сбой — только в лог, ответ
+    терминалу тот же. Занятая база останавливает разбор: запись в courier.db нельзя держать ради следующих отметок.
+    Возвращает, сколько точек записано."""
+    if state is None:
+        return 0
+
+    def save(mark: Mapping[str, Any]) -> None:
+        cid = int(mark['customer_id'])
+        stamp = state.store.geo_override_stamp(cid)
+        if stamp is not None and stamp[1] != AUTO_MARK_BY and stamp[0] > mark['moment']:
+            raise _LaterManualPoint
+        was = (mark['stop_lat'], mark['stop_lon']) if mark['stop_lat'] is not None and mark['stop_lon'] is not None else None
+        state.store.apply_geo_mark(mark['event_id'], cid, (float(mark['lat']), float(mark['lon'])), AUTO_MARK_BY,
+                                   driver=mark.get('driver_name'), code=mark.get('code'), name=mark.get('name'),
+                                   source='map' if mark.get('source') == 'map' else 'gps', marked_at=mark.get('at'), was=was,
+                                   busy_ms=AUTO_MARK_BUSY_MS)
+
+    try:
+        found = marks.open_suggestions()
+    except Exception:   # отметка уже сохранена в courier.db: терминалу ответ тот же, логист увидит её в очереди
+        logger.warning('[Courier] Отметки водителей не прочитаны — остаются у логиста', exc_info=True)
+        return 0
+    applied = 0
+    for mark in found:
+        try:
+            done = marks.decide_suggestion(mark['event_id'], 'accepted', AUTO_MARK_BY, save, latest_only=True)
+        except _LaterManualPoint:
+            logger.info('[Courier] Отметка водителя %s старше точки логиста — остаётся у логиста', mark['event_id'])
+            continue
+        except (RoutesStoreError, MarksStoreError):
+            logger.warning('[Courier] База занята или недоступна: отметки остаются у логиста', exc_info=True)
+            break
+        except Exception:   # одна битая отметка не держит остальные
+            logger.warning('[Courier] Отметка водителя %s не применена — остаётся у логиста', mark['event_id'], exc_info=True)
+            continue
+        if done is not None and not done.get('held'):
+            applied += 1
+            logger.info('[Courier] Отметка водителя %s: точка клиента %s обновлена', mark['event_id'], mark['customer_id'])
+    return applied
 
 
 def _plans(state: Any) -> Callable[[date], dp.Draft | None]:
@@ -359,6 +425,22 @@ def orders_window(day: date, view: RoutesView) -> tuple[date, date]:
     return min(first, view.carried_since) if view.carried_since is not None else first, until + timedelta(days=1)
 
 
+@dataclass(frozen=True)
+class OrderPicker:
+    """Отбор машины и точные fISN известных старых заказов; позволяет читать их без широкого окна ERP."""
+    day: date
+    view: RoutesView
+    car_code: str
+
+    @property
+    def held_order_ids(self) -> tuple[str, ...]:
+        return tuple(sorted(isn for isn in self.view.redelivery
+                            if self.view.published is None or self.view.published.get(isn) == self.car_code))
+
+    def __call__(self, orders, places):
+        return pick_orders(orders, self.day, self.view, self.car_code, places)
+
+
 def pick_orders(orders: Sequence[DispatchOrder], day: date, view: RoutesView, car_code: str,
                 places: Places | None = None) -> list[DispatchOrder]:
     """Заказы, которые «Развоз» отдал машине: отбор как на странице «Развоз» (заказы дня без «не везём
@@ -374,13 +456,14 @@ def pick_orders(orders: Sequence[DispatchOrder], day: date, view: RoutesView, ca
     if view.published is not None:
         # взятые в развоз дня их приёма в прошлые дни (№72, view.taken — уже без недовезённого, №98) — и из отправленного:
         # их везли раньше; пока нет накладной, иначе тот же заказ ушёл бы второй раз (ревью ветки 12.10, раунд 4)
-        return [o for o in orders if view.published.get(o.isn) == car_code and (o.shipped is None or o.shipped >= day)
+        return [o for o in orders if view.published.get(o.isn) == car_code
+                and (o.shipped is None or o.shipped >= day or (o.isn in view.redelivery and o.invoice))
                 and o.isn not in view.taken]
     since, _ = dp.order_window(day, view.workdays, view.holidays)
     need = sorted({o.customer_id for o in orders if view.fleet.needs_place(o)})
     texts = places(need) if need and places is not None else {}
     place = lambda cid: texts.get(cid, ('', ''))   # noqa: E731
-    sel = dp.settle_predated(dp.to_deliver(orders, day, since, view.fleet, place), since, view.seen)
+    sel = dp.settle_predated(dp.to_deliver(orders, day, since, view.fleet, place, redelivery=view.redelivery), since, view.seen)
     inside = set(view.added) | (set(view.carried) - set(view.dropped))
     same = [o for o in dp.same_day_candidates(orders, day, view.fleet, place) if o.isn in view.same_day]
     # заказ прошлых дней, взятый логистом «Տանել այսօր», — и при менеджере, снятом фильтром (как на странице)

@@ -846,7 +846,7 @@ def test_no_deadline_is_info_not_flagged_problem(term_until, client, st):
     assert next(c for c in today['cars'] if c['car_code'] == 'TEST')['flagged'] == 0
     js = (ROOT / 'static' / 'js' / 'courier.js').read_text(encoding='utf-8')
     assert "reorder: 'Հերթի փոփոխություն" in js and 'no_deadline:' in js
-    assert "courier.js') }}?v=21" in (ROOT / 'templates' / 'courier.html').read_text(encoding='utf-8')
+    assert "courier.js') }}?v=22" in (ROOT / 'templates' / 'courier.html').read_text(encoding='utf-8')
 
 
 def test_plan_lines_done_by_gps_and_latest_move(tmp_path, monkeypatch):

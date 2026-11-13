@@ -8,9 +8,11 @@ _x, битый шаблон), SQL шапки заказа (только чтен
 Запуск из корня проекта:  python -m pytest tests/test_route_dispatch_erp_import.py -q
 """
 import io
+import json
 import re
 import sys
 import zipfile
+import xml.etree.ElementTree as ET
 from datetime import date, datetime
 from pathlib import Path
 
@@ -70,7 +72,7 @@ def test_build_fills_edit_sheet_and_keeps_everything_else():
     assert list(src) == list(dst)                                       # те же части в том же порядке
     sheets = ei._sheet_paths(src)
     changed = {n for n in src if src[n] != dst[n]}
-    assert changed <= {sheets[ei.EDIT_SHEET], sheets[ei.SETTINGS_SHEET], 'xl/drawings/vmlDrawing3.vml'} | \
+    assert changed <= {'xl/workbook.xml', sheets['Ներմուծում'], sheets[ei.EDIT_SHEET], sheets[ei.SETTINGS_SHEET], 'xl/drawings/vmlDrawing3.vml'} | \
         {n for n in src if n.startswith('xl/ctrlProps/')}
     assert dst['xl/vbaProject.bin'] == src['xl/vbaProject.bin']
     edit = dst[sheets[ei.EDIT_SHEET]].decode('utf-8')
@@ -93,6 +95,31 @@ def test_build_turns_recalculation_off():
     boxes = [v.decode() for n, v in dst.items() if n.startswith('xl/ctrlProps/') and b'CheckBox' in v]
     assert len(boxes) == 5 and not any('checked=' in b for b in boxes)
     assert '<x:Checked>' not in dst['xl/drawings/vmlDrawing3.vml'].decode('utf-8')
+
+
+def test_file_opens_on_populated_edit_sheet():
+    """Excel должен сразу показать строки правки, а не пустой лист создания заказов."""
+    data = ei.build_xlsm(TEMPLATE, [_row()])
+    dst, src = _parts(data), _parts(TEMPLATE)
+    ns = {'s': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
+    book = ET.fromstring(dst['xl/workbook.xml'])
+    names = [s.attrib['name'] for s in book.findall('s:sheets/s:sheet', ns)]
+    view = book.find('s:bookViews/s:workbookView', ns)
+    assert names[int(view.get('activeTab', '0'))] == ei.EDIT_SHEET
+    for name, part in ei._sheet_paths(dst).items():
+        sheet_view = ET.fromstring(dst[part]).find('s:sheetViews/s:sheetView', ns)
+        assert (sheet_view.get('tabSelected', '0') == '1') == (name == ei.EDIT_SHEET)
+        if name != ei.EDIT_SHEET:
+            src_xml = src[part].decode('utf-8')
+            dst_xml = dst[part].decode('utf-8')
+            if name == ei.SETTINGS_SHEET:
+                src_xml = ei._settings_off(src_xml)
+            strip_views = lambda xml: re.sub(r'<sheetViews>.*?</sheetViews>', '', xml, flags=re.S)
+            assert strip_views(src_xml) == strip_views(dst_xml)
+    openpyxl = pytest.importorskip('openpyxl')
+    wb = openpyxl.load_workbook(io.BytesIO(data), keep_vba=True)
+    assert wb.active.title == ei.EDIT_SHEET
+    assert wb.active['A3'].value == '000000346783'
 
 
 def test_openpyxl_reads_the_file():
@@ -146,6 +173,13 @@ def test_order_heads_sql_is_read_only():
     assert not _SQL_WRITE_RE.search(sql)
     assert sql.count('WITH (NOLOCK)') == 3
     assert 'fDELIVERYDATE' in sql and 'fDELIVERYADDRESSID' in sql
+
+
+def test_order_heads_assignor_is_not_read_from_orders():
+    # ???? ??????? ???? ? ?????????, ?? ??????????? ? ???????? ??????? ORDERS.
+    sql = erp.SQL_ORDER_HEADS.format(ph='?')
+    assert 'o.fASSIGNOR' not in sql
+    assert "CAST(N'' AS nvarchar(6)) AS assignor" in sql
 
 
 # ============================== API ==============================
@@ -221,6 +255,8 @@ def test_api_file_has_courier_and_car_of_sent_plan(day):
     assert r.status_code == 200 and r.mimetype == views.XLSM_MIME
     assert re.search(rf'filename="ERP-araqich-{DAY}-\d{{4}}\.xlsm"', r.headers['Content-Disposition'])
     assert (r.headers['X-Erp-Rows'], r.headers['X-Erp-Skipped']) == ('3', '0')
+    assert json.loads(r.headers['X-Erp-Summary']) == {
+        'total': 3, 'exported': 3, 'unchanged': 0, 'skipped': 0, 'reasons': {}}
     rows = {x['E']: x for x in _file_rows(r)}
     assert set(rows) == {'101', '102', '104'}                           # заказ 70 план не видел — не в файле
     for cid, x in rows.items():
@@ -248,10 +284,13 @@ def test_api_order_with_delivery_address_is_skipped(day):
     day.orders[_isn(1)]['address'] = 7
     r = day.get('/api/routes/dispatch/erp-import?date=' + DAY)
     assert r.status_code == 200 and (r.headers['X-Erp-Rows'], r.headers['X-Erp-Skipped']) == ('2', '1')
+    assert json.loads(r.headers['X-Erp-Summary'])['reasons'] == {'delivery_address': 1}
     assert {x['A'] for x in _file_rows(r)} == {'N' + _isn(2)[-1], 'N' + _isn(3)[-1]}
     r = day.get(f'/api/routes/dispatch/erp-import?date={DAY}&isn={_isn(1)}')
     assert r.status_code == 409
     assert r.get_json()['error'] == f'{views.ERP_IMPORT_NOTHING} (1 պատվեր)․ {views.ERP_IMPORT_ADDRESS}՝ 1'
+    assert r.get_json()['erp_export'] == {
+        'total': 1, 'exported': 0, 'unchanged': 0, 'skipped': 1, 'reasons': {'delivery_address': 1}}
 
 
 def test_api_nothing_to_change(day):
@@ -263,6 +302,22 @@ def test_api_nothing_to_change(day):
     assert r.status_code == 409                                         # причины с числами и подсказка о порядке (№100.1)
     assert r.get_json()['error'] == (f"{views.ERP_IMPORT_NOTHING} (3 պատվեր)․ {ew.REASON_HY['unchanged']}՝ 2; "
                                      f"{ew.REASON_HY['has_child_docs']}՝ 1։ {views.ERP_IMPORT_CHILDREN_HINT}")
+    assert r.get_json()['erp_export'] == {
+        'total': 3, 'exported': 0, 'unchanged': 2, 'skipped': 1, 'reasons': {'has_child_docs': 1}}
+
+
+def test_partial_export_explains_all_skips_and_keeps_document_guard(day):
+    _sent(day)
+    day.orders[_isn(1)].update(children=True, address=7)
+    day.orders[_isn(2)]['address'] = 7
+    r = day.get('/api/routes/dispatch/erp-import?date=' + DAY)
+    assert r.status_code == 200
+    report = json.loads(r.headers['X-Erp-Summary'])
+    assert report == {'total': 3, 'exported': 1, 'unchanged': 0, 'skipped': 2,
+                      'reasons': {'has_child_docs': 1, 'delivery_address': 1}}
+    assert len(_file_rows(r)) == report['exported']
+    assert [x['A'] for x in _file_rows(r)] == ['N' + _isn(3)[-1]]
+    assert day.orders[_isn(1)]['children'] and day.orders[_isn(1)]['address'] == 7
 
 
 def test_page_menu_item_and_versions():

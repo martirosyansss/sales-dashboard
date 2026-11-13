@@ -934,8 +934,8 @@
         const home = hasHome(s.m) ? [num(s.m.home.lat), num(s.m.home.lon)] : null;
         if (home) { path.unshift(home); path.push(home); }
         if (path.length >= 2) {
-            L.polyline(path, { color: themeColor('--rt-map-ink'), weight: 7, opacity: 0.6, interactive: false }).addTo(state.routeLayer);
-            L.polyline(path, { color, weight: 3, opacity: 0.95, lineJoin: 'round', interactive: false }).addTo(state.routeLayer);
+            RoutesBasemap.roadLine(path, { color: themeColor('--rt-map-ink'), weight: 7, opacity: 0.6, interactive: false }, state.routeLayer);
+            RoutesBasemap.roadLine(path, { color, weight: 3, opacity: 0.95, lineJoin: 'round', interactive: false }, state.routeLayer);
         }
         stops.forEach(x => {
             const icon = L.divIcon({

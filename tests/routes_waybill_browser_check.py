@@ -85,7 +85,7 @@ def main() -> int:
             browser = pw.chromium.launch()
             ctx = browser.new_context(viewport={'width': 1440, 'height': 950}, accept_downloads=True)
             page = ctx.new_page()
-            page.add_init_script("try { localStorage.setItem('dpLayout', 'list'); } catch (e) {}")   # №82: прежний вид «список»
+            page.add_init_script("(() => { const m = matchMedia.bind(window); window.matchMedia = q => m(q === '(min-width: 1101px)' ? '(min-width: 99999px)' : q); })();")   # №82: прежний вид «список»
             page.on('pageerror', lambda e: errors.append('pageerror: ' + str(e)))
             expected_409 = []      # D: ответы 409 на устаревший план — ожидаемые, браузер пишет их в консоль
 
@@ -97,6 +97,7 @@ def main() -> int:
                     errors.append('console: ' + m.text)
             page.on('console', on_console)
             page.on('dialog', lambda d: d.accept())
+            page.add_init_script(base.AUTO_CONFIRM)   # системный confirm заменён окном на странице
             for pat in ('https://tiles.api-maps.yandex.ru/**', 'https://*.tile.openstreetmap.org/**'):
                 page.route(pat, lambda r: r.fulfill(status=200, content_type='image/png', body=base.TILE_PNG))
             page.goto(f'{BASE}/routes/dispatch?date={DAY}')

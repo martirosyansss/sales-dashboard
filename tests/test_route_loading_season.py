@@ -77,6 +77,10 @@ def _run(ctx):
         v = dp.plan_view(ctx, ss, d, _info)
         v['summary'].pop('preload', None)
         v['summary'].pop('end_reserve_min', None)
+        for t in v['trucks']:
+            for tr in t['trips']:
+                for s in tr['stops']:
+                    s.pop('remove_saves', None)   # новая подсказка «×»: числа плана те же
         views.append(v)
     blob = json.dumps([d1.to_json(), d2.to_json(), views], sort_keys=True, ensure_ascii=False, default=str)
     return hashlib.sha256(blob.encode()).hexdigest(), d2, views[1]

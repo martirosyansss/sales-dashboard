@@ -32,7 +32,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tests'))
 
-from routes_dispatch_browser_check import TILE_PNG, FakeClient, build_app, is_ignorable  # noqa: E402
+from routes_dispatch_browser_check import AUTO_CONFIRM, TILE_PNG, FakeClient, build_app, is_ignorable  # noqa: E402
 from route_optimizer import views  # noqa: E402
 from playwright.sync_api import sync_playwright  # noqa: E402
 from werkzeug.serving import make_server  # noqa: E402
@@ -68,6 +68,7 @@ def main() -> int:
             page.on('pageerror', lambda e: errors.append('pageerror: ' + str(e)))
             page.on('console', lambda m: errors.append('console: ' + m.text) if m.type == 'error' and not is_ignorable(m) else None)
             page.on('dialog', lambda d: d.accept())
+            page.add_init_script(AUTO_CONFIRM)   # системный confirm заменён окном на странице
             page.on('request', lambda r: posts.append((r.url.rsplit('/', 1)[-1], json.loads(r.post_data or '{}')))
                     if r.method == 'POST' and '/api/routes/dispatch/' in r.url else None)
             for pat in ('https://tiles.api-maps.yandex.ru/**', 'https://*.tile.openstreetmap.org/**'):
@@ -165,7 +166,8 @@ def main() -> int:
             page.screenshot(path=str(SHOTS / 'd-removed.png'))
 
             # E — закрыть карточку машины
-            page.click('#dpWsClose')
+            page.click('#dpWsMore')
+            page.click('#dpMenuAll')
             page.wait_for_timeout(400)
             # над рабочим экраном мог появиться счётчик «Դեռ երթերում չեն» — сравниваем долю карты, не пиксели
             mp, ws1 = rect('#dpWsMap'), rect('#dpWs')

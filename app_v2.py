@@ -426,6 +426,7 @@ def _restricted_path_allowed(path: str, method: str) -> bool:
 # route_optimizer.views.api_drivers_scorecard); статика и выход пропускаются раньше. Всё прочее — 403 JSON или переход
 # на страницу гаража. Границы пути — по сегменту: '/api/routes/garage-x' и '/api/routes/live-x' не совпадают.
 _GARAGE_PAGE = '/routes/garage'
+_REFUELS_PAGE = '/routes/refuels'
 _GARAGE_API = '/api/routes/garage'
 _LIVE_PAGE = '/routes/live'
 _LIVE_API = '/api/routes/live'
@@ -435,7 +436,7 @@ _LIVE_ACK_API = '/api/routes/live/ack'   # «Տեսա» карты машин (�
 
 
 def _garage_path_allowed(path: str, method: str) -> bool:
-    if method in ('GET', 'HEAD') and path in (_GARAGE_PAGE, _LIVE_PAGE, _DRIVERS_PAGE, _DRIVERS_API):
+    if method in ('GET', 'HEAD') and path in (_GARAGE_PAGE, _REFUELS_PAGE, _LIVE_PAGE, _DRIVERS_PAGE, _DRIVERS_API):
         return True
     if method in ('GET', 'HEAD') and (path == _LIVE_API or path.startswith(_LIVE_API + '/')):
         return True
@@ -491,6 +492,7 @@ _PUBLIC_STATIC = frozenset((
     '/static/img/yandex_maps_logo_ru.svg',   # логотип Яндекса на карте машин (подложка Яндекса, обязателен по условиям)
     '/static/css/routes_warehouse.css', '/static/js/routes_warehouse.js',                     # routes_warehouse.html (№78)
     '/static/css/routes_drivers.css', '/static/js/routes_drivers.js',                         # routes_drivers.html (№87)
+    '/static/css/routes_refuels.css', '/static/js/routes_refuels.js',  # standalone refueling journal
     '/static/css/routes_ui.css', '/static/js/routes_top.js',   # Tesla+: общие компоненты и верхняя панель раздела (routes_base.html)
     '/static/js/rt_panels.js',   # Tesla+ (12.10): сворачиваемые панели поверх карты — routes_live.html
 ))
@@ -507,7 +509,7 @@ def _public_path_allowed(path: str, method: str) -> bool:
         return method in ('GET', 'HEAD', 'POST')
     if path == '/logout':
         return method == 'POST'
-    if path in (_GARAGE_PAGE, _LIVE_PAGE, _DRIVERS_PAGE, _DRIVERS_API) or _PUBLIC_GARAGE_API_RE.fullmatch(path):
+    if path in (_GARAGE_PAGE, _REFUELS_PAGE, _LIVE_PAGE, _DRIVERS_PAGE, _DRIVERS_API) or _PUBLIC_GARAGE_API_RE.fullmatch(path):
         return _garage_path_allowed(path, method)
     if path == _WAREHOUSE_PAGE or _PUBLIC_WAREHOUSE_API_RE.fullmatch(path):
         return _warehouse_path_allowed(path, method)

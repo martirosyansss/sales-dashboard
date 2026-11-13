@@ -185,3 +185,16 @@ def test_office_driver_list_has_routes_name_hints(app, st, client, rs, monkeypat
     assert r.status_code == 200 and r.get_json()['name_hints'] == []
     app.extensions.pop('route_optimizer')
     assert client.get('/api/courier/admin/drivers').get_json()['name_hints'] == []
+
+
+def test_login_succeeds_while_a_plan_lease_blocks_the_crew_write(rs, st, client, caplog):
+    """ERP-цепочка держит замок плана: запись водителя в «Маршруты» отклонена триггером, вход терминала — нет."""
+    from route_optimizer import erp_chain_guard as guard
+    _, _, h = make_terminal(st)
+    revision = rs.save_dispatch(DAY, {'sent': {'crew': {'TEST': 'Արամ'}}}, 'qa')
+    assert guard.acquire(rs, {'day': DAY, 'revision': revision, 'loads': [{'car': 'TEST'}]}, 'operation')
+    with caplog.at_level(logging.WARNING):
+        _, body = do_login(client, h)
+    assert body['driver']['name'] == 'Արամ' and body['session']
+    assert rows(rs) == [] and guard.held_operations(rs) == ['operation']
+    assert 'не передан в «Маршруты»' in caplog.text

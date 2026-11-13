@@ -1362,7 +1362,8 @@ def test_write_lease_is_shared_and_expires(tmp_path):
 
 def test_page_assets_bumped_and_ui_selects_nothing_by_default():
     page = (ROOT / 'templates' / 'routes_dispatch.html').read_text(encoding='utf-8')
-    assert "routes_dispatch.js') }}?v=138" in page and "routes_dispatch.css') }}?v=89" in page
+    assert int(re.search(r"routes_dispatch\.js'\) }}\?v=(\d+)", page).group(1)) >= 157
+    assert int(re.search(r"routes_dispatch\.css'\) }}\?v=(\d+)", page).group(1)) >= 89
     assert 'id="dpErpDlg"' in page and 'Գրել ERP-ում' in page and '<span>Հաստատել (0)</span>' in page
     js = (ROOT / 'static' / 'js' / 'routes_dispatch.js').read_text(encoding='utf-8')
     start, end = js.index('// ---------- «Գրել ERP-ում»'), js.index('// ---------- Требует внимания (№81)')

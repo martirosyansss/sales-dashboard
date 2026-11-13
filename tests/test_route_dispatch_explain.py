@@ -261,6 +261,8 @@ def test_plan_view_without_explain_same_numbers():
     for t in full['trucks']:
         for tr in t['trips']:
             tr.pop('explain')
+            for x in tr['stops']:
+                x.pop('remove_saves')
     assert bare == full
 
 

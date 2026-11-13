@@ -34,9 +34,9 @@
     const COLLECT = { cash: 'Կանխիկ', cash_ecr: 'Կանխիկ ՀԴՄ', none: 'Չվերցնել', ask: 'Ճշտել' };
     const CASH = ['cash', 'cash_ecr'];
     const TYPE = { delivery: 'Առաքում', payment: 'Վճարում', tare: 'Տարա', return: 'Վերադարձ', scan: 'Սկան',
-        unreadable: 'Կոդը չի կարդացվում', arrived: 'Ժամանում', geo_suggest: 'Կետի առաջարկ' };
+        unreadable: 'Կոդը չի կարդացվում', arrived: 'Ժամանում', geo_suggest: 'Կետի առաջարկ', not_reached: 'Չհասցրի' };
     const ICON = { delivery: 'fa-box', payment: 'fa-coins', tare: 'fa-wine-bottle', return: 'fa-rotate-left', scan: 'fa-barcode',
-        unreadable: 'fa-ban', arrived: 'fa-location-dot', geo_suggest: 'fa-map-pin' };
+        unreadable: 'fa-ban', arrived: 'fa-location-dot', geo_suggest: 'fa-map-pin', not_reached: 'fa-clock' };
     const FLAG = {
         foreign: 'Այլ մեքենայի կամ օրվա կետ', unknown_stop: 'Անհայտ կետ', duplicate_elsewhere: 'Կոդն արդեն տրվել է այլ տեղ',
         repeat: 'Կրկնակի սկան', scan_short: 'Մակնշման սկանը պակաս է', no_ecr_receipt: 'ՀԴՄ կտրոնի համարը չկա',

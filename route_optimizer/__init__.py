@@ -21,16 +21,26 @@ from typing import Any
 from flask import Flask
 
 from . import erp, erp_write, learning, live, live_alerts, scorecard, tg_api, tg_bot, tg_reports, waybill
+from . import erp_chain_service
 from .actuals import YEREVAN
 from .roads import RoadProvider, osm_path
 from .snapshot import ResultCache, SnapshotCache, load_snapshot
 from .store import Store
+from .vehicle_authorization import require_vehicle_approval
 from .valhalla_engine import ValhallaProvider
 from .views import EXTENSION_KEY, DriverGeo, RoutesState, _live_cards, _scorecard, bp, run_learning_job, week_score
 
 logger = logging.getLogger(__name__)
 
 DB_FILENAME = 'route_optimizer.db'
+
+
+def driver_points(state: RoutesState | None) -> dict[int, tuple[float, float]]:
+    """Общие с офисом точки доставок: один кэш, округление и гистерезис для APK и маршрутов."""
+    if state is None or getattr(state, 'driver_geo', None) is None:
+        return {}
+    from .views import _driver_points
+    return dict(_driver_points(state))
 
 
 def init_app(app: Flask, db: Any, db_path: str | None = None) -> None:
@@ -54,7 +64,7 @@ def init_app(app: Flask, db: Any, db_path: str | None = None) -> None:
     valhalla = ValhallaProvider(pbf=roads.path)
     valhalla.start()
     app.extensions[EXTENSION_KEY] = RoutesState(
-        store=Store(path),
+        store=Store(path, authorize_vehicle_change=require_vehicle_approval),
         snapshots=SnapshotCache(lambda: load_snapshot(connection_string)),
         results=ResultCache(),
         roads=roads,
@@ -62,6 +72,7 @@ def init_app(app: Flask, db: Any, db_path: str | None = None) -> None:
         dispatch_loader=lambda since, until, day: erp.load_dispatch_data(connection_string, since, until, day),
         fact_loader=lambda day: erp.load_fact_data(connection_string, day),
         same_day_loader=lambda day: erp.load_same_day_data(connection_string, day),
+        known_orders_loader=lambda ids, day: erp.load_known_dispatch_data(connection_string, ids, day),
         waybill_loader=lambda isns: waybill.load_lines(connection_string, isns),
         driver_list_loader=lambda since, until: waybill.load_drivers(connection_string, since, until),
         crew_days_loader=lambda since, until: waybill.load_car_crew_days(connection_string, since, until),
@@ -73,6 +84,9 @@ def init_app(app: Flask, db: Any, db_path: str | None = None) -> None:
         erp_states_loader=(lambda isns: erp.load_order_states(connection_string, isns)) if write_dsn else None,
         erp_write_conn=(lambda: erp_write.connect_write(write_dsn)) if write_dsn else None,
         erp_import_loader=lambda isns: erp.load_order_import(connection_string, isns),
+        erp_warehouse_loader=lambda isns: erp.load_order_warehouses(connection_string, isns),
+        erp_chain_progress_loader=lambda loads: erp.load_chain_progress(connection_string, loads),
+        erp_chain=erp_chain_service.from_environment(connection_string),
     )
     app.register_blueprint(bp)
     logger.info('[Routes] Раздел «Маршруты» подключён; база настроек: %s; карта дорог: %s%s', path,

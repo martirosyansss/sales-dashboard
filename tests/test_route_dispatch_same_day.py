@@ -13,6 +13,7 @@ import sys
 from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -21,6 +22,7 @@ sys.path.insert(0, str(ROOT))
 
 from courier import routes_link as rl  # noqa: E402
 from route_optimizer import actuals as ac  # noqa: E402
+from route_optimizer import assignment  # noqa: E402
 from route_optimizer import dispatch as dp  # noqa: E402
 from route_optimizer import fleet as fl  # noqa: E402
 from route_optimizer import views  # noqa: E402
@@ -603,3 +605,155 @@ def test_truck_already_past_end_of_day_may_take_work_that_does_not_move_its_end(
     stops = dp.build_stops([*orders, new[0]], _coord_of(POINTS))
     keys = [o['key'] for o in dp.same_day_options(late, base, stops, draft, {201}, -30.0)['options']]
     assert 'insert:1' in keys and f'trip:{FORD.car_code}' not in keys
+
+
+# ============================== допуск 6% и GPS (решение владельца 09.11.2026) ==============================
+
+def _full_ford(*trips):
+    """FORD (3500 кг, с допуском 3710) без запаса настройки, рейсы trips по магазинам EAST (по 200 кг)."""
+    orders = [_dorder(i + 1, cid, kg) for i, (cid, _, kg) in enumerate(EAST)]
+    draft = dp.Draft([FORD.car_code], trips=[dp.DraftTrip(i + 1, FORD.car_code, list(s)) for i, s in enumerate(trips)],
+                     next_id=len(trips) + 1)
+    return _dp_ctx((FORD,), replace(TN, load_cap=1.0)), dp.build_stops(orders, _coord_of(POINTS)), orders, draft
+
+
+def _keys(ctx, base, stops, draft, cids, now):
+    return [o['key'] for o in dp.same_day_options(ctx, base, stops, draft, cids, now)['options']]
+
+
+def test_insert_within_overload_offered_only_when_whole_day_fits():
+    ctx, base, orders, draft = _full_ford([101, 102, 103])
+    stops = dp.build_stops([*orders, _dorder(80, 201, 2950.0, day=D)], _coord_of(POINTS))   # 600 + 2950 = 3550 кг
+    assert 'insert:1' in _keys(ctx, base, stops, draft, {201}, -30.0)
+    out = dp.take_same_day(ctx, base, stops, dp.Draft.from_json(draft.to_json()), {201}, {_isn(80)}, 'insert:1', -30.0)
+    assert set(out.trips[0].stops) == {101, 102, 103, 201}
+    assignment.validate(ctx, stops, out)                                         # утверждение и отправка его пропускают
+    ctx, base, orders, draft = _full_ford([101, 102], [103])                     # рейс 3550, но день машины 3750 — допуска нет
+    stops = dp.build_stops([*orders, _dorder(80, 201, 3150.0, day=D)], _coord_of(POINTS))
+    assert 'insert:1' not in _keys(ctx, base, stops, draft, {201}, -30.0)
+
+
+def test_new_trip_and_same_stop_stay_strict_within_overload():
+    ctx, base, orders, draft = _full_ford([101, 102, 103])
+    two = dp.build_stops([*orders, _dorder(81, 201, 1800.0, day=D), _dorder(82, 202, 1800.0, day=D)], _coord_of(POINTS))
+    assert _keys(ctx, base, two, draft, {201, 202}, -30.0) == []                 # новый рейс 3600 кг — без допуска
+    same = dp.build_stops([*orders, _dorder(83, 102, 2950.0, day=D)], _coord_of(POINTS))
+    assert _keys(ctx, base, same, draft, {102}, -30.0) == []                     # та же точка: рейс 3550 кг — без допуска
+
+
+def test_mixed_same_stop_and_insert_keeps_same_stop_trip_strict():
+    orders = [_dorder(1, 101, 200.0), _dorder(2, 102, 200.0), _dorder(3, 103, 10.0)]
+    base = dp.build_stops(orders, _coord_of(POINTS))
+    stops = dp.build_stops([*orders, _dorder(87, 102, 3150.0, day=D), _dorder(88, 201, 20.0, day=D)], _coord_of(POINTS))
+    draft = dp.Draft([FORD.car_code], trips=[dp.DraftTrip(1, FORD.car_code, [101, 102]), dp.DraftTrip(2, FORD.car_code, [103])],
+                     next_id=3)
+    keys = _keys(_dp_ctx((FORD,), replace(TN, load_cap=1.0)), base, stops, draft, {102, 201}, -30.0)
+    assert 'insert:1' in keys                                                    # вставка в сам рейс 3570 кг — с допуском
+    assert 'insert:2' not in keys                                                # рейс той же точки 3550 кг при вставке в другой — строго
+
+
+def _at_depot(ctx, **change):
+    return replace(ctx, at_depot=frozenset({FORD.car_code}), **change)
+
+
+def test_reopened_trip_leaves_now_even_preloaded_and_not_before_persists():
+    ctx, base, orders, draft = _full_ford([101, 102, 103])
+    at = _at_depot(ctx, tn=replace(ctx.tn, preload=True, warehouse_load_min_per_tonne=10.0))
+    stops = dp.build_stops([*orders, _dorder(89, 201, 100.0, day=D)], _coord_of(POINTS))
+    now = 120.0                                                                  # 11:00; по плану рейс начат с утра
+    opt = next(o for o in dp.same_day_options(at, base, stops, draft, {201}, now)['options'] if o['key'] == 'insert:1')
+    assert opt['loading_start'] == '11:00' and all(s['eta'] >= '11:00' for s in opt['stops'])
+    out = dp.take_same_day(at, base, stops, dp.Draft.from_json(draft.to_json()), {201}, {_isn(89)}, 'insert:1', now)
+    saved = dp.Draft.from_json(json.loads(json.dumps(out.to_json())))
+    assert saved.trips[0].not_before == 9 * 60 + now
+    routable = {s.customer_id: s for s in stops}
+    depart, _, arrivals = dp._timeline(at, saved.trips, routable, dp._shares(saved.trips), kg_of={})[1]
+    assert depart >= now and min(arrivals) >= now
+
+
+def test_reopened_trip_compares_misses_like_for_like():
+    ctx, base, orders, draft = _full_ford([101, 102, 103])
+    stops = dp.build_stops([*orders, _dorder(90, 201, 100.0, day=D)], _coord_of(POINTS))
+    win = _at_depot(ctx, windows={101: (0.0, 9 * 60 + 30.0)})                    # до 09:30: при выезде в 11:00 опоздание и без заказа
+    assert 'insert:1' in _keys(win, base, stops, draft, {201}, 120.0)
+
+
+def test_reopened_trip_end_of_day_counts_from_now():
+    ctx, base, orders, draft = _full_ford([101, 102, 103])
+    stops = dp.build_stops([*orders, _dorder(91, 201, 100.0, day=D)], _coord_of(POINTS))
+    at = _at_depot(ctx)
+    assert 'insert:1' in _keys(at, base, stops, draft, {201}, 100.0)
+    assert 'insert:1' not in _keys(at, base, stops, draft, {201}, 530.0)         # 17:50: при выезде сейчас к 18:00 не вернуться
+
+
+def test_first_trip_of_truck_at_depot_is_insertable_second_is_not():
+    ctx, base, orders, draft = _full_ford([101, 102], [103])
+    stops = dp.build_stops([*orders, _dorder(84, 201, 100.0, day=D)], _coord_of(POINTS))
+    assert not any(k.startswith('insert') for k in _keys(ctx, base, stops, draft, {201}, 200.0))   # по часам оба начаты
+    got = _keys(replace(ctx, at_depot=frozenset({FORD.car_code})), base, stops, draft, {201}, 200.0)
+    assert 'insert:1' in got and 'insert:2' not in got
+
+
+def test_at_depot_never_opens_loaded_or_logist_pinned_first_trip():
+    ctx, base, orders, draft = _full_ford([101, 102], [103])
+    at = replace(ctx, at_depot=frozenset({FORD.car_code}))
+    stops = dp.build_stops([*orders, _dorder(85, 102, 10.0, day=D), _dorder(86, 103, 10.0, day=D)], _coord_of(POINTS))
+    assert dp.same_day_blocked(ctx, base, stops, draft, {102, 103}, 200.0) == {102: 'started', 103: 'started'}
+    assert dp.same_day_blocked(at, base, stops, draft, {102, 103}, 200.0) == {103: 'started'}
+    for field, value in (('loaded', {'at': '2026-10-01T08:00:00', 'by': 'x', 'pin': True}), ('pinned', True)):
+        fixed = dp.Draft.from_json(draft.to_json())
+        setattr(fixed.trips[0], field, value)
+        assert dp.same_day_blocked(at, base, stops, fixed, {102}, 200.0) == {102: 'started'}, field
+
+
+GPS_NOW = datetime(2026, 10, 1, 10, 3)
+GPS_DEPOT = (40.19, 44.50)
+NEAR = (GPS_DEPOT[0] + .0036, GPS_DEPOT[1])                                      # ≈ 400 м: дальше actuals.DEPOT_RADIUS_M
+FAR = (GPS_DEPOT[0] + .0054, GPS_DEPOT[1])                                       # ≈ 600 м
+
+
+class _Facts:
+    def __init__(self, data):
+        self.data = data
+
+    def fleet(self, day):
+        if self.data is None:
+            raise RuntimeError('нет базы')
+        return self.data.get(day, {})
+
+
+def _fix(minutes_ago, point=GPS_DEPOT, now=GPS_NOW):
+    return (int(now.replace(tzinfo=ac.YEREVAN).timestamp() * 1000 - minutes_ago * 60000), *point, 5.0, 0.0, None)
+
+
+def test_not_left_depot_requires_fresh_track_entirely_near_depot():
+    def got(track):
+        state = SimpleNamespace(live_facts=_Facts({DAY: {'JAC': {'track': track}}}))
+        return views._not_left_depot(state, GPS_DEPOT, GPS_NOW)
+    assert got([]) == frozenset()
+    assert got([_fix(40), _fix(16)]) == frozenset()                              # последняя точка старше 15 минут
+    assert got([_fix(40), _fix(-2)]) == frozenset()                              # последняя точка из будущего
+    assert got([_fix(60), _fix(30, FAR), _fix(1)]) == frozenset()                # одна точка дальше 500 м
+    assert got([_fix(60), _fix(30, NEAR), _fix(1)]) == {'JAC'}
+
+
+def test_not_left_depot_degrades_to_plan_clock():
+    assert views._not_left_depot(SimpleNamespace(live_facts=None), GPS_DEPOT, GPS_NOW) == frozenset()
+    assert views._not_left_depot(SimpleNamespace(live_facts=_Facts({})), None, GPS_NOW) == frozenset()
+    assert views._not_left_depot(SimpleNamespace(live_facts=_Facts(None)), GPS_DEPOT, GPS_NOW) == frozenset()
+
+
+def test_same_day_flow_sees_gps_page_keeps_plan_clock(client, monkeypatch):
+    now = datetime(2026, 10, 1, 10, 0, tzinfo=ac.YEREVAN)
+    state, _ = _page_setup(client, monkeypatch, now=now)
+    _build(client)
+
+    def keys():
+        r = client.post('/api/routes/dispatch/same-day', json={'date': DAY, 'orders': [_isn(10)]})
+        return [o['key'] for o in r.get_json()['options']]
+    assert not any(k.startswith('insert') for k in keys())                       # без GPS — часы плана: рейс с 09:00 начат
+    depot = state.store.load().depot
+    track = [_fix(1, depot, now.replace(tzinfo=None))]
+    monkeypatch.setattr(state, 'live_facts', _Facts({DAY: {'CAR2': {'stops': [], 'track': track}}}))
+    assert any(k.startswith('insert') for k in keys())
+    assert views._load_day(state, views._bundle(state), D).ctx.at_depot == frozenset()   # остальным — прежние часы плана

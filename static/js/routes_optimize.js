@@ -2561,9 +2561,8 @@
         const path = stops.map(x => [num(x.st.lat), num(x.st.lon)]);
         if (home) { path.unshift(home); path.push(home); }
         if (path.length >= 2) {
-            L.polyline(path, { color: themeColor('--rt-map-ink'), weight: 7, opacity: 0.6, interactive: false }).addTo(state.layers.route);
-            L.polyline(path, { color, weight: 3, opacity: 0.95, lineJoin: 'round', dashArray: w2 ? '8 6' : null, interactive: false })
-                .addTo(state.layers.route);
+            RoutesBasemap.roadLine(path, { color: themeColor('--rt-map-ink'), weight: 7, opacity: 0.6, interactive: false }, state.layers.route);
+            RoutesBasemap.roadLine(path, { color, weight: 3, opacity: 0.95, lineJoin: 'round', dashArray: w2 ? '8 6' : null, interactive: false }, state.layers.route);
         }
         stops.forEach(x => {
             const ll = [num(x.st.lat), num(x.st.lon)];

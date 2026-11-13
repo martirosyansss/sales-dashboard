@@ -1,0 +1,26 @@
+{# Garage controls remain available on the standalone refueling journal. #}
+{% set garage_refuels = rt_nav == '/routes/refuels' %}
+<div class="rt-pagehead__actions rt-garage-nav">
+    <div class="rt-seg--tabs gj-tabs"{% if garage_refuels %} role="navigation" aria-label="Ավտոտնակի բաժիններ"{% else %} id="gjTabs" role="tablist" aria-label="Ավտոտնակի բաժիններ"{% endif %}>
+        {% for key, tab, panel, label in [
+            ('costs', 'gjTabCosts', 'gjCosts', 'Ծախսեր'),
+            ('odo', 'gjTabOdo', 'gjOdo', 'Վազք'),
+            ('sum', 'gjTabSum', 'gjSum', 'Ամփոփում'),
+            ('norm', 'gjTabNorm', 'gjNorm', 'Նորմ և փաստ')
+        ] %}
+            {% if garage_refuels %}
+                <a href="/routes/garage?tab={{ key }}">{{ label }}</a>
+            {% else %}
+                <button type="button" role="tab" id="{{ tab }}" aria-controls="{{ panel }}" aria-selected="{{ 'true' if loop.first else 'false' }}"{% if not loop.first %} tabindex="-1"{% endif %}>{{ label }}</button>
+            {% endif %}
+        {% endfor %}
+    </div>
+    <a href="/routes/refuels" class="rt-btn rt-btn--secondary"{% if garage_refuels %} aria-current="page"{% endif %}><i class="fas fa-gas-pump" aria-hidden="true"></i>Լիցքավորումներ</a>
+    {% if garage_refuels %}
+        <a href="/routes/garage?tab=odo" class="rt-btn rt-btn--secondary">Լրացնել վազքը</a>
+        <a href="/routes/garage?tab=costs&amp;new=1" class="rt-btn rt-btn--primary"><i class="fas fa-plus" aria-hidden="true"></i>Նոր գրառում</a>
+    {% else %}
+        <button id="gjGoOdo" type="button" class="rt-btn rt-btn--secondary">Լրացնել վազքը</button>
+        <button id="gjNew" type="button" class="rt-btn rt-btn--primary" aria-controls="gjForm" aria-expanded="false"><i class="fas fa-plus" aria-hidden="true"></i>Նոր գրառում</button>
+    {% endif %}
+</div>

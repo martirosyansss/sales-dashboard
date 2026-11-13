@@ -24,7 +24,7 @@
     const COLLECT = { cash: 'Կանխիկ', cash_ecr: 'Կանխիկ ՀԴՄ', none: 'Չվերցնել', ask: 'Ճշտել' };
     const TYPE = { delivery: 'Առաքում', payment: 'Գումար', tare: 'Տարա', return: 'Վերադարձ', scan: 'Սկան', scan_cancel: 'Սկանի չեղարկում',
         unreadable: 'Կոդը չի կարդացվում', arrived: 'Ժամանում', day_closed: 'Օրվա ավարտ', geo_suggest: 'Կետի առաջարկ',
-        track: 'GPS երթուղի', refuel: 'Լիցքավորում', reorder: 'Հերթի փոփոխություն (Գնալ առաջինը)' };
+        track: 'GPS երթուղի', refuel: 'Լիցքավորում', reorder: 'Հերթի փոփոխություն (Գնալ առաջինը)', not_reached: 'Չհասցրի' };
     const FLAG = {
         foreign: 'Այլ մեքենայի կամ օրվա կետ', unknown_stop: 'Անհայտ կետ', duplicate_elsewhere: 'Կոդն արդեն տրվել է այլ տեղ',
         repeat: 'Կրկնակի սկան', scan_short: 'Մակնշման սկանը պակաս է', no_ecr_receipt: 'ՀԴՄ կտրոնի համարը չկա',
@@ -402,7 +402,7 @@
               + mm.items.map(x => '<li>' + esc(x.customer_name || x.customer_code) + ' · ' + esc(x.doc_number) + ' — ERP՝ ' + esc(x.erp_car || 'առանց մեքենայի')
               + ', պլան՝ ' + esc(x.plan_cars.join(', ')) + '</li>').join('') + '</ul></span></div>'
             : (mm.error ? '<p class="cr-lead">Համեմատել պլանի հետ չհաջողվեց՝ ' + esc(mm.error) + '</p>' : ''))
-            + (mm.plan_exists && mm.released === false ? '<p class="cr-lead">«Առաքում» պլանը դեռ հաստատված չէ․ տերմինալները պլանի խանութները կստանան հաստատելուց հետո (ERP-ում մեքենայով ապրանքագրերը՝ հիմա)։</p>' : '')
+            + (mm.plan_exists && mm.released === false ? '<p class="cr-lead">«Առաքում» պլանը դեռ չի ուղարկվել վարորդներին․ տերմինալները պլանի խանութները կստանան ուղարկելուց հետո (ERP-ում մեքենայով ապրանքագրերը՝ հիմա)։</p>' : '')
             + (mm.no_car && mm.released !== false ? '<p class="cr-lead">Պլանի խանութների ' + fmt(mm.no_car) + ' ապրանքագիր ERP-ում առանց մեքենայի է։ Մեքենան որոշվում է ըստ պլանի։</p>' : '')
             + crewMismatch(d.crew_mismatch);
         const plan = d.crew_mismatch && d.crew_mismatch.available ? (d.crew_mismatch.planned || {}) : null;

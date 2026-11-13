@@ -3,7 +3,7 @@
 
 - данные ERP — erp_day.load_day (только чтение), порядок — order.order_customers, план и склад —
   routes_link (раздел «Маршруты»);
-- координата клиента — как в «Маршрутах»: ручная точка логиста → адрес по умолчанию ERP (валидный, не
+- координата клиента — как в «Маршрутах»: ручная точка логиста → GPS доставок водителей → адрес по умолчанию ERP (валидный, не
   «дефолтный») → медиана GPS визитов (route_optimizer.geo.resolve_coord);
 - version — sha1 канонического JSON stops: тот же ERP и те же настройки → тот же version;
 - кэш DAY_TTL_SECONDS на (машина, дата): терминалы перезапрашивают /day каждые 15 мин, а офис — чаще,
@@ -29,6 +29,8 @@
   терминале офлайн (trips_json, _matrix: склад и точки рейса, секунды и метры по дорожной модели «Развоза», время у
   магазина; нет модели — matrix null), `until_buffer_min` — запас до срока настроек «Развоза». trips и until_buffer_min
   в version не входят (не точки).
+- `require_answers` (добавочное поле, как `trips`): водитель обязан ответить по каждому магазину (Store.answers_required —
+  meta `require_answers_cars`: `*` или коды машин); в version не входит.
 """
 from __future__ import annotations
 
@@ -44,13 +46,13 @@ from typing import Any, Callable, Mapping
 
 from route_optimizer.actuals import plan_version
 from route_optimizer.erp import ErpError
-from route_optimizer.geo import Point, resolve_coord
+from route_optimizer.geo import Coord, Point, resolve_coord
 
 from . import clock
 from .erp_day import (ContainerLink, CustomerInfo, DayData, Doc, GiftRule, Line, OrdersPick, Product, collect_for,
                       expected_tare)
 from .order import order_customers
-from .routes_link import RoutesView, distance_fn, invoice_owner, orders_window, pick_orders
+from .routes_link import RoutesView, OrderPicker, distance_fn, invoice_owner, orders_window, pick_orders
 from .store import MarkSetting, Store
 
 logger = logging.getLogger(__name__)
@@ -82,13 +84,18 @@ def _num(x: float) -> float | int:
     return int(x) if float(x).is_integer() else round(float(x), 3)
 
 
-def _resolve_points(data: DayData, view: RoutesView) -> dict[int, Point | None]:
-    out: dict[int, Point | None] = {}
+def _resolve_coords(data: DayData, view: RoutesView) -> dict[int, Coord]:
+    """Те же приоритеты, что в офисе: ручная → водитель → ERP → GPS менеджеров."""
+    out: dict[int, Coord] = {}
     for cid in sorted({d.customer_id for d in data.docs}):
         info = data.customers.get(cid)
-        coord = resolve_coord(view.geo_overrides.get(cid), info.erp_point if info else None, data.gps.get(cid))
-        out[cid] = coord.point
+        out[cid] = resolve_coord(view.geo_overrides.get(cid), info.erp_point if info else None, data.gps.get(cid),
+                                 driver=view.driver_points.get(cid))
     return out
+
+
+def _resolve_points(data: DayData, view: RoutesView) -> dict[int, Point | None]:
+    return {cid: coord.point for cid, coord in _resolve_coords(data, view).items()}
 
 
 def _line_json(line: Line, product: Product | None, gtins: tuple[str, ...], mark: MarkSetting | None,
@@ -224,9 +231,15 @@ def trips_json(stops: list[dict[str, Any]], view: RoutesView, car_code: str, day
             _matrices[key] = (time.monotonic(), matrices)
             while len(_matrices) > MATRIX_CACHE_MAX:
                 _matrices.pop(next(iter(_matrices)))
+    from route_optimizer.route_policy import POLICY_ID, geometry
     return [{'trip': k + 1, 'stop_ids': [s['stop_id'] for s in xs],
              # версия рейса плана (логист пересобрал и отправил — другая): APK держит свой порядок только на своей версии
-             'plan_version': plan_version(plan[k]) if k < len(plan) else None, 'matrix': m}
+             'plan_version': plan_version(plan[k]) if k < len(plan) else None, 'matrix': m,
+             'routing_policy': POLICY_ID,
+             'route_lines': geometry(view.route_roads or view.roads,
+                  [[*([view.depot] if view.depot is not None else []),
+                    *((s['lat'],s['lon']) for s in xs if s['lat'] is not None and s['lon'] is not None),
+                    *([view.depot] if view.depot is not None else [])]])}
             for (k, xs), m in zip(sorted(by_trip.items()), matrices)]
 
 
@@ -275,11 +288,14 @@ def stops_version(stops: list[dict[str, Any]]) -> str:
 
 
 def day_payload(data: DayData, view: RoutesView, store: Store, loaded_at: datetime) -> dict[str, Any]:
-    points = _resolve_points(data, view)
+    coords = _resolve_coords(data, view)
+    points = {cid: coord.point for cid, coord in coords.items()}
     dist = distance_fn(view, [p for p in points.values() if p is not None] + ([view.depot] if view.depot else []))
     # №80: порядок плана — только выпущенного (до утверждения — как без плана)
     order, source = order_customers(points, view.depot, view.car_customers(data.car_code) if view.released else [], dist)
     stops = build_stops(data, order, points, store.mark_settings(), view.windows, agent_phones=view.agent_phones)
+    for stop in stops:
+        stop['coord_source'] = coords[stop['customer']['id']].source
     tare_types = [{'tare_id': f'erp:{tid}', 'name': name} for tid, name in sorted(data.tare_names.items())]
     tare_types += [{'tare_id': f'custom:{t["id"]}', 'name': t['name']} for t in store.tare_custom()]
     return {
@@ -297,6 +313,7 @@ def day_payload(data: DayData, view: RoutesView, store: Store, loaded_at: dateti
         # №93 (контракт §12): рейсы с матрицей для «Գնալ առաջինը» офлайн и запас до срока — добавочные поля
         'trips': trips_json(stops, view, data.car_code, data.day),
         'until_buffer_min': view.until_buffer_min,
+        'require_answers': store.answers_required(data.car_code),
     }
 
 
@@ -350,6 +367,7 @@ class _Slot:
     lock: threading.Lock
     at: float = 0.0
     payload: dict[str, Any] | None = None
+    mark: int = 0   # Store.late_marks даты при сборке
 
 
 class DayService:
@@ -382,11 +400,13 @@ class DayService:
     def get(self, car_code: str, day: date) -> dict[str, Any]:
         slot = self._slot((car_code, day))
         with slot.lock:
-            if slot.payload is not None and time.monotonic() - slot.at < self.ttl:
+            marks = self.store.late_marks   # поздняя delivery — не ждать TTL: прошедшая дата — своя метка, сегодня и дальше —
+            mark = marks.get(day.isoformat(), 0) if day < clock.today() else sum(tuple(marks.values()))   # любой прошлой даты
+            if slot.payload is not None and time.monotonic() - slot.at < self.ttl and slot.mark == mark:
                 return slot.payload
             payload = self._build(car_code, day)
             self.store.save_day(day.isoformat(), car_code, payload['stops'], payload['version'], payload['loaded_at'])
-            slot.payload, slot.at = payload, time.monotonic()
+            slot.payload, slot.at, slot.mark = payload, time.monotonic(), mark
             return payload
 
     def _build(self, car_code: str, day: date) -> dict[str, Any]:
@@ -398,6 +418,15 @@ class DayService:
         view = self.routes(day)
         loaded = clock.now()
         data = self.loader(car_code, day, orders_window(day, view),
-                           lambda orders, places: pick_orders(orders, day, view, car_code, places),
+                           OrderPicker(day, view, car_code),
                            invoice_owner(view, car_code))
+        from .replacement import apply as replacement_data, closed_stop_ids
+        data = replacement_data(data, view, lambda source: self.loader(source, day, orders_window(day, view),
+                                OrderPicker(day, view, source),
+                                invoice_owner(view, source)))
+        if view.released and any(r['to'] == car_code for r in view.replacements):
+            from dataclasses import replace
+            closed = closed_stop_ids(self.store, day.isoformat())
+            data = replace(data, docs=tuple(d for d in data.docs if d.stop_id not in closed
+                                           and not any(sid in closed for sid in d.replaces)))
         return day_payload(data, view, self.store, loaded)

@@ -396,7 +396,7 @@ def test_api_road_lines_avoid_center(client, tmp_path):
     r = client.post('/api/routes/settings', json={'settings': {'center_zone': [list(p) for p in ZONE]}})
     assert r.status_code == 200, r.get_json()
     body = {'lines': [[list(WEST), list(EAST)], [list(WEST), list(MID), list(EAST)]]}
-    assert client.post('/api/routes/road-lines', json={**body, 'avoid_center': True}).get_json()['lines'] is None
+    assert client.post('/api/routes/road-lines', json={**body, 'avoid_center': True}).get_json()['lines'] == [[], []]
     state.roads = rd.RoadProvider(_map(tmp_path))
     plain = client.post('/api/routes/road-lines', json=body).get_json()['lines']
     around = client.post('/api/routes/road-lines', json={**body, 'avoid_center': True}).get_json()['lines']
@@ -427,9 +427,10 @@ def test_dispatch_yandex_matrix_stretched_on_bypass_legs(client, tmp_path, monke
                               learned=False)
     k = ctx.norms.roads.detour(WEST, EAST)
     assert k == pytest.approx(8 / 6, rel=1e-3)
-    assert ctx.norms.km(WEST, EAST) == pytest.approx(direct[WEST, EAST] * k)
-    assert ctx.norms.provider.minutes(WEST, EAST) == pytest.approx(direct[WEST, EAST] * 2.0 * k)
-    assert ctx.norms.km(WEST, MID) == direct[WEST, MID] and ctx.norms.km(MID, TOP) == direct[MID, TOP]
+    assert ctx.norms.km(WEST, EAST) == pytest.approx(ctx.norms.roads.km(WEST, EAST))
+    assert ctx.norms.provider.minutes(WEST, EAST) == pytest.approx(ctx.norms.roads.km(WEST, EAST) * 2.0)
+    assert ctx.norms.km(WEST, MID) == pytest.approx(ctx.norms.roads.km(WEST, MID))
+    assert ctx.norms.km(MID, TOP) == pytest.approx(ctx.norms.roads.km(MID, TOP))
     assert matrix.distances[WEST, EAST] == direct[WEST, EAST]      # кэш матрицы Яндекса не меняется
 
 

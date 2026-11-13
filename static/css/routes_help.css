@@ -1,0 +1,28 @@
+/* «Ուղեցույց» (/routes/help): текст и снимки экрана в цветах темы раздела (переменные --rt-* из routes.css). */
+.rt-help-toc, .rt-help { max-width: 960px; }
+.rt-help-toc__title { margin: 0 0 6px; font-weight: 600; }
+.rt-help-toc ol { margin: 0; padding-left: 22px; columns: 2; column-gap: 32px; }
+.rt-help-toc li { line-height: 1.9; }
+.rt-help-toc a, .rt-help a { color: var(--rt-acc); text-decoration: none; }
+.rt-help-toc a:hover, .rt-help a:hover { text-decoration: underline; }
+.rt-help { color: var(--rt-fg); font-size: .9688rem; line-height: 1.6; }
+.rt-help h2 { margin: 28px 0 8px; font-size: 1.3rem; font-weight: 600; scroll-margin-top: 80px; }
+.rt-help h2:first-child, .rt-help .rt-help-lead + h2 { margin-top: 8px; }
+.rt-help h3 { margin: 20px 0 6px; font-size: 1.05rem; font-weight: 600; }
+.rt-help p { margin: 6px 0 10px; max-width: 80ch; }
+.rt-help ol, .rt-help ul { margin: 6px 0 12px; padding-left: 24px; max-width: 82ch; }
+.rt-help li { margin: 4px 0; }
+.rt-help-lead { color: var(--rt-fg-dim); }
+.rt-help-note { padding: 10px 14px; border-radius: var(--rt-radius-sm, 10px); background: var(--rt-warn-bg); }
+.rt-help figure { margin: 12px 0 22px; }
+.rt-help figure img { display: block; width: 100%; height: auto; border-radius: var(--rt-radius-sm, 10px);
+    box-shadow: var(--rt-shadow-sm, var(--rt-shadow)); }
+.rt-help figcaption { margin-top: 6px; color: var(--rt-fg-dim); font-size: .8125rem; }
+.rt-help-tablewrap { margin: 8px 0 14px; overflow-x: auto; }
+.rt-help table { width: 100%; border-collapse: collapse; font-size: .875rem; }
+.rt-help th, .rt-help td { padding: 8px 10px; border-bottom: 1px solid var(--rt-line); text-align: left; vertical-align: top; }
+.rt-help th { color: var(--rt-fg-dim); font-weight: 600; }
+@media (max-width: 640px) {
+    .rt-help-toc ol { columns: 1; }
+    .rt-help table { min-width: 520px; }
+}

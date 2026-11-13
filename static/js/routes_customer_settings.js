@@ -11,17 +11,26 @@
     // Ответы дашборда (вход, доступ) приходят по-русски — свой армянский текст по коду ответа
     const AUTH_HY = { 401: 'Անհրաժեշտ է մուտք գործել համակարգ։', 403: 'Մուտքն արգելված է — բաժինը միայն ադմինիստրատորի համար է։' };
 
-    async function api(method, path, body) {
+    async function api(method, path, body, timeoutMs) {
+        const protectedPath = path === '/api/routes/customer-vehicles' || path.startsWith('/api/routes/dispatch/');
+        if (method === 'POST' && protectedPath && window.RouteSuperadmin) {
+            return window.RouteSuperadmin.run(password => rawApi(method, path, body, password));
+        }
+        return rawApi(method, path, body, undefined);
+    }
+    async function rawApi(method, path, body, password) {
         let response;
         try {
             response = await fetch(path, { method, credentials: 'same-origin', cache: 'no-store',
-                headers: { Accept: 'application/json', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
+                headers: { Accept: 'application/json', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+                    ...(typeof password === 'string' ? { 'X-Superadmin-Password': password } : {}) },
                 ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
         } catch (e) { throw new Error('Սերվերի հետ կապ չկա։ Փորձեք կրկին։'); }
         let data = null;
         try { data = await response.json(); } catch (e) { data = null; }
         // 403 CSRF дашборда («сессия формы устарела») — не запрет доступа (как routes_learning.js и routes_garage.js)
         if (response.status === 403 && data && data.error === 'csrf') throw new Error('Էջը հնացել է՝ թարմացրեք այն և կրկնեք։');
+        if (data && data.superadmin_required === true) throw Object.assign(new Error(data.error), { data, status: response.status });
         if (AUTH_HY[response.status]) throw new Error(AUTH_HY[response.status]);
         if (data === null) throw new Error('Չհաջողվեց կարդալ սերվերի պատասխանը։ Թարմացրեք էջը։');
         if (!response.ok || !data || data.success !== true) {

@@ -38,7 +38,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tests'))
 
-from routes_dispatch_browser_check import TILE_PNG, FakeClient, build_app, is_ignorable  # noqa: E402
+from routes_dispatch_browser_check import AUTO_CONFIRM, TILE_PNG, FakeClient, build_app, is_ignorable  # noqa: E402
 from playwright.sync_api import sync_playwright  # noqa: E402
 from werkzeug.serving import make_server  # noqa: E402
 
@@ -83,11 +83,13 @@ def main() -> int:
         with sync_playwright() as pw:
             browser = pw.chromium.launch()
             page = browser.new_context(viewport={'width': 1440, 'height': 950}).new_page()
-            page.add_init_script("try { localStorage.setItem('dpLayout', 'list'); } catch (e) {}")   # №82: прежний вид «список»
+            page.add_init_script("(() => { const m = matchMedia.bind(window); window.matchMedia = q => m(q === '(min-width: 1101px)' ? '(min-width: 99999px)' : q); })();")   # №82: прежний вид «список»
             page.on('pageerror', lambda e: errors.append('pageerror: ' + str(e)))
             page.on('console', lambda m: errors.append('console: ' + m.text) if m.type == 'error' and not is_ignorable(m) else None)
             confirms = []
-            page.on('dialog', lambda d: (confirms.append(d.message), d.accept()))
+            page.on('dialog', lambda d: d.accept())
+            page.expose_function('__dpConfirmed', lambda m: confirms.append(m))   # вопросы окна на странице (было: системный confirm)
+            page.add_init_script(AUTO_CONFIRM)
             page.on('request', lambda r: posts.append((r.url.rsplit('/', 1)[-1], json.loads(r.post_data or '{}')))
                     if r.method == 'POST' and '/api/routes/dispatch/' in r.url else None)
             for pat in ('https://tiles.api-maps.yandex.ru/**', 'https://*.tile.openstreetmap.org/**'):

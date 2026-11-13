@@ -69,7 +69,7 @@ TOOLS = [{
 # времени чтения (data_as_of — каждое перечитывание ERP, fetched_at — пробки): они меняли бы текст дня между
 # вопросами, и данные дня не читались бы из кэша
 _DROP = frozenset({'lat', 'lon', 'isn', 'customer_id', 'agent_id', 'orders_sig', 'rev', 'success', 'vehicle_options',
-                   'depot', 'event_id', 'accuracy', 'current', 'doc_num', 'data_as_of', 'fetched_at'})
+                   'depot', 'event_id', 'accuracy', 'current', 'doc_num', 'data_as_of', 'fetched_at', 'remove_saves'})
 
 SYSTEM = """You are the dispatch assistant on the «Առաքում» (dispatch) page of a bottled-water distributor in Armenia. \
 The person asking is the logist who plans tomorrow's delivery trips for the company trucks and prints sheets for drivers.

@@ -102,7 +102,11 @@ DEFAULT_TRUCK_TIME = TRUCK_TIME_MODEL
 
 PROFILE_CAR = 'auto'      # машины менеджеров
 PROFILE_TRUCK = 'truck'   # грузовики развоза
-CAR_COSTING: dict[str, float] = {}
+# Предпочтение трасс; штрафы выбора пути не меняют физические км/секунды ответа Valhalla.
+CAR_COSTING: dict[str, float] = {
+    'use_highways': 1.0, 'use_living_streets': 0.0, 'use_tracks': 0.0,
+    'service_factor': 8.0, 'service_penalty': 120.0, 'alley_factor': 12.0,
+}
 TRUCK_GROSS_PER_PAYLOAD = 2.0                 # полная масса ≈ тоннаж (груз) × 2 — лёгкие грузовики 2–5 т
 TRUCK_GROSS_T = (3.5, 26.0)                   # пределы полной массы, т
 TRUCK_DIMS_M = {'height': 3.2, 'width': 2.4, 'length': 7.0}   # лёгкий грузовик, м
@@ -202,7 +206,8 @@ def truck_costing(capacity_kg: float | None) -> dict[str, float]:
     задан — DEFAULT_TRUCK_PAYLOAD_KG."""
     payload_t = (capacity_kg if capacity_kg is not None and capacity_kg > 0 else DEFAULT_TRUCK_PAYLOAD_KG) / 1000.0
     lo, hi = TRUCK_GROSS_T
-    return {'weight': round(min(hi, max(lo, payload_t * TRUCK_GROSS_PER_PAYLOAD)), 1), **TRUCK_DIMS_M}
+    return {**CAR_COSTING, 'low_class_factor': 4.0, 'low_class_penalty': 120.0,
+            'weight': round(min(hi, max(lo, payload_t * TRUCK_GROSS_PER_PAYLOAD)), 1), **TRUCK_DIMS_M}
 
 
 def costing_key(costing: dict[str, Any]) -> str:
@@ -330,6 +335,21 @@ class BuildBusy(RuntimeError):
     """Тайлы собирает другой процесс, и ждать дольше нельзя."""
 
 
+class BuildAsRoot(RuntimeError):
+    """Root в папке сервиса: новая сборка осталась бы сервису нечитаемой, а уборка удалила бы рабочую."""
+
+
+def _refuse_root_build(base: str) -> None:
+    """Сборка из-под root — только в папке root. Папки ещё нет — решает ближайшая существующая: её и создал бы root."""
+    if not (getattr(os, 'geteuid', None) and os.geteuid() == 0):
+        return
+    folder = os.path.abspath(base)
+    while not os.path.exists(folder):
+        folder = os.path.dirname(folder)
+    if os.stat(folder).st_uid != 0:
+        raise BuildAsRoot(f'root не собирает тайлы в папке сервиса {base} — запустите от её владельца')
+
+
 @contextmanager
 def _build_lock(base: str, wait_s: float) -> Iterator[str]:
     """Блокировка сборки — блокировка ОС на файле build.lock (msvcrt.locking под Windows, flock — вне её). ОС снимает
@@ -383,6 +403,7 @@ def build_tiles(pbf: str | None = None, base: str | None = None, force: bool = F
     current = current_build(base)
     if current is not None and current.id == bid and not force:
         return current
+    _refuse_root_build(base)
     os.makedirs(base, exist_ok=True)
     started = time.monotonic()
     budget = BUILD_ATTEMPTS * 2 * BUILD_TIMEOUT_S if max_seconds is None else float(max_seconds)
@@ -1277,6 +1298,9 @@ def main(argv: Sequence[str]) -> int:
         except BuildBusy as exc:
             print(f'Тайлы не собраны: {exc}', file=sys.stderr)
             return 3
+        except BuildAsRoot as exc:
+            print(f'Тайлы не собраны: {exc}', file=sys.stderr)
+            return 4
         print(json.dumps(build.info, ensure_ascii=False, indent=1))
     elif command == 'warm':
         _warm()

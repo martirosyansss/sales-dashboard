@@ -144,13 +144,14 @@ def stop_money(v: Any, collect: str | None, amount_due: Any, pays: list[Mapping[
 
 class _Entry:
     """Расчёт флота за один день: свой замок — одно вычисление на день, остальные ждут и берут его результат."""
-    __slots__ = ('lock', 'value', 'fingerprint', 'expires')
+    __slots__ = ('lock', 'value', 'fingerprint', 'expires', 'mark')
 
     def __init__(self) -> None:
         self.lock = threading.Lock()
         self.value: dict[str, dict[str, Any]] | None = None
         self.fingerprint: tuple[Any, ...] | None = None
         self.expires = 0.0
+        self.mark = 0   # Store.late_marks дня на момент расчёта
 
 
 class LiveSource:
@@ -166,7 +167,13 @@ class LiveSource:
     def _exists(self) -> bool:
         return os.path.exists(self.store.path)   # нет базы — не создаём её чтением
 
-    def fleet(self, day: str) -> dict[str, dict[str, Any]]:
+    def fresh_fleet(self, day: str) -> dict[str, dict[str, Any]]:
+        """Проверка перед заменой машины: прочитать отпечаток SQLite, не ждать TTL карты."""
+        if not self._exists():
+            raise RuntimeError('Courier database is unavailable')
+        return self.fleet(day, refresh=True)
+
+    def fleet(self, day: str, *, refresh: bool = False) -> dict[str, dict[str, Any]]:
         """Машина → факт дня (с кэшем — см. класс; состав — _compute)."""
         if not self._exists():
             return {}
@@ -178,14 +185,20 @@ class LiveSource:
                     self._entries.pop(next(k for k in self._entries if k != today))
                 entry = self._entries[day] = _Entry()
         with entry.lock:
-            if entry.value is not None and _monotonic() < entry.expires:
+            mark = self.late_mark(day)
+            if not refresh and entry.value is not None and _monotonic() < entry.expires and entry.mark == mark:
                 return entry.value
             fingerprint = self.store.day_fingerprint(day)   # до расчёта: изменение во время него поймает следующий вызов
             if entry.value is None or fingerprint != entry.fingerprint:
                 entry.value = self._compute(day)
                 entry.fingerprint = fingerprint
             entry.expires = _monotonic() + (TTL_TODAY_S if day >= clock.today().isoformat() else TTL_PAST_S)
+            entry.mark = mark
             return entry.value
+
+    def late_mark(self, day: str) -> int:
+        """Сколько поздних delivery дня принял процесс (Store.mark_late): изменилась — кэш дня сверяется с базой."""
+        return self.store.late_marks.get(day, 0)
 
     def _compute(self, day: str) -> dict[str, dict[str, Any]]:
         """Машина → факт дня (рабочий день day, YYYY-MM-DD):
@@ -234,7 +247,8 @@ class LiveSource:
                 cust = s.get('customer') or {}
                 cid = cust.get('id')
                 point = _point(s)
-                stops.append({'stop_id': sid, 'customer_id': cid if isinstance(cid, int) and not isinstance(cid, bool)
+                stops.append({'stop_id': sid, 'replaces': list(s.get('replaces') or ()),
+                              'customer_id': cid if isinstance(cid, int) and not isinstance(cid, bool)
                               else None, 'name': cust.get('name'), 'lat': point[0] if point else None,
                               'lon': point[1] if point else None, 'seq': s.get('seq'),
                               'weight_kg': _number(loaded.get('weight_kg')), 'unweighed': _unweighed(loaded),

@@ -27,6 +27,7 @@ from courier import clock, day as dy, erp_day as ed, events as ev, merge as mg, 
 from courier.state import CourierState  # noqa: E402
 from courier.store import SCHEMA_VERSION, MarkSetting, PinConflict, PinReset, Store, StoreError  # noqa: E402
 from route_optimizer import erp  # noqa: E402
+from route_optimizer import dispatch as dp  # noqa: E402
 from route_optimizer.dispatch import DispatchOrder  # noqa: E402
 from route_optimizer.store import StoreError as RoutesStoreError  # noqa: E402
 
@@ -128,6 +129,35 @@ def post(client, s, *events):
 
 def full_lines(stop, factor=1.0):
     return [{'line_id': ln['line_id'], 'qty': ln['qty'] * factor} for ln in stop['lines']]
+
+
+def _mark_event(stop):
+    return event('geo_suggest', stop['stop_id'], {'lat': 40.19, 'lon': 44.52, 'accuracy': 8})
+
+
+def test_post_events_applies_terminal_mark_once(app, st, client, term):
+    """Отметка «точка неверная» через настоящий POST /events сразу пишется точкой магазина; повтор пачки её не пишет."""
+    saved = []
+    app.extensions['route_optimizer'] = SimpleNamespace(store=SimpleNamespace(
+        geo_override_stamp=lambda cid: None,
+        apply_geo_mark=lambda event_id, cid, point, by, **kw: saved.append((cid, point, by, kw['busy_ms']))))
+    stop = term['day']['stops'][0]
+    mark = _mark_event(stop)
+    assert post(client, term['s'], mark)['accepted'] == [mark['id']]
+    assert saved == [(stop['customer']['id'], (40.19, 44.52), 'auto: terminal', 1000)]
+    assert st.store.open_suggestions() == []
+    assert post(client, term['s'], mark)['duplicates'] == [mark['id']]
+    assert len(saved) == 1
+
+
+def test_post_events_mark_survives_routes_failure(app, st, client, term):
+    """Сбой «Маршрутов» не портит ответ терминалу: событие принято, отметка ждёт у логиста."""
+    def boom(*_, **__):
+        raise RuntimeError('база «Маршрутов» недоступна')
+    app.extensions['route_optimizer'] = SimpleNamespace(store=SimpleNamespace(geo_override_stamp=boom, apply_geo_mark=boom))
+    mark = _mark_event(term['day']['stops'][0])
+    assert post(client, term['s'], mark)['accepted'] == [mark['id']]
+    assert [s['event_id'] for s in st.store.open_suggestions()] == [mark['id']]
 
 
 # ============================== чистые правила ==============================
@@ -387,7 +417,7 @@ def test_day_payload_from_erp(fake_erp, tmp_path, now):
 
 STOP_KEYS = {'stop_id', 'seq', 'source', 'doc_number', 'customer', 'lat', 'lon', 'agent_name', 'pay_type', 'collect',
              'amount_due', 'debt', 'weight_kg', 'lines', 'tare_expected', 'until', 'until_from',   # срок — v1.8 §12
-             'agent_phone'}   # телефон менеджера — v1.9 §13
+             'agent_phone', 'coord_source'}   # телефон менеджера и источник координат (добавочное поле)
 LINE_KEYS = {'line_id', 'product_id', 'code', 'name', 'qty', 'unit', 'price', 'sum', 'marked', 'pack_qty', 'gtins', 'gtin_units',
              'weight_kg'}
 
@@ -395,10 +425,10 @@ LINE_KEYS = {'line_id', 'product_id', 'code', 'name', 'qty', 'unit', 'price', 's
 def test_demo_day_matches_contract(term):
     body = term['day']
     assert set(body) == {'date', 'version', 'loaded_at', 'car', 'depot', 'order_source', 'stops', 'tare_types',
-                         'refuse_reasons', 'return_reasons', 'plan', 'trips', 'until_buffer_min'}
+                         'refuse_reasons', 'return_reasons', 'plan', 'trips', 'until_buffer_min', 'require_answers'}
     # v1.8 §12: демо — без плана и без дорожной модели: один рейс со всеми точками, матрицы нет; срока нет
     assert body['trips'] == [{'trip': 1, 'stop_ids': [s['stop_id'] for s in body['stops']], 'plan_version': None,
-                              'matrix': None}]
+                                  'matrix': None, 'routing_policy': 'main_roads_v1', 'route_lines': []}]
     assert body['until_buffer_min'] == 0.0 and all(s['until'] is None for s in body['stops'])
     assert body['plan'] == 'approved'                    # №80: демо-день — обычный рабочий день, без плашки ожидания
     assert {(s['agent_name'], s['agent_phone']) for s in body['stops']} == {('Թեստ մենեջեր', '+00000000000')}   # v1.9 §13
@@ -3779,3 +3809,204 @@ def test_gift_rules_kept_on_transient_read_failure(fake_erp, monkeypatch):
     monkeypatch.setattr(ed, 'day_gift_rules', real)
     fake_erp.groups = [(11, '033')]                          # прочиталось — новое (без правила), а не запомненное
     assert load().gift_rules == {}
+
+
+# ============================== not_reached: ответ водителя «Չհասցրի» ==============================
+
+def test_not_reached_accepted_needs_stop_and_is_idempotent(term, client):
+    s1 = term['day']['stops'][0]
+    e = event('not_reached', s1['stop_id'], {})
+    r = post(client, term['s'], e, dict(e))
+    assert r == {'accepted': [e['id']], 'duplicates': [e['id']], 'rejected': []}
+    assert post(client, term['s'], e)['duplicates'] == [e['id']]
+    r = post(client, term['s'], event('not_reached', None, {}))
+    assert r['accepted'] == [] and 'stop_id' in r['rejected'][0]['message']
+    r = post(client, term['s'], event('not_reached', s1['stop_id'], [1]))
+    assert r['accepted'] == [] and r['rejected'][0]['message'].startswith('payload')
+    assert 'not_reached' in ev.EVENT_TYPES and 'not_reached' not in ev.STOPLESS_TYPES
+
+
+def test_not_reached_keeps_stop_pending_and_money(st, client):
+    a = _who(st, 'A', '1111')
+    s1 = 'S:' + _uid(2)
+    st.store.save_day(PAST, 'CAR1', [_stop(s1, [('s1:1', 10, 100)])], 'v1', PAST + 'T08:00:00+04:00')
+    _ingest(st, a, _ev('not_reached', s1, {}, '10:00:00'))
+    stop = _today_stops(client)[s1]
+    assert (stop['status'], stop['due'], stop['paid']) == ('pending', 1000.0, 0.0)
+    # ответ не закрывает точку: позже её закрывают как обычно, деньги и статус — по delivery/payment
+    _ingest(st, a, _deliver(s1, [('s1:1', 10)], '11:00:00'),
+            _ev('payment', s1, {'amount': 1000, 'kind': 'invoice'}, '11:01:00'))
+    stop = _today_stops(client)[s1]
+    assert (stop['status'], stop['due'], stop['paid']) == ('full', 1000.0, 1000.0)
+
+
+def test_not_reached_changes_nothing_in_merge():
+    at = '2026-10-02T10:00:00.000+04:00'
+    o1, s1, o2, gone = 'O:' + _uid(1), 'S:' + _uid(2), 'O:' + _uid(3), 'O:' + _uid(4)
+    lines = [{'line_id': 'a', 'product_id': 1, 'qty': 10, 'price': 100}]
+    stops = [{'stop_id': s1, 'source': 'invoice', 'collect': 'cash', 'current': True, 'replaces': [o1], 'lines': lines},
+             {'stop_id': o1, 'source': 'order', 'collect': 'cash', 'current': False, 'lines': lines},
+             {'stop_id': o2, 'source': 'order', 'collect': 'cash', 'current': True, 'lines': lines},
+             {'stop_id': gone, 'source': 'order', 'collect': 'cash', 'current': False, 'lines': lines}]
+    dlv = {'id': 'd1', 'type': 'delivery', 'stop_id': o2, 'at': at, 'payload': {'lines': [{'line_id': 'a', 'qty': 10}]}}
+    pay = {'id': 'p1', 'type': 'payment', 'stop_id': o2, 'at': at, 'payload': {'amount': 1000, 'kind': 'invoice'}}
+    base = mg.merge(stops, [dlv, pay])
+    nr = [{'id': f'n{i}', 'type': 'not_reached', 'stop_id': x, 'at': at, 'payload': {}}
+          for i, x in enumerate((o1, s1, o2, gone))]
+    assert mg.merge(stops, [dlv, pay, *nr]) == base   # статус, деньги, инструкция, владелец и «поглощённые» — те же
+    assert gone not in base.stops                     # снятая точка не становится «со своими событиями»
+    # контроль: настоящее событие (тара) на снятой точке показывает её с removed
+    tare = {'id': 't1', 'type': 'tare', 'stop_id': gone, 'at': at, 'payload': {'items': []}}
+    assert mg.merge(stops, [dlv, pay, tare]).stops[gone].removed is True
+
+
+def test_not_reached_open_point_is_still_carried(app, st, client):
+    """Открытая точка с not_reached остаётся pending в факте терминалов (настоящий LiveSource.fleet), а перенос
+    (dispatch.auto_carried) смотрит только на статус точки: заказ переносится, как без ответа. Поздняя delivery за
+    тот же день закрывает точку сразу, не дожидаясь TTL кэшей (Store.mark_late)."""
+    from collections import OrderedDict
+    import threading
+    from courier.live import LiveSource
+    from route_optimizer import views as rv
+    a = _who(st, 'A', '1111')
+    o1 = 'O:' + _uid(1)
+    isn = o1[2:]
+    st.store.save_day(PAST, 'CAR1', [_stop(o1, [('o1:1', 10, 100)])], 'v1', PAST + 'T08:00:00+04:00')
+    with app.app_context():
+        live = LiveSource(st.store)
+        plan = dp.Draft(trips=[dp.DraftTrip(1, 'CAR1', [1])], released={'at': 'x', 'by': None})
+        state = SimpleNamespace(live_facts=live, closed_cache=OrderedDict(), live_lock=threading.Lock())
+        day = date.fromisoformat(PAST)
+        assert rv.closed_points(state, day) == set()                          # закэшировано до события
+        _ingest(st, a, _ev('not_reached', o1, {}, '10:00:00'))
+        fleet = live.fleet(PAST)
+        assert [s['status'] for s in fleet['CAR1']['stops']] == ['pending']
+        assert dp.auto_carried([(plan, fleet, True)]) == {isn}
+        assert dp.closed_points(fleet) == set()
+        # утром водитель всё же довёз: поздняя delivery за вчера — и факт дня, и закрытые точки обновились без ожидания TTL
+        _ingest(st, a, {**_deliver(o1, [('o1:1', 10)], '10:30:00'), 'at': '2026-10-02T09:00:00+04:00'})
+        assert st.store.late_marks == {PAST: 1}
+        fleet = live.fleet(PAST)
+        assert [s['status'] for s in fleet['CAR1']['stops']] == ['full']
+        assert dp.auto_carried([(plan, fleet, True)]) == set()
+        assert rv.closed_points(state, day) == {isn}
+
+
+def _set_answers_meta(st, value):
+    def write(conn):
+        if value is None:
+            conn.execute("DELETE FROM meta WHERE key = 'require_answers_cars'")
+        else:
+            conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('require_answers_cars', ?)", (value,))
+    st.store._transaction(write, 'meta')
+
+
+@pytest.mark.parametrize('value, car, expected', [
+    (None, 'TEST', False), ('', 'TEST', False), (' , ', 'TEST', False), ('*', 'TEST', True), (' * ', 'ANY', True),
+    ('TEST', 'TEST', True), ('A1, TEST ,B2', 'TEST', True), ('A1,B2', 'TEST', False), ('TES', 'TEST', False),
+    ('test', 'TEST', False), ('TEST2', 'TEST', False),
+])
+def test_answers_required_meta(st, value, car, expected):
+    _set_answers_meta(st, value)
+    assert st.store.answers_required(car) is expected
+
+
+def test_day_require_answers_flag_does_not_touch_version(st, client, term):
+    def day():
+        st.days.invalidate()
+        r = client.get(f'/api/courier/v1/day?date={DEMO}', headers=term['s'])
+        assert r.status_code == 200
+        return r.get_json()
+
+    off = day()
+    assert off['require_answers'] is False                          # по умолчанию выключено
+    for value, expected in (('TEST', True), ('*', True), ('A1,B2', False), ('', False)):
+        _set_answers_meta(st, value)
+        body = day()
+        assert body['require_answers'] is expected, value
+        assert body['version'] == off['version'] and body['stops'] == off['stops']   # поле добавочное: версия та же
+
+
+# ============================== поздние события: ответ утром за вчера ==============================
+
+def test_late_not_reached_and_delivery_two_and_three_days_back(st, client, now):
+    did, terminal, h = make_terminal(st)
+    s = login(client, h)
+    d2, d3 = '2026-09-30', '2026-09-29'                 # «сейчас» — 02.10 09:00: два и три дня назад
+    stop2, stop3 = _stop('S:' + str(uuid.uuid4()).upper(), [('l1', 2, 100.0)]), _stop('S:' + str(uuid.uuid4()).upper(), [('l2', 2, 100.0)])
+    st.store.save_day(d2, 'TEST', [stop2], 'v1', d2 + 'T08:00:00+04:00')
+    st.store.save_day(d3, 'TEST', [stop3], 'v1', d3 + 'T08:00:00+04:00')
+    nr = event('not_reached', stop2['stop_id'], {}, at=_at(NOW), date_=d2)
+    dl = event('delivery', stop3['stop_id'], {'lines': full_lines(stop3), 'reason_id': None}, at=_at(NOW), date_=d3)
+    r = post(client, s, nr, dl)
+    assert r['accepted'] == [nr['id'], dl['id']] and r['rejected'] == []
+    got = {e['id']: (e['car_code'], e['flags']) for d in (d2, d3) for e in st.store.events_for_day(d)}
+    assert got[nr['id']] == ('TEST', []) and got[dl['id']] == ('TEST', ['date_suspicious'])
+
+
+def test_overnight_rebind_files_late_event_under_old_truck(st, client, now):
+    """Терминал на TEST, ночью офис ставит его на 991AT61; утром водитель отвечает за вчера: события вчерашнего дня — у TEST,
+    без foreign и car_by_time. Событие этого же дня — как раньше (новая машина); после полуночи того же рабочего дня — прежняя."""
+    did, terminal, h = make_terminal(st)
+    stop = _stop('S:' + str(uuid.uuid4()).upper(), [('l1', 2, 100.0)])
+    st.store.save_day(PAST, 'TEST', [stop], 'v1', PAST + 'T08:00:00+04:00')
+    now['t'] = NOW + timedelta(minutes=10)
+    st.store.set_terminal_car(terminal.id, '991AT61', 'admin')       # 09:10 02.10
+    now['t'] = NOW + timedelta(minutes=31)
+    s = login(client, h)
+    sid = stop['stop_id']
+    nr = event('not_reached', sid, {}, at=_at(NOW + timedelta(minutes=30)), date_=PAST)
+    dl = event('delivery', sid, {'lines': full_lines(stop), 'reason_id': None}, at=_at(NOW + timedelta(minutes=30)), date_=PAST)
+    night = event('arrived', sid, {'lat': 40.1, 'lon': 44.5}, at='2026-10-02T00:30:00+04:00', date_=PAST)
+    closed = event('day_closed', None, {'summary': {}}, at=_at(NOW + timedelta(minutes=30)), date_=PAST)
+    unknown = event('not_reached', 'S:' + str(uuid.uuid4()).upper(), {}, at=_at(NOW + timedelta(minutes=30)), date_=PAST)
+    today = event('day_closed', None, {'summary': {}}, at=_at(NOW + timedelta(minutes=30)), date_='2026-10-02')
+    assert len(post(client, s, nr, dl, night, closed, unknown, today)['accepted']) == 6
+    got = {e['id']: (e['car_code'], e['flags']) for e in st.store.events_for_day(PAST) + st.store.events_for_day('2026-10-02')}
+    assert got[nr['id']] == ('TEST', []) and got[dl['id']] == ('TEST', []) and got[night['id']] == ('TEST', [])
+    assert got[closed['id']] == ('TEST', [])                          # без точки — машина терминала на конец вчерашней даты
+    assert got[unknown['id']] == ('TEST', ['unknown_stop'])
+    assert got[today['id']] == ('991AT61', [])                        # этот же день — по часам, как раньше
+
+
+def test_refuel_with_yesterdays_date_stays_with_current_truck(st, client, now):
+    """Заправка утром (/day сегодня ещё не загружен) несёт вчерашнюю рабочую дату: после ночной смены машины — нынешней
+    машине (цепочка одометра), как до поздних событий; delivery с той же датой — прежней."""
+    did, terminal, h = make_terminal(st)
+    stop = _stop('S:' + str(uuid.uuid4()).upper(), [('l1', 2, 100.0)])
+    st.store.save_day(PAST, 'TEST', [stop], 'v1', PAST + 'T08:00:00+04:00')
+    now['t'] = NOW + timedelta(minutes=10)
+    st.store.set_terminal_car(terminal.id, '991AT61', 'admin')
+    now['t'] = NOW + timedelta(minutes=31)
+    s = login(client, h)
+    at = _at(NOW + timedelta(minutes=30))
+    fuel = event('refuel', None, {'liters': 40.0, 'odometer_km': 1000}, at=at, date_=PAST)
+    dl = event('delivery', stop['stop_id'], {'lines': full_lines(stop), 'reason_id': None}, at=at, date_=PAST)
+    assert len(post(client, s, fuel, dl)['accepted']) == 2
+    got = {e['id']: (e['car_code'], e['flags']) for e in st.store.events_for_day(PAST)}
+    assert got[fuel['id']][0] == '991AT61' and got[dl['id']] == ('TEST', [])
+
+
+def test_day_slot_rebuilt_after_late_delivery_of_earlier_date(app, st, client, now):
+    """/day на сегодня в кэше (TTL 60 с); поздняя delivery за вчера через ingest — следующий /day собирается заново.
+    Без поздней delivery обычные запросы не пересобирают."""
+    now['t'] = datetime(2000, 1, 1, 9, 0, tzinfo=clock.YEREVAN)       # демо-день — «сегодня»
+    a = _who(st, 'A', '1111')
+    builds = []
+    real = st.days._build
+    st.days._build = lambda car, day: (builds.append((car, day)), real(car, day))[1]
+    today, yesterday = date.fromisoformat(DEMO), date.fromisoformat(DEMO) - timedelta(days=1)
+    st.days.get('TEST', today)
+    st.days.get('TEST', today)
+    assert len(builds) == 1                                           # кэш работает
+    o1 = 'O:' + _uid(1)
+    st.store.save_day(yesterday.isoformat(), 'CAR1', [_stop(o1, [('o1:1', 10, 100)])], 'v1', '1999-12-31T08:00:00+04:00')
+    late = _ev('delivery', o1, {'lines': [{'line_id': 'o1:1', 'qty': 10}], 'reason_id': None}, '09:00:00',
+               day=yesterday.isoformat())
+    late['at'] = clock.iso(clock.now())                               # ответ сегодня утром
+    _ingest(st, a, late)
+    assert st.store.late_marks == {yesterday.isoformat(): 1}
+    st.days.get('TEST', today)
+    assert len(builds) == 2                                           # пересобран, не ждёт TTL
+    st.days.get('TEST', today)
+    assert len(builds) == 2                                           # и снова из кэша

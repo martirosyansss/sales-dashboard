@@ -55,6 +55,12 @@
         ] },
         // Парк машин (fleet-plan §2): рабочий день машины и разгрузка — для рейсов и «хватает ли машин»
         { title: 'Առաքման մեքենաներ', items: [
+            { key: 'dispatch_balanced', kind: 'check', label: 'Հավասարակշռված գնահատում՝ ժամկետներ, ծանրաբեռնվածություն, շրջաններ և ռեսուրսներ',
+              hint: 'Չորս խմբերն ունեն հավասար կշիռ։ Սահմանափակումները պարտադիր են։ Անջատված՝ ընտրությունը հիմնականում վառելիքի և մաշվածքի ծախսով է։ Փոփոխությունը գործում է հաջորդ վերակազմման ժամանակ' },
+            { key: 'dispatch_extra_cost_amd', label: 'Որակի համար թույլատրելի հավելյալ ծախս՝ ամբողջ օրվա համար, դրամ', min: 0, max: 1000000, step: 1,
+              hint: 'Տնտեսող հաշվարկային տարբերակի նկատմամբ՝ վառելիք և կարգավորված մաշվածք։ 0՝ առանց հավելավճարի։ Սա յուրաքանչյուր մեքենայի կամ տեղափոխման առանձին սահման չէ։ Աշխատավարձը չի ներառվում' },
+            { key: 'truck_load_cap_pct', label: 'Երթի առավելագույն բեռնվածությունը, %', min: 1, max: 100, step: 1,
+                hint: 'Մեքենայի տոննաժի քանի տոկոսը կարելի է բեռնել մեկ երթում։ Օրինակ՝ 90%՝ 5 տ մեքենայում մինչև 4,5 տ։ 100%՝ ամբողջ տոննաժը։ Մեկ անխուսափելի ծանր պատվերը կարող է գերազանցել այս սահմանը՝ մինչև ամբողջ տոննաժը։ Պահպանելուց հետո վերակազմեք երթերը։' },
             { key: 'truck_work_start', label: 'Մեքենան մեկնում է', type: 'time' },
             { key: 'truck_work_end', label: 'Մեքենան վերադառնում է մինչև', type: 'time', hint: 'չհասցնող երթերի համար՝ «անհրաժեշտ է ևս մեկ մեքենա»' },
             // запас в конце дня (ответ владельца №78): сборка возвращает машины на столько раньше конца дня
@@ -436,6 +442,7 @@
         renderDays();
         renderManagers();
         renderZone('center');
+        renderCenterRole();
         renderYerevan();
         renderDispatchAgents();
         renderAgentPhones();
@@ -447,6 +454,21 @@
         updateSources();
         if ($('rsTrafficMode')) $('rsTrafficMode').value = state.data.settings.traffic_mode || 'gps';
         document.dispatchEvent(new CustomEvent('routes:settings', { detail: state.data }));
+    }
+
+    function renderCenterRole() {
+        const select = $('rsCenterTruck'), since = $('rsCenterFrom');
+        const rule = state.data.settings.dispatch_center_role || null;
+        select.textContent = '';
+        select.append(h('option', { value: '', text: 'Ավտոմատ՝ առանց մշտական մեքենայի' }));
+        const trucks = [...state.data.trucks];
+        if (rule && !trucks.some(t => t.car_code === rule.truck)) trucks.push({ car_code: rule.truck, name: 'չի գտնվել' });
+        trucks.forEach(t => select.append(h('option', { value: t.car_code, text: t.car_code + (t.name ? ' · ' + t.name : '') })));
+        select.value = rule ? rule.truck : '';
+        since.value = rule ? rule.from : (state.data.today || '');
+        since.disabled = !select.value;
+        select.onchange = () => { since.disabled = !select.value; };
+        reg(['dispatch_center_role', 'settings.dispatch_center_role'], select, $('rsCenterRoleErr'), 'Կենտրոնի մշտական մեքենա');
     }
 
     // ---------- 01 · Склад ----------
@@ -2197,6 +2219,12 @@
     function collect() {
         const errors = {};
         const s = Object.assign({}, state.data.settings);   // неизвестные ключи отдаём как были
+        if ($('rsCenterTruck')) {
+            const truck = $('rsCenterTruck').value, from = $('rsCenterFrom').value;
+            s.dispatch_center_role_base = state.data.settings.dispatch_center_role || null;
+            s.dispatch_center_role = truck ? { truck, from } : null;
+            if (truck && !/^\d{4}-\d{2}-\d{2}$/.test(from)) errors['settings.dispatch_center_role'] = 'Նշեք կանոնի մեկնարկի օրը';
+        }
         if ($('rsTrafficMode')) s.traffic_mode = $('rsTrafficMode').value;
         document.querySelectorAll('#rsForm [data-norm]').forEach(inp => {
             const key = inp.dataset.norm;
@@ -2376,19 +2404,25 @@
         if (Object.keys(errors).length) { showErrors(errors, true); return; }
         setSaving(true);
         try {
-            let resp;
+            let resp, data;
             try {
-                resp = await fetch('/api/routes/settings', {
-                    method: 'POST', credentials: 'same-origin',
-                    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-                    body: JSON.stringify(payload),
-                });
+                const send = async password => {
+                    const headers = { 'Content-Type': 'application/json', Accept: 'application/json' };
+                    if (password) headers['X-Superadmin-Password'] = password;
+                    const response = await fetch('/api/routes/settings', {
+                        method: 'POST', credentials: 'same-origin', headers, body: JSON.stringify(payload),
+                    });
+                    let body = null;
+                    try { body = await response.json(); } catch (e) { body = null; }
+                    if (body && body.superadmin_required) throw Object.assign(new Error(body.error || 'Պահանջվում է Superadmin-ի հաստատումը'), { data: body });
+                    return { response, body };
+                };
+                const result = window.RouteSuperadmin ? await RouteSuperadmin.run(send) : await send();
+                resp = result.response; data = result.body;
             } catch (e) {
-                showSaveError('Սերվերի հետ կապ չկա — կարգավորումները չեն պահպանվել։ Ստուգեք ցանցը և կրկին սեղմեք «Պահպանել»։');
+                if (!e.cancelled) showSaveError(e.message || 'Սերվերի հետ կապ չկա — կարգավորումները չեն պահպանվել։');
                 return;
             }
-            let data = null;
-            try { data = await resp.json(); } catch (e) { data = null; }
             if (resp.ok && data && data.success === true) {
                 state.initial = snapshot();
                 state.initialBlocks = blockSnaps();

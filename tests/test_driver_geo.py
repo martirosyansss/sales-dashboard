@@ -7,6 +7,7 @@
 import random
 import sqlite3
 import sys
+import time
 from contextlib import closing
 from dataclasses import replace
 from datetime import datetime
@@ -19,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import route_optimizer  # noqa: E402
-from courier import clock, events as ev  # noqa: E402
+from courier import clock, events as ev, routes_link  # noqa: E402
 from courier.geo import ArrivedFix, DriverSource, driver_point, driver_points  # noqa: E402
 from courier.store import SCHEMA_VERSION, Store  # noqa: E402
 from route_optimizer import evaluate, geo  # noqa: E402
@@ -259,6 +260,396 @@ def test_geo_suggest_decision(cstore):
         rows = set(conn.execute('SELECT event_id, decision, decided_by FROM geo_suggest_decision').fetchall())
     assert rows == {(a['id'], 'accepted', 'logist'), (b['id'], 'rejected', 'logist'), (c2['id'], 'accepted', 'logist'),
                     (c['id'], 'rejected', 'auto: superseded')}
+
+
+# ============================== отметка терминала применяется сразу (решение владельца 2026-11-10) ==============================
+
+BEFORE_MARKS, AFTER_MARKS = '2026-09-01T00:00:00', '2026-12-01T00:00:00'    # заведомо до и после отметок 1 октября при любом поясе
+
+
+def _routes(tmp_path):
+    return SimpleNamespace(store=rst.Store(str(tmp_path / 'routes.db')))
+
+
+def _mark(sid, lat, hhmm):
+    return {**_suggest(sid, lat=lat, lon=44.52), 'at': f'2026-10-01T{hhmm}:00+04:00'}
+
+
+def _decisions(store):
+    with closing(sqlite3.connect(store.path)) as conn:
+        return {r[0]: r[1:] for r in conn.execute('SELECT event_id, decision, decided_by FROM geo_suggest_decision')}
+
+
+def _open_ids(store):
+    return {s['event_id'] for s in store.open_suggestions()}
+
+
+def test_terminal_mark_replaces_earlier_logist_point_at_once(cstore, tmp_path):
+    who, routes = _who(cstore), _routes(tmp_path)
+    _save_day(cstore, '2026-10-01', [(_sid(1), 101)])
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(rst, '_now', lambda: BEFORE_MARKS)
+        routes.store.save_geo_override(101, (40.10, 44.40), 'logist')
+    mark = _mark(_sid(1), 40.19, '10:00')
+    ev.ingest(cstore, who, [mark])
+    assert routes_link.apply_driver_marks(routes, cstore) == 1
+    assert routes.store.load().geo_overrides[101] == (40.19, 44.52)
+    assert cstore.open_suggestions() == []
+    assert _decisions(cstore) == {mark['id']: ('accepted', 'auto: terminal')}
+    with closing(sqlite3.connect(routes.store.path)) as conn:
+        assert conn.execute('SELECT updated_by FROM customer_geo_override').fetchall() == [('auto: terminal',)]
+    assert routes_link.apply_driver_marks(routes, cstore) == 0        # повторно применять нечего
+
+
+def test_logist_point_placed_after_the_mark_is_kept(cstore, tmp_path):
+    who, routes = _who(cstore), _routes(tmp_path)
+    _save_day(cstore, '2026-10-01', [(_sid(1), 101)])
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(rst, '_now', lambda: AFTER_MARKS)
+        routes.store.save_geo_override(101, (40.10, 44.40), 'logist')
+    mark = _mark(_sid(1), 40.19, '10:00')                              # офлайн-очередь отдала отметку позже правки логиста
+    ev.ingest(cstore, who, [mark])
+    assert routes_link.apply_driver_marks(routes, cstore) == 0
+    assert routes.store.load().geo_overrides[101] == (40.10, 44.40)
+    assert _open_ids(cstore) == {mark['id']} and _decisions(cstore) == {}
+
+
+def test_later_mark_replaces_automatic_point(cstore, tmp_path):
+    who, routes = _who(cstore), _routes(tmp_path)
+    _save_day(cstore, '2026-10-01', [(_sid(1), 101)])
+    ev.ingest(cstore, who, [_mark(_sid(1), 40.19, '10:00')])
+    assert routes_link.apply_driver_marks(routes, cstore) == 1
+    ev.ingest(cstore, who, [_mark(_sid(1), 40.21, '11:00')])           # updated_at автоточки — настоящее «сейчас», позже отметки
+    assert routes_link.apply_driver_marks(routes, cstore) == 1
+    assert routes.store.load().geo_overrides[101] == (40.21, 44.52)
+
+
+def test_newest_of_open_marks_wins(cstore, tmp_path):
+    who, routes = _who(cstore), _routes(tmp_path)
+    _save_day(cstore, '2026-10-01', [(_sid(1), 101)])
+    old, new = _mark(_sid(1), 40.19, '10:00'), _mark(_sid(1), 40.21, '11:00')
+    ev.ingest(cstore, who, [new, old])                                # порядок пачки не важен: решает момент отметки
+    assert routes_link.apply_driver_marks(routes, cstore) == 1
+    assert routes.store.load().geo_overrides[101] == (40.21, 44.52)
+    assert _decisions(cstore) == {new['id']: ('accepted', 'auto: terminal'), old['id']: ('rejected', 'auto: superseded')}
+
+
+def test_older_mark_arriving_late_does_not_move_point(cstore, tmp_path):
+    who, routes = _who(cstore), _routes(tmp_path)
+    _save_day(cstore, '2026-10-01', [(_sid(1), 101), (_sid(2), 102)])
+    new = _mark(_sid(1), 40.21, '11:00')
+    ev.ingest(cstore, who, [new])
+    assert routes_link.apply_driver_marks(routes, cstore) == 1
+    old, other_store = _mark(_sid(1), 40.19, '10:00'), _mark(_sid(2), 40.25, '09:00')
+    ev.ingest(cstore, who, [old, other_store])
+    assert routes_link.apply_driver_marks(routes, cstore) == 1        # только другой магазин: его отметка не устарела
+    overrides = routes.store.load().geo_overrides
+    assert overrides[101] == (40.21, 44.52) and overrides[102] == (40.25, 44.52)
+    assert _open_ids(cstore) == {old['id']}                           # старая не применена и не потеряна: решает логист
+
+
+def test_rejected_newer_mark_does_not_hold_older_one(cstore, tmp_path):
+    who, routes = _who(cstore), _routes(tmp_path)
+    _save_day(cstore, '2026-10-01', [(_sid(1), 101)])
+    new = _mark(_sid(1), 40.21, '11:00')
+    ev.ingest(cstore, who, [new])
+    cstore.decide_suggestion(new['id'], 'rejected', 'logist', lambda s: None)
+    ev.ingest(cstore, who, [_mark(_sid(1), 40.19, '10:00')])
+    assert routes_link.apply_driver_marks(routes, cstore) == 1
+    assert routes.store.load().geo_overrides[101] == (40.19, 44.52)
+
+
+def test_fast_terminal_clock_does_not_beat_later_mark(cstore, tmp_path, monkeypatch):
+    who, routes = _who(cstore), _routes(tmp_path)
+    _save_day(cstore, '2026-10-01', [(_sid(1), 101)])
+    fast = {**_mark(_sid(1), 40.19, '10:00'), 'at': '2026-10-03T10:00:00+04:00'}   # часы спешат, но флага ещё нет
+    ev.ingest(cstore, who, [fast])
+    assert routes_link.apply_driver_marks(routes, cstore) == 1
+    monkeypatch.setattr(clock, 'now', lambda: NOW.replace(hour=11))
+    later = {**_mark(_sid(1), 40.21, '10:00'), 'at': '2026-10-02T10:30:00+04:00'}
+    ev.ingest(cstore, who, [later])
+    assert routes_link.apply_driver_marks(routes, cstore) == 1
+    assert routes.store.load().geo_overrides[101] == (40.21, 44.52)
+
+
+def test_mark_with_suspicious_date_stays_for_logist(cstore, tmp_path):
+    who, routes = _who(cstore), _routes(tmp_path)
+    _save_day(cstore, '2026-10-01', [(_sid(1), 101)])
+    mark = {**_mark(_sid(1), 40.19, '10:00'), 'at': '2026-10-20T10:00:00+04:00'}
+    ev.ingest(cstore, who, [mark])
+    assert routes_link.apply_driver_marks(routes, cstore) == 0
+    assert _open_ids(cstore) == {mark['id']} and routes.store.load().geo_overrides == {}
+
+
+def test_mark_on_stop_whose_customer_changed_stays_for_logist(cstore, tmp_path):
+    who, routes = _who(cstore), _routes(tmp_path)
+    _save_day(cstore, '2026-10-01', [(_sid(1), 101)])
+    cstore.save_day('2026-10-01', 'CAR1', [{'stop_id': _sid(1), 'seq': 1, 'customer': {'id': 102, 'code': 'C102', 'name': 'Խանութ 102'},
+                                            'lines': []}], 'v2', '2026-10-01T09:00:00+04:00')
+    mark = _mark(_sid(1), 40.19, '10:00')
+    ev.ingest(cstore, who, [mark])
+    assert routes_link.apply_driver_marks(routes, cstore) == 0
+    assert _open_ids(cstore) == {mark['id']} and routes.store.load().geo_overrides == {}
+
+
+def test_failed_mark_stays_open_and_does_not_block_others(cstore, tmp_path):
+    who, routes = _who(cstore), _routes(tmp_path)
+    _save_day(cstore, '2026-10-01', [(_sid(1), 101), (_sid(2), 102)])
+
+    def flaky(event_id, cid, point, by, **kw):
+        if cid == 101:
+            raise RuntimeError('битая отметка')
+        routes.store.apply_geo_mark(event_id, cid, point, by, **kw)
+    broken = SimpleNamespace(store=SimpleNamespace(apply_geo_mark=flaky, geo_override_stamp=lambda cid: None))
+    ev.ingest(cstore, who, [_mark(_sid(1), 40.19, '10:00'), _mark(_sid(2), 40.25, '10:00')])
+    assert routes_link.apply_driver_marks(broken, cstore) == 1
+    assert [s['customer_id'] for s in cstore.open_suggestions()] == [101]
+    assert routes_link.apply_driver_marks(routes, cstore) == 1        # следующий разбор подбирает оставшуюся
+    assert cstore.open_suggestions() == [] and set(routes.store.load().geo_overrides) == {101, 102}
+
+
+def test_failed_newest_mark_does_not_let_older_one_through(cstore, tmp_path):
+    who = _who(cstore)
+    _save_day(cstore, '2026-10-01', [(_sid(1), 101)])
+    written = []
+
+    def only_old(event_id, cid, point, by, **kw):
+        if point[0] == 40.21:
+            raise RuntimeError('новая не записалась')
+        written.append(point)
+    ev.ingest(cstore, who, [_mark(_sid(1), 40.19, '10:00'), _mark(_sid(1), 40.21, '11:00')])
+    state = SimpleNamespace(store=SimpleNamespace(apply_geo_mark=only_old, geo_override_stamp=lambda cid: None))
+    assert routes_link.apply_driver_marks(state, cstore) == 0
+    assert written == [] and len(cstore.open_suggestions()) == 2 and _decisions(cstore) == {}
+
+
+def test_busy_routes_database_stops_the_sweep_quickly(cstore, tmp_path):
+    who, routes = _who(cstore), _routes(tmp_path)
+    _save_day(cstore, '2026-10-01', [(_sid(1), 101), (_sid(2), 102), (_sid(3), 103)])
+    routes.store.load()
+    ev.ingest(cstore, who, [_mark(_sid(n), 40.19, '10:00') for n in (1, 2, 3)])
+    with closing(sqlite3.connect(routes.store.path, isolation_level=None)) as holder:
+        holder.execute('BEGIN IMMEDIATE')
+        started = time.monotonic()
+        assert routes_link.apply_driver_marks(routes, cstore) == 0
+        elapsed = time.monotonic() - started
+        holder.execute('ROLLBACK')
+    assert elapsed < 3.0                                               # одно короткое ожидание, а не три по пять секунд
+    assert len(cstore.open_suggestions()) == 3 and _decisions(cstore) == {}
+    assert routes_link.apply_driver_marks(routes, cstore) == 3
+
+
+def test_without_routes_section_nothing_is_touched():
+    calls = []
+
+    class Marks:
+        def __getattr__(self, name):
+            calls.append(name)
+            return lambda *a, **k: []
+    assert routes_link.apply_driver_marks(None, Marks()) == 0
+    assert calls == []
+
+
+# ============================== журнал точек из отметок и отмена (владелец 2026-11-10) ==============================
+
+UUID_A, UUID_B = '11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222'
+
+
+def _apply(store, event_id, lat, **kw):
+    store.apply_geo_mark(event_id, 101, (lat, 44.52), 'auto: terminal', driver='Արամ', code='C101', name='Խանութ 101', **kw)
+
+
+def test_terminal_mark_is_journaled_with_what_the_terminal_showed(cstore, tmp_path):
+    who, routes = _who(cstore), _routes(tmp_path)
+    cstore.save_day('2026-10-01', 'CAR1', [{'stop_id': _sid(1), 'seq': 1, 'lat': 40.15, 'lon': 44.50,
+                                            'customer': {'id': 101, 'code': 'C101', 'name': 'Խանութ 101'}, 'lines': []}],
+                    'v1', '2026-10-01T08:00:00+04:00')
+    mark = {**_suggest(_sid(1), lat=40.19, lon=44.52, source='map'), 'at': '2026-10-01T10:00:00+04:00'}
+    ev.ingest(cstore, who, [mark])
+    assert routes_link.apply_driver_marks(routes, cstore) == 1
+    row = routes.store.geo_marks('2000-01-01', 10)[0]
+    assert (row['event_id'], row['customer_id'], row['lat'], row['lon']) == (mark['id'], 101, 40.19, 44.52)
+    assert (row['was_lat'], row['was_lon'], row['source'], row['driver'], row['code']) == (40.15, 44.50, 'map', 'Արամ', 'C101')
+    assert row['marked_at'] == '2026-10-01T10:00:00+04:00' and row['can_undo'] is True
+
+
+def test_terminal_source_is_only_trusted_for_the_map(cstore, tmp_path):
+    who, routes = _who(cstore), _routes(tmp_path)
+    _save_day(cstore, '2026-10-01', [(_sid(1), 101)])
+    ev.ingest(cstore, who, [_suggest(_sid(1), lat=40.19, lon=44.52, source={'x': 1})])
+    assert routes_link.apply_driver_marks(routes, cstore) == 1
+    assert routes.store.geo_marks('2000-01-01', 10)[0]['source'] == 'gps'
+
+
+def test_mark_made_before_an_undo_does_not_bring_the_point_back(cstore, tmp_path):
+    who, routes = _who(cstore), _routes(tmp_path)
+    _save_day(cstore, '2026-10-01', [(_sid(1), 101)])
+    first = _mark(_sid(1), 40.19, '10:00')
+    ev.ingest(cstore, who, [first])
+    assert routes_link.apply_driver_marks(routes, cstore) == 1
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(rst, '_now', lambda: AFTER_MARKS)
+        assert routes.store.undo_geo_mark(first['id'], 'Silva')['stale'] is False
+    late = _mark(_sid(1), 40.21, '10:30')                               # из офлайн-очереди, сделана до отмены
+    ev.ingest(cstore, who, [late])
+    assert routes_link.apply_driver_marks(routes, cstore) == 0
+    assert routes.store.load().geo_overrides == {} and _open_ids(cstore) == {late['id']}
+
+
+def test_undone_mark_whose_decision_was_lost_does_not_return(cstore, tmp_path):
+    who, routes = _who(cstore), _routes(tmp_path)
+    _save_day(cstore, '2026-10-01', [(_sid(1), 101)])
+    mark = _mark(_sid(1), 40.19, '10:00')
+    ev.ingest(cstore, who, [mark])
+    routes.store.apply_geo_mark(mark['id'], 101, (40.19, 44.52), 'auto: terminal')      # точка записана, COMMIT courier.db не прошёл
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(rst, '_now', lambda: AFTER_MARKS)
+        routes.store.undo_geo_mark(mark['id'], 'Silva')
+    assert routes_link.apply_driver_marks(routes, cstore) == 0
+    assert routes.store.load().geo_overrides == {} and _open_ids(cstore) == {mark['id']}
+
+
+def test_mark_made_after_an_undo_applies(cstore, tmp_path):
+    who, routes = _who(cstore), _routes(tmp_path)
+    _save_day(cstore, '2026-10-01', [(_sid(1), 101)])
+    first = _mark(_sid(1), 40.19, '10:00')
+    ev.ingest(cstore, who, [first])
+    assert routes_link.apply_driver_marks(routes, cstore) == 1
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(rst, '_now', lambda: BEFORE_MARKS)                   # отмена раньше новой отметки
+        routes.store.undo_geo_mark(first['id'], 'Silva')
+    ev.ingest(cstore, who, [_mark(_sid(1), 40.21, '11:00')])
+    assert routes_link.apply_driver_marks(routes, cstore) == 1
+    assert routes.store.load().geo_overrides[101] == (40.21, 44.52)
+
+
+def test_identical_marks_undo_only_the_newest(tmp_path):
+    store = _routes(tmp_path).store
+    _apply(store, UUID_A, 40.19)
+    _apply(store, UUID_B, 40.19)
+    by_id = {r['event_id']: r['can_undo'] for r in store.geo_marks('2000-01-01', 10)}
+    assert by_id == {UUID_A: False, UUID_B: True}
+    assert store.undo_geo_mark(UUID_A, 'Silva')['stale'] is True
+
+
+def test_undo_restores_the_earlier_manual_point(tmp_path):
+    store = _routes(tmp_path).store
+    store.save_geo_override(101, (40.10, 44.40), 'logist')
+    _apply(store, UUID_A, 40.19)
+    assert store.undo_geo_mark(UUID_A, 'Silva') == {'customer_id': 101, 'stale': False}
+    assert store.load().geo_overrides[101] == (40.10, 44.40)
+    row = store.geo_marks('2000-01-01', 10)[0]
+    assert row['undone_by'] == 'Silva' and row['undone_at'] and row['can_undo'] is False
+    assert store.undo_geo_mark(UUID_A, 'Silva') == {'customer_id': 101, 'stale': True}   # второй раз ничего не делает
+    assert store.load().geo_overrides[101] == (40.10, 44.40)
+
+
+def test_undo_without_earlier_manual_point_returns_to_automatic(tmp_path):
+    store = _routes(tmp_path).store
+    _apply(store, UUID_A, 40.19)
+    assert store.undo_geo_mark(UUID_A, 'Silva')['stale'] is False
+    assert store.load().geo_overrides == {}
+
+
+def test_undo_refused_after_the_point_was_changed_again(tmp_path):
+    store = _routes(tmp_path).store
+    _apply(store, UUID_A, 40.19)
+    store.save_geo_override(101, (40.30, 44.60), 'logist')
+    assert store.geo_marks('2000-01-01', 10)[0]['can_undo'] is False
+    assert store.undo_geo_mark(UUID_A, 'Silva') == {'customer_id': 101, 'stale': True}
+    assert store.load().geo_overrides[101] == (40.30, 44.60)                              # правка логиста цела
+
+
+def test_two_marks_undo_step_by_step(tmp_path):
+    store = _routes(tmp_path).store
+    _apply(store, UUID_A, 40.19)
+    _apply(store, UUID_B, 40.21)
+    by_id = {r['event_id']: r for r in store.geo_marks('2000-01-01', 10)}
+    assert by_id[UUID_B]['can_undo'] is True and by_id[UUID_A]['can_undo'] is False       # отменить можно только действующую
+    assert store.undo_geo_mark(UUID_A, 'Silva')['stale'] is True
+    assert store.undo_geo_mark(UUID_B, 'Silva')['stale'] is False
+    assert store.load().geo_overrides[101] == (40.19, 44.52)
+    assert store.undo_geo_mark(UUID_A, 'Silva')['stale'] is False
+    assert store.load().geo_overrides == {}
+
+
+def test_repeated_mark_keeps_its_first_previous_point(tmp_path):
+    store = _routes(tmp_path).store
+    store.save_geo_override(101, (40.10, 44.40), 'logist')
+    _apply(store, UUID_A, 40.19)
+    _apply(store, UUID_A, 40.19)                                                         # решение в courier.db не записалось
+    assert len(store.geo_marks('2000-01-01', 10)) == 1
+    store.undo_geo_mark(UUID_A, 'Silva')
+    assert store.load().geo_overrides[101] == (40.10, 44.40)
+
+
+def test_unknown_mark_undo_is_none(tmp_path):
+    assert _routes(tmp_path).store.undo_geo_mark(UUID_A, 'Silva') is None
+
+
+def test_journal_table_is_added_to_an_existing_database(tmp_path):
+    store = _routes(tmp_path).store
+    store.load()
+    with closing(sqlite3.connect(store.path)) as conn:
+        conn.execute('DROP TABLE customer_geo_mark')
+        conn.commit()
+    _apply(store, UUID_A, 40.19)
+    assert len(store.geo_marks('2000-01-01', 10)) == 1
+
+
+def test_dispatch_lists_driver_changed_points_and_undoes_them(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(clock, 'now', lambda: NOW)
+    _dispatch_setup(client, [_dorder(1, 101, 400.0)])
+    client.post('/api/routes/dispatch/build', json={'date': '2026-10-01', 'trucks': ['CAR1']})
+    day = '/api/routes/dispatch?date=2026-10-01'
+    assert client.get(day).get_json()['geo_marks'] == {'items': []}
+    store = rst.Store(str(tmp_path / 'routes.db'))
+    _apply(store, UUID_A, 40.2, source='map', marked_at='2026-10-01T10:00:00+04:00', was=(40.19, 44.52))
+    d = client.get(day).get_json()
+    it = d['geo_marks']['items'][0]
+    assert (it['event_id'], it['customer_id'], it['name'], it['driver_name'], it['source']) == (UUID_A, 101, 'Խանութ 101', 'Արամ', 'map')
+    assert (it['in_day'], it['can_undo'], it['undone'], it['at']) == (True, True, False, '2026-10-01T10:00:00+04:00')
+    assert it['current'] == {'lat': 40.19, 'lon': 44.52, 'source': None}
+    assert it['distance_m'] == round(geo.haversine_km((40.19, 44.52), (40.2, 44.52)) * 1000)
+    assert _stops(d['plan'])[101]['coord_source'] == 'manual'
+
+    for body in ({}, {'event_id': 'x'}, {'event_id': UUID_A, 'more': 1}, [1]):
+        assert client.post('/api/routes/geo-marks/undo', json=body).status_code == 400, body
+    assert client.post('/api/routes/geo-marks/undo', json={'event_id': UUID_B}).status_code == 404
+    r = client.post('/api/routes/geo-marks/undo', json={'event_id': UUID_A.upper()})
+    assert r.status_code == 200 and r.get_json()['customer_id'] == 101
+    d = client.get(day).get_json()
+    assert (d['geo_marks']['items'][0]['undone'], d['geo_marks']['items'][0]['can_undo']) == (True, False)
+    assert _stops(d['plan'])[101]['coord_source'] == 'erp'
+    r = client.post('/api/routes/geo-marks/undo', json={'event_id': UUID_A})
+    assert r.status_code == 409 and 'արդեն փոխվել' in r.get_json()['error']
+
+
+def test_changed_points_list_shows_where_undo_goes_and_stays_out_of_the_ai_context(client, tmp_path, monkeypatch):
+    from datetime import timedelta
+    from route_optimizer import views
+    monkeypatch.setattr(clock, 'now', lambda: NOW)
+    _dispatch_setup(client, [_dorder(1, 101, 400.0)])
+    client.post('/api/routes/dispatch/build', json={'date': '2026-10-01', 'trucks': ['CAR1']})
+    day = '/api/routes/dispatch?date=2026-10-01'
+    store = rst.Store(str(tmp_path / 'routes.db'))
+    store.save_geo_override(101, (40.10, 44.40), 'logist')
+    _apply(store, UUID_A, 40.2, was=(40.15, 44.50))
+    seen = {}
+    real = views._dispatch_body
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(views, '_dispatch_body', lambda dd: seen.update(real(dd)) or seen)
+        it = client.get(day).get_json()['geo_marks']['items'][0]
+    assert 'geo_suggestions' in seen and 'geo_marks' not in seen                         # имена водителей не уходят в /ask
+    assert it['current'] == {'lat': 40.10, 'lon': 44.40, 'source': None}                 # серая точка — куда вернёт отмена
+    assert it['distance_m'] == round(geo.haversine_km((40.10, 44.40), (40.2, 44.52)) * 1000)
+    for days, shown in ((29, True), (31, False)):
+        event = UUID_B[:-1] + str(days % 10)
+        when = (datetime.now() - timedelta(days=days)).isoformat(timespec='seconds')
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(rst, '_now', lambda: when)
+            store.apply_geo_mark(event, 102, (40.21, 44.52), 'auto: terminal')
+        assert (event in {x['event_id'] for x in client.get(day).get_json()['geo_marks']['items']}) is shown, days
 
 
 def test_arrived_fixes_and_points_from_courier_db(cstore):

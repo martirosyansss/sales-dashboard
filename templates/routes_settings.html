@@ -5,6 +5,7 @@
 {% block title %}Երթուղիների կարգավորումներ — Sales Dashboard{% endblock %}
 
 {% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_superadmin.css') }}?v=1">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400..700&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+Armenian:wght@300;400;500;600;700&display=swap" rel="stylesheet">
@@ -14,7 +15,7 @@
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes_ui.css') }}?v=5">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes_customer_settings.css') }}?v=3">
 <!-- Tesla+ (макет mockups/Settings.dc.html): оглавление по шагам, поиск, панели-блоки, плавающая панель сохранения -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_settings.css') }}?v=1">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_settings.css') }}?v=2">
 {% endblock %}
 
 {% block content %}
@@ -222,6 +223,20 @@
                     <p class="rt-card-lead">Փոքր կենտրոն «Առաքում» էջը ուղարկում է միայն այն մեքենաները, որոնց համար մեքենաների աղյուսակի «Կենտրոն» սյունակում
                         ընտրված է «այո» (լռելյայն՝ JAC)։ Սահմանը կապույտ գիծն է՝ քաշեք կետը՝ այն տեղաշարժելու համար, սեղմեք քարտեզի վրա՝ մոտակա կողմին
                         կետ ավելացնելու համար, կրկնակի սեղմեք կետի վրա՝ այն հեռացնելու համար։ Պահպանելու համար սեղմեք «Պահպանել» կոճակը էջի ներքևում։</p>
+                    <div class="rs-center-role">
+                        <div>
+                            <label for="rsCenterTruck">Կենտրոնը սպասարկող մշտական մեքենա</label>
+                            <select id="rsCenterTruck" class="rt-input" aria-describedby="rsCenterRoleHelp rsCenterRoleErr"></select>
+                        </div>
+                        <div>
+                            <label for="rsCenterFrom">Գործում է սկսած</label>
+                            <input id="rsCenterFrom" class="rt-input" type="date" aria-describedby="rsCenterRoleHelp rsCenterRoleErr">
+                        </div>
+                    </div>
+                    <p id="rsCenterRoleHelp" class="rt-field-hint">Ընտրված մեքենան սպասարկում է կենտրոնը և կարող է վերցնել այլ քաղաքային խանութներ,
+                        բայց մարզ չի ուղարկվում։ Քաղաքը որոշվում է ճանապարհների հաշվարկի կենտրոնով և շառավղով։ Եթե մեքենան չի աշխատում,
+                        կենտրոնի խանութները մնում են չբաշխված՝ առանց ավտոմատ փոխարինման։ Խանութների անհատական արգելքները պահպանվում են։</p>
+                    <div id="rsCenterRoleErr" class="rt-ferr"></div>
                     <div id="rsCenterMap" class="rt-depotmap rs-centermap" role="region" aria-label="Քարտեզ՝ փոքր կենտրոնի սահմանը"></div>
                     <div class="rs-center-bar">
                         <span id="rsCenterNote" class="rt-field-hint" aria-live="polite"></span>
@@ -390,10 +405,11 @@
 {% endblock %}
 
 {% block extra_js %}
+<script src="{{ url_for('static', filename='js/routes_superadmin.js') }}?v=1"></script>
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
-<script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=4" data-yandex-key="{{ yandex_tiles_key }}"></script>
-<script src="{{ url_for('static', filename='js/routes_settings.js') }}?v=47"></script>
-<script src="{{ url_for('static', filename='js/routes_customer_settings.js') }}?v=13"></script>
+<script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=7" data-yandex-key="{{ yandex_tiles_key }}"></script>
+<script src="{{ url_for('static', filename='js/routes_settings.js') }}?v=50"></script>
+<script src="{{ url_for('static', filename='js/routes_customer_settings.js') }}?v=14"></script>
 <script src="{{ url_for('static', filename='js/routes_measurements.js') }}?v=4"></script>
 {% endblock %}

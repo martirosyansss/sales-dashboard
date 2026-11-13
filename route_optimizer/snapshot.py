@@ -16,6 +16,7 @@ from datetime import date, datetime, time, timedelta
 from typing import Any, Callable, Hashable
 
 from . import erp
+from .actuals import YEREVAN
 from .demand import Order, group_orders, month_add, seasonal_index
 from .evaluate import (ACTIVE_WINDOW_DAYS, CALIB_WINDOW_DAYS, FACT_WINDOW_DAYS, ActualVisit, Fact,
                        active_agents, fixes_by_day, manager_facts, visit_point_ok)
@@ -188,7 +189,8 @@ _snapshot_ids = itertools.count(1)
 def load_snapshot(connection_string: str) -> Snapshot:
     """Открыть read-only соединение с ERP, собрать снимок, закрыть соединение."""
     started = _time.perf_counter()
-    as_of = datetime.now().replace(microsecond=0)
+    # Бизнес-дата и время получения — по Еревану, включая серверы с часовым поясом UTC.
+    as_of = datetime.now(YEREVAN).replace(tzinfo=None, microsecond=0)
     conn = erp.connect(connection_string)
     try:
         snap = build_snapshot(conn, as_of.date(), f'{as_of:%Y%m%d%H%M%S}-{next(_snapshot_ids)}', as_of)
@@ -230,7 +232,8 @@ class SnapshotCache:
                     if refresh:
                         logger.info('[Routes] Снимок %s моложе %d с — «Обновить» не читает ERP заново',
                                     prev.id, MIN_REFRESH_SECONDS)
-                    return prev, False
+                    # Сбой ручного обновления не исчезает от чтения ещё действующего кэша.
+                    return prev, self._failed_at is not None
                 if allow_stale and recently_failed:
                     return prev, True
             elif recently_failed:
@@ -254,8 +257,9 @@ class SnapshotCache:
         перезапускался) — как get(allow_stale=True)."""
         with self._lock:
             snap = self._snap
+            stale = self._failed_at is not None
         if snap is not None:
-            return snap, False
+            return snap, stale
         return self.get(allow_stale=True)
 
     def peek(self) -> Snapshot | None:

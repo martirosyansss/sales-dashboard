@@ -109,5 +109,33 @@
         else addOsm(map);
     }
 
-    window.RoutesBasemap = { add };
+    const roadCache = new Map(), roadPending = new Map();
+    function preferredPath(points, avoidCenter, endpoint) {
+        const key = JSON.stringify([endpoint, !!avoidCenter, points]);
+        if (roadCache.has(key)) return Promise.resolve(roadCache.get(key));
+        if (roadPending.has(key)) return roadPending.get(key);
+        const pending = fetch(endpoint, {
+            method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ lines: [points], avoid_center: !!avoidCenter }),
+        }).then(response => { if (!response.ok) throw new Error('road-lines'); return response.json(); })
+            .then(data => {
+                const paths = Array.isArray(data.segments) ? data.segments : data.lines;
+                const path = data.success && Array.isArray(paths) && paths[0];
+                if (!Array.isArray(path)) throw new Error('road-lines');
+                if (path.length) roadCache.set(key, path);
+                if (roadCache.size > 128) roadCache.delete(roadCache.keys().next().value);
+                return path;
+            }).finally(() => roadPending.delete(key));
+        roadPending.set(key, pending);
+        return pending;
+    }
+    // Поздний ответ не возвращает линию уже закрытого дня или другой выбранной машины.
+    function roadLine(points, style, group, avoidCenter = false, endpoint = '/api/routes/road-lines') {
+        const line = L.polyline([], style).addTo(group);
+        preferredPath(points, avoidCenter, endpoint).then(path => {
+            if (group.hasLayer(line)) line.setLatLngs(path);
+        }).catch(() => { /* остаются метки, выдуманная прямая дорога не рисуется */ });
+        return line;
+    }
+    window.RoutesBasemap = { add, roadLine };
 })();

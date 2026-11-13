@@ -25,7 +25,7 @@ from route_optimizer.erp import ErpError
 from . import clock, events as ev
 from .day import DEMO_DAY
 from .photos import MAX_PHOTO_BYTES, PHOTO_KINDS, image_ext, save_photo
-from .routes_link import planned_crew, record_crew
+from .routes_link import apply_driver_marks, planned_crew, record_crew
 from .security import token_hash, token_shape_ok, valid_pin
 from .state import state
 from .store import PHOTO_BYTES_PER_DAY, PHOTOS_PER_DAY, Driver, PhotoLimit, PinReset, Session, StoreError, Terminal
@@ -347,6 +347,62 @@ def day() -> Any:
     return jsonify(state().days.get(g.courier_terminal.car_code, d))
 
 
+def _preferred_roads():
+    routes = current_app.extensions.get('route_optimizer')
+    provider = getattr(routes, 'roads', None)
+    roads = provider.get() if provider is not None else None
+    if roads is not None:
+        zone = routes.store.load().settings['center_zone']
+        roads = provider.bypass(roads, zone)
+    return roads
+
+
+def _center_anchors(origin: Any, destination: Any) -> list[list[float]]:
+    """Via points for a truck without the right to enter the small center; a failure only costs the anchors."""
+    from route_optimizer.route_policy import center_bypass
+    car = g.courier_terminal.car_code
+
+    def barred() -> bool:
+        routes = current_app.extensions.get('route_optimizer')
+        return routes is not None and not routes.store.load().truck_center_ok(car, _car_name(car) or None)
+    try:
+        return center_bypass(_preferred_roads(), origin, destination, barred)
+    except Exception:
+        logger.exception('[Courier] Объезд центра для машины %s не построен', car)
+        return []
+
+
+@bp.post('/navigation/route')
+@_api
+def navigation_route() -> Any:
+    from route_optimizer.guidance import GUIDANCE_ID
+    from route_optimizer.route_policy import POLICY_ID, point
+    body = _json_body()
+    origin, destination = (point(body.get(k)) for k in ('from', 'to')) if isinstance(body, dict) else (None, None)
+    if origin is None or destination is None:
+        return error(400, 'bad_request', 'Նշեք սկզբի և ավարտի կոորդինատները Հայաստանում')
+    # Yandex Navigator draws the road route itself; only a truck barred from the center gets anchors around it.
+    via = _center_anchors(origin, destination)
+    return jsonify({'from': list(origin), 'to': list(destination), 'via': via,
+                    'line': [list(origin), *via, list(destination)],
+                    'guidance': GUIDANCE_ID, 'policy': POLICY_ID})
+
+
+@bp.post('/navigation/lines')
+@_api
+def navigation_lines() -> Any:
+    from route_optimizer.route_policy import POLICY_ID, geometry, point
+    body = _json_body()
+    raw = body.get('lines') if isinstance(body, dict) else None
+    if (not isinstance(raw, list) or len(raw) > 50 or any(not isinstance(line, list) for line in raw)
+            or sum(map(len, raw)) > 1500):
+        return error(400, 'bad_request')
+    lines = [[point(p) for p in line] for line in raw]
+    if any(p is None for line in lines for p in line):
+        return error(400, 'bad_request')
+    return jsonify({'policy': POLICY_ID, 'lines': geometry(_preferred_roads(), lines)})
+
+
 @bp.post('/events')
 @_api
 def post_events() -> Any:
@@ -358,6 +414,8 @@ def post_events() -> Any:
         return error(400, 'bad_request', f'Մեկ հարցումում՝ ոչ ավելի, քան {ev.MAX_BATCH} իրադարձություն')
     t, s = g.courier_terminal, g.courier_session
     result = ev.ingest(state().store, ev.Who(t.id, t.car_code, s.driver_id, s.driver_name), items)
+    if any(isinstance(item, dict) and item.get('type') == 'geo_suggest' for item in items):
+        apply_driver_marks(current_app.extensions.get('route_optimizer'), state().store)
     return jsonify(result.json())
 
 

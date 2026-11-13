@@ -430,7 +430,8 @@ def test_time_only_truck_km_only_from_graph_whatever_truck_matrix(tmp_path, fake
 # --- Грузовик: стоимость, минуты, две модели ---
 
 def test_truck_costing_from_payload():
-    assert ve.truck_costing(3000) == {'weight': 6.0, 'height': 3.2, 'width': 2.4, 'length': 7.0}
+    assert ve.truck_costing(3000) == {**ve.CAR_COSTING, 'low_class_factor': 4.0, 'low_class_penalty': 120.0,
+                                      'weight': 6.0, 'height': 3.2, 'width': 2.4, 'length': 7.0}
     assert ve.truck_costing(1000)['weight'] == 3.5           # не легче 3,5 т
     assert ve.truck_costing(20000)['weight'] == 26.0         # не тяжелее 26 т
     assert ve.truck_costing(None)['weight'] == ve.truck_costing(0)['weight'] == 10.0   # не задан — 5 т груза
@@ -1342,3 +1343,76 @@ def test_route_never_waits_for_busy_actor_pool(tmp_path, fake):
         for c in ctxs:
             c.__exit__(None, None, None)
     assert r.route((40.1912, 44.5133), P[1], True) is not None   # освободились — снова отвечает
+
+
+# --- Сборка от root ---
+
+SERVICE_OWNER = (12345, 12346)
+root_only = pytest.mark.skipif(not hasattr(os, 'geteuid') or os.geteuid() != 0, reason='chown только из-под root')
+
+
+@root_only
+def test_root_does_not_build_tiles_in_service_folder(tmp_path, monkeypatch, fake):
+    runs = []
+    monkeypatch.setattr(ve, '_run', _builder(runs))
+    pbf, base = tmp_path / 'map.osm.pbf', tmp_path / 'v'
+    pbf.write_bytes(b'map')
+    base.mkdir()
+    (base / 'current.json').write_text('{}', encoding='utf-8')
+    os.chown(base, *SERVICE_OWNER)
+    with pytest.raises(ve.BuildAsRoot):
+        ve.build_tiles(str(pbf), str(base))
+    assert runs == [] and [p.name for p in base.iterdir()] == ['current.json']   # ни блокировки, ни папок сборки
+
+
+@root_only
+def test_root_does_not_create_missing_service_folder(tmp_path, monkeypatch, fake):
+    runs = []
+    monkeypatch.setattr(ve, '_run', _builder(runs))
+    pbf, parent = tmp_path / 'map.osm.pbf', tmp_path / 'service'
+    pbf.write_bytes(b'map')
+    parent.mkdir()
+    os.chown(parent, *SERVICE_OWNER)
+    with pytest.raises(ve.BuildAsRoot):
+        ve.build_tiles(str(pbf), str(parent / 'valhalla' / 'nested'))
+    assert runs == [] and list(parent.iterdir()) == []
+
+
+@root_only
+def test_root_keeps_ready_build_and_builds_in_own_folder(tmp_path, monkeypatch, fake):
+    monkeypatch.setattr(ve, '_run', _builder())
+    pbf, base = tmp_path / 'map.osm.pbf', tmp_path / 'v'
+    pbf.write_bytes(b'map')
+    first = ve.build_tiles(str(pbf), str(base))                                  # папка root — собирает, как раньше
+    os.chown(base, *SERVICE_OWNER)
+    assert ve.build_tiles(str(pbf), str(base)).name == first.name                # сборка готова — отказывать не в чем
+    with pytest.raises(ve.BuildAsRoot):                                          # --force заменил бы рабочую сборку
+        ve.build_tiles(str(pbf), str(base), force=True)
+    assert (base / first.name).is_dir()
+
+
+@root_only
+def test_service_user_builds_in_its_folder(tmp_path, monkeypatch, fake):
+    runs = []
+    monkeypatch.setattr(ve, '_run', _builder(runs))
+    monkeypatch.setattr(ve.os, 'geteuid', lambda: 999, raising=False)
+    pbf, base = tmp_path / 'map.osm.pbf', tmp_path / 'v'
+    pbf.write_bytes(b'map')
+    base.mkdir()
+    os.chown(base, *SERVICE_OWNER)
+    ve.build_tiles(str(pbf), str(base))
+    assert runs == ['valhalla_build_admins', 'valhalla_build_tiles']
+
+
+@root_only
+def test_root_build_command_refuses_in_one_line(tmp_path, monkeypatch, fake, capsys):
+    monkeypatch.setattr(ve, '_run', _builder())
+    pbf, base = tmp_path / 'map.osm.pbf', tmp_path / 'v'
+    pbf.write_bytes(b'map')
+    base.mkdir()
+    os.chown(base, *SERVICE_OWNER)
+    monkeypatch.setenv('ROUTES_OSM_PATH', str(pbf))
+    monkeypatch.setenv('ROUTES_VALHALLA_DIR', str(base))
+    assert ve.main(['build']) == 4
+    err = capsys.readouterr().err
+    assert len(err.strip().splitlines()) == 1 and 'в папке сервиса' in err

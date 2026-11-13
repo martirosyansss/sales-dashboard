@@ -55,6 +55,9 @@
 - `reorder` (v1.8 §12, ответ владельца №93, без stop_id): смена порядка рейса водителем — номер рейса, оставшиеся точки в
   новом порядке (первая — нажатая «Գնալ առաջինը»), причина; «срок под риском» у точки без срока — `driver` с флагом
   `no_deadline` (_reorder). Действующий порядок рейса — последний reorder машины, дня и рейса по `at` (читатели);
+- `not_reached` («Չհասցրի», водитель явно ответил по точке «не успел»): с stop_id, payload — объект (обычно `{}`),
+  других проверок нет. Точку не закрывает: статус остаётся pending, деньги и активная точка не меняются (merge.GPS_TYPES) —
+  перенос недовезённого на следующий день (dispatch.auto_carried) работает как раньше;
 - `helper_id` (v1.4 §8, необязательное поле события): второй человек в машине. Кто был помощником, решает терминал в
   момент события; сервер только проверяет подтверждение PIN на этом терминале (_helper). Не подтверждён — событие
   принимается без помощника с флагом `helper_unconfirmed`. Деньги, сканы и их отмена — по-прежнему по водителю сессии.
@@ -85,7 +88,7 @@ SQLITE_INT_MAX = 2 ** 63 - 1   # helper_id больше — не id челове
 MAX_PAYLOAD_BYTES = 20_000
 MAX_TRACK_PAYLOAD_BYTES = 40_000   # track: 100 точек с полной точностью double ≈ 19 КБ — запас вдвое (§7 п. 1)
 EVENT_TYPES = ('delivery', 'payment', 'tare', 'return', 'scan', 'scan_cancel', 'unreadable', 'arrived', 'day_closed',
-               'geo_suggest', 'track', 'refuel', 'reorder')
+               'geo_suggest', 'track', 'refuel', 'reorder', 'not_reached')
 STOPLESS_TYPES = ('day_closed', 'scan_cancel', 'track', 'refuel', 'reorder')   # stop_id не обязателен
 SUPERSEDABLE = ('delivery', 'tare', 'refuel')   # `supersedes` — исправление прежнего события того же типа
 MONEY_MAX = 1e9
@@ -671,11 +674,23 @@ def cars_on(log: CarLog, day: date, current: str) -> set[str]:
     return {car_at(log, start, current)} | {code for since, code in log if start <= since < start + DAY_MS}
 
 
-def _event_car(tx: EventTx, cars: CarLog, who: Who, at: datetime, day: date, stop_id: str | None) -> tuple[Who, bool]:
+def _event_car(tx: EventTx, cars: CarLog, who: Who, at: datetime, day: date, stop_id: str | None,
+               etype: str = '') -> tuple[Who, bool]:
     """Машина события → (who с ней, решено ли по часам с флагом car_by_time). Событие точки в день, когда терминал был
     на нескольких машинах, — машине, в чьих снимках /day этой даты точка есть, если такая машина одна (часы терминала
     могут врать, точка — нет); иначе — car_at по моменту события. Флаг — машина по часам не нынешняя, а событие старше
-    CAR_BY_TIME_LAG от приёма (очередь офлайн или сбитые часы)."""
+    CAR_BY_TIME_LAG от приёма (очередь офлайн или сбитые часы).
+    Позднее событие — рабочая дата раньше даты (Ереван) момента `at`, но не дальше DATE_SUSPICIOUS_DAYS (утром ответ за вчера): машина на ту дату, а не на
+    момент — иначе после ночной смены машины офисом оно уйдёт новой машине с флагом foreign. Точка — машине терминала
+    того дня, в чьих снимках /day даты она есть, если такая одна; иначе машина по журналу на конец даты. Флаг
+    car_by_time не ставится: машина решена по дате, а не по часам. Заправка (`refuel`) не в счёт: утренняя заправка со
+    вчерашней датой (/day сегодня ещё не загружен) — машине по часам, в цепочку одометра нынешней машины."""
+    if etype != 'refuel' and 0 < (at.astimezone(clock.YEREVAN).date() - day).days <= DATE_SUSPICIOUS_DAYS:   # дальше — date_suspicious, как раньше
+        end = _ms(datetime.combine(day + timedelta(days=1), time.min, clock.YEREVAN)) - 1
+        mine = cars_on(cars, day, who.car_code)
+        owners = {r['car_code'] for r in tx.stop_rows(stop_id) if r['date'] == day.isoformat()} & mine \
+            if stop_id is not None else set()
+        return replace(who, car_code=owners.pop() if len(owners) == 1 else car_at(cars, end, who.car_code)), False
     if stop_id is not None and len(that_day := cars_on(cars, day, who.car_code)) > 1:
         owners = {r['car_code'] for r in tx.stop_rows(stop_id) if r['date'] == day.isoformat()} & that_day
         if len(owners) == 1:
@@ -711,7 +726,7 @@ def _check(tx: EventTx, raw: Mapping[str, Any], event_id: str, who: Who, cars: C
     elif etype not in STOPLESS_TYPES:
         raise Reject('stop_id՝ պարտադիր է')
     ev = {'id': event_id, 'date': day.isoformat(), 'at': raw['at']}
-    who, by_time = _event_car(tx, cars, who, at, day, stop_id)
+    who, by_time = _event_car(tx, cars, who, at, day, stop_id, etype)
     # версия /day, по которой водитель записал доставку или тару (§5 п. 16) — необязательна
     day_version = _text(payload.get('day_version'), DAY_VERSION_MAX, 'day_version') \
         if etype in ('delivery', 'tare') else None
@@ -813,6 +828,7 @@ def ingest(store: Store, who: Who, events: Sequence[Any]) -> Result:
             _LOG_WARNED.add(who.terminal_id)   # журнал разошёлся с терминалом (правка базы вручную) — раз на процесс
             logger.warning('[Courier] Терминал %s: машина %s, а по журналу — %s', who.terminal_id, who.car_code,
                            cars[-1][1])
+        late: set[str] = set()   # даты принятых delivery за прошедшие дни
         rejected_room: int | None = None   # сколько отказов ещё можно сохранить сегодня (считается при первом)
         for raw in events:
             raw_id = raw.get('id') if isinstance(raw, dict) else None
@@ -864,7 +880,11 @@ def ingest(store: Store, who: Who, events: Sequence[Any]) -> Result:
                 continue
             if scan_row is not None:
                 tx.insert_scan(scan_row)
+            if row['type'] == 'delivery' and row['date'] < clock.today().isoformat():
+                late.add(row['date'])
             result.accepted.append(raw_id)
+    for d in late:   # после фиксации пачки: читатели, сбросив кэш, увидят событие
+        store.mark_late(d)
     return result
 
 

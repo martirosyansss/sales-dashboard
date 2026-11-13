@@ -21,7 +21,7 @@ tests/fixtures/courier_merge_vectors.json; менять только синхр�
 Компоненты. Точки связаны рёбрами S:–O: по `replaces` каждой накладной, которая есть в текущем /day или имеет свои
 события; учитываются только ссылки на известные точки-ЗАКАЗЫ (ссылки на накладные и неизвестные точки игнорируются,
 v1.2.3). «Свои события» — любые принятые события точки (доставка,
-оплата, тара, скан, возврат…), КРОМЕ событий GPS arrived и geo_suggest (§6): они не держат пропавшую точку в списке
+оплата, тара, скан, возврат…), КРОМЕ событий GPS arrived и geo_suggest (§6) и ответа not_reached: они не держат пропавшую точку в списке
 и не связывают её; в расчёте денег и статуса участвуют только delivery и payment. current — точки
 текущего /day. Владелец — среди current сначала накладные, затем наименьший stop_id. Владелец поглощает все
 не текущие точки компоненты (их события относятся к нему, сами они не показываются). Остальные текущие точки —
@@ -75,7 +75,8 @@ Kind = Literal['take', 'refund', 'paid', 'none', 'ask', 'check', 'covered']
 SOURCES = ('invoice', 'order')
 CASH_COLLECTS = ('cash', 'cash_ecr')   # водитель берёт деньги; none — не берёт; прочее — ask
 MONEY_TYPES = ('delivery', 'payment')  # только они участвуют в деньгах и статусе
-GPS_TYPES = ('arrived', 'geo_suggest')  # §6: не делают точку «со своими событиями»
+GPS_TYPES = ('arrived', 'geo_suggest',   # §6: не делают точку «со своими событиями»
+             'not_reached')              # ответ водителя «Չհասցրի»: точка остаётся открытой, как будто событий нет
 FINAL: frozenset[str] = frozenset({'full', 'partial', 'refused'})
 MERGE_CONFLICT = 'merge_conflict'
 SPLIT_ORDER = 'split_order'
@@ -444,7 +445,7 @@ def merge(stops: Iterable[Mapping[str, Any]], events: Iterable[Mapping[str, Any]
     заявления (правила (в), «покрытые товары»), строкой остатка и товаром владельца в (г); в статусе и деньгах —
     обычная строка (цена 0).
     events — все принятые события точек дня, любого типа: {id, type, stop_id, at, payload}. Любое событие, кроме
-    arrived и geo_suggest, делает точку «со своими событиями»; в деньгах и статусе участвуют только delivery
+    arrived, geo_suggest и not_reached, делает точку «со своими событиями»; в деньгах и статусе участвуют только delivery
     ({lines: [{line_id, qty}], supersedes?}) и payment ({amount, kind: invoice|debt, cancel_of?}) — у них at
     (ISO-8601 с зоной или datetime с зоной) и payload обязательны. События неизвестных точек не показываются (но их
     cancel_of действует).

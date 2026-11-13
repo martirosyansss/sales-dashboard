@@ -956,3 +956,28 @@ def test_api_helper_change_after_first_request_recounts(client, sc_app):
     state.store.save_truck_crew('CAR1', D2, {'helper': ('Բաբկեն', True)}, 'qa')
     after = {r['key']: r for r in client.get(url, base_url=LAN).get_json()['drivers']}
     assert after['helper:2']['stops'] == 3 and after['helper:2']['days'] == 2
+
+
+def test_crew_source_terminal_people_takes_the_last_driver_and_ignores_the_helper(courier_app):
+    from courier.scorecard import CrewSource
+    store = courier_app.extensions['courier'].store
+    first = store.save_driver(None, 'Արամ', True, '1111', 'admin')
+    last = store.save_driver(None, 'Բաբկեն', True, '2222', 'admin')
+    helper = store.save_driver(None, 'Կարեն', True, '3333', 'admin')
+    terminal, _ = store.create_terminal('U-CAR1', 'CAR1', 'admin')
+    with closing(sqlite3.connect(store.path)) as conn, conn:
+        conn.executemany("INSERT INTO crew_log(terminal_id, car_code, date, driver_id, helper_id, at_utc, kind) "
+                         "VALUES(?, 'CAR1', ?, ?, ?, ?, ?)", [
+                             (terminal.id, '2026-10-05', first, None, '2026-10-05T05:00:00Z', 'alone'),
+                             (terminal.id, '2026-10-05', last, helper, '2026-10-05T06:00:00Z', 'helper'),
+                             (terminal.id, '2026-10-06', helper, None, '2026-10-06T06:00:00Z', 'alone')])
+    src = CrewSource(store)
+    assert src.terminal_people('2026-10-05') == {'CAR1': (last, 'Բաբկեն')}
+    assert src.terminal_people('2026-10-06') == {'CAR1': (helper, 'Կարեն')}
+    assert src.terminal_people('2026-10-07') == {}
+
+
+def test_crew_source_terminal_people_without_db(tmp_path):
+    from courier.scorecard import CrewSource
+    from courier.store import Store
+    assert CrewSource(Store(str(tmp_path / 'none.db'))).terminal_people('2026-10-05') == {}

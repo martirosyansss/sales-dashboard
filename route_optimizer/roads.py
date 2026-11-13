@@ -7,7 +7,8 @@
 
 - граф: highway из CAR_HIGHWAYS без access/motor_vehicle = no/private; oneway=yes/1/true — только
   вперёд, -1 — только назад, кольцо и motorway — одностороннее по умолчанию; вес ребра — haversine
-  между соседними узлами. Кэш — <карта>.graph.npz рядом с картой, пересборка при смене файла карты;
+  между соседними узлами. Выбор пути предпочитает основные дороги (way_factor); км — реальная длина выбранного пути.
+  Кэш — <карта>.graph.npz рядом с картой, пересборка при смене файла карты или правил;
 - привязка: ближайший узел наибольшей сильно связной компоненты (KD-дерево в локальной
   равнопромежуточной проекции, км); дальше SNAP_MAX_KM от дороги — точка не привязана;
 - d(A, B) = привязка_A + дорога A→B + привязка_B (направленно: одностороннее движение — разные км туда и
@@ -90,11 +91,19 @@ CLIMB_CHUNK = 32           # подъёмы досчитываются куск�
 # вместо 11, с паузой 3 — 14 с; фон при этом дольше: 95 с вместо 34 (один раз на новые точки)
 CLIMB_PAUSE = 3.0
 CLIMB_BATCH = 4
-GRAPH_FORMAT = 2
-DIST_FORMAT = 3            # 3 — направленная матрица (было: среднее туда и обратно)
-RULES_VERSION = 2          # правила way_direction: поменялись — граф и кэш расстояний пересобираются
+GRAPH_FORMAT = 3           # отдельные стоимость выбора пути и физическая длина
+DIST_FORMAT = 4            # км по пути с предпочтением основных дорог
+RULES_VERSION = 3          # направления, доступ и предпочтение основных дорог
 
-Way = tuple[Sequence[int], int]   # (id узлов по ходу линии, направление: 1 вперёд, -1 назад, 0 оба)
+# Основные дороги — обычная стоимость; местные улицы доступны для подъезда к магазину,
+# но невыгодны как транзитная срезка. Значения — предпочтение пути, не множитель километража.
+HIGHWAY_FACTORS = {
+    'tertiary': 1.2, 'tertiary_link': 1.2, 'unclassified': 2.5,
+    'residential': 4.0, 'living_street': 8.0, 'service': 8.0, 'road': 5.0,
+}
+UNPAVED_SURFACES = frozenset({'unpaved', 'gravel', 'fine_gravel', 'ground', 'dirt', 'earth', 'sand', 'mud', 'grass'})
+
+Way = tuple[Sequence[int], int] | tuple[Sequence[int], int, float]   # узлы, направление, необязательный фактор
 
 
 def roads_supported() -> bool:
@@ -121,6 +130,14 @@ def _cache_path(path: str, kind: str) -> str:
     return f'{base}.{kind}.npz'
 
 
+def _own_like_folder(fd: int, path: str) -> None:
+    """Файл, который пишет root (warm, разовый скрипт), — владельцу папки: mkstemp даёт 0600, и сервис под своим
+    пользователем не прочитал бы кэш после рестарта — пересчёт всей матрицы под блокировкой, «Развоз» висит."""
+    if getattr(os, 'geteuid', None) and os.geteuid() == 0:
+        folder = os.stat(os.path.dirname(path) or '.')
+        os.fchown(fd, folder.st_uid, folder.st_gid)
+
+
 def _save_npz(path: str, **arrays: Any) -> None:
     """Атомарная запись .npz: свой временный файл в той же папке, затем os.replace — сервер и
     команда warm не портят файлы друг друга. Ошибка — OSError, временный файл удаляется."""
@@ -128,6 +145,7 @@ def _save_npz(path: str, **arrays: Any) -> None:
                                dir=os.path.dirname(path) or '.')
     try:
         with os.fdopen(fd, 'wb') as f:
+            _own_like_folder(f.fileno(), path)
             np.savez(f, **arrays)
         os.replace(tmp, path)
     except BaseException:
@@ -162,6 +180,16 @@ def way_direction(tags: Mapping[str, str]) -> int | None:
     return 0
 
 
+def way_factor(tags: Mapping[str, str]) -> float:
+    """Предпочтение трасс и основных дорог, сохраняя местный подъезд и единственный доступный путь."""
+    factor = HIGHWAY_FACTORS.get(tags.get('highway'), 1.0)
+    if tags.get('service') in {'alley', 'driveway', 'parking_aisle'}:
+        factor = max(factor, 12.0)
+    if tags.get('surface') in UNPAVED_SURFACES:
+        factor *= 3.0
+    return factor
+
+
 def _haversine_np(lat1: Any, lon1: Any, lat2: Any, lon2: Any) -> Any:
     la1, lo1, la2, lo2 = (np.radians(x) for x in (lat1, lon1, lat2, lon2))
     h = np.sin((la2 - la1) / 2) ** 2 + np.cos(la1) * np.cos(la2) * np.sin((lo2 - lo1) / 2) ** 2
@@ -193,27 +221,32 @@ def zone_key(zone: Sequence[Point]) -> str:
 
 @dataclass(frozen=True)
 class RoadGraph:
-    """Направленный граф дорог: узлы (широта, долгота) и рёбра src → dst с весом km.
-    Параллельных рёбер и петель нет (from_arrays оставляет кратчайшее)."""
+    """Направленный граф дорог: узлы (широта, долгота), физические km и стоимость выбора пути.
+    Параллельных рёбер и петель нет (from_arrays оставляет предпочтительное ребро)."""
     lat: Any    # np.ndarray float64 [узлы]
     lon: Any
     src: Any    # np.ndarray int32 [рёбра]
     dst: Any
     km: Any     # np.ndarray float64 [рёбра]
     source: str = field(default='', compare=False)   # версия карты, из которой собран
+    cost: Any = field(default=None, compare=False)   # стоимость выбора пути; None — обычные км
+
+    @property
+    def route_cost(self) -> Any:
+        return self.km if self.cost is None else self.cost
 
     @cached_property
     def identity(self) -> str:
         """Отпечаток графа: версия карты, формат и правила, размеры и crc32 массивов."""
         crc = 0
-        for a in (self.lat, self.lon, self.src, self.dst, self.km):
+        for a in (self.lat, self.lon, self.src, self.dst, self.km, self.route_cost):
             crc = zlib.crc32(np.ascontiguousarray(a).tobytes(), crc)
         return (f'{self.source}|g{GRAPH_FORMAT}|r{RULES_VERSION}|n{len(self.lat)}|e{len(self.src)}'
                 f'|{crc:08x}')
 
     @classmethod
     def from_arrays(cls, lat: Any, lon: Any, src: Any, dst: Any, km: Any | None = None,
-                    source: str = '') -> RoadGraph:
+                    source: str = '', cost: Any | None = None) -> RoadGraph:
         """Граф из массивов; km не задан — haversine между концами ребра."""
         lat = np.asarray(lat, dtype=np.float64)
         lon = np.asarray(lon, dtype=np.float64)
@@ -221,15 +254,17 @@ class RoadGraph:
         dst = np.asarray(dst, dtype=np.int64)
         km = (_haversine_np(lat[src], lon[src], lat[dst], lon[dst]) if km is None
               else np.asarray(km, dtype=np.float64))
+        cost = km.copy() if cost is None else np.asarray(cost, dtype=np.float64)
         keep = src != dst
-        src, dst, km = src[keep], dst[keep], np.maximum(km[keep], MIN_EDGE_KM)
-        # csr_matrix складывает повторные рёбра — оставляем одно, кратчайшее
-        order = np.lexsort((km, dst, src))
-        src, dst, km = src[order], dst[order], km[order]
+        src, dst, km, cost = (src[keep], dst[keep], np.maximum(km[keep], MIN_EDGE_KM),
+                              np.maximum(cost[keep], MIN_EDGE_KM))
+        # Параллельные рёбра: выбираем по предпочтению, при равенстве — по физической длине.
+        order = np.lexsort((km, cost, dst, src))
+        src, dst, km, cost = src[order], dst[order], km[order], cost[order]
         first = np.ones(len(src), dtype=bool)
         first[1:] = (src[1:] != src[:-1]) | (dst[1:] != dst[:-1])
         return cls(lat, lon, src[first].astype(np.int32), dst[first].astype(np.int32), km[first],
-                   source)
+                   source, cost[first])
 
     @classmethod
     def from_ways(cls, nodes: Mapping[int, Point], ways: Iterable[Way],
@@ -240,6 +275,7 @@ class RoadGraph:
         lon: list[float] = []
         src: list[int] = []
         dst: list[int] = []
+        factors: list[float] = []
 
         def idx(ref: int) -> int:
             i = index.get(ref)
@@ -249,17 +285,22 @@ class RoadGraph:
                 lon.append(nodes[ref][1])
             return i
 
-        for refs, direction in ways:
+        for way in ways:
+            refs, direction = way[:2]
+            factor = way[2] if len(way) == 3 else 1.0
             chain = [idx(r) for r in refs if r in nodes]
             if direction == -1:
                 chain.reverse()
             for a, b in zip(chain, chain[1:]):
                 src.append(a)
                 dst.append(b)
+                factors.append(factor)
                 if direction == 0:
                     src.append(b)
                     dst.append(a)
-        return cls.from_arrays(lat, lon, src, dst, source=source)
+                    factors.append(factor)
+        km = _haversine_np(np.asarray(lat)[src], np.asarray(lon)[src], np.asarray(lat)[dst], np.asarray(lon)[dst])
+        return cls.from_arrays(lat, lon, src, dst, km, source=source, cost=km * np.asarray(factors))
 
     @property
     def n_nodes(self) -> int:
@@ -268,11 +309,11 @@ class RoadGraph:
     def save(self, path: str) -> None:
         _save_npz(path, format=GRAPH_FORMAT, rules=RULES_VERSION, source=self.source,
                   identity=self.identity, lat=self.lat, lon=self.lon, src=self.src, dst=self.dst,
-                  km=self.km)
+                  km=self.km, cost=self.route_cost)
 
     @staticmethod
     def _valid(z: Any, source: str) -> bool:
-        if not {'format', 'rules', 'source', 'identity'} <= set(z.files):   # прежний формат
+        if not {'format', 'rules', 'source', 'identity', 'cost'} <= set(z.files):   # прежний формат
             return False
         return (int(z['format']) == GRAPH_FORMAT and int(z['rules']) == RULES_VERSION
                 and str(z['source']) == source)
@@ -288,7 +329,7 @@ class RoadGraph:
             with open(path, 'rb') as f, np.load(f, allow_pickle=False) as z:
                 if not cls._valid(z, source):
                     return None
-                return cls(z['lat'], z['lon'], z['src'], z['dst'], z['km'], source)
+                return cls(z['lat'], z['lon'], z['src'], z['dst'], z['km'], source, z['cost'])
         except Exception:   # zipfile.BadZipFile, EOFError, KeyError, ValueError, OSError…
             logger.warning('[Routes] Кэш графа %s не прочитан — граф пересобирается из карты',
                            os.path.basename(path), exc_info=True)
@@ -323,7 +364,7 @@ def graph_from_pbf(path: str, source: str = '') -> RoadGraph:
                 if n.location.valid():
                     refs.append(n.ref)
                     nodes[n.ref] = (n.location.lat, n.location.lon)
-            ways.append((refs, direction))
+            ways.append((refs, direction, way_factor(w.tags)))
 
     Handler().apply_file(path, locations=True)
     return RoadGraph.from_ways(nodes, ways, source)
@@ -355,7 +396,8 @@ def without_zone(graph: RoadGraph, zone: Sequence[Point]) -> RoadGraph:
     inside = _in_polygon_np(lat, lon, zone)
     drop = inside[src] | inside[dst] | _in_polygon_np((lat[src] + lat[dst]) / 2, (lon[src] + lon[dst]) / 2, zone)
     keep = ~drop
-    return RoadGraph(lat, lon, src[keep], dst[keep], graph.km[keep], f'{graph.source}|center:{zone_key(zone)}')
+    return RoadGraph(lat, lon, src[keep], dst[keep], graph.km[keep], f'{graph.source}|center:{zone_key(zone)}',
+                     graph.route_cost[keep])
 
 
 class RoadNetwork:
@@ -365,8 +407,11 @@ class RoadNetwork:
     def __init__(self, graph: RoadGraph):
         n = graph.n_nodes
         self.graph = graph
-        self._g = csr_matrix((graph.km, (graph.src, graph.dst)), shape=(n, n))
+        self._g = csr_matrix((graph.route_cost, (graph.src, graph.dst)), shape=(n, n))
         self._gt = self._g.T.tocsr()
+        self._lengths = csr_matrix((graph.km, (graph.src, graph.dst)), shape=(n, n))
+        self._lengthst = self._lengths.T.tocsr()
+        self._weighted = not np.array_equal(graph.route_cost, graph.km)
         _, labels = connected_components(self._g, directed=True, connection='strong')
         big = int(np.argmax(np.bincount(labels))) if n else 0
         self._snap_nodes = np.flatnonzero(labels == big) if n else np.zeros(0, dtype=np.int64)
@@ -390,18 +435,30 @@ class RoadNetwork:
         km = _haversine_np(lat, lon, self.graph.lat[nodes], self.graph.lon[nodes])
         return np.where(km <= SNAP_MAX_KM, nodes, -1), km
 
+    def _edge_lengths(self, pred: Any, reverse: bool = False) -> Any:
+        """Физические длины рёбер дерева выбранного пути, без штрафов предпочтения."""
+        root = pred < 0
+        parent = np.where(root, 0, pred)
+        lengths = self._lengthst if reverse else self._lengths
+        return np.where(root, 0.0, np.asarray(lengths[parent, np.arange(len(pred))]).ravel())
+
     def distances(self, sources: Any, targets: Any, reverse: bool = False) -> Any:
         """Км по дорогам [len(sources) × len(targets)]: от sources[i] до targets[j]; reverse — от
         targets[j] до sources[i] (Dijkstra по обратному графу). Пути нет — inf."""
         g = self._gt if reverse else self._g
         out = np.empty((len(sources), len(targets)), dtype=np.float64)
         for k in range(0, len(sources), DIJKSTRA_BATCH):
-            rows = dijkstra(g, directed=True, indices=sources[k:k + DIJKSTRA_BATCH])
+            if self._weighted:
+                costs, pred = dijkstra(g, directed=True, indices=sources[k:k + DIJKSTRA_BATCH], return_predecessors=True)
+                rows = np.array([np.where(np.isfinite(c), _tree_sums(p, self._edge_lengths(p, reverse)), np.inf)
+                                 for c, p in zip(costs, pred)])
+            else:
+                rows = dijkstra(g, directed=True, indices=sources[k:k + DIJKSTRA_BATCH])
             out[k:k + DIJKSTRA_BATCH] = rows[:, targets]
         return out
 
     def climbs(self, sources: Any, targets: Any, z: Any, reverse: bool = False, pause: float = 0.0) -> Any:
-        """Эффективный подъём, м [len(sources) × len(targets)] по тем же кратчайшим путям, что у distances (reverse — от
+        """Эффективный подъём, м [len(sources) × len(targets)] по тем же выбранным путям, что у distances (reverse — от
         targets[j] к sources[i]); z — высоты узлов. Ребро дерева Dijkstra p → v — terrain.edge_climb, его длина — разность
         расстояний от источника; сумма по пути — _tree_sums. Пути нет — NaN. pause — фоновый расчёт: после каждого шага
         сон pause × его время, Dijkstra — по CLIMB_BATCH источников (запросы сервера не ждут процессор)."""
@@ -421,7 +478,7 @@ class RoadNetwork:
                 d, p = dist[i], pred[i]
                 root = p < 0
                 q = np.where(root, 0, p)
-                length = np.where(root, 0.0, d - d[q])
+                length = self._edge_lengths(p, reverse)
                 # по обратному графу предшественник — следующий узел пути к источнику: ребро узел → предшественник
                 w = terrain.edge_climb(z, z[q], length) if reverse else terrain.edge_climb(z[q], z, length)
                 w[root] = 0.0
@@ -766,6 +823,12 @@ class RoadDistances:
             logger.exception('[Routes] Участки по дорогам не построены — на карте по прямой')
             return None
 
+    def navigation(self, origin: Point, destination: Point, max_via: int = 16) -> Any:
+        if self.failed:
+            return None
+        from .guidance import navigation
+        return navigation(self._load_network(), origin, destination, max_via)
+
     def unsnapped(self, points: Iterable[Point | None]) -> int:
         """Сколько разных точек из набора дальше SNAP_MAX_KM от дороги (из посчитанных)."""
         t = self._table
@@ -1000,6 +1063,14 @@ class CenterBypassRoads:
         self.bypass = bypass
         self.zone = tuple((float(lat), float(lon)) for lat, lon in zone)
         self._inside: dict[Point, bool] = {}   # точка расчёта (ensure) → в центре: km спрашивает их тысячи раз
+
+    def navigation(self, origin: Point, destination: Point, max_via: int = 16) -> Any:
+        if self.around(origin, destination) and not self.bypass.failed:
+            from .guidance import navigation
+            result = navigation(self.bypass._load_network(),origin,destination,max_via,
+                                comparison=self.base._load_network())
+            return result
+        return self.base.navigation(origin,destination,max_via)
 
     @property
     def version(self) -> str:

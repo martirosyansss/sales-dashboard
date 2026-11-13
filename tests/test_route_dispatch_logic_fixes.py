@@ -20,12 +20,19 @@ import sys
 from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+import pytest  # noqa: E402
+
+from route_optimizer import assignment  # noqa: E402
 from route_optimizer import dispatch as dp  # noqa: E402
-from test_route_optimizer import EAST, WEST, _dorder, _dp_ctx, _dp_stops, _info, _isn, client  # noqa: E402,F401
+from route_optimizer import dispatch_quality as dq  # noqa: E402
+from route_optimizer import fleet as fl  # noqa: E402
+from route_optimizer import replacement as rp  # noqa: E402
+from test_route_optimizer import EAST, TN, WEST, _dorder, _dp_ctx, _dp_stops, _info, _isn, client  # noqa: E402,F401
 
 TRUCKS = ['991AT61', '333DO33']
 
@@ -553,17 +560,17 @@ def test_capacity_of_split_store_trip_uses_assigned_orders():
     ctx = _dp_ctx()
     ford, howo = '333DO33', '991AT61'                                            # FORD 3500 кг
     stops, orders = _dp_stops([(101, (40.200, 44.640), 3400.0), (101, (40.200, 44.640), 100.0),
-                               (102, (40.205, 44.650), 200.0)])
+                               (102, (40.205, 44.650), 400.0)])
     draft = dp.Draft([ford, howo], trips=[dp.DraftTrip(1, ford, [101, 102]), dp.DraftTrip(2, howo, [101])], next_id=3)
     view = dp.plan_view(ctx, stops, draft, _info, explain=False)
     trips = {tr['truck']: tr for t in view['trucks'] for tr in t['trips']}
-    assert trips[ford]['kg'] == 3600 and trips[ford]['over_capacity'] is True        # заказ 3400 целиком у FORD
+    assert trips[ford]['kg'] == 3800 and trips[ford]['over_capacity'] is True        # заказ 3400 целиком у FORD
     assert trips[howo]['kg'] == 100
     shop = {tr['truck']: s for t in view['trucks'] for tr in t['trips'] for s in tr['stops'] if s['customer_id'] == 101}
     assert (shop[ford]['kg'], shop[ford]['share'], shop[howo]['kg']) == (3400, 1, 100)
     assert dp.published_orders(draft, stops) == {orders[0].isn: [ford, 3400.0, 10000.0, 101],
                                                  orders[1].isn: [howo, 100.0, 10000.0, 101],
-                                                 orders[2].isn: [ford, 200.0, 10000.0, 102]}
+                                                 orders[2].isn: [ford, 400.0, 10000.0, 102]}
 
 
 # ============================== итоговое ревью ветки 12.10 ==============================
@@ -918,3 +925,228 @@ def test_whole_store_refuses_truck_prohibited_for_store():
     assert draft.to_json() == before                                       # ничего не изменилось
     got = dp.apply_edit(ctx, stops, draft, {'action': 'whole_store', 'customer_id': 101, 'truck': howo}, set())
     assert _where(got, 101) == [howo] and got.locks == {101: howo}
+
+
+# ============================== допуск 6% (решение владельца 09.11.2026) ==============================
+
+JAC = fl.FleetTruck('475DD61', 'JAC', 2200.0, 14.0)                              # предел с допуском — 2332 кг
+JAC_TN = replace(TN, load_cap=1.0)                                               # truck_load_cap_pct = 100
+
+
+def _jac_day(*trips, tn=JAC_TN):
+    """День JAC: trips — кг магазинов по рейсам (магазины 101, 102, … по порядку). (контекст, точки, они по клиентам, план)."""
+    ids = iter(range(101, 200))
+    plan = [[next(ids) for _ in kgs] for kgs in trips]
+    stops, _ = _dp_stops([(c, (40.2 + (c - 100) * .005, 44.64 + (c - 100) * .004), kg)
+                          for cids, kgs in zip(plan, trips) for c, kg in zip(cids, kgs)])
+    draft = dp.Draft([JAC.car_code], trips=[dp.DraftTrip(i + 1, JAC.car_code, s) for i, s in enumerate(plan)],
+                     next_id=len(plan) + 1)
+    return _dp_ctx((JAC,), tn), stops, {s.customer_id: s for s in stops}, draft
+
+
+def test_can_carry_strict_by_default_overload_up_to_6_percent_of_limit():
+    code, cids = JAC.car_code, [101, 102]
+    ctx, _, two209, _ = _jac_day([1100.0, 1109.0])
+    assert not dp._can_carry(ctx, [JAC], code, cids, two209, {})                 # 2209 > 2200
+    assert dp._can_carry(ctx, [JAC], code, cids, two209, {}, overload=True)
+    _, _, two332, _ = _jac_day([1200.0, 1132.0])
+    assert dp._can_carry(ctx, [JAC], code, cids, two332, {}, overload=True)
+    _, _, two333, _ = _jac_day([1200.0, 1133.0])
+    assert not dp._can_carry(ctx, [JAC], code, cids, two333, {}, overload=True)
+    tight = _dp_ctx((JAC,), replace(JAC_TN, load_cap=.9))                        # 106% — от предела сборки (1980 кг), не от тоннажа
+    _, _, two098, _ = _jac_day([1000.0, 1098.0])
+    assert not dp._can_carry(tight, [JAC], code, cids, two098, {})
+    assert dp._can_carry(tight, [JAC], code, cids, two098, {}, overload=True)
+    _, _, two100, _ = _jac_day([1000.0, 1100.0])
+    assert not dp._can_carry(tight, [JAC], code, cids, two100, {}, overload=True)
+
+
+def _refused(ctx, stops, draft, before=None):
+    with pytest.raises(dp.DispatchError) as got:
+        assignment.validate(ctx, stops, draft, before, reserve=True, confirm_reserve=True, check_time=False)
+    assert not isinstance(got.value, dp.ReserveEdit) and 'տարողությունը՝ 2200.0 կգ' in str(got.value)
+
+
+def test_validate_overload_needs_confirmation_and_whole_day_within_6_percent():
+    ctx, stops, _, draft = _jac_day([1500.0, 832.0])                             # 2332 кг — ровно 106%
+    assignment.validate(ctx, stops, draft, reserve=True, confirm_reserve=True)
+    with pytest.raises(dp.ReserveEdit):
+        assignment.validate(ctx, stops, draft, reserve=True)
+    ctx, stops, _, draft = _jac_day([1500.0, 832.6])                             # тяжелее предела
+    _refused(ctx, stops, draft)
+    ctx, stops, _, draft = _jac_day([1500.0, 800.0], [100.0])                    # правка: рейс 2300 в допуске, день 2400 — нет
+    before = dp.Draft.from_json(draft.to_json())
+    before.trips[0].stops = [101]
+    _refused(ctx, stops, draft, before)
+    ctx, stops, _, draft = _jac_day([1500.0, 700.0], [100.0])                    # в тоннаже второй рейс не мешает
+    assignment.validate(ctx, stops, draft, reserve=True, confirm_reserve=True)
+
+
+def test_approve_passes_tolerated_trip_after_truck_gained_another_trip():
+    ctx, stops, _, draft = _jac_day([1500.0, 800.0], [100.0])                    # рейс 2300, потом у машины появился второй
+    assignment.validate(ctx, stops, draft, require_available=False)              # утверждение и отправка: before нет
+    before = dp.Draft.from_json(draft.to_json())
+    before.trips = before.trips[:1]
+    assignment.validate(ctx, stops, draft, before, reserve=True, check_time=False)   # правка добавила только второй рейс
+    ctx, stops, _, draft = _jac_day([1500.0, 840.0], [100.0])                    # рейс сам тяжелее предела — отказ и здесь
+    with pytest.raises(dp.DispatchError):
+        assignment.validate(ctx, stops, draft, require_available=False)
+
+
+def test_same_weight_judged_alike_across_half_kg_boundary():
+    for kg, fits in ((1132.5, True), (1132.6, False)):                           # 2332,5 и 2332,6 кг
+        ctx, stops, routable, draft = _jac_day([1200.0, kg])
+        assert dp._can_carry(ctx, [JAC], JAC.car_code, [101, 102], routable, {}, overload=True) is fits, kg
+        over = next(tr for t in dp.plan_view(ctx, stops, draft, _info, explain=False)['trucks']
+                    for tr in t['trips'])['over_capacity']
+        assert over is (not fits), kg
+        if fits:
+            assignment.validate(ctx, stops, draft, reserve=True, confirm_reserve=True)
+        else:
+            _refused(ctx, stops, draft)
+
+
+JAC2 = fl.FleetTruck('476DD61', 'JAC2', 2200.0, 14.0)
+
+
+def _two_jacs(*kgs):
+    """Рейс 1 у JAC (магазины 101…), рейс 2 — у JAC2 (если задан)."""
+    _, stops, _, draft = _jac_day(*kgs)
+    draft.trucks = [JAC.car_code, JAC2.car_code]
+    if len(draft.trips) > 1:
+        draft.trips[1].truck = JAC2.car_code
+    return _dp_ctx((JAC, JAC2), JAC_TN), stops, draft
+
+
+def test_swap_of_tolerated_trip_needs_reserve_confirmation_only():
+    edit = {'action': 'swap_trucks', 'truck': JAC.car_code, 'other_truck': JAC2.car_code}
+    ctx, stops, draft = _two_jacs([1200.0, 1009.0], [500.0])                     # 2209 кг
+    with pytest.raises(dp.ReserveEdit):
+        dp.apply_edit(ctx, stops, draft, edit, set())
+    dp.apply_edit(ctx, stops, draft, {**edit, 'confirm_reserve': True}, set())
+    assert {t.id: t.truck for t in draft.trips} == {1: JAC2.car_code, 2: JAC.car_code}
+    ctx, stops, draft = _two_jacs([1200.0, 1140.0], [500.0])                     # 2340 кг — за пределом
+    with pytest.raises(dp.DispatchError) as got:
+        dp.apply_edit(ctx, stops, draft, {**edit, 'confirm_reserve': True}, set())
+    assert not isinstance(got.value, dp.ReserveEdit)
+
+
+def test_replacement_moves_tolerated_trip_with_reserve_confirmation():
+    ctx, stops, draft = _two_jacs([1200.0, 1009.0])
+    dd = SimpleNamespace(ctx=ctx, draft=draft, stops=stops)
+    work = {'completed': [], 'stop_ids': [], 'customers': [101, 102], 'orders': 2, 'completed_count': 0, 'kg': 2209.0}
+
+    def run(**edit):
+        return rp.apply(dd, JAC.car_code, JAC2.car_code, work, edit, '2026-10-01T10:00:00', 'qa', {}, {}, None)
+    with pytest.raises(dp.ReserveEdit):
+        run()
+    assert [t.truck for t in run(confirm_reserve=True).trips] == [JAC2.car_code]
+
+
+def test_validate_keeps_old_weight_semantics_above_tolerance():
+    ctx, stops, _, before = _jac_day([1500.0, 900.0])                            # 2400 кг уже в плане — не тяжелее прежнего можно
+    after = dp.Draft.from_json(before.to_json())
+    after.trips[0].stops.reverse()
+    assignment.validate(ctx, stops, after, before, reserve=True, confirm_reserve=True, check_time=False)
+
+
+def test_over_capacity_threshold_is_106_percent():
+    def flag(*kgs):
+        ctx, stops, _, draft = _jac_day(list(kgs))
+        return next(tr for t in dp.plan_view(ctx, stops, draft, _info, explain=False)['trucks']
+                    for tr in t['trips'])['over_capacity']
+    assert flag(1100.0, 1109.0) is False                                         # 2209
+    assert flag(1200.0, 1132.0) is False                                         # 2332
+    assert flag(1200.0, 1132.6) is True                                          # 2332,6
+
+
+def test_merge_overload_joins_two_trips_within_6_percent():
+    ctx, stops, routable, draft = _jac_day([1100.0], [1109.0])
+    before = dq.signature(draft)
+    dp._merge_overload(ctx, routable, draft, [JAC])
+    assert [t.id for t in draft.trips] == [1] and set(draft.trips[0].stops) == {101, 102}
+    assert dq.signature(draft) != before                                         # прежний выбор качества устареет (describe)
+    assert next(tr for t in dp.plan_view(ctx, stops, draft, _info, explain=False)['trucks']
+                for tr in t['trips'])['over_capacity'] is False
+
+
+def test_build_ends_with_merge_overload():
+    ctx, stops, _, _ = _jac_day([1100.0], [1109.0])
+    draft = dp.build(ctx, stops, None, [JAC.car_code], 'now')                    # решатель делит: вместе 2209 > 2200
+    assert len(draft.trips) == 1 and set(draft.trips[0].stops) == {101, 102}
+
+
+def test_merge_overload_runs_after_improve(monkeypatch):
+    ctx, stops, _, plan = _jac_day([1100.0], [1109.0])
+    seen = []
+
+    def improved(ctx, stops, draft, previous=None):                              # улучшение вернуло два рейса: склеить можно только после него
+        seen.append(len(draft.trips))
+        return dp.Draft.from_json(plan.to_json())
+    monkeypatch.setattr(dq, 'improve', improved)
+    got = dp.build(replace(ctx, balanced=True), stops, None, [JAC.car_code], 'now')
+    assert seen and [t.id for t in got.trips] == [1] and set(got.trips[0].stops) == {101, 102}
+
+
+def test_merge_overload_with_real_improve_keeps_describe_working():
+    ctx, stops, _, _ = _jac_day([1100.0], [1109.0])
+    balanced = replace(ctx, balanced=True)
+    got = dp.build(balanced, stops, None, [JAC.car_code], 'now')
+    assert len(got.trips) == 1 and dq.describe(balanced, stops, got)['selection'] is None
+
+
+def _timed_pinned(monkeypatch, **change):
+    """Закреплённый перегруженный рейс 1 (2209 кг) и магазин 103 с окном: сборка вокруг него; какие ответы дал PyVRP."""
+    ctx, stops, _, old = _jac_day([1100.0, 1109.0], [100.0])
+    old.trips[0].pinned = True
+    timed = replace(ctx, windows={103: (9 * 60.0, 18 * 60.0)}, **change)
+    tries, real = [], fl._solver_try
+    monkeypatch.setattr(fl, '_solver_try', lambda *a, **k: tries.append(real(*a, **k)) or tries[-1])
+    return dp.build(timed, stops, old, [JAC.car_code], 'now'), tries
+
+
+def test_pinned_overloaded_trip_keeps_pyvrp_solution_in_timed_rebuild(monkeypatch):
+    got, tries = _timed_pinned(monkeypatch)
+    assert tries and tries[-1][0] is not None and tries[-1][1] is None           # решение PyVRP принято, не «своим расчётом»
+    assert next(t for t in got.trips if t.id == 1).stops == [101, 102] and any(103 in t.stops for t in got.trips)
+
+
+def test_pinned_trip_center_check_stays_in_timed_rebuild(monkeypatch):
+    zone = ((40.20, 44.64), (40.21, 44.64), (40.21, 44.66), (40.20, 44.66))      # магазин 101 в центре, JAC без права въезда
+    _, tries = _timed_pinned(monkeypatch, center_zone=zone)
+    assert tries and all(found is None for found, _ in tries) and tries[-1][1] == 'load'
+
+
+def test_merge_overload_leaves_plan_when_tolerance_does_not_decide():
+    for kgs in (([1100.0], [1240.0]), ([1000.0], [1000.0])):                     # 2340 > 106%; 2000 — и без допуска, решение решателя
+        ctx, _, routable, draft = _jac_day(*kgs)
+        dp._merge_overload(ctx, routable, draft, [JAC])
+        assert [t.id for t in draft.trips] == [1, 2], kgs
+
+
+@pytest.mark.parametrize('fix', [
+    lambda ctx, d: setattr(d.trips[1], 'pinned', True),
+    lambda ctx, d: setattr(d.trips[0], 'loaded', {'at': '2026-10-01T08:00:00', 'by': 'x', 'pin': False}),
+    lambda ctx, d: setattr(d.trips[1], 'not_before', 600.0),
+    lambda ctx, d: setattr(d.trips[1], 'origin', (40.2, 44.6)),
+    lambda ctx, d: d.trips[1].stops.append(101),                                 # магазин в двух рейсах
+    lambda ctx, d: replace(ctx, solo=frozenset({102})),
+], ids=['pinned', 'loaded', 'not_before', 'origin', 'share', 'solo'])
+def test_merge_overload_skips_fixed_trips(fix):
+    ctx, _, routable, draft = _jac_day([1100.0], [1109.0])
+    ctx = fix(ctx, draft) or ctx
+    dp._merge_overload(ctx, routable, draft, [JAC])
+    assert [t.id for t in draft.trips] == [1, 2]
+
+
+def test_merge_overload_refused_when_window_would_be_missed():
+    """Весь груз грузится до выезда: первый магазин вместе с грузом второго рейса приедет на 33 минуты позже."""
+    tn = replace(JAC_TN, warehouse_load_min_per_tonne=30.0)
+    ctx, _, routable, draft = _jac_day([1100.0], [1109.0], tn=tn)
+    at = dp._timeline(ctx, draft.trips, routable, dp._shares(draft.trips), kg_of={})[1][2][0]
+    tight = replace(ctx, windows={101: (0.0, 9 * 60 + at + 1.0)})
+    dp._merge_overload(tight, routable, draft, [JAC])
+    assert [t.id for t in draft.trips] == [1, 2]
+    wide = replace(ctx, windows={101: (0.0, 9 * 60 + at + 40.0)})                # то же окно с запасом — склейка проходит
+    dp._merge_overload(wide, routable, draft, [JAC])
+    assert [t.id for t in draft.trips] == [1]
